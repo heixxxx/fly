@@ -1,7 +1,8 @@
 // S7 跨块连接归并（并查集）单测（2026-09-13 裁定，方案 design-db-plan.md
 // §2.6 + S7 节）：
-//   1. 局部收集：per-DEF 边集（父网连接 (子实例名, port 名) × 子网连接
-//      ("PIN", port 名) 对接——S5b 名字形态，无 local 0 条目）+ port 网
+//   1. 局部收集：per-DEF 边集（父网 (子实例 local id, port pin 全局 id)
+//      × 子网 (local 0 占位, 同一 port pin id) 对接——S5b 连接为 id 形态
+//      （2026-09-13 id 化裁定，port 位条目 = local 0 占位））+ port 网
 //      local id 集；
 //   2. 基本 union / 电气等价：子网连两 port 到不同父网 → 两父网同类；
 //   3. 多层嵌套：孙网 → 子网 → 顶层网，root = 顶层（层级最高优先）；
@@ -45,19 +46,29 @@ DSBlockBuildData make_block(
     return b;
 }
 
-// 合成 per-DEF 网内容产物：local net id → (实例名, pin 名) 连接序列
-//（S5b 连接表名字形态——port 引用 instance_name = "PIN"）
+// 合成 per-DEF 网内容产物：local net id → 连接序列（id 形态，2026-09-13
+// 裁定——条目 = (实例 local id, 合成 port pin 全局 id, port 位)；port
+// 引用 local id = 0。合成 pin id 手工指定：PB=100/PC=101/PD=102/TP=103/
+// TISO=104/P1=105/P2=106，S7 对接只消费 port pin id 相等性）
+struct ConnItem {
+    uint64_t inst_local;
+    uint32_t pin_id;
+    bool port;
+};
+
 DSNetBuildData make_nets(
     const char* block_name,
-    const CMVector<std::pair<uint64_t,
-                             CMVector<std::pair<CMString, CMString>>>>& conns) {
+    const CMVector<std::pair<uint64_t, CMVector<ConnItem>>>& conns) {
     DSNetBuildData n;
     n.set_block_name(block_name);
-    for (const auto& [net_id, pairs] : conns) {
-        for (const auto& [inst, pin] : pairs) {
+    for (const auto& [net_id, items] : conns) {
+        for (const auto& item : items) {
             DSNetConnection c;
-            c.set_instance_name(inst);
-            c.set_pin_name(pin);
+            c.instance_local_id_ = item.inst_local;
+            c.pin_id_ = item.pin_id;
+            if (item.port) {
+                c.set_port();
+            }
             n.add_connection(net_id, std::move(c));
         }
     }
@@ -107,19 +118,19 @@ struct UnionEnv {
 
         top = make_block("top", {{"m1", mid_id}, {"m2", mid_id}}, 3);
         top_nets = make_nets("top", {
-            {1, {{"m1", "PB"}, {"PIN", "TP"}}},
-            {2, {{"m2", "PB"}}},
-            {3, {{"PIN", "TISO"}}},
+            {1, {{1, 100, false}, {0, 103, true}}},   // (m1 PB) + (PIN TP)
+            {2, {{2, 100, false}}},                 // (m2 PB)
+            {3, {{0, 104, true}}},                 // (PIN TISO)
         });
         mid = make_block("mid", {{"b1", bottom_id}}, 1);
         mid_nets = make_nets("mid", {
-            {1, {{"PIN", "PB"}, {"b1", "PC"}}},
+            {1, {{0, 100, true}, {1, 101, false}}},  // (PIN PB) + (b1 PC)
         });
         bottom = make_block("bottom", {}, 3);
         bottom_nets = make_nets("bottom", {
-            {1, {{"PIN", "PC"}}},
-            {2, {{"u9", "ZZ"}}},
-            {3, {{"PIN", "PD"}}},
+            {1, {{0, 101, true}}},   // (PIN PC)
+            {2, {{1, 107, false}}},  // (u9 ZZ)——叶实例 internal
+            {3, {{0, 102, true}}},   // (PIN PD)
         });
 
         CMVector<const DSBlockBuildData*> blocks = {&top, &mid, &bottom};
@@ -182,7 +193,7 @@ TEST(DSNetUnionTest, CollectsSliceEdgesAndPortNets) {
     EXPECT_EQ(mid_slice.port_net_ids_, (CMVector<uint64_t>{1}));
 
     // bottom（叶块，无块实例连接）：无边；port 网 nb(1)/nd(3)，internal
-    // ni(2) 不在 port 集名形态上（无 ("PIN", x) 引用）
+    // ni(2) 无 port 位条目
     const DSNetUnionSlice bottom_slice =
         ds_collect_net_union_slice(env.tree, env.bottom_nets, {});
     EXPECT_TRUE(bottom_slice.edges_.empty());
@@ -200,17 +211,17 @@ TEST(DSNetUnionTest, MergesEquivalentParentNetsWithCanonicalRoot) {
     design.add_cell(std::move(cb));
     const uint32_t cb_id = design.cell_names_.get_id("cb");
 
-    // top：c1→cb；网 na(1)：(c1, P1)、nb(2)：(c1, P2)
-    // cb ：网 nc(1)：(PIN, P1) + (PIN, P2)——一子网连两 port → 两父网
+    // top：c1→cb；网 na(1)：(c1 P1)、nb(2)：(c1 P2)
+    // cb ：网 nc(1)：(PIN P1) + (PIN P2)——一子网连两 port → 两父网
     // 电气等价（合法形态）
     DSBlockBuildData t2 = make_block("t2", {{"c1", cb_id}}, 2);
     DSBlockBuildData cbd = make_block("cb", {}, 1);
     DSNetBuildData t2_nets = make_nets("t2", {
-        {1, {{"c1", "P1"}}},
-        {2, {{"c1", "P2"}}},
+        {1, {{1, 105, false}}},
+        {2, {{1, 106, false}}},
     });
     DSNetBuildData cb_nets = make_nets("cb", {
-        {1, {{"PIN", "P1"}, {"PIN", "P2"}}},
+        {1, {{0, 105, true}, {0, 106, true}}},
     });
     CMVector<const DSBlockBuildData*> blocks = {&t2, &cbd};
     CMVector<const DSNetBuildData*> nets = {&t2_nets, &cb_nets};

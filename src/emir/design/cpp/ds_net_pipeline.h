@@ -13,8 +13,18 @@
 //
 // S5b 三节点（首批）：
 //   DSNetConnectionParseNode  连接项解析：网名对齐 S5a local net id（⑨）
-//                             + 连接表保留（S7 并查集输入）+ block port
-//                             引用判别（defi instance() = "PIN"）；
+//                             + 连接项 id 换算（2026-09-13 裁定：解析边
+//                             界一次完成名字 → id——instance 名 → local
+//                             id 经 S5a 实例 hasher、pin 名 → 全局平铺
+//                             pin id 经容器 pin hasher 组合键
+//                             "cell_name/pin_name"、"PIN" port 条目 →
+//                             组合键 "block_name/port_name"）+ flags 六
+//                             位填写（port/driver/receiver/power/ground/
+//                             clock——定位到的 DSPin direction/type 顺手
+//                             取得，hybrid = driver+receiver 同置）+ 未
+//                             命中兜底跳过 + 计数 + DSGN::0025 提醒
+//                            （dev-rules §7）+ 连接表保留（S7 并查集输
+//                             入）；
 //   DSNetGeometryExpandNode   路由几何展开：wire 段（layer id + 宽度——
 //                             special 显式 / 普通 net 回填 stack 层缺省
 //                             宽）与 rect 项（层引用未定义 → 条目级丢弃
@@ -132,7 +142,7 @@ private:
 
 // —— S5b 三节点（首批）———————————————————————————————
 
-// 节点 1：连接项解析（⑨ local net id 对齐 + 连接表保留 + port 判别）
+// 节点 1：连接项解析（⑨ local net id 对齐 + id 换算 + 连接表保留）
 class DSNetConnectionParseNode : public DSNetHandler {
 public:
     const char* name() const override { return "NetConnectionParseNode"; }

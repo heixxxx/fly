@@ -11,11 +11,13 @@ R7 name 体系收敛（㊱㊳㊴㊸㊹㊻）：EXDSPin/EXDSInstance 删 name 面
 ds_make_name_mapper 统一组装工厂。
 COMPONENTS 解析：EXDSDensityGrid/EXDSInstanceStats/EXDSBlockBuildData
 （per-DEF 产物只读面）+ EXDSDefComponentsStats + ds_parse_def_components
-/ ds_merge_block_build（责任链 DSInstancePipeline 含 unique_ptr 不可绑
-定，装配在 C++ 侧内部）。
+（返回 (stats, fake cells)——fake cell 数据经独立临时对象传 S5a 汇总，
+2026-09-13 裁定产物本体不含副本）/ ds_merge_block_build（责任链
+DSInstancePipeline 含 unique_ptr 不可绑定，装配在 C++ 侧内部）。
 网内容解析：EXDSNetStats/EXDSNetBuildData（网内容产物只读面）+
-EXDSDefNetsStats + ds_parse_def_nets（网内容链 DSNetPipeline 同上不上
-Python）。
+EXDSNetConnection（连接项 id 形态只读面，flags 六位 port/driver/receiver/
+power/ground/clock，hybrid = driver+receiver 同置）+ EXDSDefNetsStats +
+ds_parse_def_nets（网内容链 DSNetPipeline 同上不上 Python）。
 层级树：EXDSHierNode/EXDSHierTree（层级树只读面，⑮ 四接口 + ⑨ 换算）+
 ds_build_hier_tree（构建在 C++，多根/零根/环 raise D22）。
 S8 分区：EXDSSubPartition（core/extend 双区域，core/extend 四元组）+
@@ -53,6 +55,7 @@ from _fly_emir_design import (
     EXDSLefParseStats,
     EXDSNameMapper,
     EXDSNetBuildData,
+    EXDSNetConnection,
     EXDSNetStats,
     EXDSPartConnection,
     EXDSPartInstConnections,
@@ -63,7 +66,6 @@ from _fly_emir_design import (
     EXDSPin,
     EXDSPinGeometry,
     EXDSPinTables,
-    EXDSPowerPin,
     EXDSSubPartition,
     EXDSStack,
     EXDSNetUnion,

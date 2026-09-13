@@ -69,7 +69,12 @@ void DSCellResolveNode::handle(DSInstanceContext& ctx) {
 
     // 3) fake cell 生成（⑲/⑳）：名 = block::cell（同 ⑫ via 前缀模式）、
     //    1×1 全局最小单位矩形、无 pin、fake_cell 位；不 raise 不跳过 +
-    //    DSGN::0007 提醒（实例清单保持完整）
+    //    DSGN::0007 提醒（实例清单保持完整）。数据入独立容器（2026-09-13
+    //    裁定：产物本体不含 fake cell 副本——临时对象传 S5a 汇总）
+    if (ctx.fake_cells == nullptr) {
+        ctx.error = true;  // 调用方契约错误（fake 容器未挂）
+        return;
+    }
     DSCell fake;
     fake.set_name(fake_key);
     fake.set_bbox(GEORect(0, 0, 1, 1));
@@ -78,9 +83,9 @@ void DSCellResolveNode::handle(DSInstanceContext& ctx) {
     const uint32_t fake_id =
         ds_fake_cell_id_base(ctx.block_name,
                              static_cast<uint32_t>(ctx.design->cells_.size())) +
-        static_cast<uint32_t>(ctx.block_data->fake_cells_.size());
+        static_cast<uint32_t>(ctx.fake_cells->size());
     ctx.block_data->fake_name_to_id_[fake.get_name()] = fake_id;
-    ctx.block_data->fake_cells_.push_back(std::move(fake));
+    ctx.fake_cells->push_back(std::move(fake));
     ++ctx.block_data->stats_.fake_cell_count;
 
     ctx.cell_id = fake_id;
@@ -107,7 +112,6 @@ void DSInstanceBuildNode::handle(DSInstanceContext& ctx) {
                                       ctx.cell_bbox, ctx.cell_origin_x,
                                       ctx.cell_origin_y));
     inst.set_placement_status(ctx.placement_status);
-    inst.set_weight(ctx.weight);
     // R7 ㊱：实例名不进 DSInstance——登记进双向 instance hasher
     ctx.instance_id =
         ctx.block_data->add_instance(std::move(inst), ctx.instance_name);

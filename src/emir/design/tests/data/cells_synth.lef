@@ -27,7 +27,7 @@ MACRO INV_X1
    END A
    PIN ZN
       DIRECTION OUTPUT ;
-      USE SIGNAL ;
+      USE CLOCK ;
       PORT
          LAYER M2 ;
             RECT 0.3 0.3 0.5 0.5 ;

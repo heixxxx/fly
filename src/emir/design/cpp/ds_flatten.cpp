@@ -123,54 +123,6 @@ PointAssignment assign_point(const I64Point& p,
     return out;
 }
 
-// 电源引脚预展开（D18）：cell 的 POWER/GROUND pin，锚点 = 该 pin 全部
-// 几何矩形的聚合包围盒中心（int64 中点），经复合变换 g 映射全局坐标。
-// pin 无几何（lib-only 等形态）跳过——无锚点可算，不虚构。
-void expand_power_pins(DSInstance& copy, const DSInstance& src,
-                       const I64Transform& g, const DSDesign& design,
-                       const DSPinGeometry* pin_geoms) {
-    if (pin_geoms == nullptr || src.cell_id_ >= design.cells_.size()) {
-        return;
-    }
-    const DSCell& cell = design.cells_[src.cell_id_];
-    for (const DSPin& pin : cell.pins_) {
-        const auto type = static_cast<DSPinType>(pin.type_);
-        if (type != DSPinType::POWER && type != DSPinType::GROUND) {
-            continue;
-        }
-        const CMVector<DSShapeRef>* geos = pin_geoms->geometry_of(
-            pin.pin_id_);
-        if (geos == nullptr || geos->empty()) {
-            continue;
-        }
-        int64_t xl = geos->front().rect_.get_x_low();
-        int64_t yl = geos->front().rect_.get_y_low();
-        int64_t xh = geos->front().rect_.get_x_high();
-        int64_t yh = geos->front().rect_.get_y_high();
-        for (size_t k = 1; k < geos->size(); ++k) {
-            const GEORect& r = (*geos)[k].rect_;
-            xl = std::min(xl, static_cast<int64_t>(r.get_x_low()));
-            yl = std::min(yl, static_cast<int64_t>(r.get_y_low()));
-            xh = std::max(xh, static_cast<int64_t>(r.get_x_high()));
-            yh = std::max(yh, static_cast<int64_t>(r.get_y_high()));
-        }
-        const I64Point anchor(xl + (xh - xl) / 2, yl + (yh - yl) / 2);
-        const I64Point gp = g.apply(anchor);
-        if (!fits_i32(gp.get_x()) || !fits_i32(gp.get_y())) {
-            // 越界点跳过该电源引脚（review 2026-09-13：截断为静默损坏；
-            // 与无几何电源 pin 跳过同族）
-            WARN("ds_flatten_block: power pin {} anchor out of int32 "
-                 "domain — skipped", pin.pin_id_);
-            continue;
-        }
-        DSPowerPin pp;
-        pp.pin_id_ = pin.pin_id_;
-        pp.pos_ = GEOPoint(static_cast<int32_t>(gp.get_x()),
-                           static_cast<int32_t>(gp.get_y()));
-        copy.add_power_pin(std::move(pp));
-    }
-}
-
 }  // namespace
 
 // —— DSPartitionProduct ——（分片追加合并；同 global id 的 instance 副本
@@ -202,8 +154,7 @@ void DSPartitionProduct::merge_from(const DSPartitionProduct& src) {
 // 见 DSHierNode 字段注释），本函数不读父块产物。
 CMVector<std::pair<uint32_t, DSPartitionProduct>> ds_flatten_block(
     const DSHierTree& tree, const DSBlockBuildData& block,
-    const DSNetBuildData& nets, const DSBlockNames& names,
-    const DSDesign& design, const DSPinGeometry* pin_geoms,
+    const DSNetBuildData& nets, const DSDesign& design,
     const CMVector<DSSubPartition>& partitions) {
     CMVector<std::pair<uint32_t, DSPartitionProduct>> out;
     if (partitions.empty() || tree.node_count() == 0) {
@@ -246,31 +197,22 @@ CMVector<std::pair<uint32_t, DSPartitionProduct>> ds_flatten_block(
         const PointAssignment self_assign = assign_point(t.get_offset(),
                                                          partitions);
 
-        // S5b 名字形态 → global 连接项（instance 名经伴生 hasher →
-        // local id → +inst_start；("PIN", port) → 块实例自身 global id +
-        // port 位，⑧ local 0 映射）。未登记实例名（S5a/S5b desync 防御）
-        // WARN 后丢弃条目，不中断建库。
+        // 连接项 id 形态 → global 连接项（instance local id → +inst_start；
+        // port 位条目 → 块实例自身 global id + port 位，⑧ local 0 映射；
+        // pin 全局平铺 id 直存——名字换算已在 S5b 解析边界完成，本层零
+        // 字符串匹配）。flags 六位（port/driver/receiver/power/ground/
+        // clock）整体直存，hybrid = driver+receiver 同置不变。
         const auto make_connection = [&](const DSNetConnection& c,
                                          uint64_t global_net,
                                          DSPartConnection& pc) -> bool {
-            if (c.is_port_ref()) {
+            if (c.is_port()) {
                 pc.instance_global_id_ = node.get_self_global_id();
-                pc.set_port();
             } else {
-                const uint64_t local =
-                    names.instance_names_
-                        ? names.instance_names_->get_id(c.get_instance_name())
-                        : DSInstanceNameHasher::kInvalidId;
-                if (!DSInstanceNameHasher::is_valid_id(local)) {
-                    WARN("ds_flatten_block: connection instance '{}' not in "
-                         "name hasher (block {}) — entry dropped",
-                         c.get_instance_name(), block.get_block_name());
-                    return false;
-                }
-                pc.instance_global_id_ = inst_start + local;
+                pc.instance_global_id_ = inst_start + c.instance_local_id_;
             }
             pc.net_global_id_ = global_net;
-            pc.pin_name_ = c.get_pin_name();
+            pc.pin_id_ = c.pin_id_;
+            pc.flags_ = c.flags_;
             return true;
         };
 
@@ -319,7 +261,6 @@ CMVector<std::pair<uint32_t, DSPartitionProduct>> ds_flatten_block(
                     GEOPoint(static_cast<int32_t>(g.get_offset().get_x()),
                              static_cast<int32_t>(g.get_offset().get_y())),
                     g.get_orient());
-                expand_power_pins(copy, inst, g, design, pin_geoms);
                 if (pid == pa.primary) {
                     copy.set_primary();
                 }

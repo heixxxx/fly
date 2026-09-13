@@ -84,10 +84,11 @@ def ds_parse_def_one(path: str, stack):
 def ds_parse_def_components_one(path: str, stack, design, block_data,
                                 bin_dbu: int):
     """COMPONENTS 解析（实例侧）：责任链 ∥ 网名扫描（同一遍 DEF 读取）
-    ——就地填充 block_data（实例表/密度通道/统计），返回 stats。bin_dbu
-    = 密度采样格边长（全局 DBU；alpha 配置换算，见 ds_flow）。网名空间
-    在返回的 stats 侧（skipped 计数）；实例名经 DSInstanceNameHasher 双向
-    登记（R7）。"""
+    ——就地填充 block_data（实例表/密度通道/统计），返回 (stats, fake
+    cells)。fake cell 数据经独立临时对象传递（2026-09-13 裁定：产物本体
+    不含副本，S5a 汇总并入全局表）。bin_dbu = 密度采样格边长（全局 DBU；
+    alpha 配置换算，见 ds_flow）。网名空间在返回的 stats 侧（skipped 计
+    数）；实例名经 DSInstanceNameHasher 双向登记（R7）。"""
     _check_readable(path)
     return ds_parse_def_components(path, stack, design, block_data, bin_dbu)
 

@@ -63,19 +63,19 @@ DSNetUnionSlice ds_collect_net_union_slice(
     DSNetUnionSlice slice;
     slice.block_name_ = parent_nets.get_block_name();
 
-    // 子定义端口索引：block 名 → (port 名 → 子网 local id 集)。扫描子网
-    // 产物连接表的 ("PIN", port) 引用（S5b 名字形态，defi 回调语义）。
-    CMUnorderedMap<CMString, CMUnorderedMap<CMString, CMVector<uint64_t>>>
-        port_nets;
+    // 子定义端口索引：port pin 全局 id → 子网 local id 集。扫描子网产物
+    // 连接表的 port 引用条目（is_port 位，⑧ local 0 占位）。port pin 全局
+    // id 唯一（S5b 解析边界换算：组合键 "block_cell_name/port_name"），
+    // 跨子定义平铺安全——同 id 不会出现在两个 block cell。
+    CMUnorderedMap<uint32_t, CMVector<uint64_t>> port_pin_nets;
     for (const DSNetBuildData* child : child_defs) {
         if (child == nullptr) {
             continue;  // 防御（编排侧空条目）
         }
-        auto& index = port_nets[child->get_block_name()];
         for (const auto& [local_id, conns] : child->connections_) {
             for (const DSNetConnection& c : conns) {
-                if (c.is_port_ref()) {
-                    index[c.get_pin_name()].push_back(local_id);
+                if (c.is_port()) {
+                    port_pin_nets[c.pin_id_].push_back(local_id);
                 }
             }
         }
@@ -84,7 +84,7 @@ DSNetUnionSlice ds_collect_net_union_slice(
     // 本 def 的 port 网 local id 集（与实例化位置无关，一网一计）
     for (const auto& [local_id, conns] : parent_nets.connections_) {
         for (const DSNetConnection& c : conns) {
-            if (c.is_port_ref()) {
+            if (c.is_port()) {
                 slice.port_net_ids_.push_back(local_id);
                 break;  // 一网一计
             }
@@ -104,32 +104,44 @@ DSNetUnionSlice ds_collect_net_union_slice(
         }
     }
 
-    // 逐位置逐连接收集 (父网, 子网) 边：实例名命中树 children = block
-    // instance（实例名块内唯一，叶实例无树节点）；同名 port 的子网集全
-    // 并（同一子网连多 port 连到不同父网 → 两父网 union，电气等价）
+    // 块实例 local id → 树节点 id 索引（id 对接键，2026-09-13 裁定：S7
+    // 内部链路零字符串匹配）：非 root 节点 self_global_id_ = 父块
+    // instance_start + 父块内 local id（⑧）。全局建一次（量 = 树节点数）。
+    CMUnorderedMap<uint64_t, uint32_t> node_by_self_id;
+    for (const DSHierNode& node : tree.nodes_) {
+        node_by_self_id.emplace(node.get_self_global_id(), node.get_id());
+    }
+
+    // 逐位置逐连接收集 (父网, 子网) 边：父侧 (子实例 local id, port pin
+    // 全局 id) × 子侧 (local 0, 同一 port pin id) 直接相等对接（同一
+    // port 的全局 pin id 唯一）；同名 port 的子网集全并（同一子网连多
+    // port 连到不同父网 → 两父网 union，电气等价）
     CMVector<std::pair<uint64_t, uint64_t>> edges;
     for (const uint32_t pos : positions) {
+        const uint64_t inst_start =
+            tree.instance_range(pos).first;
         for (const auto& [local_net, conns] : parent_nets.connections_) {
             const uint64_t parent_global = tree.global_net_id(pos, local_net);
             if (parent_global == DSHierTree::kNoNode) {
                 continue;  // 防御：越界 local id（S5a/S5b 计数不一致兜底）
             }
             for (const DSNetConnection& c : conns) {
-                if (c.is_port_ref()) {
+                if (c.is_port()) {
                     continue;  // 顶层引脚连接：root 候选，不产生跨层 union
                 }
-                const uint32_t child_node = tree.find_child_by_instance_name(
-                    pos, c.get_instance_name());
-                if (child_node == DSHierTree::kNoNode) {
+                // 子实例 local id → 树 child 节点（self_global_id 反查；
+                // 叶实例不在树上 = 未命中，不产生跨层 union）
+                const auto node_it =
+                    node_by_self_id.find(inst_start + c.instance_local_id_);
+                if (node_it == node_by_self_id.end()) {
                     continue;  // 叶实例连接（非块实例），不产生跨层 union
                 }
-                const auto def_it = port_nets.find(
-                    tree.node(child_node).get_block_cell_name());
-                if (def_it == port_nets.end()) {
-                    continue;  // 子定义网产物未提供（层级不完整兜底）
+                const uint32_t child_node = node_it->second;
+                if (tree.parent(child_node) != pos) {
+                    continue;  // 防御：非本位置的块实例（数据不变式兜底）
                 }
-                const auto nets_it = def_it->second.find(c.get_pin_name());
-                if (nets_it == def_it->second.end()) {
+                const auto nets_it = port_pin_nets.find(c.pin_id_);
+                if (nets_it == port_pin_nets.end()) {
                     continue;  // 该 port 未连接任何子网（父网不经此下探）
                 }
                 for (const uint64_t child_local : nets_it->second) {

@@ -6,10 +6,10 @@
 //   3. 非 pg net 全量补全（跨分区连接四条全在）；pg 不补全（仅本分区
 //      instance 副本相关条目）；
 //   4. is_crossing 标记；geometry extend 交叠副本（不裁剪）；
-//   5. 电源引脚预展开坐标（合成 cell pin 几何，锚点 = 聚合 bbox 中心）；
-//   6. id 换算三类（instance = start + local；net = start + local − 1；
-//      不换算 S7 root）；
-//   7. 合并：两 slice 同区 merge 幂等 + 序列化往返。
+//   5. id 换算三类（instance = start + local；net = start + local − 1；
+//      不换算 S7 root）——连接项 id + flags 六位直存（2026-09-13 裁定：
+//      S5b 解析边界换算完成，S9 零名字查询零 pin 几何依赖）；
+//   6. 合并：两 slice 同区 merge 幂等 + 序列化往返。
 // 期望值全部按实现口径手工推导（分区/坐标常数见 FlattenEnv），锁定行为。
 #include <emir/design/cpp/ds_flatten.h>
 #include <emir/design/cpp/ds_types.h>
@@ -36,6 +36,21 @@ constexpr int32_t kIntMax = std::numeric_limits<int32_t>::max();
 //   via [0,1)。
 // 分区 '2x1'：p0 core (0,0,1000,2000) extend (MIN,MIN,1140,MAX)、
 //   p1 core (1000,0,2000,2000) extend (860,MIN,MAX,MAX)。
+// 连接项构造辅助（id + flags 形态；port 位按需；flags 位构造时置位
+// 验证 S9 直存）
+DSNetConnection make_conn(uint64_t local, uint32_t pin, bool port,
+                          bool receiver = false, bool driver = false,
+                          bool power = false) {
+    DSNetConnection c;
+    c.instance_local_id_ = local;
+    c.pin_id_ = pin;
+    if (port) c.set_port();
+    if (receiver) c.set_receiver();
+    if (driver) c.set_driver();
+    if (power) c.set_power();
+    return c;
+}
+
 struct FlattenEnv {
     DSHierTree tree;
     DSDesign design;
@@ -43,9 +58,6 @@ struct FlattenEnv {
     DSBlockBuildData sub;
     DSNetBuildData top_nets;
     DSNetBuildData sub_nets;
-    DSBlockNames top_names;
-    DSBlockNames sub_names;
-    DSPinGeometry geoms;
     CMVector<DSSubPartition> parts;
 
     FlattenEnv() {
@@ -62,15 +74,10 @@ struct FlattenEnv {
         stack.add_layer(std::move(m2));
         (void)stack;
 
-        // INV cell（id 0）：VDD(POWER, pin id 7) 局部几何 (0,300)-(350,350)
+        // INV cell（id 0）：结构占位（连接 pin id 为合成值，S9 不查 cell）
         DSCell inv;
         inv.set_name("INV");
-        DSPin vdd;
-        vdd.type_ = static_cast<uint8_t>(DSPinType::POWER);
-        vdd.pin_id_ = 7;
-        inv.add_pin(std::move(vdd));
         design.add_cell(std::move(inv));
-        geoms.add_geometry(7, DSShapeRef{0, GEORect(0, 300, 350, 350)});
 
         // sub block cell（id 1，无 pin）
         DSCell sub_cell;
@@ -154,40 +161,21 @@ struct FlattenEnv {
         csub.placement_status_ = static_cast<uint8_t>(DSPlacementStatus::PLACED);
         top.add_instance(std::move(csub), "csub");
 
-        // top nets：n_top(local 1, 4 连接跨两分区) + n_pg(local 2, pg)
-        DSNetConnection c1;
-        c1.set_instance_name("la");
-        c1.set_pin_name("A");
-        top_nets.add_connection(1, std::move(c1));
-        DSNetConnection c2;
-        c2.set_instance_name("lb");
-        c2.set_pin_name("A");
-        top_nets.add_connection(1, std::move(c2));
-        DSNetConnection c3;
-        c3.set_instance_name("csub");
-        c3.set_pin_name("PIN_IN");
-        top_nets.add_connection(1, std::move(c3));
-        DSNetConnection c4;
-        c4.set_instance_name("PIN");
-        c4.set_pin_name("TOP");
-        top_nets.add_connection(1, std::move(c4));
+        // top nets：n_top(local 1, 4 连接跨两分区) + n_pg(local 2, pg)。
+        // 合成 pin id：A=1(receiver)、hybrid VDD=2、csub port PIN_IN=10、
+        // top port TOP=20/VDD_TOP=21（port 位 + flags 位与解析产物同构）
+        top_nets.add_connection(1, make_conn(1, 1, false, true));
+        top_nets.add_connection(1, make_conn(2, 1, false, true));
+        top_nets.add_connection(1, make_conn(3, 10, false, true));
+        top_nets.add_connection(1, make_conn(0, 20, true, true));
         DSNetWire wt;
         wt.layer_id_ = 0;
         wt.width_ = 40;
         wt.points_ = {GEOPoint(0, 1800), GEOPoint(2000, 1800)};
         top_nets.add_wire(1, std::move(wt));
-        DSNetConnection p1c;
-        p1c.set_instance_name("la");
-        p1c.set_pin_name("VDD");
-        top_nets.add_connection(2, std::move(p1c));
-        DSNetConnection p2c;
-        p2c.set_instance_name("lb");
-        p2c.set_pin_name("VDD");
-        top_nets.add_connection(2, std::move(p2c));
-        DSNetConnection p3c;
-        p3c.set_instance_name("PIN");
-        p3c.set_pin_name("VDD_TOP");
-        top_nets.add_connection(2, std::move(p3c));
+        top_nets.add_connection(2, make_conn(1, 2, false, true, true, true));
+        top_nets.add_connection(2, make_conn(2, 2, false, true, true, true));
+        top_nets.add_connection(2, make_conn(0, 21, true, true, true, true));
         DSNetWire wp;
         wp.layer_id_ = 0;
         wp.width_ = 40;
@@ -203,15 +191,10 @@ struct FlattenEnv {
         u1.placement_status_ = static_cast<uint8_t>(DSPlacementStatus::PLACED);
         sub.add_instance(std::move(u1), "u1");
 
-        // sub nets：n1(local 1, wire + via) + n2(local 2, pg 无几何)
-        DSNetConnection u1a;
-        u1a.set_instance_name("u1");
-        u1a.set_pin_name("A");
-        sub_nets.add_connection(1, std::move(u1a));
-        DSNetConnection sub_pin;
-        sub_pin.set_instance_name("PIN");
-        sub_pin.set_pin_name("PIN_IN");
-        sub_nets.add_connection(1, std::move(sub_pin));
+        // sub nets：n1(local 1, wire + via) + n2(local 2, pg 无几何)。
+        // 合成 port pin id：PIN_IN=10(receiver)、PIN_OUT=11(driver)
+        sub_nets.add_connection(1, make_conn(1, 1, false, true));
+        sub_nets.add_connection(1, make_conn(0, 10, true, true));
         DSNetWire w1;
         w1.layer_id_ = 0;
         w1.width_ = 40;
@@ -221,24 +204,13 @@ struct FlattenEnv {
         vi.via_cell_id_ = 0;
         vi.pos_ = GEOPoint(500, 100);
         sub_nets.add_via_instance(1, std::move(vi));
-        DSNetConnection u1z;
-        u1z.set_instance_name("u1");
-        u1z.set_pin_name("ZN");
-        sub_nets.add_connection(2, std::move(u1z));
-        DSNetConnection sub_pin2;
-        sub_pin2.set_instance_name("PIN");
-        sub_pin2.set_pin_name("PIN_OUT");
-        sub_nets.add_connection(2, std::move(sub_pin2));
+        sub_nets.add_connection(2, make_conn(1, 2, false, false, true));
+        sub_nets.add_connection(2, make_conn(0, 11, true, false, true));
         sub_nets.mark_pg_net(2);
 
         // sub obstruction（DEF BLOCKAGE 等价物；全局 (1010,510,1060,560)）
         sub.obstructions_.push_back(DSShapeRef{2, GEORect(10, 10, 60, 60)});
 
-        // 名字伴生对象：hasher 与解析产物共享（flow attach 同构）
-        top_names.instance_names_ = top.instance_names_;
-        top_names.net_names_ = top.net_names_;
-        sub_names.instance_names_ = sub.instance_names_;
-        sub_names.net_names_ = sub.net_names_;
     }
 };
 
@@ -264,9 +236,9 @@ const DSInstance* inst_of(const DSPartitionProduct& p, uint64_t gid) {
 
 TEST(DSFlattenTest, PrimaryAssignmentAndExtendCopies) {
     FlattenEnv env;
-    const auto slices = ds_flatten_block(
-        env.tree, env.top, env.top_nets, env.top_names, env.design, nullptr,
-        env.parts);
+    const auto slices =
+        ds_flatten_block(env.tree, env.top, env.top_nets, env.design,
+                         env.parts);
     // 两个分区都有实例副本（top 定义只覆盖这两区）
     const DSPartitionProduct* p0 = product_of(slices, 0);
     const DSPartitionProduct* p1 = product_of(slices, 1);
@@ -307,9 +279,9 @@ TEST(DSFlattenTest, PrimaryAssignmentAndExtendCopies) {
 
 TEST(DSFlattenTest, ChildDefInstancesUseCompositeTransform) {
     FlattenEnv env;
-    const auto slices = ds_flatten_block(
-        env.tree, env.sub, env.sub_nets, env.sub_names, env.design,
-        &env.geoms, env.parts);
+    const auto slices =
+        ds_flatten_block(env.tree, env.sub, env.sub_nets, env.design,
+                         env.parts);
     const DSPartitionProduct* p0 = product_of(slices, 0);
     const DSPartitionProduct* p1 = product_of(slices, 1);
     ASSERT_NE(p0, nullptr);
@@ -333,9 +305,9 @@ TEST(DSFlattenTest, ChildDefInstancesUseCompositeTransform) {
 
 TEST(DSFlattenTest, GeometryCopiesUncrossedAndCrossing) {
     FlattenEnv env;
-    const auto slices = ds_flatten_block(
-        env.tree, env.top, env.top_nets, env.top_names, env.design, nullptr,
-        env.parts);
+    const auto slices =
+        ds_flatten_block(env.tree, env.top, env.top_nets, env.design,
+                         env.parts);
     const DSPartitionProduct* p0 = product_of(slices, 0);
     const DSPartitionProduct* p1 = product_of(slices, 1);
     ASSERT_NE(p0, nullptr);
@@ -378,9 +350,9 @@ TEST(DSFlattenTest, GeometryCopiesUncrossedAndCrossing) {
 
 TEST(DSFlattenTest, ViaEntriesCarryCellIdAndPlacementPrimary) {
     FlattenEnv env;
-    const auto slices = ds_flatten_block(
-        env.tree, env.sub, env.sub_nets, env.sub_names, env.design,
-        &env.geoms, env.parts);
+    const auto slices =
+        ds_flatten_block(env.tree, env.sub, env.sub_nets, env.design,
+                         env.parts);
     const DSPartitionProduct* p1 = product_of(slices, 1);
     ASSERT_NE(p1, nullptr);
 
@@ -438,9 +410,9 @@ TEST(DSFlattenTest, ViaEntriesCarryCellIdAndPlacementPrimary) {
 
 TEST(DSFlattenTest, ObstructionGoesToNetZeroBucketWithObsFlag) {
     FlattenEnv env;
-    const auto slices = ds_flatten_block(
-        env.tree, env.sub, env.sub_nets, env.sub_names, env.design,
-        &env.geoms, env.parts);
+    const auto slices =
+        ds_flatten_block(env.tree, env.sub, env.sub_nets, env.design,
+                         env.parts);
     const DSPartitionProduct* p0 = product_of(slices, 0);
     const DSPartitionProduct* p1 = product_of(slices, 1);
     ASSERT_NE(p0, nullptr);
@@ -471,39 +443,43 @@ TEST(DSFlattenTest, ObstructionGoesToNetZeroBucketWithObsFlag) {
 
 TEST(DSFlattenTest, NonPgNetConnectionsFullyCompleted) {
     FlattenEnv env;
-    const auto slices = ds_flatten_block(
-        env.tree, env.top, env.top_nets, env.top_names, env.design, nullptr,
-        env.parts);
+    const auto slices =
+        ds_flatten_block(env.tree, env.top, env.top_nets, env.design,
+                         env.parts);
     const DSPartitionProduct* p0 = product_of(slices, 0);
     const DSPartitionProduct* p1 = product_of(slices, 1);
     ASSERT_NE(p0, nullptr);
     ASSERT_NE(p1, nullptr);
 
     // n_top(global 0, 非 pg) 四条连接（la/lb/csub/PIN）跨分区也全量保
-    // 存——两分区各一份完整列表
+    // 存——两分区各一份完整列表（pin id + flags 位直存）
     for (const DSPartitionProduct* p : {p0, p1}) {
         auto it = p->net_connections_.items_.find(0);
         ASSERT_NE(it, p->net_connections_.items_.end());
         ASSERT_EQ(it->second.size(), 4u);
         EXPECT_EQ(it->second[0].instance_global_id_, 1u);
-        EXPECT_EQ(it->second[0].pin_name_, "A");
+        EXPECT_EQ(it->second[0].pin_id_, 1u);
         EXPECT_FALSE(it->second[0].is_port());
+        EXPECT_TRUE(it->second[0].is_receiver());
         EXPECT_EQ(it->second[1].instance_global_id_, 2u);
         // csub 端点 = 块实例 global id 3；PIN 端点 = root 自身 global id
-        // 0 + port 位（⑧ local 0 映射）
+        // 0 + port 位（⑧ local 0 映射）；flags 位整体直存
         EXPECT_EQ(it->second[2].instance_global_id_, 3u);
-        EXPECT_EQ(it->second[2].pin_name_, "PIN_IN");
+        EXPECT_EQ(it->second[2].pin_id_, 10u);
+        EXPECT_FALSE(it->second[2].is_port());
+        EXPECT_TRUE(it->second[2].is_receiver());
         EXPECT_EQ(it->second[3].instance_global_id_, 0u);
-        EXPECT_EQ(it->second[3].pin_name_, "TOP");
+        EXPECT_EQ(it->second[3].pin_id_, 20u);
         EXPECT_TRUE(it->second[3].is_port());
+        EXPECT_TRUE(it->second[3].is_receiver());
     }
 }
 
 TEST(DSFlattenTest, PgNetConnectionsFilteredToLocalInstances) {
     FlattenEnv env;
-    const auto slices = ds_flatten_block(
-        env.tree, env.top, env.top_nets, env.top_names, env.design, nullptr,
-        env.parts);
+    const auto slices =
+        ds_flatten_block(env.tree, env.top, env.top_nets, env.design,
+                         env.parts);
     const DSPartitionProduct* p0 = product_of(slices, 0);
     const DSPartitionProduct* p1 = product_of(slices, 1);
     ASSERT_NE(p0, nullptr);
@@ -522,27 +498,27 @@ TEST(DSFlattenTest, PgNetConnectionsFilteredToLocalInstances) {
 
 TEST(DSFlattenTest, InstConnectionsFollowCopies) {
     FlattenEnv env;
-    const auto slices = ds_flatten_block(
-        env.tree, env.sub, env.sub_nets, env.sub_names, env.design,
-        &env.geoms, env.parts);
+    const auto slices =
+        ds_flatten_block(env.tree, env.sub, env.sub_nets, env.design,
+                         env.parts);
     const DSPartitionProduct* p0 = product_of(slices, 0);
     const DSPartitionProduct* p1 = product_of(slices, 1);
     ASSERT_NE(p0, nullptr);
     ASSERT_NE(p1, nullptr);
 
-    // u1(global 5) 两分区副本各带自身连接端点：n1(global 2) A + n2
-    // (global 3) ZN（n2 为 pg 无几何——instance 维度仍可达，拼装口径）。
-    // 两端点来自不同网（conn_bucket 按连接表 unordered 键序累积），按
-    // (net, pin) 集合断言，不依赖桶序。
+    // u1(global 5) 两分区副本各带自身连接端点：n1(global 2) pin 1
+    // (receiver) + n2(global 3) pin 2 (driver)（n2 为 pg 无几何——
+    // instance 维度仍可达，拼装口径）。两端点来自不同网（conn_bucket 按
+    // 连接表 unordered 键序累积），按 (net, pin) 集合断言，不依赖桶序。
     const auto expect_conn_set = [](const CMVector<DSPartConnection>& conns,
-                                    std::pair<uint64_t, const char*> a,
-                                    std::pair<uint64_t, const char*> b) {
+                                    std::pair<uint64_t, uint32_t> a,
+                                    std::pair<uint64_t, uint32_t> b) {
         ASSERT_EQ(conns.size(), 2u);
         for (const auto& c : conns) {
             if (c.net_global_id_ == a.first) {
-                EXPECT_EQ(c.pin_name_, a.second);
+                EXPECT_EQ(c.pin_id_, a.second);
             } else if (c.net_global_id_ == b.first) {
-                EXPECT_EQ(c.pin_name_, b.second);
+                EXPECT_EQ(c.pin_id_, b.second);
             } else {
                 FAIL() << "unexpected net " << c.net_global_id_;
             }
@@ -551,62 +527,34 @@ TEST(DSFlattenTest, InstConnectionsFollowCopies) {
     for (const DSPartitionProduct* p : {p0, p1}) {
         auto it = p->inst_connections_.items_.find(5);
         ASSERT_NE(it, p->inst_connections_.items_.end());
-        expect_conn_set(it->second, {2, "A"}, {3, "ZN"});
+        expect_conn_set(it->second, {2, 1}, {3, 2});
     }
-    // 块自身 port 引用（("PIN", PIN_IN) + ("PIN", PIN_OUT)）→ 挂 csub
-    // global id 3（父块展开产出的副本位置——本测试只展开 sub，parent 视
-    // 角由 top 展开补）
+    // 块自身 port 引用（local 0 条目 PIN_IN/PIN_OUT）→ 挂 csub global
+    // id 3（父块展开产出的副本位置——本测试只展开 sub，parent 视角由
+    // top 展开补）；位直存（PIN_IN receiver / PIN_OUT driver）
     auto it = p1->inst_connections_.items_.find(3);
     ASSERT_NE(it, p1->inst_connections_.items_.end());
     ASSERT_EQ(it->second.size(), 2u);
     for (const auto& c : it->second) {
         EXPECT_TRUE(c.is_port());
         if (c.net_global_id_ == 2u) {
-            EXPECT_EQ(c.pin_name_, "PIN_IN");
+            EXPECT_EQ(c.pin_id_, 10u);
+            EXPECT_TRUE(c.is_receiver());
         } else {
             EXPECT_EQ(c.net_global_id_, 3u);
-            EXPECT_EQ(c.pin_name_, "PIN_OUT");
+            EXPECT_EQ(c.pin_id_, 11u);
+            EXPECT_TRUE(c.is_driver());
         }
     }
 }
 
-// ── 4. 电源引脚预展开（D18；锚点 = 聚合 bbox 中心）──────────────────
-
-TEST(DSFlattenTest, PowerPinsPreexpandedWithComposite) {
-    FlattenEnv env;
-    const auto slices = ds_flatten_block(
-        env.tree, env.sub, env.sub_nets, env.sub_names, env.design,
-        &env.geoms, env.parts);
-    const DSPartitionProduct* p1 = product_of(slices, 1);
-    ASSERT_NE(p1, nullptr);
-
-    // VDD pin 几何 (0,300)-(350,350) 中心 (175,325) × 复合(含实例放置)
-    // → u1 全局 (1100,600) + (175,325) = (1275,925)
-    const DSInstance* u1 = inst_of(*p1, 5);
-    ASSERT_NE(u1, nullptr);
-    ASSERT_EQ(u1->power_pin_count(), 1u);
-    EXPECT_EQ(u1->power_pin_at(0).pin_id_, 7u);
-    EXPECT_EQ(u1->power_pin_at(0).pos_.get_x(), 1275);
-    EXPECT_EQ(u1->power_pin_at(0).pos_.get_y(), 925);
-
-    // pin 几何未注入（nullptr）→ 不做电源引脚预展开
-    const auto bare = ds_flatten_block(
-        env.tree, env.sub, env.sub_nets, env.sub_names, env.design, nullptr,
-        env.parts);
-    const DSPartitionProduct* bare1 = product_of(bare, 1);
-    ASSERT_NE(bare1, nullptr);
-    const DSInstance* u1_bare = inst_of(*bare1, 5);
-    ASSERT_NE(u1_bare, nullptr);
-    EXPECT_EQ(u1_bare->power_pin_count(), 0u);
-}
-
-// ── 5. 合并幂等 + 序列化往返 ────────────────────────────────────────
+// ── 4. 合并幂等 + 序列化往返 ────────────────────────────────────────
 
 TEST(DSFlattenTest, MergeIsIdempotentForSameSlice) {
     FlattenEnv env;
-    const auto slices = ds_flatten_block(
-        env.tree, env.sub, env.sub_nets, env.sub_names, env.design,
-        &env.geoms, env.parts);
+    const auto slices =
+        ds_flatten_block(env.tree, env.sub, env.sub_nets, env.design,
+                         env.parts);
     const DSPartitionProduct* p1 = product_of(slices, 1);
     ASSERT_NE(p1, nullptr);
     const size_t inst_count = p1->instances_.size();
@@ -625,9 +573,9 @@ TEST(DSFlattenTest, MergeIsIdempotentForSameSlice) {
 
 TEST(DSFlattenTest, ProductSerializeRoundTrip) {
     FlattenEnv env;
-    const auto slices = ds_flatten_block(
-        env.tree, env.sub, env.sub_nets, env.sub_names, env.design,
-        &env.geoms, env.parts);
+    const auto slices =
+        ds_flatten_block(env.tree, env.sub, env.sub_nets, env.design,
+                         env.parts);
     const DSPartitionProduct* p1 = product_of(slices, 1);
     ASSERT_NE(p1, nullptr);
 
@@ -640,8 +588,6 @@ TEST(DSFlattenTest, ProductSerializeRoundTrip) {
     const DSInstance* u1 = inst_of(back, 5);
     ASSERT_NE(u1, nullptr);
     EXPECT_TRUE(u1->is_primary());
-    ASSERT_EQ(u1->power_pin_count(), 1u);
-    EXPECT_EQ(u1->power_pin_at(0).pos_.get_x(), 1275);
     // geometry：net 0（OBS 桶）与 net 2（wire+via）共存
     EXPECT_EQ(back.geometry_.nets_.size(), p1->geometry_.nets_.size());
     ASSERT_NE(back.geometry_.entries_of(2), nullptr);
@@ -670,9 +616,9 @@ TEST(DSFlattenTest, OutOfCorePointFallsBackToNearestPrimary) {
         static_cast<uint8_t>(DSPlacementStatus::PLACED);
     env.top.add_instance(std::move(far_i), "far");
 
-    const auto slices = ds_flatten_block(
-        env.tree, env.top, env.top_nets, env.top_names, env.design,
-        &env.geoms, env.parts);
+    const auto slices =
+        ds_flatten_block(env.tree, env.top, env.top_nets, env.design,
+                         env.parts);
     const DSPartitionProduct* p0 = product_of(slices, 0);
     const DSPartitionProduct* p1 = product_of(slices, 1);
     ASSERT_NE(p0, nullptr);
@@ -702,9 +648,9 @@ TEST(DSFlattenTest, RootFirstNetAndObsShareNetZeroBucket) {
     env.top.obstructions_.push_back(
         DSShapeRef{2, GEORect(10, 10, 60, 60)});  // M2 层局部矩形
 
-    const auto slices = ds_flatten_block(
-        env.tree, env.top, env.top_nets, env.top_names, env.design,
-        &env.geoms, env.parts);
+    const auto slices =
+        ds_flatten_block(env.tree, env.top, env.top_nets, env.design,
+                         env.parts);
     const DSPartitionProduct* p0 = product_of(slices, 0);
     ASSERT_NE(p0, nullptr);
     const auto* bucket = p0->geometry_.entries_of(0);

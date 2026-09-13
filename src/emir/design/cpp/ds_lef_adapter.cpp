@@ -165,12 +165,17 @@ bool expand_viarule(const lefiViaRule& vr, const DSStack& stack,
 
 // LEF PIN 的 USE/DIRECTION 文本 → 枚举（uint8_t 存储）。宽松映射：
 // USE 缺省 SIGNAL；DIRECTION 的 TRISTATE 记 OUTPUT、FEEDTHRU 记 INOUT。
+// USE CLOCK 补收（2026-09-13 裁定：DSPinType 扩展 CLOCK 第四值，连接
+// flags 的 clock 位数据源）
 uint8_t map_pin_use(const char* use) {
     if (std::strcmp(use, "POWER") == 0) {
         return static_cast<uint8_t>(DSPinType::POWER);
     }
     if (std::strcmp(use, "GROUND") == 0) {
         return static_cast<uint8_t>(DSPinType::GROUND);
+    }
+    if (std::strcmp(use, "CLOCK") == 0) {
+        return static_cast<uint8_t>(DSPinType::CLOCK);
     }
     return static_cast<uint8_t>(DSPinType::SIGNAL);
 }
@@ -402,10 +407,10 @@ int cell_macro_cbk(lefrCallbackType_e, lefiMacro* m, lefiUserData ud) {
     auto* ctx = static_cast<CellContext*>(ud);
     if (!ctx->macro_valid) return 0;
 
-    // ㉗：cell lef 来源标记（lef_cell + macro_cell）
+    // ㉗：cell lef 来源标记（lef_cell + macro_cell）。（2026-09-13 裁定：
+    // class/site 不入库——EMIR 无流程消费，种类判定用 flags 位。）
     ctx->current_cell.set_lef_cell();
     ctx->current_cell.set_macro_cell();
-    if (m->hasClass()) ctx->current_cell.set_class(m->macroClass());
     if (m->hasSize()) {
         // ㉞：bbox 直接存放置包围盒（lef SIZE 矩形从 (0,0) 起）；尺寸由
         // bbox 派生，不再存 width_/height_ 字段
@@ -419,7 +424,6 @@ int cell_macro_cbk(lefrCallbackType_e, lefiMacro* m, lefiUserData ud) {
         ctx->current_cell.set_origin_y(
             static_cast<int32_t>(to_dbu(m->originY())));
     }
-    if (m->hasSiteName()) ctx->current_cell.set_site(m->siteName());
 
     // 收录：add_cell 注册 namemap，局部 cell id = cells_ 下标（裁定 ①：
     // 全局 id 由 T6 汇总统一重排）。pin 几何已在 cell_pin_cbk 按局部

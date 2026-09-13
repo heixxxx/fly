@@ -52,8 +52,9 @@ namespace fly {
 enum class DSLayerType : uint8_t { ROUTING, CUT };
 // 方向（布线层用）：水平 / 垂直 / 无
 enum class DSDirection : uint8_t { HORIZONTAL, VERTICAL, NONE };
-// pin 类型：信号 / 电源 / 地
-enum class DSPinType : uint8_t { SIGNAL, POWER, GROUND };
+// pin 类型：信号 / 电源 / 地 / 时钟（2026-09-13 裁定：CLOCK 补收——LEF
+// macro pin 的 USE CLOCK 语句原先落 SIGNAL，扩展为显式第四值）
+enum class DSPinType : uint8_t { SIGNAL, POWER, GROUND, CLOCK };
 // pin 方向：输入 / 输出 / 双向
 enum class DSPinDirection : uint8_t { INPUT, OUTPUT, INOUT };
 // pin 放置状态（P3 裁定：仅 port 场景有效；NONE = 非 port pin 的默认
@@ -243,13 +244,11 @@ public:
     // origin_ 与 LEF ORIGIN 同位——放置参考点 = 原坐标系 −origin_ 点）
     int32_t origin_x_ = 0;
     int32_t origin_y_ = 0;
-    // CORE/BLOCK/...
-    CMString class_;
-    CMString site_;
     // block 场景字段（㉙，flags 的 block_cell 位判别后使用）：来源 DEF
-    // 完整路径（可追溯，dev-rules §7）+ DEF UNITS DIST MICRONS 值
+    // 完整路径（可追溯，dev-rules §7）。（2026-09-13 裁定：class_/site_/
+    // def_units_per_micron_ 删除——class/site 无 EMIR 流程消费（种类判定
+    // 用 flags 位）、def_units 换算在解析期完成无下游消费。）
     CMString def_path_;
-    int32_t def_units_per_micron_ = 0;
     // 来源与种类标记（㉗ 示例集 + ㉞ is_polygon 位）：
     //   fake_cell（⑲ fake 兜底 cell，S5a 机制生成）/ std_cell /
     //   lef_cell / lib_cell（S3 merge 匹配）/ macro_cell /
@@ -289,10 +288,7 @@ public:
     CM_PROPERTY(bbox)
     CM_PROPERTY(origin_x)
     CM_PROPERTY(origin_y)
-    CM_PROPERTY(class)
-    CM_PROPERTY(site)
     CM_PROPERTY(def_path)
-    CM_PROPERTY(def_units_per_micron)
     CM_PROPERTY(pin_tables)
     CM_PROPERTY(pin_geometry)
 
@@ -318,30 +314,14 @@ public:
     }
 
     // 字段表显式排除 pin_tables_/pin_geometry_（⑱：注入后 write→load 为空）
-    FLY_SERIALIZE(name_, library_name_, bbox_, origin_x_, origin_y_, class_,
-                  site_, def_path_, def_units_per_micron_, flags_, polygon_,
-                  pins_, obs_)
+    FLY_SERIALIZE(name_, library_name_, bbox_, origin_x_, origin_y_,
+                  def_path_, flags_, polygon_, pins_, obs_)
 };
 
 // —— 2.3 instance（R6：transform 业务接入；S5a COMPONENTS 产物）——
 
-// 电源引脚预展开坐标（D18：S9 flatten 切分时预计算，⑫ 注入点直接可用
-// ——下游无需再加载 cell pin 几何并重放变换）。解析产物（S5a）中恒空；
-// 仅 S9 分区 INSTANCES 副本填充。
-class DSPowerPin {
-public:
-    // 全局平铺 pin id（D1；经容器 pin hasher 反查 pin 名）
-    uint32_t pin_id_ = 0;
-    // 引脚锚点全局坐标（DBU）。锚点口径 = 该 pin 全部几何矩形的聚合
-    // 包围盒中心（多点 pin 取整体中心比「首 rect」对输入序不敏感；
-    // int64 中点防大坐标加法溢出）。局部锚点 ×（复合 ∘ 实例放置）变换。
-    GEOPoint pos_;
-
-    FLY_SERIALIZE(pin_id_, pos_)
-};
-
 // instance（cell 在设计中的实例化放置，⑧）：引用 cell id + pos/orient
-// transform + 放置状态 + 权重。transform_.offset_ = pos（cell 原始坐标
+// transform + 放置状态。transform_.offset_ = pos（cell 原始坐标
 // 系 (0,0) 点的全局位置，㉜ 最终形态——「经过旋转的 origin 点」的精确
 // 化，由 place_from_def 自 DEF placement 换算一次）；orient_ = 放置
 // 朝向（defin 回调整型直转）。instance 全局坐标 = R(orient)·m + pos。
@@ -350,8 +330,11 @@ public:
 // DSBlockNames_<i> 伴生对象落盘 ㊵②），内部业务全程以 local id 为键。
 // local instance id 分配语义（⑧：从 1 起、local 0 = block 自身占位）
 // 在 S5a per-DEF 产物 DSBlockBuildData（ds_types.h 下方 S5a 节）。
-// S9 扩展（2026-09-13 裁定补记①）：primary 位 + 电源引脚预展开坐标仅
-// 在分区副本上有意义（解析产物恒复位/恒空；早期无兼容负担，直接加）。
+// S9 扩展（2026-09-13 裁定补记①）：primary 位仅在分区副本上有意义
+//（解析产物恒复位；早期无兼容负担，直接加）。（2026-09-13 裁定：
+// weight_ 与 power_pins_/DSPowerPin 删除——DEF WEIGHT 全流程无消费者
+//（⑩ 功耗走 lib 表 × 翻转率、⑫ 走引脚电流，10⁹ 实例 × 8B ≈ 8GB 冗余）；
+// 电源引脚坐标归 ④ 提取按复现原则自取（D18 翻转），预存服务对象错位。）
 class DSInstance {
 public:
     DSInstance() = default;
@@ -364,31 +347,15 @@ public:
     // 密度通道）
     uint8_t placement_status_ =
         static_cast<uint8_t>(DSPlacementStatus::UNPLACED);
-    // OPTIONAL weight（DEF COMPONENTS + WEIGHT），缺省 0 = 未给
-    double weight_ = 0.0;
     // 分区归属标记（S9 裁定补记①）：放置点在 core_rect 内的副本
     // primary 置位（每对象恰一个 primary）；extend 副本复位
     CM_FLAGS(int8_t, primary)
-    // 电源引脚预展开坐标（D18；见 DSPowerPin 注释；解析产物恒空）
-    CMVector<DSPowerPin> power_pins_;
 
     CM_PROPERTY(cell_id)
     CM_PROPERTY(transform)
     CM_PROPERTY(placement_status)
-    CM_PROPERTY(weight)
 
-    // 容器接口（power_pins_ 走专门 add/count/at，规避大容器 set 拷贝 ㉒）
-    void add_power_pin(DSPowerPin&& pp) {
-        power_pins_.push_back(std::move(pp));
-    }
-    size_t power_pin_count() const { return power_pins_.size(); }
-    const DSPowerPin& power_pin_at(size_t i) const {
-        assert(i < power_pins_.size());
-        return power_pins_[i];
-    }
-
-    FLY_SERIALIZE(cell_id_, transform_, placement_status_, weight_, flags_,
-                  power_pins_)
+    FLY_SERIALIZE(cell_id_, transform_, placement_status_, flags_)
 };
 
 // —— 2.4 S5a per-DEF 产物（⑬ 大体量独立对象，不进 DSDesign）——
@@ -508,12 +475,12 @@ public:
     // 统计
     DSInstanceStats stats_;
     // fake cell 本地登记（⑲/⑳）：fake 登记名 → 任务内分配 id（同 DEF
-    // 内复用）；fake cell 数据随序存放于 fake_cells_（其 id 经
-    // fake_name_to_id_ 反查）。fake 登记表为 block 级便捷子集索引、
-    // 非完整 hasher（fake cell 属 cell 编号空间，全局查询走
-    // DSDesign cell hasher）——保留原样（R7 ㊲ 注释裁定）。
+    // 内复用）。fake 登记表为 block 级便捷子集索引、非完整 hasher（fake
+    // cell 属 cell 编号空间，全局查询走 DSDesign cell hasher）——保留
+    // 原样（R7 ㊲ 注释裁定）。（2026-09-13 裁定：fake_cells_ 副本删除
+    // ——fake cell 数据经独立临时对象传 S5a 汇总并入全局表，产物本体
+    // 不再冗余存一份。）
     CMUnorderedMap<CMString, uint32_t> fake_name_to_id_;
-    CMVector<DSCell> fake_cells_;
     // DEF obstruction（BLOCKAGES 段，2026-09-13 D17 修订：收录进分区
     // geometry——S9 展开时换全局坐标入 net id 0 + OBS 位条目）。block
     // 局部坐标、全局 DBU 基准；由 S4 头扫描收录（与 block cell/port 同
@@ -587,7 +554,7 @@ public:
 
     // 字段表排除两 hasher（㊵②：随 DSBlockNames 伴生对象独立落盘）
     FLY_SERIALIZE(block_name_, instances_, density_, stats_,
-                  fake_name_to_id_, fake_cells_, obstructions_,
+                  fake_name_to_id_, obstructions_,
                   next_instance_id_, next_net_id_)
 };
 
@@ -596,20 +563,38 @@ public:
 //（与 DSBlockBuildData 的 local net namemap 对齐，⑨ 仅依赖 S5a）。
 
 // 连接项（local 拓扑保留，S7 并查集的输入）：instance pin 引用或 block
-// 级 port 引用。instance_name_ = "PIN" 表示 port 引用（defi 回调语义，
-// ( PIN portName ) 语法），pin_name_ = pin/port 名。
+// 级 port 引用。id 化形态（2026-09-13 裁定：S5b 解析边界一次完成名字 →
+// id 换算，S7/S9 内部链路零字符串匹配）——端点实例 = local id（⑧：0 =
+// block 自身——port 引用条目的占位）、端点 pin = 全局平铺 pin id（D1；
+// instance 条目经 cell 名 + pin 名组合键查 pin hasher，port 引用 = block
+// cell 的 port pin 全局 id，组合键 "block_name/port_name"）。
+// flags 六位（2026-09-13 裁定 + 同日多次裁定补充，S5b 换 id 时一并填写
+// ——换算 pin id 本就要定位所属 cell 的 pin，direction/type 顺手取得）：
+//   port 位 = block 端口引用（原 instance_name == "PIN" 判别语义移植）；
+//   driver 位 = 端点 pin 方向 OUTPUT（该实例驱动此网）；
+//   receiver 位 = 端点 pin 方向 INPUT；INOUT = 两位同置，显式命名
+//   **hybrid**（混合类型，2026-09-13 裁定：非隐含「两位都置」而是明确
+//   的第三分类）；
+//   power / ground 位 = 端点 pin 的 DSPin type 为 POWER/GROUND（与方向
+//   位正交组合，如电源输入引脚 = receiver + power 双置）；
+//   clock 位 = 端点 pin 的 DSPin type 为 CLOCK（USE CLOCK 补收，见
+//   DSPinType 扩展）。
+// get_net 类消费的统计按三分类互斥单列口径计数：driver 数 = 仅 driver
+// 位、receiver 数 = 仅 receiver 位、hybrid 数 = 双置——hybrid 不并入
+// driver 也不并入 receiver；power/ground/clock 端点直接数位（pg 网概要
+// 计数按此分类），不再查 cell 推导。uint8 六位、余 2 位扩展余量，条目
+// 大小不变零膨胀。
 class DSNetConnection {
 public:
-    CMString instance_name_;
-    CMString pin_name_;
+    // 端点实例 local id（⑧：0 = block 自身——port 引用条目的占位）
+    uint64_t instance_local_id_ = 0;
+    // 端点 pin 全局平铺 id（port 引用 = block cell 的 port pin 全局 id）
+    uint32_t pin_id_ = 0;
+    // port / driver / receiver / power / ground / clock 位；driver+
+    // receiver 同置 = hybrid（见类注释）
+    CM_FLAGS(uint8_t, port, driver, receiver, power, ground, clock)
 
-    CM_PROPERTY(instance_name)
-    CM_PROPERTY(pin_name)
-
-    // block 级 port 引用判别
-    bool is_port_ref() const { return instance_name_ == "PIN"; }
-
-    FLY_SERIALIZE(instance_name_, pin_name_)
+    FLY_SERIALIZE(instance_local_id_, pin_id_, flags_)
 };
 
 // wire 段：layer + 宽度 + 路径点列。点 = 全局 DBU（int32，路径顶点按
@@ -672,10 +657,14 @@ public:
     uint64_t skipped_layer_ref_count = 0;
     // 网名不在 S5a local namemap 的防御兜底计数
     uint64_t skipped_net_count = 0;
+    // 无效连接项跳过数（2026-09-13 id 化裁定：实例名未登记 / cell 无此
+    // pin / port 未注册——兜底跳过 + DSGN::0025 提醒，dev-rules §7）
+    uint64_t skipped_invalid_connection_count = 0;
 
     FLY_SERIALIZE(net_count, connection_count, wire_count, rect_count,
                   via_instance_count, skipped_via_count,
-                  skipped_layer_ref_count, skipped_net_count)
+                  skipped_layer_ref_count, skipped_net_count,
+                  skipped_invalid_connection_count)
 };
 
 // per-DEF 网内容产物（③ 分批解析落批追加；⑬ 独立对象）：连接表 + 几何表

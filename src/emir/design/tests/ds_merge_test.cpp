@@ -20,13 +20,11 @@ using namespace fly;
 DSCell make_block_cell(const char* design_name) {
     DSCell blk;
     blk.name_ = design_name;
-    blk.class_ = "BLOCK";
     blk.set_block_cell();
     blk.set_bbox(GEORect(0, 0, 2000, 1000));
     blk.origin_x_ = 0;
     blk.origin_y_ = 0;
     blk.def_path_ = "/work/x.def";
-    blk.def_units_per_micron_ = 1000;
     DSPin p;  // R7 ㊱：DSPin 无 name（port 名经 ds_merge_def_header 的
               // port_names 参数进全局 pin hasher）
     p.set_port();

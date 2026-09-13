@@ -71,12 +71,112 @@ void DSNetConnectionParseNode::handle(DSNetContext& ctx) {
         ctx.net_data->mark_pg_net(local_id);
     }
 
-    // 连接表保留（local 拓扑，S7 并查集输入）；port 引用判别在
-    // DSNetConnection::is_port_ref（instance_name_ == "PIN"）
+    // 连接项 id 换算（2026-09-13 裁定：解析边界一次完成，S7/S9 内部链路
+    // 零字符串匹配）：
+    //   instance 条目：实例名 → local id（S5a 实例 hasher，任务输入已注
+    //   入）→ cell id → DSCell 名 + pin 名组合键查容器 pin hasher（design
+    //   对象 = S2/S4 汇总后全局快照，pin hasher 已就绪）；
+    //   "PIN" port 条目：组合键 "block_name/port_name"（defi 回调语义
+    //   ( PIN portName ) 移植为 port 位 + local 0 占位）。
+    // flags 六位（port/driver/receiver/power/ground/clock）换 id 时一并
+    // 填写：定位到的 DSPin 的 direction/type 顺手取得（cell 内 pin 无名
+    // R7——pin_id 匹配遍历，cell pin 数量级小）。
+    // 未命中（实例名未登记 / cell 无此 pin / port 未注册）→ 兜底跳过 +
+    // skipped_invalid_connection_count 计数 + DSGN::0025 提醒（dev-rules
+    // §7 不 raise；对齐 fake cell/未定义 via 的先例语义）
+    const CMString& block_name = ctx.block_data->get_block_name();
+    // pin_id → direction/type 匹配经 cell 内线性遍历：std cell pin 数
+    // <20 无负担；block cell（port 条目）pin 数当前 10³-10⁴ 级可接受
+    //（review 注记：port 数上万时可改用 pin_base 连续性直接定位）
+    const auto fill_pin_flags = [](DSNetConnection& conn, const DSCell& cell,
+                                   uint32_t pin_id) {
+        for (const DSPin& p : cell.pins_) {
+            if (p.pin_id_ != pin_id) {
+                continue;
+            }
+            const auto dir = static_cast<DSPinDirection>(p.direction_);
+            if (dir == DSPinDirection::OUTPUT ||
+                dir == DSPinDirection::INOUT) {
+                conn.set_driver();
+            }
+            if (dir == DSPinDirection::INPUT ||
+                dir == DSPinDirection::INOUT) {
+                conn.set_receiver();  // INOUT = driver+receiver 同置 = hybrid
+            }
+            const auto type = static_cast<DSPinType>(p.type_);
+            if (type == DSPinType::POWER) {
+                conn.set_power();
+            } else if (type == DSPinType::GROUND) {
+                conn.set_ground();
+            } else if (type == DSPinType::CLOCK) {
+                conn.set_clock();
+            }
+            break;
+        }
+    };
     for (DSNetRawConnection& raw : ctx.connections) {
         DSNetConnection conn;
-        conn.set_instance_name(std::move(raw.instance_name));
-        conn.set_pin_name(std::move(raw.pin_name));
+        if (raw.instance_name == "PIN") {
+            const uint32_t port_pin =
+                ctx.design->pin_names_.get_id(block_name + "/" + raw.pin_name);
+            if (!DSPinNameHasher::is_valid_id(port_pin)) {
+                ++ctx.net_data->stats_.skipped_invalid_connection_count;
+                MSG("DSGN::0025", 0,
+                    "net '{}' references unregistered port '{}' — "
+                    "connection dropped", ctx.net_name, raw.pin_name);
+                continue;
+            }
+            conn.pin_id_ = port_pin;
+            conn.set_port();
+            // port pin 的方向/type 位：block cell 的 port pin 同在 cell 表
+            const uint32_t block_cell_id =
+                ctx.design->cell_names_.get_id(block_name);
+            if (DSCellNameHasher::is_valid_id(block_cell_id) &&
+                block_cell_id < ctx.design->cells_.size()) {
+                fill_pin_flags(conn, ctx.design->cells_[block_cell_id],
+                               port_pin);
+            }
+        } else {
+            const uint64_t inst_local =
+                ctx.block_data->instance_names_
+                    ? ctx.block_data->instance_names_->get_id(
+                          raw.instance_name)
+                    : DSInstanceNameHasher::kInvalidId;
+            if (!DSInstanceNameHasher::is_valid_id(inst_local)) {
+                ++ctx.net_data->stats_.skipped_invalid_connection_count;
+                MSG("DSGN::0025", 0,
+                    "net '{}' references unknown instance '{}' — "
+                    "connection dropped", ctx.net_name, raw.instance_name);
+                continue;
+            }
+            const auto iit = ctx.block_data->instances_.find(inst_local);
+            if (iit == ctx.block_data->instances_.end() ||
+                iit->second.get_cell_id() >= ctx.design->cells_.size()) {
+                // 占位（local 0）或 fake cell 引用（快照表外）：无 pin 可查
+                ++ctx.net_data->stats_.skipped_invalid_connection_count;
+                MSG("DSGN::0025", 0,
+                    "net '{}' instance '{}' has no resolvable cell "
+                    "(placeholder/fake, pin '{}' unreachable) "
+                    "— connection dropped", ctx.net_name, raw.instance_name,
+                    raw.pin_name);
+                continue;
+            }
+            const DSCell& cell =
+                ctx.design->cells_[iit->second.get_cell_id()];
+            const uint32_t pin_id =
+                ctx.design->pin_names_.get_id(cell.name_ + "/" + raw.pin_name);
+            if (!DSPinNameHasher::is_valid_id(pin_id)) {
+                ++ctx.net_data->stats_.skipped_invalid_connection_count;
+                MSG("DSGN::0025", 0,
+                    "net '{}' references undefined pin '{}' of cell '{}' — "
+                    "connection dropped", ctx.net_name, raw.pin_name,
+                    cell.name_);
+                continue;
+            }
+            conn.instance_local_id_ = inst_local;
+            conn.pin_id_ = pin_id;
+            fill_pin_flags(conn, cell, pin_id);
+        }
         ctx.net_data->add_connection(ctx.local_net_id, std::move(conn));
     }
 }

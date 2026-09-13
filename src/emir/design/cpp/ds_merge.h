@@ -45,9 +45,12 @@ int ds_merge_def_header(DSDesign& dst, const CMVector<DSCell>& block_cells,
 // S5a 汇总（单 per-DEF 产物一调用）：fake cell 并入全局 cell 表（id 保持
 // 任务内分配值 ⑳；目标位已被占用时顺延到下一空位——⑳ 冲突率不严格，
 // 正确性不依赖无冲突）+ instance 引用与统计键同步重映射 + namemap 注册
-// + fake_cell_ids_ 索引。同名 fake 重复并入（同 block DEF 重复提交）
-// 保留首份跳过。返回并入的 fake cell 数。
-int ds_merge_block_build(DSDesign& dst, DSBlockBuildData& block_data);
+// + fake_cell_ids_ 索引。fake cell 数据经独立临时对象传入（2026-09-13
+// 裁定：产物本体不含 fake cell 副本——fake_cells 与 block_data 的
+// fake_name_to_id_ 登记序一一对应）。同名 fake 重复并入（同 block DEF
+// 重复提交）保留首份跳过。返回并入的 fake cell 数。
+int ds_merge_block_build(DSDesign& dst, DSBlockBuildData& block_data,
+                         const CMVector<DSCell>& fake_cells);
 
 // S6：层级树构建 + 起始编号分配（裁定 ⑧⑨⑮；消费 S5a 的实例/网计数与
 // 引用关系 + S5b 的 via instance 统计计数——via 区间为四接口之区间反查

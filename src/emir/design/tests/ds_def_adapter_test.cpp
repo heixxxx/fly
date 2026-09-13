@@ -87,13 +87,11 @@ TEST(DsDefHeaderTest, ParseBlockPinsAndPrefixedVias) {
     EXPECT_EQ(p.obstructions[0].rect_.get_x_high(), 400);
     EXPECT_EQ(p.obstructions[0].rect_.get_y_high(), 250);
 
-    // block cell（㉙：DSCell 承载；DIEAREA 4 点双存 / UNITS 换算系数）
+    // block cell（㉙：DSCell 承载；DIEAREA 4 点双存）
     ASSERT_EQ(p.block_cells.size(), 1u);
     const DSCell& blk = p.block_cells[0];
     EXPECT_EQ(blk.get_name(), "block_a");
     EXPECT_TRUE(blk.is_block_cell());
-    EXPECT_EQ(blk.get_class(), "BLOCK");
-    EXPECT_EQ(blk.get_def_units_per_micron(), 1000);
     EXPECT_NE(blk.get_def_path().find("block_synth.def"),
               CMString::npos);  // def_path 已填（绝对路径随 runfile 环境）
     // DIEAREA 4 点（含负坐标）聚合：def (-1000,-500)-(1500,2000) × 1
@@ -124,6 +122,9 @@ TEST(DsDefHeaderTest, ParseBlockPinsAndPrefixedVias) {
     EXPECT_EQ(pa.get_type(), static_cast<uint8_t>(DSPinType::SIGNAL));
     EXPECT_EQ(pa.get_direction(),
               static_cast<uint8_t>(DSPinDirection::INPUT));
+    // PIN_OUT 的 USE CLOCK → DSPinType::CLOCK（2026-09-13 收录）
+    EXPECT_EQ(blk.pin_at(1).get_type(),
+              static_cast<uint8_t>(DSPinType::CLOCK));
     EXPECT_EQ(pa.get_placement_status(),
               static_cast<uint8_t>(DSPinPlacementStatus::FIXED));
     ASSERT_EQ(p.port_geoms.geometry_of(0)->size(), 1u);  // 局部 pin 下标 0

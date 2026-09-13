@@ -49,7 +49,7 @@
     规范化 → net_union 正式对象 + slice 清理 + 悬空 port DSGN::0018）
   → S9 任务组（flatten 展平 + 分区保存，两级任务 + 小 DEF 聚合，2026-09-13
     裁定补记①-⑤ + D26；依赖 S8 分区表 + S6 树 + 全部 per-DEF 产物 +
-    DSDesign + pin 几何 + 伴生名）：plan 任务（分组编排：预估 = DEF 文件
+    DSDesign）：plan 任务（分组编排：预估 = DEF 文件
     大小 × 树上实例化次数，≥ alpha def_aggregate_threshold 独占任务、低
     于阈值贪心聚合；重名定义保留首份；worker 上动态提交下游任务——同
     solver kickoff 先例）→ per-组展开任务并行（每组只读本组 def 产物——
@@ -268,21 +268,25 @@ def _def_header_merge_task(db, s3_key, part_keys, snapshot_key, geoms_key,
 # ── COMPONENTS 解析：每 DEF 一 task（实例责任链 ∥ 网名扫描，同一遍读取）─
 
 @as_task(inputs=lambda db, path, stack_key, snapshot_key, block_key,
-         names_key, obs_key, bin_dbu, lcp_name_arena: [
+         names_key, obs_key, fake_key, bin_dbu, lcp_name_arena: [
     db.get_full_name(stack_key),
     db.get_full_name(snapshot_key),
     db.get_full_name(obs_key),
 ])
 def _components_def_task(db, path, stack_key, snapshot_key, block_key,
-                         names_key, obs_key, bin_dbu, lcp_name_arena):
+                         names_key, obs_key, fake_key, bin_dbu,
+                         lcp_name_arena):
     stack = db.read_object(stack_key)
     design = db.read_object(snapshot_key)
     block_data = EXDSBlockBuildData()
     # S4 收录的 obstruction 回填（2026-09-13 D17 修订；inputs 声明依赖
     # 保证头扫描产物先行）
     block_data.set_obstructions(db.read_object(obs_key))
-    stats = ds_parse_def_components_one(path, stack, design, block_data,
-                                        bin_dbu)
+    # fake cell 数据经独立临时对象传递（2026-09-13 裁定：产物本体不含
+    # 副本——汇总任务并入全局表后即与 cells_ 冗余）
+    stats, fake_cells = ds_parse_def_components_one(path, stack, design,
+                                                    block_data, bin_dbu)
+    db.write_object(fake_key, fake_cells, save_to_db=False)
     # R8d 落盘封口（裁定 55：alpha 键 lcp_name_arena——解析完成后、名字
     # 伴生对象落盘前的单一封口点）：true = instance/net 两 hasher id→name
     # 侧 LCP 后缀压缩封口（DSBlockNames_<i> 落盘即封口形态，读回按标记
@@ -338,12 +342,13 @@ def _hier_task(db, snapshot_key, temp_block_keys, names_keys, formal_net_keys,
 
 # ── 实例解析汇总：fake cell 并入全局表（id 保持 ⑳）→ 正式对象唯一写定 ─
 
-@as_task(inputs=lambda db, snapshot_key, temp_block_keys, formal_block_keys,
-         design_key, hier_key: [
+@as_task(inputs=lambda db, snapshot_key, temp_block_keys, fake_keys,
+         formal_block_keys, design_key, hier_key: [
     db.get_full_name(snapshot_key),
     db.get_full_name(hier_key),
-] + [db.get_full_name(k) for k in temp_block_keys])
-def _components_merge_task(db, snapshot_key, temp_block_keys,
+] + [db.get_full_name(k) for k in temp_block_keys]
+  + [db.get_full_name(k) for k in fake_keys])
+def _components_merge_task(db, snapshot_key, temp_block_keys, fake_keys,
                            formal_block_keys, design_key, hier_key):
     design = db.read_object(snapshot_key)
     # 层级树嵌容器（⑬；层级树产物——在正式 DSDesign 写定前完成树挂载）
@@ -353,9 +358,13 @@ def _components_merge_task(db, snapshot_key, temp_block_keys,
     total_leaf = 0
     total_net = 0
     total_fake = 0
-    for temp_key, formal_key in zip(temp_block_keys, formal_block_keys):
+    for temp_key, fake_key, formal_key in zip(temp_block_keys, fake_keys,
+                                              formal_block_keys):
         block_data = db.read_object(temp_key)
-        total_fake += ds_merge_block_build(design, block_data)
+        # fake cell 数据经独立临时对象传入（2026-09-13 裁定：产物本体
+        # 不含副本——并入全局表后即冗余，临时对象由 freeze 清理）
+        fake_cells = db.read_object(fake_key)
+        total_fake += ds_merge_block_build(design, block_data, fake_cells)
         total_leaf += block_data.stats.instance_count
         total_net += block_data.net_count
         # per-DEF 产物正式写定（实施计划 §3.2「即产即落盘」；fake 引用
@@ -407,12 +416,16 @@ def _nets_def_task(db, path, stack_key, snapshot_key, block_key, names_key,
         "via_instance": stats.via_instance_count,
         "skipped_via": stats.skipped_via_count,
         "skipped_net": stats.skipped_net_count,
+        "skipped_invalid_connection": stats.skipped_invalid_connection_count,
         "batch": stats.batch_count,
     }, save_to_db=False)
-    if stats.skipped_via_count or stats.skipped_net_count:
+    if stats.skipped_via_count or stats.skipped_net_count or \
+            stats.skipped_invalid_connection_count:
         from log import INFO
         INFO(f"nets '{path}': {stats.skipped_via_count} undefined via "
-             f"references skipped, {stats.skipped_net_count} unknown nets")
+             f"references skipped, {stats.skipped_net_count} unknown nets, "
+             f"{stats.skipped_invalid_connection_count} invalid connections "
+             f"skipped")
 
 
 # ── 网内容汇总：统计合并 → DSGN::0009（网数/几何/via instance 数）─────
@@ -423,7 +436,7 @@ def _nets_def_task(db, path, stack_key, snapshot_key, block_key, names_key,
 def _nets_summary_task(db, stats_keys):
     total = {"net": 0, "connection": 0, "wire": 0, "rect": 0,
              "via_instance": 0, "skipped_via": 0, "skipped_net": 0,
-             "batch": 0}
+             "skipped_invalid_connection": 0, "batch": 0}
     for key in stats_keys:
         stats = db.read_object(key)
         for name in total:
@@ -434,7 +447,9 @@ def _nets_summary_task(db, stats_keys):
             f"({total['connection']} connections, {total['wire']} wires, "
             f"{total['rect']} rects, {total['via_instance']} via instances "
             f"in {total['batch']} batches), "
-            f"{total['skipped_via']} undefined vias skipped")
+            f"{total['skipped_via']} undefined vias skipped, "
+            f"{total['skipped_invalid_connection']} invalid connections "
+            f"skipped")
 
 
 # ── S8：全局密度合并 + 分区决策（core/extend 双区域，2026-09-12/13 裁定）─
@@ -562,15 +577,15 @@ def _net_union_summary_task(db, hier_key, slice_keys, union_key):
 # 定补记①-⑤ + D26）──────────────────────────────────────────────────
 
 @as_task(inputs=lambda db, design_key, global_density_key, hier_key,
-         block_names_key, alpha_key, geoms_key, block_keys, net_keys,
-         names_keys, def_paths, slice_prefix, verify_prefix, stack_key,
+         block_names_key, alpha_key, block_keys, net_keys, names_keys,
+         def_paths, slice_prefix, verify_prefix, stack_key,
          net_union_key, formal_keys, temp_keys: [
     db.get_full_name(design_key), db.get_full_name(global_density_key),
     db.get_full_name(hier_key), db.get_full_name(block_names_key),
     db.get_full_name(alpha_key),
 ])
 def _s9_plan_task(db, design_key, global_density_key, hier_key,
-                  block_names_key, alpha_key, geoms_key, block_keys,
+                  block_names_key, alpha_key, block_keys,
                   net_keys, names_keys, def_paths, slice_prefix,
                   verify_prefix, stack_key, net_union_key, formal_keys,
                   temp_keys):
@@ -601,6 +616,8 @@ def _s9_plan_task(db, design_key, global_density_key, hier_key,
     settings = db.read_object(alpha_key)
     settings.normalize()
     threshold = settings.def_aggregate_threshold
+    # names_keys 不被展开消费（连接 id 化后展开零名字查询，2026-09-13
+    # 裁定）——仅透传给下方动态提交的 S10 全局校验任务（namemap 全查）
 
     # 树上实例化计数（block cell 名 → 出现次数；root 含其定义自身）
     inst_count = {}
@@ -638,10 +655,9 @@ def _s9_plan_task(db, design_key, global_density_key, hier_key,
 
     # 展开任务（每组一任务，只读本组 def 产物——每份 DEF 数据只读一次）
     for g, group in enumerate(groups):
-        _s9_expand_task(db, design_key, geoms_key, hier_key, block_names_key,
-                        group, [block_keys[i] for i in group],
+        _s9_expand_task(db, design_key, hier_key, block_names_key, group,
+                        [block_keys[i] for i in group],
                         [net_keys[i] for i in group],
-                        [names_keys[i] for i in group],
                         f"{slice_prefix}{g}_", len(partitions))
     # 每分区一合并任务（真实合并语义）：merge 全部相关分片 → 四类正式
     # 对象唯一写定
@@ -671,38 +687,30 @@ def _s9_plan_task(db, design_key, global_density_key, hier_key,
                         temp_keys + slice_keys + verify_keys)
 
 
-@as_task(inputs=lambda db, design_key, geoms_key, hier_key, block_names_key,
-         group, block_keys, net_keys, names_keys, slice_prefix, n_parts: (
-    [db.get_full_name(k) for k in (design_key, geoms_key, hier_key,
-                                   block_names_key)]
+@as_task(inputs=lambda db, design_key, hier_key, block_names_key,
+         group, block_keys, net_keys, slice_prefix, n_parts: (
+    [db.get_full_name(k) for k in (design_key, hier_key, block_names_key)]
     + [db.get_full_name(k) for k in block_keys]
-    + [db.get_full_name(k) for k in net_keys]
-    + [db.get_full_name(k) for k in names_keys]))
-def _s9_expand_task(db, design_key, geoms_key, hier_key, block_names_key,
-                    group, block_keys, net_keys, names_keys, slice_prefix,
+    + [db.get_full_name(k) for k in net_keys]))
+def _s9_expand_task(db, design_key, hier_key, block_names_key,
+                    group, block_keys, net_keys, slice_prefix,
                     n_parts):
-    """per-组展开任务：读本组各 def 的单份解析产物（实例表/网内容/伴生
-    名）→ ds_flatten_block 全部出现位置展开（复合变换取树节点、三类 id
-    换算、放置点归属、几何副本、连接补全、电源引脚预展开）→ 按分区累积
-    分片，对全部分区各写一份（未触达分区写空产物）。"""
+    """per-组展开任务：读本组各 def 的单份解析产物（实例表/网内容）→
+    ds_flatten_block 全部出现位置展开（复合变换取树节点、三类 id 换算、
+    放置点归属、几何副本、连接补全）→ 按分区累积分片，对全部分区各写一
+    份（未触达分区写空产物）。连接项 id + flags 六位已在 S5b 解析边界换
+    算填写（2026-09-13 裁定），本任务零名字查询、零 pin 几何依赖（电源
+    引脚预展开 D18 删除——归 ④ 提取自取）。"""
     design = db.read_object(design_key)
-    design.set_pin_geometry(db.read_object(geoms_key))
     tree = db.read_object(hier_key)
     block_names = db.read_object(block_names_key)
     products = {}
-    for i, block_key, net_key, names_key in zip(group, block_keys, net_keys,
-                                                names_keys):
+    for i, block_key, net_key in zip(group, block_keys, net_keys):
         if block_names.index(block_names[i]) != i:
             continue  # 重名保留首份（plan 分组已排除，防御再判）
         block = db.read_object(block_key)
-        names = db.read_object(names_key)
-        # ㊵② 名字伴生对象共享注入（flatten 经 instance hasher 查名换
-        # global id）
-        block.attach_names(names)
         nets = db.read_object(net_key)
-        for pid, product in ds_flatten_block(tree, block, nets, names,
-                                             design,
-                                             design.get_pin_geometry()):
+        for pid, product in ds_flatten_block(tree, block, nets, design):
             if pid in products:
                 products[pid].merge_from(product)
             else:
@@ -932,15 +940,19 @@ def run_design_flow(db, lef_paths, def_paths, lib_db):
     # 由汇总唯一写定
     temp_block_keys = []
     names_keys = []
+    fake_keys = []
     for i, path in enumerate(def_paths):
         block_key = _tmp_key(uid, f"components_{i}_block")
         names_key = DesignDb.names_obj_name(i)
         obs_key = header_part_keys[i][3]  # S4 obstruction 临时对象
+        fake_key = _tmp_key(uid, f"fake_cells_{i}")  # fake cell 中转
         temp_keys.append(block_key)
+        temp_keys.append(fake_key)
         temp_block_keys.append(block_key)
         names_keys.append(names_key)
+        fake_keys.append(fake_key)
         _components_def_task(db, path, stack_key, snapshot_key, block_key,
-                             names_key, obs_key,
+                             names_key, obs_key, fake_key,
                              bin_um * 1000,  # µm → DBU（全局基准 ㉝）
                              lcp_name_arena)
 
@@ -974,7 +986,7 @@ def run_design_flow(db, lef_paths, def_paths, lib_db):
     # 写定
     formal_block_keys = [DesignDb.block_obj_name(i)
                          for i in range(len(def_paths))]
-    _components_merge_task(db, snapshot_key, temp_block_keys,
+    _components_merge_task(db, snapshot_key, temp_block_keys, fake_keys,
                            formal_block_keys, design_key, hier_key)
 
     # S8：全局密度合并 + 分区决策（依赖 S6 树 + 全部 per-DEF 正式产物 +
@@ -1002,7 +1014,8 @@ def run_design_flow(db, lef_paths, def_paths, lib_db):
     _net_union_summary_task(db, hier_key, union_slice_keys, net_union_key)
 
     # S9：flatten 展平 + 分区保存（依赖 S8 分区表 + S6 树 + 全部 per-DEF
-    # 产物 + 伴生名；两级任务 + 小 DEF 聚合，plan 任务在 worker 上动态
+    # 产物；连接项 id + flags 位在 S5b 解析边界完成换算，展开零名字查询
+    # 零 pin 几何依赖。两级任务 + 小 DEF 聚合，plan 任务在 worker 上动态
     # 提交展开/合并任务并收尾 freeze——final_keys 需携带运行时确定的全
     # 部分区对象名，故 freeze 由 plan 动态提交而非本函数静态提交）。
     # S10 校验链同由 plan 动态提交（merge 之后、freeze 之前；freeze 依赖
@@ -1011,7 +1024,7 @@ def run_design_flow(db, lef_paths, def_paths, lib_db):
     verify_prefix = _tmp_key(uid, "s10_verify_")
     _s9_plan_task(
         db, design_key, global_density_key, hier_key, block_names_key,
-        DesignDb.ALPHA_SETTINGS_OBJ, geoms_key, formal_block_keys,
+        DesignDb.ALPHA_SETTINGS_OBJ, formal_block_keys,
         formal_net_keys, names_keys, def_paths, slice_prefix, verify_prefix,
         stack_key, net_union_key,
         [design_key, stack_key, tables_key, geoms_key] + formal_block_keys +

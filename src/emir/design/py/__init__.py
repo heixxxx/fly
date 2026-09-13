@@ -37,7 +37,7 @@ from .ds_export import (  # noqa: F401
     EXDSPin,
     EXDSPinGeometry,
     EXDSPinTables,
-    EXDSPowerPin,
+    EXDSNetConnection,
     EXDSSubPartition,
     EXDSStack,
     EXDSNetUnion,

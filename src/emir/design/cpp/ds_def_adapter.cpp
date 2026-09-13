@@ -36,12 +36,17 @@ GEORect def_rect_to_dbu(int64_t xl, int64_t yl, int64_t xh, int64_t yh,
         static_cast<int32_t>(def_to_dbu(yh, stack_dbu, def_units)));
 }
 
+// USE/DIRECTION 文本 → 枚举（DEF PINS port；与 S2 map_pin_use 同语义，
+// USE CLOCK 补收见 DSPinType 扩展——2026-09-13 裁定）
 uint8_t map_port_use(const char* use) {
     if (std::strcmp(use, "POWER") == 0) {
         return static_cast<uint8_t>(DSPinType::POWER);
     }
     if (std::strcmp(use, "GROUND") == 0) {
         return static_cast<uint8_t>(DSPinType::GROUND);
+    }
+    if (std::strcmp(use, "CLOCK") == 0) {
+        return static_cast<uint8_t>(DSPinType::CLOCK);
     }
     return static_cast<uint8_t>(DSPinType::SIGNAL);
 }
@@ -105,10 +110,10 @@ bool add_via_unique(CMVector<DSViaCell>& vias, DSViaCell&& cell,
 int def_design_cbk(defrCallbackType_e, const char* name, defiUserData ud) {
     auto* ctx = static_cast<DefContext*>(ud);
     ctx->design_name = name;
-    // ㉙：block cell 直接以 DSCell 承载（block_cell 位标记）
+    // ㉙：block cell 直接以 DSCell 承载（block_cell 位标记种类——2026-09-13
+    // 裁定：class_ 字段已删，种类判定用 flags 位）
     ctx->current_cell = DSCell{};
     ctx->current_cell.set_name(name);
-    ctx->current_cell.set_class("BLOCK");
     ctx->current_cell.set_block_cell();
     ctx->current_cell.set_def_path(ctx->def_path);
     ctx->block_active = true;
@@ -117,9 +122,9 @@ int def_design_cbk(defrCallbackType_e, const char* name, defiUserData ud) {
 
 int def_units_cbk(defrCallbackType_e, double value, defiUserData ud) {
     auto* ctx = static_cast<DefContext*>(ud);
+    // 换算解析期完成（裁定 ㉝），def_units 不入库（2026-09-13 裁定：
+    // def_units_per_micron_ 字段已删——无下游消费）
     ctx->def_units = static_cast<int64_t>(value);
-    ctx->current_cell.set_def_units_per_micron(
-        static_cast<int32_t>(ctx->def_units));
     return 0;
 }
 
@@ -434,6 +439,9 @@ struct DefComponentsContext {
     const DSInstancePipeline* pipeline;
     DSBlockBuildData* block_data;
     DSDefComponentsStats* stats;
+    // fake cell 独立容器（⑳：2026-09-13 裁定不入产物本体——解析任务经
+    // 临时对象传出、S5a 汇总并入全局表）
+    CMVector<DSCell>* fake_cells;
     // UNITS 缺省 100（防无 UNITS 语句文件除零，同 S4）
     int64_t def_units = 100;
     // 密度采样格边长（全局 DBU）；<= 0 = 不配置格网
@@ -534,9 +542,9 @@ int def_components_component_cbk(defrCallbackType_e, defiComponent* comp,
                     ? static_cast<GEOOrientation>(orient_raw)
                     : GEOOrientation::N;
     ic.placement_status = map_component_status(comp->placementStatus());
-    ic.weight = comp->hasWeight() ? static_cast<double>(comp->weight()) : 0.0;
     ic.design = ctx->design;
     ic.block_data = ctx->block_data;
+    ic.fake_cells = ctx->fake_cells;
 
     ctx->pipeline->run(ic);
     ++ctx->stats->component_count;
@@ -565,7 +573,8 @@ void ds_parse_def_components(const CMString& path, const DSStack& stack,
                              const DSDesign& design,
                              DSBlockBuildData& block_data,
                              DSDefComponentsStats& stats,
-                             int32_t density_bin_dbu) {
+                             int32_t density_bin_dbu,
+                             CMVector<DSCell>& fake_cells_out) {
     const DSInstancePipeline pipeline = ds_make_components_pipeline();
 
     DefComponentsContext ctx;
@@ -574,6 +583,7 @@ void ds_parse_def_components(const CMString& path, const DSStack& stack,
     ctx.pipeline = &pipeline;
     ctx.block_data = &block_data;
     ctx.stats = &stats;
+    ctx.fake_cells = &fake_cells_out;
     ctx.bin_dbu = density_bin_dbu;
 
     FILE* f = std::fopen(path.c_str(), "r");
@@ -935,6 +945,8 @@ void ds_parse_def_nets(const CMString& path, const DSStack& stack,
         static_cast<int>(net_data.stats_.skipped_layer_ref_count);
     stats.skipped_net_count =
         static_cast<int>(net_data.stats_.skipped_net_count);
+    stats.skipped_invalid_connection_count =
+        static_cast<int>(net_data.stats_.skipped_invalid_connection_count);
 }
 
 // ── S4+S4b：DEF 头部一遍读取（原有入口）─────────────────────────────

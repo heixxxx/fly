@@ -7,9 +7,9 @@
 // 数据结构（分区产物四类 + 分片中间形态，裁定补记②）：
 //   DSPartConnection        连接项条目（INST_CONNECTIONS / NET_CONNECTIONS
 //                           共用形态）：端点实例 global id + 端点网 global
-//                           id + pin/port 名（S5b 原名保留）+ port 位
-//                          （("PIN", port) 引用——端点实例 = 所属块实例自
-//                           身 global id，⑧ local 0 映射）。
+//                           id + 端点 pin 全局平铺 id（S5b 解析边界换算，
+//                           直存）+ port 位（块级 port 引用——端点实例 =
+//                           所属块实例自身 global id，⑧ local 0 映射）。
 //   DSGeomEntry             几何条目（统一形态）：layer id + 全局矩形 +
 //                           via 专属字段（via cell id，kNoViaCell = 非
 //                           via）+ obs 位（DEF obstruction）+ primary 位
@@ -19,8 +19,7 @@
 //                           obs 位判别）+ 跨分区网集合（is_crossing，
 //                           补记④：成员图形散布 > 1 分区，S10 统计口径）。
 //   DSPartInstances         /INSTANCES：instance global id → DSInstance
-//                           副本（全局 transform + primary 位 + 电源引脚
-//                           预展开坐标 D18）。
+//                           副本（全局 transform + primary 位）。
 //   DSPartInstConnections   /INST_CONNECTIONS：instance global id → 连接
 //                           项列表（跟随 instance 副本）。
 //   DSPartNetConnections    /NET_CONNECTIONS：net global id → 连接项列表
@@ -45,7 +44,9 @@
 //                     （无 primary 概念、跨多区多副本，坐标分量判定——
 //                     禁 width()/height()，补记④/⑦）；DEF obstruction →
 //                     net 0 + obs 位（补记③）；cell 级 pin/macro OBS 几何
-//                     绝不入产物（复现原则）；电源引脚预展开（D18）。
+//                     绝不入产物（复现原则）。（2026-09-13 裁定：电源引脚
+//                     预展开（D18）删除——电源引脚坐标归 ④ 提取按复现原则
+//                     自 instance + transform + cell pin 几何自取。）
 //
 // 编排（ds_flow.py 两级任务）：展开任务按 block 定义切分（小 DEF 按
 // alpha def_aggregate_threshold 聚合），每任务产出所涉各分区的分片；每
@@ -62,21 +63,26 @@
 
 namespace fly {
 
-// 分区连接项（INST_CONNECTIONS / NET_CONNECTIONS 共用条目形态；S5b 名字
-// 形态的 global 化——instance 名经伴生 hasher → local id → +inst_start；
-// ("PIN", port) 引用 → 端点实例 = 所属块实例自身 global id + port 位）。
+// 分区连接项（INST_CONNECTIONS / NET_CONNECTIONS 共用条目形态；S5b 连接
+// 表 id 形态的 global 化——instance local id → +inst_start（⑧ local 0 =
+// 块实例自身）；pin 全局平铺 id 直存（2026-09-13 裁定（D1 全局平铺 pin id）：分区副本 pin
+// 不留名——pin id 全局唯一，名字反查经容器 pin hasher）。flags 六位
+// （port/driver/receiver/power/ground/clock）自 S5b 条目直存，hybrid =
+// driver+receiver 同置（第三分类命名，统计口径互斥单列——见
+// DSNetConnection 注释）。
 class DSPartConnection {
 public:
     // 端点实例 global id（⑧ local 0 映射目标；port 位条目 = 块实例自身）
     uint64_t instance_global_id_ = 0;
     // 端点网 global id（local + offset，不换算 root）
     uint64_t net_global_id_ = 0;
-    // pin / port 名（S5b 连接表原名保留；下游经 cell 数据解 pin id）
-    CMString pin_name_;
-    // port 位 = ("PIN", port) 块级引用（instance_name == "PIN" 语义移植）
-    CM_FLAGS(uint8_t, port)
+    // 端点 pin 全局平铺 id（S5b 解析边界换算完成，直存）
+    uint32_t pin_id_ = 0;
+    // port / driver / receiver / power / ground / clock 位（S5b 直存；
+    // hybrid = driver+receiver 同置）
+    CM_FLAGS(uint8_t, port, driver, receiver, power, ground, clock)
 
-    FLY_SERIALIZE(instance_global_id_, net_global_id_, pin_name_, flags_)
+    FLY_SERIALIZE(instance_global_id_, net_global_id_, pin_id_, flags_)
 };
 
 // 分区几何条目（net wire/rect 图形 + via instance 展开图形 + DEF
@@ -215,16 +221,14 @@ public:
 };
 
 // S9 展开算法（每 block 定义一调用；方案「每份 DEF 数据只读一次」）：
-// 该 def 的实例/网产物 + 伴生名（连接项 instance 名 → local id）+ 容器
-//（cell 电源 pin 判定 / via cell 权威表几何）+ pin 几何对象（电源 pin
-// 局部几何，可为 nullptr——无几何时不做电源引脚预展开）+ 分区表 → 所涉
-// 各分区的分片列表（仅产出非空分区）。tree 与产物无对齐校验（树构建期
-// 已 fatal 对齐错误）；def 未被实例化（树上无位置）→ 空结果放行
-//（dev-rules §7）。
+// 该 def 的实例/网产物 + 容器（via cell 权威表几何）+ 分区表 → 所涉各
+// 分区的分片列表（仅产出非空分区）。连接项 id 形态直换（instance local
+// id → +inst_start、pin id 直存——名字换算已在 S5b 解析边界完成，本层
+// 零字符串匹配）；tree 与产物无对齐校验（树构建期已 fatal 对齐错误）；
+// def 未被实例化（树上无位置）→ 空结果放行（dev-rules §7）。
 CMVector<std::pair<uint32_t, DSPartitionProduct>> ds_flatten_block(
     const DSHierTree& tree, const DSBlockBuildData& block,
-    const DSNetBuildData& nets, const DSBlockNames& names,
-    const DSDesign& design, const DSPinGeometry* pin_geoms,
+    const DSNetBuildData& nets, const DSDesign& design,
     const CMVector<DSSubPartition>& partitions);
 
 }  // namespace fly

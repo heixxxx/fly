@@ -93,7 +93,8 @@ struct DSDefComponentsStats {
 
 // S5a：DEF 一遍读取 → COMPONENTS 责任链（四节点，内部装配
 // ds_make_components_pipeline）产出 per-DEF 产物 + 网名扫描填 local net
-// namemap。
+// namemap。fake cell 数据（⑲/⑳，2026-09-13 裁定不入产物本体）写入
+// fake_cells_out（独立临时对象传 S5a 汇总并入全局表）。
 // density_bin_dbu = 密度采样格边长（全局 DBU，正方形格子；flow 侧由
 // alpha 配置换算）——DIEAREA 换算后配置格网（原点 = diearea 左下角，
 // 行列数向上取整覆盖 diearea）；DIEAREA 缺失（非法 DEF）时格网不配置，
@@ -103,7 +104,8 @@ void ds_parse_def_components(const CMString& path, const DSStack& stack,
                              const DSDesign& design,
                              DSBlockBuildData& block_data,
                              DSDefComponentsStats& stats,
-                             int32_t density_bin_dbu);
+                             int32_t density_bin_dbu,
+                             CMVector<DSCell>& fake_cells_out);
 
 // S5b 统计（批处理侧；实例/网名在 S5a 侧。几何/via instance 计数镜像
 // 产物内 DSNetStats，另加批次观测）
@@ -117,6 +119,7 @@ struct DSDefNetsStats {
     int skipped_layer_ref_count = 0;  // 未定义层引用丢弃条目数（wire 段/
                                       // rect 项；DSGN::0010）
     int skipped_net_count = 0;   // 网名不在 S5a namemap 的防御兜底计数
+    int skipped_invalid_connection_count = 0;  // 无效连接项跳过（DSGN::0025）
     int batch_count = 0;         // 分批批次数（③ 分批落批可观测）
 };
 

@@ -32,7 +32,7 @@ PINS 2 ;
         + FIXED ( 10 20 ) N ;
     - PIN_OUT + NET n2
       + DIRECTION OUTPUT
-      + USE SIGNAL
+      + USE CLOCK
       + PORT
         + LAYER M2 ( 800 900 ) ( 1000 1100 )
         + PLACED ( 900 1000 ) N ;

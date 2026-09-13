@@ -174,14 +174,13 @@ TEST(DSInstanceTest, DefaultsAndSerializeRoundTrip) {
     EXPECT_EQ(inst.get_transform().get_orient(), GEOOrientation::N);
     EXPECT_EQ(inst.get_placement_status(),
               static_cast<uint8_t>(DSPlacementStatus::UNPLACED));
-    EXPECT_DOUBLE_EQ(inst.get_weight(), 0.0);  // OPTIONAL weight 缺省 0
+    EXPECT_FALSE(inst.is_primary());  // 解析产物恒复位（分区副本置位）
 
     inst.set_cell_id(7);
     inst.set_transform(
         GEOTransform(GEOPoint(100400, 200100),
                               GEOOrientation::W));
     inst.set_placement_status(static_cast<uint8_t>(DSPlacementStatus::FIXED));
-    inst.set_weight(2.5);
 
     CMString blob;
     FLY_ENCODE(inst, blob);
@@ -194,7 +193,6 @@ TEST(DSInstanceTest, DefaultsAndSerializeRoundTrip) {
     EXPECT_EQ(back.get_transform().get_orient(), GEOOrientation::W);
     EXPECT_EQ(back.get_placement_status(),
               static_cast<uint8_t>(DSPlacementStatus::FIXED));
-    EXPECT_DOUBLE_EQ(back.get_weight(), 2.5);
 }
 
 }  // namespace

@@ -144,13 +144,8 @@ FLY_EXPORT_CLASS(fly::DSCell, "EXDSCell")
     })
     FLY_EXPORT_READONLY_ATTR("origin_x", &fly::DSCell::origin_x_)
     FLY_EXPORT_READONLY_ATTR("origin_y", &fly::DSCell::origin_y_)
-    // class 为 Python 关键字，暴露名取 cell_class
-    FLY_EXPORT_READONLY_ATTR("cell_class", &fly::DSCell::class_)
-    FLY_EXPORT_READONLY_ATTR("site", &fly::DSCell::site_)
     // block 场景字段（㉙；is_block_cell 判别后使用）
     FLY_EXPORT_READONLY_ATTR("def_path", &fly::DSCell::def_path_)
-    FLY_EXPORT_READONLY_ATTR("def_units_per_micron",
-                             &fly::DSCell::def_units_per_micron_)
     // ㉗/㉙ flags 只读面
     FLY_EXPORT_READONLY_PROPERTY("is_fake_cell", [](const fly::DSCell& c) {
         return c.is_fake_cell();
@@ -208,33 +203,51 @@ FLY_EXPORT_CLASS(fly::DSInstance, "EXDSInstance")
     })
     FLY_EXPORT_READONLY_ATTR("placement_status",
                              &fly::DSInstance::placement_status_)
-    FLY_EXPORT_READONLY_ATTR("weight", &fly::DSInstance::weight_)
     // S9：分区归属 primary 位（解析产物恒复位；分区副本置位）
     FLY_EXPORT_READONLY_PROPERTY("is_primary", [](const fly::DSInstance& i) {
         return i.is_primary();
     })
-    // S9：电源引脚预展开坐标（D18；解析产物恒空）
-    FLY_EXPORT_READONLY_PROPERTY("power_pin_count",
-                                 [](const fly::DSInstance& i) {
-        return static_cast<int>(i.power_pin_count());
-    })
-    FLY_EXPORT_DEF("power_pin_at", [](const fly::DSInstance& i, size_t k) {
-        const fly::DSPowerPin& pp = i.power_pin_at(k);
-        return nb::make_tuple(pp.pin_id_, pp.pos_.get_x(), pp.pos_.get_y());
-    })
     FLY_EXPORT_SERIALIZE_PICKLE(fly::DSInstance);
 
-// 电源引脚预展开坐标（S9 分区副本；D18）
-FLY_EXPORT_CLASS(fly::DSPowerPin, "EXDSPowerPin")
+// S5b 连接项（id 形态只读面，2026-09-13 裁定；flags 六位——port/driver/
+// receiver/power/ground/clock，hybrid = driver+receiver 同置）
+FLY_EXPORT_CLASS(fly::DSNetConnection, "EXDSNetConnection")
     FLY_EXPORT_INIT()
-    FLY_EXPORT_READONLY_ATTR("pin_id", &fly::DSPowerPin::pin_id_)
-    FLY_EXPORT_READONLY_PROPERTY("pos", [](const fly::DSPowerPin& pp) {
-        return nb::make_tuple(pp.pos_.get_x(), pp.pos_.get_y());
+    FLY_EXPORT_READONLY_ATTR("instance_local_id",
+                             &fly::DSNetConnection::instance_local_id_)
+    FLY_EXPORT_READONLY_ATTR("pin_id", &fly::DSNetConnection::pin_id_)
+    FLY_EXPORT_READONLY_PROPERTY("is_port", [](const fly::DSNetConnection& c) {
+        return c.is_port();
     })
-    FLY_EXPORT_SERIALIZE_PICKLE(fly::DSPowerPin);
+    FLY_EXPORT_READONLY_PROPERTY("is_driver",
+                                 [](const fly::DSNetConnection& c) {
+        return c.is_driver();
+    })
+    FLY_EXPORT_READONLY_PROPERTY("is_receiver",
+                                 [](const fly::DSNetConnection& c) {
+        return c.is_receiver();
+    })
+    FLY_EXPORT_READONLY_PROPERTY("is_power", [](const fly::DSNetConnection& c) {
+        return c.is_power();
+    })
+    FLY_EXPORT_READONLY_PROPERTY("is_ground",
+                                 [](const fly::DSNetConnection& c) {
+        return c.is_ground();
+    })
+    FLY_EXPORT_READONLY_PROPERTY("is_clock", [](const fly::DSNetConnection& c) {
+        return c.is_clock();
+    })
+    // hybrid = driver+receiver 同置（INOUT pin 的第三分类，统计口径与
+    // driver/receiver 互斥单列）
+    FLY_EXPORT_READONLY_PROPERTY("is_hybrid",
+                                 [](const fly::DSNetConnection& c) {
+        return c.is_driver() && c.is_receiver();
+    })
+    FLY_EXPORT_SERIALIZE_PICKLE(fly::DSNetConnection);
 
 // S5b 网内容只读面（最小暴露：统计 + 按 net/via id 检索；连接项以
-// 二元组、wire 以 (layer, width, 点列) 透出，不下沉 Python 几何类型）
+// id + flags 位对象透出、wire 以 (layer, width, 点列) 透出，不下沉
+// Python 几何类型）
 FLY_EXPORT_CLASS(fly::DSNetStats, "EXDSNetStats")
     FLY_EXPORT_INIT()
     FLY_EXPORT_READONLY_ATTR("net_count", &fly::DSNetStats::net_count)
@@ -248,6 +261,9 @@ FLY_EXPORT_CLASS(fly::DSNetStats, "EXDSNetStats")
                              &fly::DSNetStats::skipped_via_count)
     FLY_EXPORT_READONLY_ATTR("skipped_net_count",
                              &fly::DSNetStats::skipped_net_count)
+    // 无效连接项跳过数（2026-09-13 id 化裁定，DSGN::0025）
+    FLY_EXPORT_READONLY_ATTR("skipped_invalid_connection_count",
+                             &fly::DSNetStats::skipped_invalid_connection_count)
     FLY_EXPORT_SERIALIZE_PICKLE(fly::DSNetStats);
 
 FLY_EXPORT_CLASS(fly::DSNetBuildData, "EXDSNetBuildData")
@@ -273,8 +289,10 @@ FLY_EXPORT_CLASS(fly::DSNetBuildData, "EXDSNetBuildData")
         const auto* conns = n.connections_of(net_id);
         if (conns != nullptr) {
             for (const auto& c : *conns) {
-                out.append(nb::make_tuple(c.get_instance_name(),
-                                          c.get_pin_name()));
+                // id 形态（2026-09-13 裁定）：对象面 (instance local id +
+                // 全局 pin id + flags 六位)；port 引用条目 local id = 0
+                //（⑧ 占位）
+                out.append(c);  // 元素为值拷贝（24B 值类型，非引用）
             }
         }
         return out;
@@ -581,7 +599,7 @@ FLY_EXPORT_CLASS(fly::DSBlockBuildData, "EXDSBlockBuildData")
     })
     FLY_EXPORT_READONLY_PROPERTY("fake_cell_count",
                                  [](const fly::DSBlockBuildData& b) {
-        return static_cast<int>(b.fake_cells_.size());
+        return static_cast<int>(b.stats_.fake_cell_count);
     })
     FLY_EXPORT_READONLY_PROPERTY("density",
                                  [](const fly::DSBlockBuildData& b)
@@ -788,6 +806,9 @@ FLY_EXPORT_CLASS(fly::DSDefNetsStats, "EXDSDefNetsStats")
                              &fly::DSDefNetsStats::skipped_via_count)
     FLY_EXPORT_READONLY_ATTR("skipped_net_count",
                              &fly::DSDefNetsStats::skipped_net_count)
+    FLY_EXPORT_READONLY_ATTR("skipped_invalid_connection_count",
+                             &fly::DSDefNetsStats::
+                                 skipped_invalid_connection_count)
     FLY_EXPORT_READONLY_ATTR("batch_count", &fly::DSDefNetsStats::batch_count);
 
 FLY_EXPORT_CLASS(fly::DSDesign, "EXDSDesign")
@@ -990,16 +1011,20 @@ FLY_EXPORT_FUNCTION("ds_merge_def_header",
 });
 
 // S5a：COMPONENTS 责任链 ∥ 网名扫描（同一遍 DEF 读取，责任链在 C++
-// 侧内部装配）→ stats；block_data 就地填充
+// 侧内部装配）→ (stats, fake cell 集合)。block_data 就地填充；fake cell
+// 数据经独立临时对象传出（2026-09-13 裁定：产物本体不含副本，S5a 汇总
+// 并入全局表）
 FLY_EXPORT_FUNCTION("ds_parse_def_components",
                     [](const CMString& path, const fly::DSStack& stack,
                        const fly::DSDesign& design,
                        fly::DSBlockBuildData& block_data,
                        int32_t density_bin_dbu) {
+    CMVector<fly::DSCell> fake_cells;
     fly::DSDefComponentsStats stats;
     fly::ds_parse_def_components(path, stack, design, block_data, stats,
-                                 density_bin_dbu);
-    return nb::cast(stats);
+                                 density_bin_dbu, fake_cells);
+    return nb::make_tuple(nb::cast(stats),
+                          nb::cast(std::move(fake_cells)));
 });
 
 // S5b：网内容责任链 ∥ 分批多阶段（③ 批界 net_batch_size；⑨ local net
@@ -1033,12 +1058,13 @@ FLY_EXPORT_FUNCTION("ds_build_hier_tree",
     return nb::cast(fly::ds_build_hier_tree(block_ptrs, net_ptrs, design));
 });
 
-// S5a 汇总：fake cell 并入（返回并入数）；block_data 的实例引用随顺延
+// S5a 汇总：fake cell 并入（返回并入数；fake cell 数据经独立临时对象
+// 传入，2026-09-13 裁定产物本体不含副本）；block_data 的实例引用随顺延
 // 结果就地重映射
 FLY_EXPORT_FUNCTION("ds_merge_block_build",
-                    [](fly::DSDesign& dst,
-                       fly::DSBlockBuildData& block_data) {
-    return fly::ds_merge_block_build(dst, block_data);
+                    [](fly::DSDesign& dst, fly::DSBlockBuildData& block_data,
+                       const CMVector<fly::DSCell>& fake_cells) {
+    return fly::ds_merge_block_build(dst, block_data, fake_cells);
 });
 
 // S8 密度合并：层级树 + per-DEF 产物（blocks/nets 借指针列表）→ 全局
@@ -1164,9 +1190,35 @@ FLY_EXPORT_CLASS(fly::DSPartConnection, "EXDSPartConnection")
                              &fly::DSPartConnection::instance_global_id_)
     FLY_EXPORT_READONLY_ATTR("net_global_id",
                              &fly::DSPartConnection::net_global_id_)
-    FLY_EXPORT_READONLY_ATTR("pin_name", &fly::DSPartConnection::pin_name_)
+    // 端点 pin 全局平铺 id（2026-09-13 裁定：S5b 解析边界换算、直存——
+    // 名字反查经容器 pin hasher）
+    FLY_EXPORT_READONLY_ATTR("pin_id", &fly::DSPartConnection::pin_id_)
     FLY_EXPORT_READONLY_PROPERTY("is_port", [](const fly::DSPartConnection& c) {
         return c.is_port();
+    })
+    FLY_EXPORT_READONLY_PROPERTY("is_driver",
+                                 [](const fly::DSPartConnection& c) {
+        return c.is_driver();
+    })
+    FLY_EXPORT_READONLY_PROPERTY("is_receiver",
+                                 [](const fly::DSPartConnection& c) {
+        return c.is_receiver();
+    })
+    FLY_EXPORT_READONLY_PROPERTY("is_power", [](const fly::DSPartConnection& c) {
+        return c.is_power();
+    })
+    FLY_EXPORT_READONLY_PROPERTY("is_ground",
+                                 [](const fly::DSPartConnection& c) {
+        return c.is_ground();
+    })
+    FLY_EXPORT_READONLY_PROPERTY("is_clock", [](const fly::DSPartConnection& c) {
+        return c.is_clock();
+    })
+    // hybrid = driver+receiver 同置（INOUT pin 的第三分类，统计口径与
+    // driver/receiver 互斥单列）
+    FLY_EXPORT_READONLY_PROPERTY("is_hybrid",
+                                 [](const fly::DSPartConnection& c) {
+        return c.is_driver() && c.is_receiver();
     })
     FLY_EXPORT_SERIALIZE_PICKLE(fly::DSPartConnection);
 
@@ -1301,18 +1353,16 @@ FLY_EXPORT_CLASS(fly::DSPartitionProduct, "EXDSPartitionProduct")
     FLY_EXPORT_SERIALIZE_PICKLE(fly::DSPartitionProduct);
 
 // S9 展开算法（每 block 定义一调用；分片列表 [(partition_id, product)]。
-// 分区表取自 design 容器（S8 写定 partitions_）；pin_geoms = None 时不做
-// 电源引脚预展开）。SliceList 别名行置于宏外——模板实参逗号会拆分宏形参。
+// 分区表取自 design 容器（S8 写定 partitions_）；连接项 id + flags 位在
+// S5b 解析边界完成，展开零名字查询零 pin 几何依赖（2026-09-13 裁定）。
+// SliceList 别名行置于宏外——模板实参逗号会拆分宏形参。
 using DSSliceList = CMVector<std::pair<uint32_t, fly::DSPartitionProduct>>;
 FLY_EXPORT_FUNCTION("ds_flatten_block",
                     [](const fly::DSHierTree& tree,
                        const fly::DSBlockBuildData& block,
                        const fly::DSNetBuildData& nets,
-                       const fly::DSBlockNames& names,
-                       const fly::DSDesign& design,
-                       const fly::DSPinGeometry* pin_geoms) {
-    DSSliceList slices = fly::ds_flatten_block(tree, block, nets, names,
-                                               design, pin_geoms,
+                       const fly::DSDesign& design) {
+    DSSliceList slices = fly::ds_flatten_block(tree, block, nets, design,
                                                design.partitions_);
     nb::list out;
     for (auto& [pid, product] : slices) {

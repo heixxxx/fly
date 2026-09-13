@@ -71,8 +71,6 @@ DSDesign make_design() {
     inv.set_bbox(GEORect(0, 0, 1400, 1400));
     inv.origin_x_ = 0;
     inv.origin_y_ = 0;
-    inv.class_ = "CORE";
-    inv.site_ = "site1";
     inv.set_lef_cell();
     inv.set_macro_cell();
     DSPin a;  // pin 名不存 DSPin（R7 ㊱）——经 register_pin 进全局 hasher
@@ -90,7 +88,6 @@ DSDesign make_design() {
 
     DSCell filler;
     filler.name_ = "FILLER01";
-    filler.class_ = "CORE_SPACER";
     filler.set_fake_cell();  // ⑲ fake cell（S5a 机制生成，此处结构就位）
     design.add_cell(std::move(filler));
     design.fake_cell_ids_.push_back(1);  // ⑳ fake 单独集合（P4 保留索引）
@@ -107,13 +104,11 @@ DSDesign make_design() {
     // 场景字段；port = cell.pins_ 的 port 位 DSPin）
     DSCell blk;
     blk.name_ = "top_block";
-    blk.class_ = "BLOCK";
     blk.set_block_cell();
     blk.set_bbox(GEORect(-190000, -120000, 190360, 350000));
     blk.origin_x_ = 190000;
     blk.origin_y_ = 120000;
     blk.def_path_ = "/work/top.def";
-    blk.def_units_per_micron_ = 1000;
     DSPin p0;
     p0.set_port();
     p0.placement_status_ = static_cast<uint8_t>(DSPinPlacementStatus::FIXED);
@@ -260,8 +255,6 @@ TEST(DSDesignTest, SerializeRoundTripAllFields) {
     EXPECT_EQ(inv.width(), 1400);
     EXPECT_EQ(inv.height(), 1400);
     EXPECT_EQ(inv.get_bbox().get_x_high(), 1400);
-    EXPECT_EQ(inv.get_class(), "CORE");
-    EXPECT_EQ(inv.get_site(), "site1");
     EXPECT_FALSE(inv.is_fake_cell());
     EXPECT_TRUE(inv.is_lef_cell());
     EXPECT_TRUE(inv.is_macro_cell());
@@ -301,7 +294,6 @@ TEST(DSDesignTest, SerializeRoundTripAllFields) {
     ASSERT_GE(back.cells_.size(), 3u);
     const DSCell& blk = back.cells_[2];
     EXPECT_EQ(blk.get_name(), "top_block");
-    EXPECT_EQ(blk.get_class(), "BLOCK");
     EXPECT_TRUE(blk.is_block_cell());
     EXPECT_FALSE(blk.is_lef_cell());
     EXPECT_EQ(blk.get_bbox().get_x_low(), -190000);
@@ -311,7 +303,6 @@ TEST(DSDesignTest, SerializeRoundTripAllFields) {
     EXPECT_EQ(blk.get_origin_x(), 190000);  // −diearea 左下角（P7）
     EXPECT_EQ(blk.get_origin_y(), 120000);
     EXPECT_EQ(blk.get_def_path(), "/work/top.def");
-    EXPECT_EQ(blk.get_def_units_per_micron(), 1000);
     ASSERT_EQ(blk.pin_count(), 1u);
     const DSPin& port = blk.pin_at(0);
     EXPECT_EQ(back.pin_name_of(port.get_pin_id()), "PIN_A");
@@ -420,7 +411,6 @@ TEST(DSDesignTest, NameMapBidirectionalConsistency) {
     const DSCell* blk = back.find_cell("top_block");
     ASSERT_NE(blk, nullptr);
     EXPECT_TRUE(blk->is_block_cell());
-    EXPECT_EQ(blk->get_def_units_per_micron(), 1000);
     EXPECT_EQ(back.find_cell("nope"), nullptr);
 
     // pin 组合键（cell_name/pin_name；block port pin 同一 pin id 空间）

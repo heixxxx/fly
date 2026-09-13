@@ -18,14 +18,15 @@
 //   ds_build_net_union           全局汇总（单任务）：合并全部局部边集 →
 //                                两层化 + root 规范化 + 悬空计数。
 //
-// 对接形态（S5b 连接表为名字形态，DSNetConnectionParseNode 实现：连接
-// 项按 defi 回调原样保留，port 引用 instance_name = "PIN"；S5b 连接表
-// 无 local 0 条目——block 自身占位仅在 instance 表）：父网连接条目
-// (子实例名, port 名) × 子网连接条目 ("PIN", port 名)——对接键 = 同一块
-// 实例 + 同名 port，两侧都是字符串（无需 pin id）；同一子网连接多个
-// port 且这些 port 在父层连到不同父网 → 两父网 union（电气等价，合法
-// 形态）。顶层引脚连接（root 块的 ("PIN", port)）不产生跨层 union
-//（root 候选，root 块 port 网不入悬空口径）。
+// 对接形态（S5b 连接表 id 形态，DSNetConnectionParseNode 在解析边界完成
+// 名字 → id 换算；port 引用条目带 port 位、instance_local_id_ = 0 占位）：
+// 父网连接条目 (子实例 local id, port pin 全局 id) × 子网连接条目 (local 0,
+// 同一 port pin 全局 id)——同一 port 的全局 pin id 唯一（pin 组合键
+// "block_cell_name/port_name" 注册于容器 pin hasher），直接相等对接，S7
+// 内部链路零字符串匹配（2026-09-13 裁定）；同一子网连接多个 port 且这些
+// port 在父层连到不同父网 → 两父网 union（电气等价，合法形态）。顶层引脚
+// 连接（root 块的 port 位条目）不产生跨层 union（root 候选，root 块
+// port 网不入悬空口径）。
 // =============================================================================
 
 #include <common/serialization/cpp/serialization_macros.h>
@@ -50,9 +51,9 @@ public:
 // per-DEF 局部收集产物（临时对象，汇总合并后即弃）：
 //   edges_         该 def 全部实例化位置的 (父网, 子网) 边（规范化
 //                  (min, max) + 升序去重）
-//   port_net_ids_  本 def 的 port 网 local net id 集（连接表含
-//                  ("PIN", port) 引用的网；悬空判定由汇总任务结合树与
-//                  全量边集完成——per-DEF 局部视野不知父侧连接）
+//   port_net_ids_  本 def 的 port 网 local net id 集（连接表含 port 位
+//                  引用的网；悬空判定由汇总任务结合树与全量边集完成
+//                  ——per-DEF 局部视野不知父侧连接）
 //   block_name_    本 def 的 block 名（DESIGN 名 = block cell 名；汇总
 //                  任务按名反查树上的实例化位置）
 class DSNetUnionSlice {

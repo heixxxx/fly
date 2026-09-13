@@ -1,8 +1,11 @@
 // S5b 网内容责任链 + 批处理单测（裁定 ③④⑨⑩⑪⑫，方案
 // design-db-phase2-plan.md §2.3 + design-db-plan.md S5b 节）：
 //   1. 链骨架：顺序执行 + 错误标记即停（仿 S5a §2.1 形态）；
-//   2. ConnectionParseNode：local net id 对齐（⑨ S5a namemap）+ 连接表
-//      保留（S7 并查集输入）+ port 引用判别 + 未收录网兜底计数；
+//   2. ConnectionParseNode：local net id 对齐（⑨ S5a namemap）+ 连接项
+//      id 换算（2026-09-13 裁定：instance 名 → local id、pin 名 → 全局
+//      pin id 经组合键、("PIN", port) → port 位 + local 0）+ flags 六位
+//      填写（direction/type 顺手取得；hybrid = driver+receiver 同置）+
+//      未命中兜底跳过 + 计数 + 未收录网兜底计数；
 //   3. GeometryExpandNode：wire 段（layer id + 宽度回填缺省值 + 点列）/
 //      rect 项 / via 命名引用解析（⑪ 权威表：plain → design:: 前缀回退，
 //      ⑫）/ 未定义 via 跳过计数（兜底不 raise）/ VIADATA 阵列展开
@@ -70,13 +73,66 @@ struct TestEnv {
         inv.set_name("INV_X1");
         inv.set_lef_cell();
         inv.set_bbox(GEORect(0, 0, 1400, 1400));
+        DSPin a;  // INPUT SIGNAL → 连接 flags receiver 位
+        a.direction_ = static_cast<uint8_t>(DSPinDirection::INPUT);
+        inv.add_pin(std::move(a));
+        DSPin zn;  // OUTPUT SIGNAL → driver 位
+        zn.direction_ = static_cast<uint8_t>(DSPinDirection::OUTPUT);
+        inv.add_pin(std::move(zn));
+        DSPin vdd;  // INOUT POWER → hybrid（driver+receiver 同置）+ power 位
+        vdd.direction_ = static_cast<uint8_t>(DSPinDirection::INOUT);
+        vdd.type_ = static_cast<uint8_t>(DSPinType::POWER);
+        inv.add_pin(std::move(vdd));
+        // pin 组合键注册（S2 汇总同构；全局平铺 id 手工分配）
+        DSPin vss;  // INPUT GROUND → receiver + ground 位
+        vss.direction_ = static_cast<uint8_t>(DSPinDirection::INPUT);
+        vss.type_ = static_cast<uint8_t>(DSPinType::GROUND);
+        inv.add_pin(std::move(vss));
+        DSPin clk;  // INPUT CLOCK → receiver + clock 位（USE CLOCK 收录）
+        clk.direction_ = static_cast<uint8_t>(DSPinDirection::INPUT);
+        clk.type_ = static_cast<uint8_t>(DSPinType::CLOCK);
+        inv.add_pin(std::move(clk));
         design.add_cell(std::move(inv));
+        // pin 组合键注册（S2 汇总同构；全局平铺 id 手工分配）
+        design.register_pin("INV_X1", "A", 0);
+        design.register_pin("INV_X1", "ZN", 1);
+        design.register_pin("INV_X1", "VDD", 2);
+        design.register_pin("INV_X1", "VSS", 3);
+        design.register_pin("INV_X1", "CLK", 4);
+        design.cells_[0].pins_[0].set_pin_id(0);
+        design.cells_[0].pins_[1].set_pin_id(1);
+        design.cells_[0].pins_[2].set_pin_id(2);
+        design.cells_[0].pins_[3].set_pin_id(3);
+        design.cells_[0].pins_[4].set_pin_id(4);
+
+        // block cell（S4 汇总同构）：port pin 的方向/type 是连接 flags
+        // port 条目位填写的数据源
+        DSCell blk;
+        blk.set_name("nets_blk");
+        blk.set_block_cell();
+        DSPin pin_a;  // INPUT → port 条目 receiver 位
+        pin_a.set_port();
+        pin_a.direction_ = static_cast<uint8_t>(DSPinDirection::INPUT);
+        blk.add_pin(std::move(pin_a));
+        DSPin pout;  // OUTPUT → port 条目 driver 位
+        pout.set_port();
+        pout.direction_ = static_cast<uint8_t>(DSPinDirection::OUTPUT);
+        blk.add_pin(std::move(pout));
+        design.add_cell(std::move(blk));
+        design.register_pin("nets_blk", "PIN_A", 5);
+        design.register_pin("nets_blk", "POUT", 6);
+        design.cells_[1].pins_[0].set_pin_id(5);
+        design.cells_[1].pins_[1].set_pin_id(6);
     }
 
-    // 挂好环境的 ctx（local 0 占位 + 两网名，仿 S5a 产物）
+    // 挂好环境的 ctx（local 0 占位 + 实例 u1 = local 1 + 两网名，仿 S5a
+    // 产物；连接 id 换算需实例 hasher，2026-09-13 裁定）
     DSBlockBuildData make_block_data() const {
         DSBlockBuildData block_data;
         block_data.init_placeholder("nets_blk", DSDesign::kInvalidId);
+        DSInstance u1;
+        u1.set_cell_id(design.cell_names_.get_id("INV_X1"));
+        block_data.add_instance(std::move(u1), "u1");
         block_data.register_net("n1");
         block_data.register_net("VDD");
         return block_data;
@@ -137,7 +193,7 @@ TEST(DSNetPipelineTest, RunsInOrderAndStopsOnError) {
 
 // ── 2. ConnectionParseNode ──────────────────────────────────────────
 
-TEST(DSNetConnectionParseNodeTest, AlignsLocalIdAndKeepsTopology) {
+TEST(DSNetConnectionParseNodeTest, AlignsLocalIdAndConvertsConnectionIds) {
     TestEnv env;
     DSBlockBuildData block_data = env.make_block_data();
     DSNetBuildData net_data;
@@ -152,12 +208,97 @@ TEST(DSNetConnectionParseNodeTest, AlignsLocalIdAndKeepsTopology) {
     // ⑨ local net id 沿用 S5a 网名扫描分配（n1 = 1）
     EXPECT_EQ(ctx.local_net_id, 1u);
     ASSERT_EQ(net_data.connections_.at(1).size(), 2u);
-    EXPECT_EQ(net_data.connections_.at(1)[0].instance_name_, "u1");
-    EXPECT_EQ(net_data.connections_.at(1)[0].pin_name_, "A");
-    // block 级 port 引用（defi instance() = "PIN"）判别
-    EXPECT_TRUE(net_data.connections_.at(1)[1].is_port_ref());
+    // 连接项 id 形态（2026-09-13 裁定）：(instance local id, 全局 pin id)
+    // + flags 位——(u1 A)：local 1、pin A = 0、INPUT → receiver 位
+    const DSNetConnection& c0 = net_data.connections_.at(1)[0];
+    EXPECT_EQ(c0.instance_local_id_, 1u);
+    EXPECT_EQ(c0.pin_id_, 0u);
+    EXPECT_FALSE(c0.is_port());
+    EXPECT_TRUE(c0.is_receiver());
+    EXPECT_FALSE(c0.is_driver());
+    // ("PIN" PIN_A)：local 0 占位（⑧）、port pin = 3、port 位 + INPUT
+    // → receiver 位
+    const DSNetConnection& c1 = net_data.connections_.at(1)[1];
+    EXPECT_EQ(c1.instance_local_id_, 0u);
+    EXPECT_EQ(c1.pin_id_, 5u);
+    EXPECT_TRUE(c1.is_port());
+    EXPECT_TRUE(c1.is_receiver());
     EXPECT_EQ(net_data.stats_.net_count, 1u);
     EXPECT_EQ(net_data.stats_.connection_count, 2u);
+    EXPECT_EQ(net_data.stats_.skipped_invalid_connection_count, 0u);
+}
+
+TEST(DSNetConnectionParseNodeTest, FillsDriverReceiverPowerFlags) {
+    // 方向/类型位（2026-09-13 裁定变更 + 补充）：OUTPUT → driver、INOUT
+    // → driver+receiver 同置（hybrid）、POWER type → power 位；port 条目
+    // 方向随 block cell 的 port pin（POUT = OUTPUT → driver）
+    TestEnv env;
+    DSBlockBuildData block_data = env.make_block_data();
+    DSNetBuildData net_data;
+
+    DSNetContext ctx = make_ctx(env, block_data, net_data, "VDD");
+    ctx.is_special = true;
+    ctx.connections.push_back({"u1", "VDD"});   // INOUT POWER → hybrid+power
+    ctx.connections.push_back({"PIN", "POUT"});  // port + OUTPUT → driver
+    ctx.connections.push_back({"u1", "ZN"});     // OUTPUT → 仅 driver
+    ctx.connections.push_back({"u1", "VSS"});    // INPUT GROUND → receiver+ground
+    ctx.connections.push_back({"u1", "CLK"});    // INPUT CLOCK → receiver+clock
+
+    DSNetConnectionParseNode node;
+    node.handle(ctx);
+
+    ASSERT_EQ(net_data.connections_.at(2).size(), 5u);
+    const DSNetConnection& hybrid = net_data.connections_.at(2)[0];
+    EXPECT_EQ(hybrid.instance_local_id_, 1u);
+    EXPECT_EQ(hybrid.pin_id_, 2u);  // INV_X1/VDD
+    EXPECT_TRUE(hybrid.is_driver() && hybrid.is_receiver());  // hybrid
+    EXPECT_TRUE(hybrid.is_power());
+    EXPECT_FALSE(hybrid.is_ground());
+    const DSNetConnection& port = net_data.connections_.at(2)[1];
+    EXPECT_EQ(port.instance_local_id_, 0u);
+    EXPECT_EQ(port.pin_id_, 6u);  // nets_blk/POUT
+    EXPECT_TRUE(port.is_port() && port.is_driver());
+    EXPECT_FALSE(port.is_receiver());
+    const DSNetConnection& drv = net_data.connections_.at(2)[2];
+    EXPECT_EQ(drv.pin_id_, 1u);  // INV_X1/ZN
+    EXPECT_TRUE(drv.is_driver());
+    EXPECT_FALSE(drv.is_receiver());
+    EXPECT_FALSE(drv.is_driver() && drv.is_receiver());  // 非 hybrid
+    // ground 位（INPUT GROUND → receiver + ground，与 power 互斥）
+    const DSNetConnection& gnd = net_data.connections_.at(2)[3];
+    EXPECT_EQ(gnd.pin_id_, 3u);  // INV_X1/VSS
+    EXPECT_TRUE(gnd.is_receiver() && gnd.is_ground());
+    EXPECT_FALSE(gnd.is_power() || gnd.is_driver() || gnd.is_clock());
+    // clock 位（INPUT CLOCK → receiver + clock）
+    const DSNetConnection& clk = net_data.connections_.at(2)[4];
+    EXPECT_EQ(clk.pin_id_, 4u);  // INV_X1/CLK
+    EXPECT_TRUE(clk.is_receiver() && clk.is_clock());
+    EXPECT_FALSE(clk.is_power() || clk.is_ground() || clk.is_driver());
+}
+
+TEST(DSNetConnectionParseNodeTest, InvalidConnectionsSkippedAndCounted) {
+    // 未命中兜底（2026-09-13 id 化裁定，dev-rules §7 不 raise）：实例名
+    // 未登记 / cell 无此 pin / port 未注册——各自跳过 + 计数 + DSGN::0025
+    // 提醒，合法条目照常收录
+    TestEnv env;
+    DSBlockBuildData block_data = env.make_block_data();
+    DSNetBuildData net_data;
+
+    DSNetContext ctx = make_ctx(env, block_data, net_data, "n1");
+    ctx.connections.push_back({"ghost_inst", "A"});   // 实例名未登记
+    ctx.connections.push_back({"u1", "GHOST_PIN"});   // cell 无此 pin
+    ctx.connections.push_back({"PIN", "GHOST_PORT"});  // port 未注册
+    ctx.connections.push_back({"u1", "A"});           // 合法条目
+
+    DSNetConnectionParseNode node;
+    node.handle(ctx);
+
+    EXPECT_FALSE(ctx.error);
+    ASSERT_EQ(net_data.connections_.at(1).size(), 1u);
+    EXPECT_EQ(net_data.connections_.at(1)[0].instance_local_id_, 1u);
+    EXPECT_EQ(net_data.connections_.at(1)[0].pin_id_, 0u);
+    EXPECT_EQ(net_data.stats_.skipped_invalid_connection_count, 3u);
+    EXPECT_EQ(net_data.stats_.connection_count, 1u);
 }
 
 TEST(DSNetConnectionParseNodeTest, UnknownNetCountedAndSkipped) {
@@ -375,7 +516,10 @@ TEST(DSNetBuildDataTest, SerializeRoundTrip) {
 
     EXPECT_EQ(back.get_block_name(), "");
     ASSERT_EQ(back.connections_.at(1).size(), 2u);
-    EXPECT_TRUE(back.connections_.at(1)[1].is_port_ref());
+    EXPECT_EQ(back.connections_.at(1)[0].instance_local_id_, 1u);
+    EXPECT_EQ(back.connections_.at(1)[0].pin_id_, 0u);
+    EXPECT_TRUE(back.connections_.at(1)[1].is_port());
+    EXPECT_EQ(back.connections_.at(1)[1].pin_id_, 5u);
     ASSERT_EQ(back.wires_.at(1).size(), 1u);
     EXPECT_EQ(back.wires_.at(1)[0].layer_id_, 0u);
     EXPECT_EQ(back.wires_.at(1)[0].width_, 140);

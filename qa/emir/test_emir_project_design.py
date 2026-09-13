@@ -19,17 +19,21 @@ name——pin 名经容器 pin hasher、实例/网名经 DSBlockNames_<i> 伴生
     不入密度（D14）、实例面积密度通道、local net namemap（③）→ 汇总
     fake cell 并入全局 cell 表 + 正式 DSBlock_<i> 产物对象；
   - S5b 每 DEF 一任务（网内容责任链 ∥ 分批多阶段，裁定 ③/⑨；批大小
-    alpha 键 net_batch_size）：连接表（port 引用判别）、wire 段（缺省宽
-    回填）、⑩ via instance（⑫ design:: 前缀名解析）、⑥ 金属/通孔逐层
-    分列密度通道 → 正式 DSNet_<i> 产物对象 + DSGN::0009 统计汇总；
+    alpha 键 net_batch_size）：连接表 id 化（2026-09-13 裁定：实例名 →
+    local id、pin 名 → 全局 pin id 在解析边界一次换算完成，port 引用 =
+    local 0 + port 位；flags 位 = 方向/类型，hybrid = driver+receiver 同
+    置）、wire 段（缺省宽回填）、⑩ via instance（⑫ design:: 前缀名解
+    析）、⑥ 金属/通孔逐层分列密度通道 → 正式 DSNet_<i> 产物对象 +
+    DSGN::0009 统计汇总；
   - S6 汇总任务（层级树 + 起始编号，⑧⑨⑮；消费 S5a+S5b 计数）：
     主 DEF = 唯一无父者（block_parent 实例化 block_child 的两层嵌套），
     DFS 序连续分配 instance/net/via 三类区间，树嵌正式 DSDesign
     （唯一写定前构建）→ 四接口/换算/format_tree 只读面；
   - S7 任务组（跨块连接归并并查集，2026-09-13 裁定：仅 port 相连网、
     两层树、单对象）：per-DEF slice (父网, 子网) 边收集（对接键 = 同一
-    块实例 + 同名 port）+ 单任务两层化 + root 规范化（层级最高/同级最
-    小 global id）→ net_union 正式对象 + 悬空 port DSGN::0018；
+    port 的全局 pin id 相等——S5b 连接 id 化后 S7 内部零字符串匹配）+
+    单任务两层化 + root 规范化（层级最高/同级最小 global id）→ net_union
+    正式对象 + 悬空 port DSGN::0018；
   - S9 任务组（flatten 展平 + 分区保存，2026-09-13 裁定补记①-⑤：两级
     任务 plan→展开→每分区合并→freeze；单分区场景全 primary + BLOCKAGE
     入 net 0 桶 + 电源引脚预展开 + 连接补全）；
@@ -169,7 +173,6 @@ assert child.is_polygon is True, "4-point DIEAREA must set is_polygon"
 assert len(child.polygon) == 4, f"polygon points={len(child.polygon)}"
 assert child.polygon[0] == (-500, -250)
 assert child.polygon[3] == (750, -250)
-assert child.def_units_per_micron == 1000
 assert child.def_path.endswith("block_child.def"), f"def_path={child.def_path}"
 # P7：origin = −diearea 左下角
 assert child.origin_x == 500 and child.origin_y == 250, \
@@ -244,16 +247,29 @@ assert block1.density.total_count == 1
 
 # ── S5b：per-DEF 网内容产物（③ 分批责任链 + ⑨ local id 对齐 + ⑩⑫）──
 # block_child n1：连接 2 项 + 1 wire（M1 缺省宽 0.07µm×1000=70 回填）+
-# 1 via（VIA12 → ⑫ block_child::VIA12 前缀名解析）@ (500,200)
+# 1 via（VIA12 → ⑫ block_child::VIA12 前缀名解析）@ (500,200)。
+# 连接 id 形态（2026-09-13 裁定，全局 pin id 手算：S2 汇总 INV_X1 的
+# A=0/ZN=1/VDD=2，S4 汇总 port PIN_IN=3/PIN_OUT=4/TOP_IN=5；port 引用
+# = local 0 + port 位；位口径 A/INPUT→receiver、ZN/OUTPUT→driver）
 net0 = design_db.read_object(design_db.net_obj_name(0))
 assert net0.block_name == "block_child"
 assert net0.stats.net_count == 2
 assert net0.stats.connection_count == 4 and net0.stats.wire_count == 1
 assert net0.stats.via_instance_count == 1
 assert net0.stats.skipped_via_count == 0 and net0.stats.skipped_net_count == 0
-# 连接表（S7 并查集输入；instance "PIN" = block port 引用）
-assert net0.connections_of(1) == [("u1", "A"), ("PIN", "PIN_IN")]
-assert net0.connections_of(2) == [("u1", "ZN"), ("PIN", "PIN_OUT")]
+assert net0.stats.skipped_invalid_connection_count == 0
+# 连接表（S7 并查集输入）：n1 = (u1 A) + (PIN PIN_IN)
+conns_n1 = net0.connections_of(1)
+assert [(c.instance_local_id, c.pin_id) for c in conns_n1] == [(1, 0), (0, 3)]
+assert [c.is_port for c in conns_n1] == [False, True]
+assert [c.is_receiver for c in conns_n1] == [True, True]   # A、PIN_IN 均 INPUT
+assert [c.is_driver for c in conns_n1] == [False, False]
+assert not any(c.is_driver and c.is_receiver for c in conns_n1)  # 无 hybrid
+# n2 = (u1 ZN) + (PIN PIN_OUT)：OUTPUT → driver 位
+conns_n2 = net0.connections_of(2)
+assert [(c.instance_local_id, c.pin_id) for c in conns_n2] == [(1, 1), (0, 4)]
+assert [c.is_port for c in conns_n2] == [False, True]
+assert [c.is_driver for c in conns_n2] == [True, True]
 wires = net0.wires_of(1)
 assert len(wires) == 1, f"n1 wires={wires}"
 assert wires[0][0] == 0 and wires[0][1] == 70  # M1 + 缺省宽回填
@@ -273,10 +289,15 @@ assert net0.density.layer_total(1, True) == 1    # VIA1 通孔
 net1 = design_db.read_object(design_db.net_obj_name(1))
 assert net1.block_name == "block_parent"
 # S7 跨块连接数据（block_parent.def 的 n_top 增 ( top3 PIN_IN )）：
-# 连接 3 项 = 叶实例 + 子块实例 port + 顶层引脚
-assert net1.connections_of(1) == [("top1", "A"), ("top3", "PIN_IN"),
-                                  ("PIN", "TOP_IN")]
+# 连接 3 项 = 叶实例 + 子块实例 port + 顶层引脚（TOP_IN = pin 5，INPUT
+# → receiver 位）
+conns_top = net1.connections_of(1)
+assert [(c.instance_local_id, c.pin_id) for c in conns_top] == \
+    [(1, 0), (3, 3), (0, 5)]
+assert [c.is_port for c in conns_top] == [False, False, True]
+assert [c.is_receiver for c in conns_top] == [True, True, True]
 assert net1.stats.wire_count == 0 and net1.stats.via_instance_count == 0
+assert net1.stats.skipped_invalid_connection_count == 0
 INFO("[OK] S5b: net content (connections/wires/via instances, per-layer "
      "density channels, local net id aligned)")
 
@@ -327,11 +348,12 @@ INFO("[OK] S6: hierarchy tree (DFS numbering, ⑧ local-0 mapping, four "
 
 # ── S7：跨块连接归并（并查集；2026-09-13 裁定：仅 port 相连网、两层
 # 树、root = 层级最高/同级最小 global id、悬空 port 照常入表 root=自身）──
-# 数据形态：父网 n_top ( top3 PIN_IN ) × 子网 n1 ( PIN PIN_IN ) 对接（对
-# 接键 = 同一块实例 top3 + 同名 port PIN_IN）→ n1 归并入 n_top；n2 挂
+# 数据形态：父网 n_top ( top3 PIN_IN ) × 子网 n1 ( PIN PIN_IN ) 对接（id
+# 对接键 = top3 的 port pin 全局 id 相等——PIN_IN = pin 3，2026-09-13
+# 裁定后 S7 内部零字符串匹配）→ n1 归并入 n_top；n2 挂
 # child 的 PIN_OUT、父侧未连接 → 悬空 port 网（root = 自身 + 计数）；
-# internal net（无 PIN 引用）不入表——红线由 C++ 单测 ds_union_test 固化
-#（本数据无 internal 网）
+# internal net（无 port 位条目）不入表——红线由 C++ 单测 ds_union_test
+# 固化（本数据无 internal 网）
 from emir.design import load_design_net_union
 union = load_design_net_union(design_db)
 g_n_top = hier.global_net_id(0, 1)  # 0：root 块 n_top（物理网展示名锚）
@@ -603,16 +625,10 @@ assert top3_i.is_primary and (top3_i.pos_x, top3_i.pos_y) == (1250, 500), \
 u1_i = inst_p.get(5)
 assert u1_i.is_primary and (u1_i.pos_x, u1_i.pos_y) == (1350, 700)
 assert 2 not in inst_p.ids(), "UNPLACED top2 (global 2) must be excluded"
-# 电源引脚预展开（D18）：INV_X1 VDD pin 几何 (0,600)-(700,700)（µm ×1000）
-# 中心 (350,650) × 放置；block port 全 SIGNAL → top3 无电源引脚
-vdd_pin = design.pin_id_by_name("INV_X1", "VDD")
-assert top1_i.power_pin_count == 1
-assert top1_i.power_pin_at(0)[0] == vdd_pin  # (pin_id, x, y)
-assert top1_i.power_pin_at(0)[1:] == (600, 900)
-assert u1_i.power_pin_at(0)[1:] == (1700, 1350)
-assert top3_i.power_pin_count == 0
+# 2026-09-13 裁定：电源引脚预展开（D18）删除——坐标归 ④ 提取按复现原则
+# 自 instance + transform + cell pin 几何自取，分区副本不再携带
 INFO("[OK] S9 instances: composite-transformed global pos (top3 pos = "
-     "place_from_def (2000,750)), UNPLACED excluded, power pins preexpanded")
+     "place_from_def (2000,750)), UNPLACED excluded")
 
 # /GEOMETRY：net 0 桶 = OBS（block_parent BLOCKAGE M2 (100,100)-(300,400)
 # units 2000 ×0.5 → (50,50,150,200)；n_top 无几何不产出条目）；child n1
@@ -639,24 +655,32 @@ INFO("[OK] S9 geometry: BLOCKAGE -> net 0 + obs flag, child n1 wire + via "
      "graphics expanded by composite transform (via cell id + primary)")
 
 # /NET_CONNECTIONS：仅 child n1（有几何、非 pg）全量补全两条；n_top/n2
-# 无几何 → 不产条目（跟随 net 副本）
+# 无几何 → 不产条目（跟随 net 副本）。条目 = (instance global id, 全局
+# pin id, port 位)——(5, 0) = u1.A、(3, 3) = top3 的 PIN_IN（port 位，
+# 端点实例 = 块实例自身 global id 3，⑧）
 assert nconn_p.size == 1
-assert [(c.instance_global_id, c.pin_name, c.is_port)
+assert [(c.instance_global_id, c.pin_id, c.is_port)
         for c in nconn_p.connections_of(1)] == [
-    (5, "A", False), (3, "PIN_IN", True)]
+    (5, 0, False), (3, 3, True)]
 # /INST_CONNECTIONS：跟随 instance 副本（含 pg 网 n2 的 instance 维度端点
 # ——下游 union 拼装口径）
-assert [(c.net_global_id, c.pin_name)
-        for c in iconn_p.connections_of(1)] == [(0, "A")]
+assert [(c.net_global_id, c.pin_id)
+        for c in iconn_p.connections_of(1)] == [(0, 0)]
 t3c = iconn_p.connections_of(3)
 assert len(t3c) == 3
-t3_pairs = [(c.net_global_id, c.pin_name) for c in t3c]
-assert (0, "PIN_IN") in t3_pairs, "parent-side endpoint on n_top"
-assert sorted((c.net_global_id, c.pin_name) for c in t3c if c.is_port) == \
-    [(1, "PIN_IN"), (2, "PIN_OUT")]
+t3_pairs = [(c.net_global_id, c.pin_id) for c in t3c]
+assert (0, 3) in t3_pairs, "parent-side endpoint on n_top (PIN_IN = pin 3)"
+assert sorted((c.net_global_id, c.pin_id) for c in t3c if c.is_port) == \
+    [(1, 3), (2, 4)]
 u1c = iconn_p.connections_of(5)
-assert sorted((c.net_global_id, c.pin_name) for c in u1c) == \
-    [(1, "A"), (2, "ZN")]
+assert sorted((c.net_global_id, c.pin_id) for c in u1c) == \
+    [(1, 0), (2, 1)]
+# 位直存（S9 flags 六位自 S5b 条目拷贝）：n1 端点 u1.A receiver、top3
+# 的 PIN_IN port 条目 receiver、PIN_OUT port 条目 driver
+assert [(c.is_receiver, c.is_driver) for c in u1c if c.net_global_id == 1] \
+    == [(True, False)]
+assert [(c.is_port, c.is_receiver, c.is_driver)
+        for c in t3c if c.net_global_id == 2] == [(True, False, True)]
 INFO("[OK] S9 connections: non-pg net completion follows net copies, "
      "inst connections follow instance copies (pg n2 reachable via "
      "instance dimension)")

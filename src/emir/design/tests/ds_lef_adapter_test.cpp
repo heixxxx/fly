@@ -178,7 +178,6 @@ TEST(DsCellLefTest, ParseMacrosPinsGeometryAndVias) {
     ASSERT_EQ(design.cells_.size(), 2u);
     const DSCell& inv = design.cells_[0];
     EXPECT_EQ(inv.get_name(), "INV_X1");
-    EXPECT_EQ(inv.get_class(), "CORE");
     EXPECT_TRUE(inv.is_lef_cell());
     EXPECT_TRUE(inv.is_macro_cell());
     EXPECT_EQ(inv.width(), 700);    // 0.7 µm × 1000（bbox 派生）
@@ -186,7 +185,6 @@ TEST(DsCellLefTest, ParseMacrosPinsGeometryAndVias) {
     EXPECT_EQ(inv.get_bbox().get_x_low(), 0);
     EXPECT_EQ(inv.get_bbox().get_y_high(), 700);
     EXPECT_EQ(inv.get_origin_x(), 0);
-    EXPECT_EQ(inv.get_site(), "site1");
 
     // 简化 pin（⑰）：USE POWER → power 类型、DIRECTION 映射。
     // R7 ㊱：DSPin 无 name——pin 名经 pin hasher 组合键反查（局部 pin id
@@ -200,6 +198,9 @@ TEST(DsCellLefTest, ParseMacrosPinsGeometryAndVias) {
     EXPECT_EQ(design.pin_name_of(1), "ZN");
     EXPECT_EQ(inv.pin_at(1).get_direction(),
               static_cast<uint8_t>(DSPinDirection::OUTPUT));
+    // USE CLOCK → DSPinType::CLOCK（2026-09-13 收录，连接 flags clock 位源头）
+    EXPECT_EQ(inv.pin_at(1).get_type(),
+              static_cast<uint8_t>(DSPinType::CLOCK));
     EXPECT_EQ(design.pin_name_of(2), "VDD");
     EXPECT_EQ(inv.pin_at(2).get_type(),
               static_cast<uint8_t>(DSPinType::POWER));
@@ -238,7 +239,6 @@ TEST(DsCellLefTest, ParseMacrosPinsGeometryAndVias) {
     const DSCell& dff = design.cells_[1];
     EXPECT_EQ(dff.get_name(), "DFF_X1");
     EXPECT_EQ(dff.width(), 1400);
-    EXPECT_EQ(dff.get_site(), "");
     EXPECT_EQ(dff.obs_count(), 0u);
 
     // cell lef 侧 via 入文件集（跨文件同名合并 T6 汇总处理）

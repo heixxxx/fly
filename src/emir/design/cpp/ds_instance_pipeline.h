@@ -16,10 +16,12 @@
 //   DSCellResolveNode   master 名查 cell namemap；未定义 → fake cell
 //                       生成（⑲/⑳），ctx 填 cell id 与放置换算所需的
 //                       cell 几何（bbox/origin 值拷贝，防 vector 重分配
-//                       失效）；
+//                       失效）——fake cell 数据写入独立容器（2026-09-13
+//                       裁定：不进 per-DEF 产物本体，经临时对象传 S5a
+//                       汇总并入全局表）；
 //   DSInstanceBuildNode local instance id 从 1 起分配（⑧ per-DEF 计数
 //                       器）、place_from_def 换算 transform_（R6）、
-//                       status/weight 填充、实例入表；
+//                       status 填充、实例入表；
 //   DSDensityNode       实例 footprint（cell bbox 经 transform_）与固定
 //                       采样格子的交叠计数（实例面积通道，⑥ 图形计数
 //                       口径）；UNPLACED 不计（D14）；
@@ -69,15 +71,17 @@ struct DSInstanceContext {
     GEOOrientation orient = GEOOrientation::N;
     // 放置状态（DSPlacementStatus）
     uint8_t placement_status = static_cast<uint8_t>(DSPlacementStatus::UNPLACED);
-    // OPTIONAL weight（DEF 未给 = 0）
-    double weight = 0.0;
 
     // —— 环境（非拥有观察；调用方保证覆盖 pipeline.run 生命周期）——
-    // 全局容器（cell namemap 查询；fake cell 不直接写入——入 per-DEF
-    // 产物，汇总任务并入）
+    // 全局容器（cell namemap 查询；fake cell 不直接写入——入独立容器，
+    // 汇总任务并入）
     const DSDesign* design = nullptr;
     // per-DEF 产物容器（实例表 / 密度 / 统计 / fake 登记）
     DSBlockBuildData* block_data = nullptr;
+    // fake cell 独立容器（⑳：2026-09-13 裁定——产物本体不含 fake cell
+    // 副本，解析任务经临时对象传出、S5a 汇总并入全局表；序号 = 容器
+    // 尾部下标，与 fake 登记表同步增长）
+    CMVector<DSCell>* fake_cells = nullptr;
 
     // —— 节点产出 ——
     // DSCellResolveNode：解析到的 cell id（fake 为任务内分配 id）

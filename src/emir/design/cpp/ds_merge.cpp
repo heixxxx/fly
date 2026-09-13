@@ -171,12 +171,13 @@ int ds_merge_def_header(DSDesign& dst, const CMVector<DSCell>& block_cells,
 
 // ── S5a 汇总：per-DEF 产物的 fake cell 并入全局容器 ─────────────────
 
-int ds_merge_block_build(DSDesign& dst, DSBlockBuildData& block_data) {
+int ds_merge_block_build(DSDesign& dst, DSBlockBuildData& block_data,
+                         const CMVector<DSCell>& fake_cells) {
     int merged = 0;
 
     // fake cell 并入（⑳：id 保持任务内分配值；目标位被占用 → 顺延到
     // 下一空位并重映射引用）。占位 cell（空名）即空位。
-    for (const DSCell& fake_src : block_data.fake_cells_) {
+    for (const DSCell& fake_src : fake_cells) {
         const CMString& fake_name = fake_src.get_name();
         if (dst.find_cell(fake_name) != nullptr) {
             continue;  // 同名 fake 已并入（同 block DEF 重复提交）——保留首份
