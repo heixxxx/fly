@@ -198,7 +198,7 @@ DSPartitionCheckResult ds_verify_partition(
     const DSPartitionGeometry& geometry,
     const DSPartInstances& instances,
     const DSPartInstConnections& inst_connections,
-    const DSPartNetConnections& net_connections) {
+    const DSPartitionNets& nets) {
     DSPartitionCheckResult r;
     r.partition_id_ = partition_id;
     r.xp_ = xp;
@@ -228,16 +228,22 @@ DSPartitionCheckResult ds_verify_partition(
         }
     }
     r.crossing_net_count_ = geometry.crossing_nets_.size();
-    for (const auto& [net_id, flag] : geometry.crossing_nets_) {
-        (void)flag;
+    for (const uint64_t net_id : geometry.crossing_nets_) {
         r.net_ids_.push_back(net_id);
         r.crossing_net_ids_.push_back(net_id);
     }
 
     // 连接表：条目计数 + 网覆盖素材（跟随网副本的键 + 跟随实例副本条目
-    // 的端点网 id）
-    for (const auto& [net_id, conns] : net_connections.items_) {
-        r.connection_count_ += conns.size();
+    // 的端点网 id；NETS 两表——信号网/pg 网同口径，素材取表键=网 id，
+    // 2026-09-13 重组裁定）。
+    for (const auto& [net_id, net] : nets.nets_) {
+        (void)net_id;
+        r.connection_count_ += net.connections_.size();
+        r.net_ids_.push_back(net_id);
+    }
+    for (const auto& [net_id, net] : nets.pg_nets_) {
+        (void)net_id;
+        r.connection_count_ += net.connections_.size();
         r.net_ids_.push_back(net_id);
     }
     for (const auto& [id, conns] : inst_connections.items_) {

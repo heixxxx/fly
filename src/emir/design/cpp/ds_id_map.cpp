@@ -59,7 +59,7 @@ DSIdPartitionMapResult ds_merge_id_partition_slices(
 
 // 提取：分区产物 → 本区片段。instance 维度取 primary 副本（每对象恰一
 // primary，补记①）；net 维度取 geometry 键集（跟随 net 副本口径——
-// NET_CONNECTIONS 与 use map 均以几何命中分区为落点）。
+// NETS 两表均以几何命中分区为落点）。
 DSIdPartitionSlice ds_collect_partition_id_slice(
     const DSPartInstances& instances, const DSPartitionGeometry& geometry,
     bool instance_kind, uint32_t partition_id) {

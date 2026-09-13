@@ -127,7 +127,7 @@ DSIdPartitionMapResult ds_merge_id_partition_slices(
     const CMVector<const DSIdPartitionSlice*>& slices);
 
 // 提取：分区产物 → 本区片段（instance_kind = true 取 primary instance
-// 副本 id 集；false 取 net 副本 id 集——geometry 键集，与 NET_CONNECTIONS
+// 副本 id 集；false 取 net 副本 id 集——geometry 键集，与 NETS 两表
 // 跟随副本口径一致）。partition_id = 本区 pid。
 DSIdPartitionSlice ds_collect_partition_id_slice(
     const DSPartInstances& instances, const DSPartitionGeometry& geometry,

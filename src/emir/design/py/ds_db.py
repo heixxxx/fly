@@ -17,7 +17,8 @@ get_instance/get_net/get_layer/convert_to_id/convert_to_name）：挂 db
 句柄的交互定位面——内部完成 id↔name 转换（inst/net 走层级路径 name
 mapper、其余走 hasher），映射定位分区后整分区对象按需加载 + 进程内
 LRU 缓存（容量定值防撑爆）；方向/power/ground/clock 统计直接数连接
-flags 位（S9 已存位，零推导）；pg 网（POWER/GROUND）不返回 connections
+flags 位（S9 已存位，零推导）；pg 网（全局 pg 网 id 集 "pg_nets" 命中
+——2026-09-13 重组裁定 O(1) 判定）不返回 connections
 明细（数据量保护，只返回属性与计数概要）。
 """
 
@@ -60,9 +61,12 @@ class DesignDb(Database):
     ALPHA_SETTINGS_OBJ = "alpha_settings"
 
     # S9 分区四类正式对象 kind（partition_obj_name 的 kind 入参；
-    # 2026-09-13 裁定补记②）
-    PARTITION_KINDS = ("GEOMETRY", "INSTANCES", "INST_CONNECTIONS",
-                       "NET_CONNECTIONS")
+    # 2026-09-13 裁定补记② + 同日 partition 网数据结构重组终态——第四类
+    # NET_CONNECTIONS 随 DSPartitionNets 重组更名为 NETS）
+    PARTITION_KINDS = ("GEOMETRY", "INSTANCES", "INST_CONNECTIONS", "NETS")
+    # 全局 pg 网 id 集（DSPgNetSet："pg_nets" 正式对象，S9 汇总任务唯一
+    # 写定——power/ground 两 unordered_set，debug API is_pg 快速判定）
+    PG_NETS_OBJ = "pg_nets"
 
     # id → partition 反向映射正式对象 kind（2026-09-13 debug 定位裁定：
     # inst/net 各一张全空间映射——段表 + 分段段对象按需加载）
@@ -177,6 +181,15 @@ class DesignDb(Database):
             stack = self._lru_put("_stack_cache", 1, "stack",
                                   self.read_object(self.STACK_OBJ))
         return stack
+
+    def _cached_pg_nets(self):
+        """全局 pg 网 id 集缓存（DSPgNetSet；冻结库只读——单条目缓存足
+        够）。get_net 的 is_pg 快速判定（O(1)）数据源。"""
+        pg = self._lru_get("_pg_nets_cache", "pg_nets")
+        if pg is None:
+            pg = self._lru_put("_pg_nets_cache", 1, "pg_nets",
+                               self.read_object(self.PG_NETS_OBJ))
+        return pg
 
     def _ensure_mappers(self):
         """层级 name mapper 惰性加载（读全部 DSBlockNames_<i> 伴生对象 →
@@ -366,17 +379,22 @@ class DesignDb(Database):
 
     def get_net(self, net):
         """查 net（入参 global id 或层级路径名自动判别；未命中——无几何
-        副本不落分区的网——返回 None；例外：root 首网（global 0）
-        无几何时因 OBS 桶键 0 混叠仍可定位，返回空连接概要——其
-        跨块连接见 net_union）。
+        副本不落分区的网（无几何——含 root 首网：虽可经 OBS 桶键 0
+        混叠定位分区，但 NETS 无 DSNet 记录），或**有几何但无任何
+        连接的悬浮网**（无连接则无聚合对象，几何仍在 GEOMETRY 对
+        象）——一律返回显式 None（2026-09-13 review 修正：旧兜底
+        曾静默降级为空概要；这些网的真实连接见 S5b 产物与
+        net_union）。
 
         返回 dict：net id/层级名/use 属性（DEF USE 八值字符串，缺省
-        SIGNAL）/connections 数量/driver/receiver/hybrid 数（三分类互斥
-        单列）与 power/ground/clock/port 端点计数——统计直接数连接 flags
-        位（S9 已存位，零推导）。**pg 网（use POWER/GROUND）不返回
-        connections 明细**（数据量保护——只返回属性与计数概要）；非 pg 网
-        附 connections 列表：端点实例 id + 层级名 + pin id + pin 名 +
-        flags 概要（port 条目如实呈现——端点实例 = 块实例层级名 + port 名）。
+        SIGNAL——2026-09-13 重组裁定随 DSNet.use_ 直取）/connections 数
+        量/driver/receiver/hybrid 数（三分类互斥单列）与 power/ground/
+        clock/port 端点计数——统计直接数连接 flags 位（S9 已存位，零推
+        导）。**pg 网（全局 pg 网 id 集命中）不返回 connections 明细**
+        （数据量保护——只返回属性与计数概要）；非 pg 网附 connections 列
+        表：端点实例 id + 层级名 + pin id + pin 名 + flags 概要（port 条
+        目如实呈现——端点实例 = 块实例层级名 + port 名）。is_pg 判定经
+        全局 pg 网 id 集（O(1) 快速路径，DSPgNetSet）。
         """
         _, _, net_mapper = self._ensure_mappers()
         gid = self._to_id("net", net)
@@ -387,15 +405,26 @@ class DesignDb(Database):
             return None
         partition_id, (xp, yp) = located
         name = net_mapper.get_full_name(gid)
-        net_conns = self._load_partition_obj(xp, yp, "NET_CONNECTIONS")
-        use = net_conns.use_of(gid)
-        conns = net_conns.connections_of(gid)
+        # is_pg 经全局 pg 网 id 集（2026-09-13 重组裁定：快速路径——原
+        # use 字符串比较口径与集内容一致：pg 集 = use POWER/GROUND 的网）
+        is_pg = self._cached_pg_nets().is_pg(gid)
+        net_conns = self._load_partition_obj(xp, yp, "NETS")
+        net_obj = net_conns.net_of(gid)
+        if net_obj is None:
+            # 显式口径（review 2026-09-13 修正）：NETS 产物无此网记录
+            # = 有几何但无任何连接的悬浮网（DSNet 不落表——无连接则无
+            # 聚合对象；几何仍在 GEOMETRY 对象）或映射键混叠——返回
+            # None 而非静默降级（旧兜底会把无连接 POWER 网误报为
+            # SIGNAL 非 pg）
+            return None
+        use = net_obj.use
+        conns = net_obj.connections
         counts = {"driver": 0, "receiver": 0, "hybrid": 0, "power": 0,
                   "ground": 0, "clock": 0, "port": 0}
         detail = []
-        # pg 网（use POWER/GROUND）不返回 connections 明细（数据量保护
-        # 红线）——只数位出概要；非 pg 附明细（端点实例名 + pin 名 name 化）
-        show_detail = use not in ("POWER", "GROUND")
+        # pg 网（pg 集命中）不返回 connections 明细（数据量保护红线）——
+        # 只数位出概要；非 pg 附明细（端点实例名 + pin 名 name 化）
+        show_detail = not is_pg
         if show_detail:
             design, inst_mapper, _ = self._ensure_mappers()
         for conn in conns:
@@ -416,16 +445,16 @@ class DesignDb(Database):
                 counts["port"] += 1
             if show_detail:
                 detail.append({
-                    "instance_id": conn.instance_global_id,
+                    "instance_id": conn.inst_id,
                     "instance_name": inst_mapper.get_full_name(
-                        conn.instance_global_id),
+                        conn.inst_id),
                     "pin_id": conn.pin_id,
                     "pin_name": design.pin_name_of(conn.pin_id),
                     **s,
                 })
         info = {
             "id": gid, "name": name, "use": use,
-            "is_pg": use in ("POWER", "GROUND"),
+            "is_pg": is_pg,
             "primary_partition_id": partition_id,
             "connection_count": len(conns), **{f"{k}_count": v
                                                for k, v in counts.items()},

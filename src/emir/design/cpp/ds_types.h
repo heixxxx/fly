@@ -58,7 +58,7 @@ enum class DSPinType : uint8_t { SIGNAL, POWER, GROUND, CLOCK };
 // net 用途（2026-09-13 裁定：S5b 全量补收——DEF NET USE 语句规范全集
 // 八值，缺省 SIGNAL）。此前仅 power/ground 两值隐含在 pg 判定的字符串
 // 比较中，无显式 net 维度属性；本枚举随 S5b 解析收录、随 S9 入分区产物
-//（DSPartNetConnections 的 per-net use map，get_net 类 debug 消费）。
+//（DSNet.use_ 随网写入，get_net 类 debug 消费）。
 enum class DSNetUse : uint8_t {
     SIGNAL = 0, POWER, GROUND, CLOCK, TIEOFF, ANALOG, RESET, SCAN
 };
@@ -700,12 +700,14 @@ public:
     // via instance id 列表）
     CMUnorderedMap<uint64_t, DSViaInstance> via_instances_;
     CMUnorderedMap<uint64_t, CMVector<uint64_t>> net_via_ids_;
-    // pg 网判定（S9 连接补全口径，2026-09-13 裁定补记②：pg 判定 =
-    // special net 或 USE POWER/GROUND；pg 网的分区 NET_CONNECTIONS 不做
-    // 全量补全——靠 union + instance 维度拼装）。键 = local net id、值
-    // 恒 1（序列化框架无 set 容器支持，map 充当 set——bitsery 适配面仅
-    // map/vector/string）；S5b 连接解析节点记录。
-    CMUnorderedMap<uint64_t, uint8_t> pg_nets_;
+    // pg 网判定（S9 连接分流口径，2026-09-13 裁定补记②：pg 判定 =
+    // special net 或 USE POWER/GROUND；pg 网的分区 NETS pg_nets_ 表不做
+    // 全量补全——靠 union + instance 维度拼装）。键 = local net id。
+    // （2026-09-13 修正：原「CMUnorderedMap<uint64_t, uint8_t> 值恒 1 充
+    // 当 set」系序列化宏无 set 支持时期的妥协——宏已接 set 全族，回归
+    // CMUnorderedSet 直存；S5b local id 生产表，与全局 DSPgNetSet
+    // （global id 汇总集）语义不同层、不合并。）
+    CMUnorderedSet<uint64_t> pg_nets_;
     // 网 USE 属性（2026-09-13 全量补收裁定：S5b 解析收录、随 S9 入分区
     // 产物 per-net use map）。键 = local net id、值 = DSNetUse 整型；
     // **只记录非 SIGNAL 条目**（DEF 缺省 + 显式 USE SIGNAL 同语义，缺省
@@ -741,7 +743,7 @@ public:
         return pg_nets_.contains(local_net_id);
     }
     void mark_pg_net(uint64_t local_net_id) {
-        pg_nets_.emplace(local_net_id, 1);
+        pg_nets_.insert(local_net_id);
     }
 
     // 网 USE 属性收录/读取（S5b 收录、S9 flatten 与 debug 消费；读取

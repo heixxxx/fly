@@ -189,21 +189,22 @@ struct PartitionPair {
 PartitionPair make_products() {
     PartitionPair pp;
     DSPartConnection c1;
-    c1.instance_global_id_ = 1;
+    c1.inst_id_ = 1;
     c1.net_global_id_ = 0;
     pp.p0.inst_connections_.items_[1].push_back(c1);
     DSPartConnection c2;
-    c2.instance_global_id_ = 1;
+    c2.inst_id_ = 1;
     c2.net_global_id_ = 1;
     pp.p0.inst_connections_.items_[1].push_back(c2);
-    DSPartConnection n1;
-    n1.instance_global_id_ = 1;
-    n1.net_global_id_ = 0;
-    pp.p0.net_connections_.items_[0].push_back(n1);
-    DSPartConnection n2;
-    n2.instance_global_id_ = 2;
-    n2.net_global_id_ = 0;
-    pp.p0.net_connections_.items_[0].push_back(n2);
+    // NETS 信号网表（键 0；条目 = DSNetConnEntry——2026-09-13 重组裁定）
+    DSPartitionNets& n0 = pp.p0.nets_;
+    n0.nets_[0].net_id_ = 0;
+    DSNetConnEntry e1;
+    e1.inst_id_ = 1;
+    n0.nets_[0].connections_.push_back(e1);
+    DSNetConnEntry e2;
+    e2.inst_id_ = 2;
+    n0.nets_[0].connections_.push_back(e2);
     DSGeomEntry g0;
     g0.layer_id_ = 0;
     g0.rect_ = GEORect(0, 100, 500, 140);
@@ -232,17 +233,18 @@ PartitionPair make_products() {
     pp.p0.instances_.items_[3] = std::move(i3);
 
     DSPartConnection c3;
-    c3.instance_global_id_ = 5;
+    c3.inst_id_ = 5;
     c3.net_global_id_ = 3;
     pp.p1.inst_connections_.items_[5].push_back(c3);
     DSPartConnection c4;
-    c4.instance_global_id_ = 5;
+    c4.inst_id_ = 5;
     c4.net_global_id_ = 4;
     pp.p1.inst_connections_.items_[5].push_back(c4);
-    DSPartConnection n3;
-    n3.instance_global_id_ = 5;
-    n3.net_global_id_ = 3;
-    pp.p1.net_connections_.items_[3].push_back(n3);
+    DSPartitionNets& n1 = pp.p1.nets_;
+    n1.nets_[3].net_id_ = 3;
+    DSNetConnEntry e3;
+    e3.inst_id_ = 5;
+    n1.nets_[3].connections_.push_back(e3);
     DSGeomEntry g3;
     g3.layer_id_ = 0;
     g3.rect_ = GEORect(1100, 100, 1500, 140);
@@ -267,10 +269,10 @@ CMVector<DSPartitionCheckResult> check_products(const PartitionPair& pp) {
     CMVector<DSPartitionCheckResult> checks;
     checks.push_back(
         ds_verify_partition(0, 0, 0, pp.p0.geometry_, pp.p0.instances_,
-                            pp.p0.inst_connections_, pp.p0.net_connections_));
+                            pp.p0.inst_connections_, pp.p0.nets_));
     checks.push_back(
         ds_verify_partition(1, 1, 0, pp.p1.geometry_, pp.p1.instances_,
-                            pp.p1.inst_connections_, pp.p1.net_connections_));
+                            pp.p1.inst_connections_, pp.p1.nets_));
     return checks;
 }
 
@@ -301,7 +303,7 @@ TEST(DSVerifyTest, PartitionCheckCountsAndIdSets) {
     PartitionPair pp = make_products();
     DSPartitionCheckResult r0 = ds_verify_partition(
         0, 0, 0, pp.p0.geometry_, pp.p0.instances_, pp.p0.inst_connections_,
-        pp.p0.net_connections_);
+        pp.p0.nets_);
     EXPECT_EQ(r0.partition_id_, 0u);
     EXPECT_EQ(r0.primary_instance_count_, 2u);          // 1/2 primary
     EXPECT_EQ(r0.instance_count_, 3u);                  // 1/2/3（3 = 副本）
@@ -320,7 +322,7 @@ TEST(DSVerifyTest, PartitionCheckCountsAndIdSets) {
 
     DSPartitionCheckResult r1 = ds_verify_partition(
         1, 1, 0, pp.p1.geometry_, pp.p1.instances_, pp.p1.inst_connections_,
-        pp.p1.net_connections_);
+        pp.p1.nets_);
     EXPECT_EQ(r1.primary_instance_count_, 2u);          // 3/5 primary
     EXPECT_EQ(r1.instance_count_, 2u);
     EXPECT_EQ(r1.geometry_entry_count_, 2u);
@@ -342,7 +344,7 @@ TEST(DSVerifyTest, ObsOnlyNetZeroBucketNotCountedAsCoverage) {
     geometry.add_entry(0, std::move(obs));
     DSPartInstances instances;
     DSPartInstConnections iconns;
-    DSPartNetConnections nconns;
+    DSPartitionNets nconns;
     const DSPartitionCheckResult r = ds_verify_partition(
         0, 0, 0, geometry, instances, iconns, nconns);
     EXPECT_EQ(r.geometry_entry_count_, 1u);

@@ -606,16 +606,18 @@ INFO("[OK] S8 partitions: default alpha -> single partition, core = root "
      "DIEAREA grid coverage, extend = int32 extremes")
 
 # ── S9：flatten 展平 + 分区保存（两级任务；单分区 → extend 全域全
-# primary；2026-09-13 裁定补记①-⑤ 手算锁定）──
+# primary；2026-09-13 裁定补记①-⑤ + 同日重组终态（NET_CONNECTIONS →
+# NETS = DSPartitionNets 信号网/pg 网分表 + 全局 pg 网 id 集）手算锁定）──
 # 层级：root block_parent（inst [0,4) net [0,1)）→ child top3（block_child，
 # inst [4,6) net [1,3)）。block_parent UNITS 2000 → 坐标 ×0.5：top1 放置
 # (500,500) → pos (250,250)（N 向 pos = t）；top3 放置 (1500,500) →
 # t (750,250)、P7 origin 修正 → pos (1250,500)；child 复合变换 =
 # translate(1250,500)，u1 local (100,200)（child UNITS 1000 ×1）→ 全局
 # (1350,700)；top2 UNPLACED 不入分区。
-from emir.design import iter_design_partition, load_partition
+from emir.design import iter_design_partition, load_design_pg_nets, \
+    load_partition
 assert iter_design_partition(design_db) == [(0, 0)]
-geo_p, inst_p, iconn_p, nconn_p = load_partition(design_db, 0, 0)
+geo_p, inst_p, iconn_p, nets_p = load_partition(design_db, 0, 0)
 assert inst_p.size == 3, f"instances={inst_p.size} (top2 UNPLACED excluded)"
 top1_i = inst_p.get(1)
 assert top1_i.is_primary and (top1_i.pos_x, top1_i.pos_y) == (250, 250)
@@ -654,14 +656,28 @@ assert not geo_p.is_crossing(1), "single partition must not mark crossing"
 INFO("[OK] S9 geometry: BLOCKAGE -> net 0 + obs flag, child n1 wire + via "
      "graphics expanded by composite transform (via cell id + primary)")
 
-# /NET_CONNECTIONS：仅 child n1（有几何、非 pg）全量补全两条；n_top/n2
-# 无几何 → 不产条目（跟随 net 副本）。条目 = (instance global id, 全局
-# pin id, port 位)——(5, 0) = u1.A、(3, 3) = top3 的 PIN_IN（port 位，
-# 端点实例 = 块实例自身 global id 3，⑧）
-assert nconn_p.size == 1
-assert [(c.instance_global_id, c.pin_id, c.is_port)
-        for c in nconn_p.connections_of(1)] == [
+# /NETS（2026-09-13 重组裁定：NET_CONNECTIONS → NETS = DSPartitionNets
+# 信号网/pg 网分表）：仅 child n1（有几何、非 pg）全量补全两条（入信号
+# 网表）；n_top/n2 无几何 → 不产条目（跟随 net 副本）。条目 = (端点实例
+# global id, 全局 pin id, port 位)——(5, 0) = u1.A、(3, 3) = top3 的
+# PIN_IN（port 位，端点实例 = 块实例自身 global id 3，⑧）；网 id 由
+# DSNet 键承载，net_of 两表查命中
+assert nets_p.size == 1
+n1_net = nets_p.net_of(1)
+assert n1_net is not None, "n1 must be reachable via net_of both tables"
+assert n1_net.net_id == 1 and n1_net.use == "SIGNAL"
+assert [(c.inst_id, c.pin_id, c.is_port) for c in n1_net.connections] == [
     (5, 0, False), (3, 3, True)]
+assert len(nets_p.pg_ids) == 0 and len(nets_p.signal_ids) == 1
+# 位直存（S9 flags 六位自 S5b 条目拷贝）：n1 两端点 u1.A / top3 的
+# PIN_IN 均 INPUT → receiver 位、无 driver（port 位另见上断言）
+assert [(c.is_receiver, c.is_driver) for c in n1_net.connections] == [
+    (True, False), (True, False)]
+# 全局 pg 网 id 集（2026-09-13 重组裁定："pg_nets" 正式对象）：本数据无
+# pg 网 → 空集
+db_pg = load_design_pg_nets(design_db)
+assert db_pg.power_count == 0 and db_pg.ground_count == 0 \
+    and db_pg.is_pg(1) is False
 # /INST_CONNECTIONS：跟随 instance 副本（含 pg 网 n2 的 instance 维度端点
 # ——下游 union 拼装口径）
 assert [(c.net_global_id, c.pin_id)
@@ -681,9 +697,9 @@ assert [(c.is_receiver, c.is_driver) for c in u1c if c.net_global_id == 1] \
     == [(True, False)]
 assert [(c.is_port, c.is_receiver, c.is_driver)
         for c in t3c if c.net_global_id == 2] == [(True, False, True)]
-INFO("[OK] S9 connections: non-pg net completion follows net copies, "
-     "inst connections follow instance copies (pg n2 reachable via "
-     "instance dimension)")
+INFO("[OK] S9 connections: non-pg net completion follows net copies "
+     "(NETS signal table), inst connections follow instance copies "
+     "(pg n2 reachable via instance dimension)")
 
 # ── S10：汇总校验 + 冻结（2026-09-13 校验分级裁定：损坏类 fatal / 观测
 # 类 warn；verify_report 正式对象随冻结落盘）──
@@ -800,9 +816,13 @@ assert [(c["instance_id"], c["instance_name"], c["pin_name"], c["is_port"])
         for c in n1["connections"]] == [
     (5, "block_parent/top3/u1", "A", False),
     (3, "block_parent/top3", "PIN_IN", True)]
+# n_top 有连接但无几何（block_parent.def 的 n_top 无 wire/rect）→ 无
+# 分区副本、NETS 无 DSNet 记录 → 显式 None（2026-09-13 review 修正：
+# 旧兜底曾静默降级为空概要——丢失连接信息且误导；其真实连接在 S5b
+# 产物与 net_union 中）
 n_top = design_db.get_net("block_parent/n_top")
-assert n_top["id"] == 0 and n_top["connection_count"] == 0
-assert n_top["connections"] == []
+assert n_top is None, \
+    "geometry-less net (with connections) must return explicit None"
 assert design_db.get_net("block_parent/top3/n2") is None, \
     "geometry-less net has no partition copy"
 assert design_db.get_net(999) is None
@@ -942,8 +962,15 @@ assert dbg_report.union_inconsistency == "" \
 assert dbg_report.total_primary == 2 and dbg_report.total_nets == 4
 assert dbg_report.total_connections == 12
 assert dbg_report.total_geometry_entries == 5
-INFO("[OK] debug db: partition use field, id map segments, S10 stats "
-     "hand-computed")
+# 全局 pg 网 id 集（2026-09-13 重组裁定）：VDD0（SPECIALNETS + USE POWER
+# → global 3）为唯一 pg 网 → power set = {3}；sig1/tie1/weird 不入集
+dbg_pg = load_design_pg_nets(debug_db)
+assert dbg_pg.power_count == 1 and dbg_pg.ground_count == 0
+assert dbg_pg.is_power(3) is True and dbg_pg.is_pg(3) is True
+assert dbg_pg.is_pg(0) is False and dbg_pg.is_pg(1) is False \
+    and dbg_pg.is_pg(2) is False
+INFO("[OK] debug db: partition use field, pg net set {3}, id map segments, "
+     "S10 stats hand-computed")
 
 # ── load_project 动态还原 ──
 import fly

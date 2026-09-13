@@ -28,6 +28,13 @@ S7 跨块连接归并：EXDSNetUnion（find/members/class_count/dangling 只读�
 ds_collect_net_union_slice（每父块 DEF 一收集）/ ds_build_net_union（全局
 汇总：两层化 + root 规范化 + 悬空计数）/ ds_net_union_child_indexes（编排
 辅助：def 序号 → 子定义序号集）。
+S9 flatten（2026-09-13 重组裁定）：EXDSPartitionProduct（分片中间形态，
+merge_from + 四类成员访问）/ EXDSGeomEntry / EXDSPartConnection
+（INST_CONNECTIONS 条目）/ EXDSNetConnEntry / EXDSNet / EXDSPartitionNets
+（NETS 信号网/pg 网分表，net_of 两表查）/ EXDSPgNetSlice /
+EXDSPgNetSet（全局 pg 网 id 集，is_power/is_ground/is_pg O(1) 查询口）+
+ds_flatten_block（每定义一调用展开）/ ds_collect_pg_net_slice（分区 NETS
+→ pg 片段）/ ds_build_pg_net_set（全部分区片段 → 两 set 去重合并）。
 S10 汇总校验：EXDSIdDomain（id 连续性观测域）/ EXDSPartitionCheckResult
 （分区级校验结果，Python 面仅规模计数）/ EXDSDesignCheckReport（全局校验
 报告，正式对象 "verify_report"）+ ds_verify_partition（每分区一校验）/
@@ -68,9 +75,13 @@ from _fly_emir_design import (
     EXDSPartConnection,
     EXDSPartInstConnections,
     EXDSPartInstances,
-    EXDSPartNetConnections,
     EXDSPartitionGeometry,
+    EXDSPartitionNets,
     EXDSPartitionProduct,
+    EXDSPgNetSet,
+    EXDSPgNetSlice,
+    EXDSNet,
+    EXDSNetConnEntry,
     EXDSPin,
     EXDSPinGeometry,
     EXDSPinTables,
@@ -82,8 +93,10 @@ from _fly_emir_design import (
     EXDSViaCell,
     ds_build_hier_tree,
     ds_build_net_union,
+    ds_build_pg_net_set,
     ds_collect_net_union_slice,
     ds_collect_partition_id_slice,
+    ds_collect_pg_net_slice,
     ds_decide_partitions,
     ds_flatten_block,
     ds_make_name_mapper,

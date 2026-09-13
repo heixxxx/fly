@@ -33,15 +33,47 @@
 #include <bitsery/bitsery.h>
 #include <bitsery/adapter/buffer.h>
 #include <bitsery/adapter/stream.h>
+// 核心 resizable 容器 traits（vector/string 原有；一次性补齐全族）
+#include <bitsery/traits/array.h>
+#include <bitsery/traits/deque.h>
+#include <bitsery/traits/forward_list.h>
+#include <bitsery/traits/list.h>
 #include <bitsery/traits/vector.h>
 #include <bitsery/traits/string.h>
 
+// ext 扩展全族（一次性补齐 bitsery v5.2.4 的类型分派面；std_map/
+// std_smart_ptr 原有）。非容器类 ext（value_range/compact_value/entropy/
+// growable/inheritance/pointer）为编码优化选项或指针面，不进 FLY_FIELD
+// 类型分派——smart_ptr/pointer linking 已接，其余按需显式使用。
 #include <bitsery/ext/std_map.h>
+#include <bitsery/ext/std_set.h>
+#include <bitsery/ext/std_optional.h>
+#include <bitsery/ext/std_variant.h>
+#include <bitsery/ext/std_tuple.h>
+#include <bitsery/ext/std_bitset.h>
+#include <bitsery/ext/std_atomic.h>
+#include <bitsery/ext/std_chrono.h>
+#include <bitsery/ext/std_queue.h>
+#include <bitsery/ext/std_stack.h>
+#include <bitsery/ext/std_smart_ptr.h>
 #include <container/cpp/container_aliases.h>
 #include <common/buffer/cpp/fly_buffer.h>
+#include <array>
+#include <atomic>
+#include <bitset>
+#include <chrono>
 #include <cstdint>
-#include <stdexcept>
+#include <deque>
+#include <forward_list>
 #include <fstream>
+#include <list>
+#include <optional>
+#include <queue>
+#include <stack>
+#include <stdexcept>
+#include <tuple>
+#include <utility>
+#include <variant>
 #include <common/serialization/cpp/bitsery_ext/version.h>
 
 // TrustedConfig: disables data validation for internal trusted data.
@@ -189,6 +221,10 @@ using FlyInputStreamAdapter = bitsery::InputStreamAdapter;
 //   FLY_FIELD(s, o, tags);         // map<string,int> → StdMap(auto)
 //   FLY_FIELD(s, o, grouped);      // map<string,vector<Obj>> → StdMap(auto)
 //   FLY_FIELD(s, o, inner);        // SomeStruct → object(serialize)
+//   FLY_FIELD(s, o, ids);          // unordered_set<uint64_t> → StdSet(auto)
+// 扩展容器/复合族（set 四种/optional/variant/tuple/pair/array/list 族/
+// queue/stack/atomic/chrono/bitset）经 is_extended_v 分支统一委托
+// fly_ser::elem——bitsery ext 接线与元素级路径同源单点（见 fly_ser::elem）。
 // FLY_FIELD — unified auto-dispatch for any field type.
 // s and o are from the enclosing FLY_SERIALIZE_BEGIN lambda — hardcoded here.
 #define FLY_FIELD(field) \
@@ -199,11 +235,13 @@ using FlyInputStreamAdapter = bitsery::InputStreamAdapter;
             s.ext(fly_v_, bitsery::ext::StdSmartPtr{}); \
         } else if constexpr (fly_ser::is_map_v<fly_T_>) { \
             s.ext(fly_v_, bitsery::ext::StdMap{FLY_MAX_SIZE}, [](auto& s, auto& key, auto& val) { \
-                fly_ser::map_elem(s, key); \
-                fly_ser::map_elem(s, val); \
+                fly_ser::elem(s, key); \
+                fly_ser::elem(s, val); \
             }); \
         } else if constexpr (fly_ser::is_vector_v<fly_T_>) { \
             fly_ser::container(s, fly_v_); \
+        } else if constexpr (fly_ser::is_extended_v<fly_T_>) { \
+            fly_ser::elem(s, fly_v_); \
         } else if constexpr (fly_ser::is_string_v<fly_T_>) { \
             fly_ser::text(s, fly_v_); \
         } else if constexpr (std::is_fundamental_v<fly_T_> || std::is_enum_v<fly_T_>) { \
@@ -249,6 +287,110 @@ constexpr bool is_vector_v = is_vector_impl<std::decay_t<T>>::value;
 template<typename T>
 constexpr bool is_string_v = std::is_same_v<std::decay_t<T>, std::string>;
 
+// —— 扩展容器/复合族 traits（一次性补齐 bitsery v5.2.4 类型分派面）——
+
+// set 四种（set/multiset/unordered_set/unordered_multiset；CMSet/
+// CMUnorderedSet 为别名自动覆盖）——经 ext::StdSet（键序列化）
+template<typename T> struct is_set_impl : std::false_type {};
+template<typename... A> struct is_set_impl<std::set<A...>> : std::true_type {};
+template<typename... A> struct is_set_impl<std::multiset<A...>> : std::true_type {};
+template<typename... A> struct is_set_impl<std::unordered_set<A...>> : std::true_type {};
+template<typename... A> struct is_set_impl<std::unordered_multiset<A...>> : std::true_type {};
+
+template<typename T>
+constexpr bool is_set_v = is_set_impl<std::decay_t<T>>::value;
+
+template<typename T> struct is_optional_impl : std::false_type {};
+template<typename T> struct is_optional_impl<std::optional<T>> : std::true_type {};
+
+template<typename T>
+constexpr bool is_optional_v = is_optional_impl<std::decay_t<T>>::value;
+
+template<typename T> struct is_variant_impl : std::false_type {};
+template<typename... A> struct is_variant_impl<std::variant<A...>> : std::true_type {};
+
+template<typename T>
+constexpr bool is_variant_v = is_variant_impl<std::decay_t<T>>::value;
+
+template<typename T> struct is_tuple_impl : std::false_type {};
+template<typename... A> struct is_tuple_impl<std::tuple<A...>> : std::true_type {};
+
+template<typename T>
+constexpr bool is_tuple_v = is_tuple_impl<std::decay_t<T>>::value;
+
+// pair（bitsery 无 pair 专用 ext——两元素依次分派即其序列化，elem 接线）
+template<typename T> struct is_pair_impl : std::false_type {};
+template<typename F, typename S> struct is_pair_impl<std::pair<F, S>> : std::true_type {};
+
+template<typename T>
+constexpr bool is_pair_v = is_pair_impl<std::decay_t<T>>::value;
+
+// 定长容器（编译期 N、无 size 前缀——bitsery 非 resizable container 路径）
+template<typename T> struct is_array_impl : std::false_type {};
+template<typename A, size_t N> struct is_array_impl<std::array<A, N>> : std::true_type {};
+
+template<typename T>
+constexpr bool is_array_v = is_array_impl<std::decay_t<T>>::value;
+
+// resizable 顺序容器（list/forward_list/deque；核心 traits 路径）
+template<typename T> struct is_list_impl : std::false_type {};
+template<typename... A> struct is_list_impl<std::list<A...>> : std::true_type {};
+template<typename... A> struct is_list_impl<std::forward_list<A...>> : std::true_type {};
+template<typename... A> struct is_list_impl<std::deque<A...>> : std::true_type {};
+
+template<typename T>
+constexpr bool is_list_v = is_list_impl<std::decay_t<T>>::value;
+
+// queue / priority_queue / stack（适配器容器——ext 持底层容器遍历）
+template<typename T> struct is_queue_impl : std::false_type {};
+template<typename... A> struct is_queue_impl<std::queue<A...>> : std::true_type {};
+template<typename... A> struct is_queue_impl<std::priority_queue<A...>> : std::true_type {};
+
+template<typename T>
+constexpr bool is_queue_v = is_queue_impl<std::decay_t<T>>::value;
+
+template<typename T> struct is_stack_impl : std::false_type {};
+template<typename... A> struct is_stack_impl<std::stack<A...>> : std::true_type {};
+
+template<typename T>
+constexpr bool is_stack_v = is_stack_impl<std::decay_t<T>>::value;
+
+template<typename T> struct is_atomic_impl : std::false_type {};
+template<typename T> struct is_atomic_impl<std::atomic<T>> : std::true_type {};
+
+template<typename T>
+constexpr bool is_atomic_v = is_atomic_impl<std::decay_t<T>>::value;
+
+// chrono 时长 / 时间点（epoch 计数直存——StdDuration / StdTimePoint）
+template<typename T> struct is_duration_impl : std::false_type {};
+template<typename R, typename P>
+struct is_duration_impl<std::chrono::duration<R, P>> : std::true_type {};
+
+template<typename T>
+constexpr bool is_duration_v = is_duration_impl<std::decay_t<T>>::value;
+
+template<typename T> struct is_time_point_impl : std::false_type {};
+template<typename C, typename R, typename P>
+struct is_time_point_impl<std::chrono::time_point<C, std::chrono::duration<R, P>>>
+    : std::true_type {};
+
+template<typename T>
+constexpr bool is_time_point_v = is_time_point_impl<std::decay_t<T>>::value;
+
+template<typename T> struct is_bitset_impl : std::false_type {};
+template<size_t N> struct is_bitset_impl<std::bitset<N>> : std::true_type {};
+
+template<typename T>
+constexpr bool is_bitset_v = is_bitset_impl<std::decay_t<T>>::value;
+
+// FLY_FIELD 扩展分支判定（set/optional/variant/tuple/pair/array/list/
+// queue/stack/atomic/chrono/bitset 十二族——命中即统一委托 elem 分派器）
+template<typename T>
+constexpr bool is_extended_v = is_set_v<T> || is_optional_v<T> || is_variant_v<T> ||
+    is_tuple_v<T> || is_pair_v<T> || is_array_v<T> || is_list_v<T> ||
+    is_queue_v<T> || is_stack_v<T> || is_atomic_v<T> || is_duration_v<T> ||
+    is_time_point_v<T> || is_bitset_v<T>;
+
 // 反序列化侧判定：serialize(S& s) 在保存/加载两侧共用（bitsery 同一
 // 序列化函数双向复用），S 在加载侧为 bitsery::Deserializer 实例化
 // （FLY_DECODE / FLY_DECODE_FROM_STREAM 同构）——序列化体需按方向分支
@@ -280,6 +422,11 @@ void object(S& s, T& obj) {
     s.object(obj);
 }
 
+// --- Element dispatch（elem）前置声明——container 的元素 lambda 递归
+// 引用（container ⇄ elem 互递归：容器内 vector 元素再走 container）
+template<typename S, typename T>
+void elem(S& s, T& v);
+
 template<typename S, typename T>
 void container(S& s, T& c) {
     using E = typename T::value_type;
@@ -288,29 +435,110 @@ void container(S& s, T& c) {
         else if constexpr (sizeof(E) == 2) s.container2b(c, FLY_MAX_SIZE);
         else if constexpr (sizeof(E) == 4) s.container4b(c, FLY_MAX_SIZE);
         else if constexpr (sizeof(E) == 8) s.container8b(c, FLY_MAX_SIZE);
-    } else if constexpr (is_string_v<E>) {
-        s.container(c, FLY_MAX_SIZE, [](S& s, E& e) { text(s, e); });
-    } else if constexpr (is_vector_v<E>) {
-        // 嵌套 vector（vector<vector<T>> 等）：元素递归走 container 分支。
-        // 深层嵌套由 constexpr 递归展开；元素类型无 serialize 成员时
-        // s.object 会 static assert，故必须先于 object 分支判 vector。
-        s.container(c, FLY_MAX_SIZE, [](S& s, E& e) { container(s, e); });
     } else {
-        s.container(c, FLY_MAX_SIZE, [](S& s, E& e) { s.object(e); });
+        // 非基础元素统一走 elem 分派（string/vector/结构/复合元素同构，
+        // vector<pair> / vector<optional> 等组合自动可用）
+        s.container(c, FLY_MAX_SIZE, [](S& s2, E& e) { elem(s2, e); });
     }
 }
 
-// --- Map element dispatch (for key/val inside StdMap lambdas) ---
+// chrono 字宽分派（StdDuration/StdTimePoint 共用）：rep/计数类型按
+// sizeof 走 ext1b..8b（value overload——StdChrono 无 lambda/object 能力）。
+// ext 以临时值传入（bitsery ExtensionTraits 按值类型匹配——引用实参
+// 会使 traits 特化失配，见 StdDuration traits 声明）
+template<typename S, typename T, typename Ext>
+void chronoSizedExt(S& s, T& v, const Ext&) {
+    // 字宽防御（review 2026-09-13）：>8 字节 rep（如 long double）无对应
+    // ext——编译期拒绝，禁止 else 静默截断到 ext1b
+    static_assert(sizeof(typename T::rep) <= 8,
+                  "chrono rep wider than 8 bytes has no bitsery value ext");
+    if constexpr (sizeof(typename T::rep) == 8) {
+        s.ext8b(v, Ext{});
+    } else if constexpr (sizeof(typename T::rep) == 4) {
+        s.ext4b(v, Ext{});
+    } else if constexpr (sizeof(typename T::rep) == 2) {
+        s.ext2b(v, Ext{});
+    } else {
+        s.ext1b(v, Ext{});
+    }
+}
 
+// --- 元素统一分派器（elem）——StdMap 的 key/val、StdSet 的键、各容器
+// 元素、optional/variant/tuple/pair 内元素的唯一入口；与 FLY_FIELD 的
+// 字段级分派同语义（FLY_FIELD 扩展族分支委托本函数）。新增类型分派只
+// 改此处（单点）。
 template<typename S, typename T>
-void map_elem(S& s, T& v) {
+void elem(S& s, T& v) {
     using fly_T_ = std::decay_t<T>;
     if constexpr (is_map_v<fly_T_>) {
-        s.ext(v, bitsery::ext::StdMap{FLY_MAX_SIZE}, [](auto& s, auto& key, auto& val) {
-            map_elem(s, key);
-            map_elem(s, val);
+        s.ext(v, bitsery::ext::StdMap{FLY_MAX_SIZE}, [](auto& s2, auto& key, auto& val) {
+            elem(s2, key);
+            elem(s2, val);
         });
-    } else if constexpr (std::is_fundamental_v<fly_T_>) {
+    } else if constexpr (is_set_v<fly_T_>) {
+        // set 四种：size + 逐元素写出；读侧 clear + reserve + emplace_hint
+        //（unordered 族 reserve 加速重建——bitsery StdSet 内建）
+        s.ext(v, bitsery::ext::StdSet{FLY_MAX_SIZE}, [](auto& s2, auto& key) {
+            elem(s2, key);
+        });
+    } else if constexpr (is_optional_v<fly_T_>) {
+        s.ext(v, bitsery::ext::StdOptional{}, [](auto& s2, auto& inner) {
+            elem(s2, inner);
+        });
+    } else if constexpr (is_variant_v<fly_T_>) {
+        // 泛型 lambda 即 CompositeTypeOverloads 的 catch-all overload——
+        // serializeType 的 is_invocable 检测恒命中，元素分派回到 elem
+        s.ext(v, bitsery::ext::StdVariant{
+                     [](auto& s2, auto& inner) { elem(s2, inner); }});
+    } else if constexpr (is_tuple_v<fly_T_>) {
+        s.ext(v, bitsery::ext::StdTuple{
+                     [](auto& s2, auto& inner) { elem(s2, inner); }});
+    } else if constexpr (is_pair_v<fly_T_>) {
+        // pair 无 bitsery ext——两元素依次分派即其序列化
+        elem(s, v.first);
+        elem(s, v.second);
+    } else if constexpr (is_array_v<fly_T_>) {
+        // 定长容器：bitsery 非 resizable 重载（无 size 前缀，N 编译期定）
+        s.container(v, [](auto& s2, auto& inner) { elem(s2, inner); });
+    } else if constexpr (is_list_v<fly_T_>) {
+        s.container(v, FLY_MAX_SIZE, [](auto& s2, auto& inner) {
+            elem(s2, inner);
+        });
+    } else if constexpr (is_queue_v<fly_T_>) {
+        // queue/priority_queue：ext 剥底层容器遍历（写 front→back 序）
+        s.ext(v, bitsery::ext::StdQueue{FLY_MAX_SIZE}, [](auto& s2, auto& inner) {
+            elem(s2, inner);
+        });
+    } else if constexpr (is_stack_v<fly_T_>) {
+        s.ext(v, bitsery::ext::StdStack{FLY_MAX_SIZE}, [](auto& s2, auto& inner) {
+            elem(s2, inner);
+        });
+    } else if constexpr (is_atomic_v<fly_T_>) {
+        // atomic：仅 value overload（extN b 按内层 T 字宽分派——bitsery
+        // StdAtomic 无 lambda/object 能力；字宽防御（review 2026-09-13）：
+        // >8 字节 value_type 编译期拒绝，禁止 else 静默截断
+        static_assert(sizeof(typename fly_T_::value_type) <= 8,
+                      "atomic value_type wider than 8 bytes has no bitsery "
+                      "value ext");
+        if constexpr (sizeof(typename fly_T_::value_type) == 8) {
+            s.ext8b(v, bitsery::ext::StdAtomic{});
+        } else if constexpr (sizeof(typename fly_T_::value_type) == 4) {
+            s.ext4b(v, bitsery::ext::StdAtomic{});
+        } else if constexpr (sizeof(typename fly_T_::value_type) == 2) {
+            s.ext2b(v, bitsery::ext::StdAtomic{});
+        } else {
+            s.ext1b(v, bitsery::ext::StdAtomic{});
+        }
+    } else if constexpr (is_duration_v<fly_T_>) {
+        // chrono 时长：epoch 计数直存（rep 字宽分派，同 atomic 口径）
+        chronoSizedExt(s, v, bitsery::ext::StdDuration{});
+    } else if constexpr (is_time_point_v<fly_T_>) {
+        // time_point：time_since_epoch 计数直存（同 duration 口径）
+        chronoSizedExt(s, v, bitsery::ext::StdTimePoint{});
+    } else if constexpr (is_bitset_v<fly_T_>) {
+        // bitset：定长位集直存（StdBitset 不消费 Fnc——双参 ext）
+        s.ext(v, bitsery::ext::StdBitset{});
+    } else if constexpr (std::is_fundamental_v<fly_T_> || std::is_enum_v<fly_T_>) {
         value(s, v);
     } else if constexpr (is_string_v<fly_T_>) {
         text(s, v);

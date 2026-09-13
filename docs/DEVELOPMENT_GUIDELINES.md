@@ -1107,6 +1107,26 @@ def some_task(db):
 足），并发 error message 让用户感知。**禁止第三态**（失败悬挂：任务失败且
 不产出数据、下游依赖断裂）。
 
+### 18.0 前置原则：禁止臆测能力缺失（2026-09-13 裁定）
+
+实施任何设计前，**不得臆测 fly 框架或其依赖库「缺失某能力且无法补充」而直接采用
+workaround 形态**（替代结构/中转载体/降级实现）。正确顺序：
+
+1. 先调研确认：读依赖库源码（bazel external / third_party 签入副本）与官方文档，
+   确认该能力**确实难以支持**；
+2. 区分「库不支持」与「fly 适配层未接线」——后者是补充适配工作（如序列化宏
+   FLY_FIELD 分派链补容器分支），**不是 workaround**；bitsery v5.2.4 的容器支持
+   面已全量接入（set 四种/map 四种/optional/variant/tuple+pair/array/list/
+   forward_list/deque/bitset/queue/stack/atomic/chrono），后续以
+   `src/common/serialization/cpp/serialization_macros.h` 为准；
+3. 确需 workaround 时：最终报告与代码注释**必须着重声明** workaround 内容、
+   查证结论（为什么确实不支持）与影响——禁止以「适配面仅…」之类未经验证的
+   断言默认掩盖。
+
+教训背景：bitsery 原生自带 `ext/std_set.h`（StdSet 覆盖全族 set）曾被误传为
+「不支持 set」，导致多批数据结构采用「map 充当 set」「vector 中转落盘」等妥协
+形态扩散，最终返工。
+
 ### 18.1 二元判定标准
 
 | 判定 | 处置 | 机制 |

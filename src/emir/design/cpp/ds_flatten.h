@@ -2,13 +2,19 @@
 
 // =============================================================================
 // S9 flatten 展平 + 分区保存（方案 design-db-plan.md §3.2 S9 + 2026-09-13
-// 裁定补记①-⑤ 定稿）。
+// 裁定补记①-⑤ 定稿 + 同日 partition 网数据结构重组终态）。
 //
-// 数据结构（分区产物四类 + 分片中间形态，裁定补记②）：
-//   DSPartConnection        连接项条目（INST_CONNECTIONS / NET_CONNECTIONS
-//                           共用形态）：端点实例 global id + 端点网 global
-//                           id + 端点 pin 全局平铺 id（S5b 解析边界换算，
-//                           直存）+ port 位（块级 port 引用——端点实例 =
+// 数据结构（分区产物四类 + 分片中间形态）：
+//   DSNetConnEntry          NETS 侧连接条目 = (端点实例 global id, 端点
+//                           pin 全局平铺 id, flags 六位)——沿用原
+//                           DSPartConnection 的 NET 维度语义（网 id 由所
+//                           在 DSNet 的键承载，条目不再冗余），2026-09-13
+//                           重组裁定更名。
+//   DSPartConnection        INST_CONNECTIONS 条目（instance 维度）：与
+//                           DSNetConnEntry 同款字段（inst_id/pin_id/
+//                           flags）+ 端点网 global id（instance 维度组
+//                           织必需——条目散挂各实例副本，网 id 无法由键
+//                           承载）。port 位（块级 port 引用——端点实例 =
 //                           所属块实例自身 global id，⑧ local 0 映射）。
 //   DSGeomEntry             几何条目（统一形态）：layer id + 全局矩形 +
 //                           via 专属字段（via cell id，kNoViaCell = 非
@@ -22,12 +28,25 @@
 //                           副本（全局 transform + primary 位）。
 //   DSPartInstConnections   /INST_CONNECTIONS：instance global id → 连接
 //                           项列表（跟随 instance 副本）。
-//   DSPartNetConnections    /NET_CONNECTIONS：net global id → 连接项列表
-//                           （跟随 net 副本；非 pg 网全量补全——跨分区连
-//                           接也保存、本分区自足；pg 网不补全——仅本分区
-//                           instance 副本相关条目，靠 union + instance
-//                           维度拼装，补记②）+ per-net use map（2026-09-13
-//                           USE 全量补收裁定，跟随 net 副本）。
+//   DSNet                   单网聚合 = net id + use（DSNetUse，缺省
+//                           SIGNAL）+ 连接条目集（几何不进本结构——仍在
+//                           分区 GEOMETRY 对象按 net 组织）。
+//   DSPartitionNets         /NETS（2026-09-13 重组裁定，取代原
+//                           DSPartNetConnections/NET_CONNECTIONS）：每分
+//                           区一份、信号网 / pg 网分表（nets_ / pg_nets_）。
+//                           信号网（use 非 POWER/GROUND）= 全量补全连接副
+//                           本（跨分区连接也保存、本分区自足）；pg 网 =
+//                           不补全（仅本分区 instance 副本相关条目，靠
+//                           union + instance 维度拼装，补记②）。use 随
+//                           DSNet 写入（自 S5b net_uses_，USE 全量补收
+//                           裁定），get_net 类 debug 消费直接读取、不查
+//                           S5b per-DEF 产物。
+//   DSPgNetSlice            pg 网全局集分区片段（临时对象）：本区
+//                           pg_nets_ 表键按 use 分流的两 id 列表。
+//   DSPgNetSet              全局 pg 网 id 集（"pg_nets" 正式对象）：
+//                           power/ground 两 unordered_set（O(1) 判定，
+//                           2026-09-13 用户定稿结构；运行时结构与序列化
+//                           格式解耦已消解——序列化宏已接 set 全族直存）。
 //   DSPartitionProduct      四类聚合容器 = 分片（slice）中间形态 + 合并
 //                           工作形态；merge_from = 追加合并（幂等键覆盖
 //                           不叠加——instance 副本同 global id 只此一份）。
@@ -51,7 +70,8 @@
 //
 // 编排（ds_flow.py 两级任务）：展开任务按 block 定义切分（小 DEF 按
 // alpha def_aggregate_threshold 聚合），每任务产出所涉各分区的分片；每
-// 分区一合并任务 merge 全部相关分片 → 四类正式对象。net id 保持
+// 分区一合并任务 merge 全部相关分片 → 四类正式对象（NETS 连接写入按
+// is_pg_net 分流：pg → pg_nets_、信号 → nets_）。net id 保持
 // local + offset 形式不换算 root（S7 裁定④）。
 // =============================================================================
 
@@ -64,17 +84,35 @@
 
 namespace fly {
 
-// 分区连接项（INST_CONNECTIONS / NET_CONNECTIONS 共用条目形态；S5b 连接
-// 表 id 形态的 global 化——instance local id → +inst_start（⑧ local 0 =
-// 块实例自身）；pin 全局平铺 id 直存（2026-09-13 裁定（D1 全局平铺 pin id）：分区副本 pin
-// 不留名——pin id 全局唯一，名字反查经容器 pin hasher）。flags 六位
-// （port/driver/receiver/power/ground/clock）自 S5b 条目直存，hybrid =
-// driver+receiver 同置（第三分类命名，统计口径互斥单列——见
-// DSNetConnection 注释）。
+// NETS 侧连接条目（2026-09-13 重组裁定：原 DSPartConnection 的 NET 维度
+// 语义更名——端点网 global id 由所在 DSNet 的键承载，条目三字段）。S5b
+// 连接表 id 形态的 global 化——instance local id → +inst_start（⑧ local
+// 0 = 块实例自身）；pin 全局平铺 id 直存（2026-09-13 裁定（D1 全局平铺
+// pin id）：分区副本 pin 不留名——pin id 全局唯一，名字反查经容器 pin
+// hasher）。flags 六位（port/driver/receiver/power/ground/clock）自 S5b
+// 条目直存，hybrid = driver+receiver 同置（第三分类命名，统计口径互斥
+// 单列——见 DSNetConnection 注释）。
+class DSNetConnEntry {
+public:
+    // 端点实例 global id（⑧ local 0 映射目标；port 位条目 = 块实例自身）
+    uint64_t inst_id_ = 0;
+    // 端点 pin 全局平铺 id（S5b 解析边界换算完成，直存）
+    uint32_t pin_id_ = 0;
+    // port / driver / receiver / power / ground / clock 位（S5b 直存；
+    // hybrid = driver+receiver 同置）
+    CM_FLAGS(uint8_t, port, driver, receiver, power, ground, clock)
+
+    FLY_SERIALIZE(inst_id_, pin_id_, flags_)
+};
+
+// INST_CONNECTIONS 侧连接条目（instance 维度）：与 DSNetConnEntry 同款
+// 字段（inst_id/pin_id/flags 六位，2026-09-13 重组裁定对齐更名）+ 端点
+// 网 global id——instance 维度组织必需（条目散挂各实例副本，网 id 无法
+// 由键承载；NET 维度条目 DSNetConnEntry 则由所在 DSNet 键承载）。
 class DSPartConnection {
 public:
     // 端点实例 global id（⑧ local 0 映射目标；port 位条目 = 块实例自身）
-    uint64_t instance_global_id_ = 0;
+    uint64_t inst_id_ = 0;
     // 端点网 global id（local + offset，不换算 root）
     uint64_t net_global_id_ = 0;
     // 端点 pin 全局平铺 id（S5b 解析边界换算完成，直存）
@@ -83,7 +121,7 @@ public:
     // hybrid = driver+receiver 同置）
     CM_FLAGS(uint8_t, port, driver, receiver, power, ground, clock)
 
-    FLY_SERIALIZE(instance_global_id_, net_global_id_, pin_id_, flags_)
+    FLY_SERIALIZE(inst_id_, net_global_id_, pin_id_, flags_)
 };
 
 // 分区几何条目（net wire/rect 图形 + via instance 展开图形 + DEF
@@ -118,16 +156,18 @@ public:
     // ——root 块 net_start_ = 0、local 1 → global 0，为合法网 id）
     CMUnorderedMap<uint64_t, CMVector<DSGeomEntry>> nets_;
     // 跨分区网（is_crossing，补记④）：成员图形散布多于一个分区的
-    // global net id 集（本分区有副本的网才登记；S10 统计口径）。键 = net
-    // global id、值恒 1（序列化框架无 set 容器支持，map 充当 set）
-    CMUnorderedMap<uint64_t, uint8_t> crossing_nets_;
+    // global net id 集（本分区有副本的网才登记；S10 统计口径）。
+    // （2026-09-13 修正：原「CMUnorderedMap<uint64_t, uint8_t> 值恒 1 充
+    // 当 set」系序列化宏无 set 支持时期的妥协——宏已接 set 全族，回归
+    // CMUnorderedSet 直存）
+    CMUnorderedSet<uint64_t> crossing_nets_;
 
     // 构建期接口（条目追加；跨分区判定由展开任务完成）
     void add_entry(uint64_t net_global_id, DSGeomEntry&& entry) {
         nets_[net_global_id].push_back(std::move(entry));
     }
     void mark_crossing(uint64_t net_global_id) {
-        crossing_nets_.emplace(net_global_id, 1);
+        crossing_nets_.insert(net_global_id);
     }
     bool is_crossing(uint64_t net_global_id) const {
         return crossing_nets_.contains(net_global_id);
@@ -194,44 +234,99 @@ public:
     FLY_SERIALIZE(items_)
 };
 
-// /NET_CONNECTIONS：net global id → 连接项列表（跟随 net 副本——仅几何
-// 所在分区；非 pg 全量补全 / pg 仅本区 instance 副本相关条目）。
-// 2026-09-13 USE 全量补收裁定：增 per-net use map（键 = net global id、
-// 值 = DSNetUse 整型；只记非 SIGNAL 条目，缺省读取 SIGNAL——与
-// DSNetBuildData::net_uses_ 同口径），跟随 net 副本落分区，get_net 类
-// debug 消费直接读取、不查 S5b per-DEF 产物。
-class DSPartNetConnections {
+// 单网聚合（2026-09-13 重组裁定）：id + use + 连接条目集。几何不进本
+// 结构——仍在分区 GEOMETRY 对象按 net 组织。use = DSNetUse 整型（S5b
+// net_uses_ 全量补收裁定随网写入；缺省 SIGNAL——S5b 只记非 SIGNAL 条
+// 目，缺省读取口径一致）。
+class DSNet {
 public:
-    CMUnorderedMap<uint64_t, CMVector<DSPartConnection>> items_;
-    // per-net use map（键 = net global id；只记非 SIGNAL，缺省 SIGNAL）
-    CMUnorderedMap<uint64_t, uint8_t> uses_;
+    uint64_t net_id_ = 0;
+    uint8_t use_ = static_cast<uint8_t>(DSNetUse::SIGNAL);
+    CMVector<DSNetConnEntry> connections_;
 
-    size_t size() const { return items_.size(); }
-    // use 读取（未记录 = SIGNAL 缺省；DSNetUse 整型存取）
-    DSNetUse use_of(uint64_t net_global_id) const {
-        const auto it = uses_.find(net_global_id);
-        return it == uses_.end()
-                   ? DSNetUse::SIGNAL
-                   : static_cast<DSNetUse>(it->second);
+    // use 读取（DSNetUse 枚举视图）
+    DSNetUse use() const { return static_cast<DSNetUse>(use_); }
+
+    FLY_SERIALIZE(net_id_, use_, connections_)
+};
+
+// /NETS（2026-09-13 重组裁定，取代原 DSPartNetConnections/NET_CONNECTIONS
+// 对象）：每分区一份、信号网 / pg 网分表。信号网（use 非 POWER/GROUND）
+// = 全量补全连接副本（跨分区连接也保存、本分区自足）；pg 网 = 不补全
+// （仅本分区 instance 副本相关条目，靠 union + instance 维度拼装，补记
+// ②）。net_of 两表查（pg 表优先级仅影响同键双表的不一致防御形态——正
+// 常建库单网单表）。
+class DSPartitionNets {
+public:
+    // 本分区 id（ds_flatten_block 分片产出时回填；merge 幂等——同分区
+    // 分片同 id）
+    uint32_t part_id_ = 0;
+    // 信号网表（use 非 POWER/GROUND；键 = net global id）
+    CMUnorderedMap<uint64_t, DSNet> nets_;
+    // pg 网表（不补全语义；键 = net global id）
+    CMUnorderedMap<uint64_t, DSNet> pg_nets_;
+
+    size_t size() const { return nets_.size() + pg_nets_.size(); }
+    // 两表查（未命中 nullptr；引用读取零拷贝）
+    const DSNet* net_of(uint64_t net_id) const;
+    // 两表查可写版（构建期接入用）
+    DSNet* net_of(uint64_t net_id);
+
+    FLY_SERIALIZE(part_id_, nets_, pg_nets_)
+};
+
+// pg 网全局集分区片段（S9 每分区合并任务写本区片段的临时对象；汇总合
+// 并后清理）：本区 pg_nets_ 表键按 DSNet.use_ 分流的两 id 列表（use 非
+// POWER/GROUND 的 special 网不入 pg 全局集——is_pg 判定口径 = use 枚举）。
+class DSPgNetSlice {
+public:
+    CMVector<uint64_t> power_ids_;
+    CMVector<uint64_t> ground_ids_;
+
+    FLY_SERIALIZE(power_ids_, ground_ids_)
+};
+
+// 全局 pg 网 id 集（2026-09-13 用户定稿结构；"pg_nets" 正式对象）：
+// power/ground 分开两 unordered_set（O(1) 判定——消费 = debug API get_net
+// 的 is_pg 快速路径 + Python is_power/is_ground/is_pg 查询口）。产出 =
+// flatten 后汇总任务读全部分区片段 finalize（同 pg 网跨分区副本 set 天
+// 然去重）。
+class DSPgNetSet {
+public:
+    // 运行时判定结构（O(1)）
+    CMUnorderedSet<uint64_t> power_;
+    CMUnorderedSet<uint64_t> ground_;
+
+    // 全局汇总（独立轻任务）：全部分区片段键集按 use 分流合并（set 去
+    // 重——同 pg 网跨分区副本只此一条）
+    void finalize_from_flatten(const CMVector<const DSPgNetSlice*>& slices);
+
+    bool is_power(uint64_t net_id) const { return power_.contains(net_id); }
+    bool is_ground(uint64_t net_id) const { return ground_.contains(net_id); }
+    bool is_pg(uint64_t net_id) const {
+        return power_.contains(net_id) || ground_.contains(net_id);
     }
+    // 规模观测（S10 统计/日志）
+    size_t power_count() const { return power_.size(); }
+    size_t ground_count() const { return ground_.size(); }
 
-    FLY_SERIALIZE(items_, uses_)
+    FLY_SERIALIZE(power_, ground_)
 };
 
 // 四类聚合容器：展开任务产出的分片（slice）中间形态 + 分区合并任务的
 // 工作形态。merge_from = 追加合并（同 global id 的 instance 副本键覆盖
-// ——global id 全局唯一，同键仅同源重放；连接项列表拼接；几何条目拼接；
-// crossing 集并）。
+// ——global id 全局唯一，同键仅同源重放；连接项列表拼接；NETS 两表同键
+// DSNet 连接条目拼接；几何条目拼接；crossing 集并）。
 class DSPartitionProduct {
 public:
     DSPartInstances instances_;
     DSPartInstConnections inst_connections_;
-    DSPartNetConnections net_connections_;
+    DSPartitionNets nets_;
     DSPartitionGeometry geometry_;
 
     void merge_from(const DSPartitionProduct& src);
 
-    FLY_SERIALIZE(instances_, inst_connections_, net_connections_, geometry_)
+    FLY_SERIALIZE(instances_, inst_connections_, nets_, geometry_)
 };
 
 // S9 展开算法（每 block 定义一调用；方案「每份 DEF 数据只读一次」）：
@@ -244,5 +339,10 @@ CMVector<std::pair<uint32_t, DSPartitionProduct>> ds_flatten_block(
     const DSHierTree& tree, const DSBlockBuildData& block,
     const DSNetBuildData& nets, const DSDesign& design,
     const CMVector<DSSubPartition>& partitions);
+
+// pg 网全局集分区片段提取（S9 每分区合并任务调用）：本区 pg_nets_ 表键
+// 按 DSNet.use_ 分流（POWER → power_ids_ / GROUND → ground_ids_；use 非
+// POWER/GROUND 的 special 网不入 pg 全局集）。
+DSPgNetSlice ds_collect_pg_net_slice(const DSPartitionNets& nets);
 
 }  // namespace fly

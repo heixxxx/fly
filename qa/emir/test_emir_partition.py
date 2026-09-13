@@ -1,5 +1,7 @@
 """E2E test: S8 分区决策直切场景（target_partitions '2x1'，2026-09-12/13
-裁定 1/2/4）+ S9 flatten 展平 + 分区保存（2026-09-13 裁定补记①-⑤）。
+裁定 1/2/4）+ S9 flatten 展平 + 分区保存（2026-09-13 裁定补记①-⑤ + 同日
+partition 网数据结构重组终态：NET_CONNECTIONS → NETS = DSPartitionNets
+信号网/pg 网分表 + 全局 pg 网 id 集 "pg_nets"）。
 
 单 DEF 无嵌套（层级树 1 节点，合并恒等无分摊损失）+ alpha
 density_bin_size=1（bin 1000 DBU → 格网 4×2）+ target_partitions '2x1'。
@@ -14,9 +16,10 @@ density_bin_size=1（bin 1000 DBU → 格网 4×2）+ target_partitions '2x1'。
     物理最高有效层，自底向上层表序内位置最高），2w = 140
 验证：S8 分区数、core/extend 坐标（最外围 int32 极值 / 内侧 ±2w）、全局密
 度三通道计数；S9 四类分区对象（primary 恰一 + extend 副本、geometry 副本
-不裁剪 + is_crossing、OBS → net 0 桶、非 pg 连接全量补全、alpha 聚合阈值
-键）；S10 汇总校验 + 冻结（verify_report 手算锁定：损坏类三字段空、id 域
-无空洞重复、primary 守恒、统计汇总 DSGN::0024，正常路径无 fatal/warn）。
+不裁剪 + is_crossing、OBS → net 0 桶、非 pg 连接全量补全、NETS 信号网表
+形态、pg 集空集形态、alpha 聚合阈值键）；S10 汇总校验 + 冻结（verify_
+report 手算锁定：损坏类三字段空、id 域无空洞重复、primary 守恒、统计汇
+总 DSGN::0024，正常路径无 fatal/warn）。
 """
 import os
 import shutil
@@ -103,8 +106,8 @@ INFO("[OK] S8 partitions: '2x1' direct cut at grid 2 (load prefix-sum "
 from emir.design import DesignDb, iter_design_partition, load_partition
 assert iter_design_partition(design_db) == [(0, 0), (1, 0)], \
     f"iter={iter_design_partition(design_db)}"
-geo0, inst0, iconn0, nconn0 = load_partition(design_db, 0, 0)
-geo1, inst1, iconn1, nconn1 = load_partition(design_db, 1, 0)
+geo0, inst0, iconn0, nets0 = load_partition(design_db, 0, 0)
+geo1, inst1, iconn1, nets1 = load_partition(design_db, 1, 0)
 
 # /INSTANCES：primary 恰一 + extend 副本 + 全局坐标（2026-09-13 裁定：
 # 电源引脚预展开删除——坐标归 ④ 提取自取）
@@ -138,24 +141,40 @@ assert geo0.is_crossing(0) and geo1.is_crossing(0)
 INFO("[OK] S9 geometry: wire copies both partitions unclipped + crossing, "
      "OBS to net-0 bucket with obs flag (p0 only)")
 
-# /NET_CONNECTIONS：非 pg 全量补全（跨分区连接也保存——两分区各一份完
+# /NETS（2026-09-13 重组裁定：NET_CONNECTIONS → NETS = DSPartitionNets
+# 信号网/pg 网分表）：非 pg 全量补全（跨分区连接也保存——两分区各一份完
 # 整列表；n1 仅 (inv1 A) 一条连接，p1 虽无 inv1 副本仍全量保存）。
-# 连接 id 形态（2026-09-13 裁定）：(instance global id, 全局 pin id)——
-# inv1.A = 全局 pin 0（INV_X1 的 A 为 S2 汇总首 pin）
+# 连接 id 形态（2026-09-13 裁定）：(端点实例 global id, 全局 pin id)——
+# inv1.A = 全局 pin 0（INV_X1 的 A 为 S2 汇总首 pin）；网 id 由 DSNet 键
+# 承载（net_of 两表查命中）
 expect_conns = [(1, 0)]
-for nconn in (nconn0, nconn1):
-    got = [(c.instance_global_id, c.pin_id) for c in nconn.connections_of(0)]
+for nets in (nets0, nets1):
+    net = nets.net_of(0)
+    assert net is not None, "n1 must be reachable via net_of both tables"
+    got = [(c.inst_id, c.pin_id) for c in net.connections]
     assert got == expect_conns, f"net conns={got}"
-    assert nconn.size == 1
-    assert [c.is_receiver for c in nconn.connections_of(0)] == [True]
+    assert net.net_id == 0 and net.use == "SIGNAL"
+    assert nets.size == 1
+    assert [c.is_receiver for c in net.connections] == [True]
+    # 分流断言：n1 非 pg → 信号网表命中、pg 网表为空
+    assert nets.net_of(0) is not None and len(nets.pg_ids) == 0
 # /INST_CONNECTIONS：跟随 instance 副本（partition.def 仅 inv1 有连接项
 # ——inv1 端点只在 p0；inv2/inv3 无连接项不产条目）
 assert [(c.net_global_id, c.pin_id) for c in iconn0.connections_of(1)] \
     == [(0, 0)]
 assert iconn1.connections_of(1) == [], "inv1 must not appear in p1"
 assert iconn0.size == 1 and iconn1.size == 0
-INFO("[OK] S9 connections: non-pg net fully completed in both partitions, "
-     "inst connections follow copies")
+INFO("[OK] S9 connections: non-pg net fully completed in both partitions "
+     "(NETS signal table), inst connections follow copies")
+
+# 全局 pg 网 id 集（2026-09-13 重组裁定："pg_nets" 正式对象）：本数据无
+# pg 网（无 SPECIALNETS / 无 USE POWER|GROUND）→ 空 set、查询恒 False
+from emir.design import load_design_pg_nets
+pg_nets = load_design_pg_nets(design_db)
+assert pg_nets.power_count == 0 and pg_nets.ground_count == 0
+assert pg_nets.is_pg(0) is False and pg_nets.is_power(0) is False \
+    and pg_nets.is_ground(0) is False
+INFO("[OK] S9 pg net set: empty for pg-free data, O(1) queries false")
 
 # alpha settings 对象：S9 聚合阈值键随建库持久化（缺省 64 MiB）
 assert design_db.read_object(
@@ -173,7 +192,7 @@ INFO("[OK] S9 alpha def_aggregate_threshold persisted with default 64MiB")
 #     UNPLACED) = 3 − 0 → 无偏差；
 #   - 网域：expected 1、actual {0}（n1 几何 + 连接 + 跨分区标记）→
 #     holes 0；via 域 expected 0 / actual 0；
-#   - 统计：primary 3、副本 4（inv3 extend 副本）、连接 3（nconn 两分区
+#   - 统计：primary 3、副本 4（inv3 extend 副本）、连接 3（NETS 两分区
 #     各 1 + iconn p0 1）、图形条目 3（p0 wire+obs、p1 wire）、跨分区网 1、
 #     密度 inst=3/metal=8/via=0（与 S8 手算一致）。
 from emir.design import load_design_verify_report

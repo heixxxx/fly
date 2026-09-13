@@ -1216,14 +1216,14 @@ FLY_EXPORT_FUNCTION("ds_net_union_child_indexes",
         tree, names, static_cast<uint32_t>(index)));
 });
 
-// ── S9 flatten 展平 + 分区保存（2026-09-13 裁定补记①-⑤；分片中间形态
-// 与四类正式对象共用数据结构）────────────────────────────────────────
+// ── S9 flatten 展平 + 分区保存（2026-09-13 裁定补记①-⑤ + 同日 partition
+// 网数据结构重组终态；分片中间形态与四类正式对象共用数据结构）──────────
 
-// 分区连接项（INST_CONNECTIONS / NET_CONNECTIONS 共用条目形态；只读面）
+// INST_CONNECTIONS 条目（instance 维度：端点实例/网 global id + pin 全局
+// 平铺 id；只读面）
 FLY_EXPORT_CLASS(fly::DSPartConnection, "EXDSPartConnection")
     FLY_EXPORT_INIT()
-    FLY_EXPORT_READONLY_ATTR("instance_global_id",
-                             &fly::DSPartConnection::instance_global_id_)
+    FLY_EXPORT_READONLY_ATTR("inst_id", &fly::DSPartConnection::inst_id_)
     FLY_EXPORT_READONLY_ATTR("net_global_id",
                              &fly::DSPartConnection::net_global_id_)
     // 端点 pin 全局平铺 id（2026-09-13 裁定：S5b 解析边界换算、直存——
@@ -1335,29 +1335,140 @@ FLY_EXPORT_CLASS(fly::DSPartInstConnections, "EXDSPartInstConnections")
     }, nb::rv_policy::reference_internal)
     FLY_EXPORT_SERIALIZE_PICKLE(fly::DSPartInstConnections);
 
-// /NET_CONNECTIONS：net global id → 连接项列表（跟随 net 副本）+ per-net
-// use map（2026-09-13 USE 全量补收；未记录 = "SIGNAL" 缺省——枚举字符串
-// 化，不透出整型）
-FLY_EXPORT_CLASS(fly::DSPartNetConnections, "EXDSPartNetConnections")
+// NETS 侧连接条目（2026-09-13 重组裁定：原 NET 维度共用条目更名——端点
+// 网由所在 DSNet 键承载，条目 = 端点实例 + pin + flags 六位）
+FLY_EXPORT_CLASS(fly::DSNetConnEntry, "EXDSNetConnEntry")
     FLY_EXPORT_INIT()
+    FLY_EXPORT_READONLY_ATTR("inst_id", &fly::DSNetConnEntry::inst_id_)
+    FLY_EXPORT_READONLY_ATTR("pin_id", &fly::DSNetConnEntry::pin_id_)
+    FLY_EXPORT_READONLY_PROPERTY("is_port", [](const fly::DSNetConnEntry& c) {
+        return c.is_port();
+    })
+    FLY_EXPORT_READONLY_PROPERTY("is_driver",
+                                 [](const fly::DSNetConnEntry& c) {
+        return c.is_driver();
+    })
+    FLY_EXPORT_READONLY_PROPERTY("is_receiver",
+                                 [](const fly::DSNetConnEntry& c) {
+        return c.is_receiver();
+    })
+    FLY_EXPORT_READONLY_PROPERTY("is_power", [](const fly::DSNetConnEntry& c) {
+        return c.is_power();
+    })
+    FLY_EXPORT_READONLY_PROPERTY("is_ground",
+                                 [](const fly::DSNetConnEntry& c) {
+        return c.is_ground();
+    })
+    FLY_EXPORT_READONLY_PROPERTY("is_clock", [](const fly::DSNetConnEntry& c) {
+        return c.is_clock();
+    })
+    // hybrid = driver+receiver 同置（INOUT pin 的第三分类，统计口径与
+    // driver/receiver 互斥单列）
+    FLY_EXPORT_READONLY_PROPERTY("is_hybrid",
+                                 [](const fly::DSNetConnEntry& c) {
+        return c.is_driver() && c.is_receiver();
+    })
+    FLY_EXPORT_SERIALIZE_PICKLE(fly::DSNetConnEntry);
+
+// 单网聚合（net id + use + 连接条目集；use 字符串化——DSNetUse 八值
+// 缺省 SIGNAL，与导出面既有枚举字符串化同口径）
+FLY_EXPORT_CLASS(fly::DSNet, "EXDSNet")
+    FLY_EXPORT_INIT()
+    FLY_EXPORT_READONLY_ATTR("net_id", &fly::DSNet::net_id_)
+    FLY_EXPORT_READONLY_PROPERTY("use", [](const fly::DSNet& n) {
+        return fly::ds_net_use_name(n.use());
+    })
+    FLY_EXPORT_READONLY_PROPERTY("connection_count",
+                                 [](const fly::DSNet& n) {
+        return static_cast<int>(n.connections_.size());
+    })
+    // 连接条目只读视图（property 数据面——与 size 等观测属性同风格）
+    FLY_EXPORT_READONLY_PROPERTY("connections", [](const fly::DSNet& n) {
+        nb::list out;
+        for (const auto& c : n.connections_) out.append(c);
+        return out;
+    })
+    FLY_EXPORT_SERIALIZE_PICKLE(fly::DSNet);
+
+// /NETS：信号网 / pg 网分表（2026-09-13 重组裁定，取代
+// EXDSPartNetConnections；net_of 两表查、未命中 None）
+FLY_EXPORT_CLASS(fly::DSPartitionNets, "EXDSPartitionNets")
+    FLY_EXPORT_INIT()
+    FLY_EXPORT_READONLY_ATTR("part_id", &fly::DSPartitionNets::part_id_)
     FLY_EXPORT_READONLY_PROPERTY("size",
-                                 [](const fly::DSPartNetConnections& p) {
+                                 [](const fly::DSPartitionNets& p) {
         return static_cast<int>(p.size());
     })
-    FLY_EXPORT_DEF("connections_of", [](const fly::DSPartNetConnections& p,
-                                        uint64_t net_global_id) {
-        nb::list out;
-        auto it = p.items_.find(net_global_id);
-        if (it != p.items_.end()) {
-            for (const auto& c : it->second) out.append(c);
-        }
-        return out;
+    FLY_EXPORT_DEF("net_of", [](const fly::DSPartitionNets& p,
+                                uint64_t net_global_id)
+                            -> const fly::DSNet* {
+        return p.net_of(net_global_id);
     }, nb::rv_policy::reference_internal)
-    FLY_EXPORT_DEF("use_of", [](const fly::DSPartNetConnections& p,
-                                uint64_t net_global_id) {
-        return fly::ds_net_use_name(p.use_of(net_global_id));
+    // 两表键集只读视图（property 数据面——规模观测 / pg 分流核对手算用）
+    FLY_EXPORT_READONLY_PROPERTY("signal_ids", [](const fly::DSPartitionNets& p) {
+        nb::list out;
+        for (const auto& [id, _] : p.nets_) out.append(id);
+        return out;
     })
-    FLY_EXPORT_SERIALIZE_PICKLE(fly::DSPartNetConnections);
+    FLY_EXPORT_READONLY_PROPERTY("pg_ids", [](const fly::DSPartitionNets& p) {
+        nb::list out;
+        for (const auto& [id, _] : p.pg_nets_) out.append(id);
+        return out;
+    })
+    FLY_EXPORT_SERIALIZE_PICKLE(fly::DSPartitionNets);
+
+// pg 网全局集分区片段（临时对象：本区 pg_nets_ 键按 use 分流）
+FLY_EXPORT_CLASS(fly::DSPgNetSlice, "EXDSPgNetSlice")
+    FLY_EXPORT_INIT()
+    FLY_EXPORT_READONLY_PROPERTY("power_count",
+                                 [](const fly::DSPgNetSlice& s) {
+        return static_cast<int>(s.power_ids_.size());
+    })
+    FLY_EXPORT_READONLY_PROPERTY("ground_count",
+                                 [](const fly::DSPgNetSlice& s) {
+        return static_cast<int>(s.ground_ids_.size());
+    })
+    FLY_EXPORT_SERIALIZE_PICKLE(fly::DSPgNetSlice);
+
+// 全局 pg 网 id 集（power/ground 两 unordered_set，O(1) 判定；Python
+// is_power/is_ground/is_pg 查询口）
+FLY_EXPORT_CLASS(fly::DSPgNetSet, "EXDSPgNetSet")
+    FLY_EXPORT_INIT()
+    FLY_EXPORT_DEF("is_power", [](const fly::DSPgNetSet& s, uint64_t id) {
+        return s.is_power(id);
+    })
+    FLY_EXPORT_DEF("is_ground", [](const fly::DSPgNetSet& s, uint64_t id) {
+        return s.is_ground(id);
+    })
+    FLY_EXPORT_DEF("is_pg", [](const fly::DSPgNetSet& s, uint64_t id) {
+        return s.is_pg(id);
+    })
+    FLY_EXPORT_READONLY_PROPERTY("power_count",
+                                 [](const fly::DSPgNetSet& s) {
+        return static_cast<int>(s.power_count());
+    })
+    FLY_EXPORT_READONLY_PROPERTY("ground_count",
+                                 [](const fly::DSPgNetSet& s) {
+        return static_cast<int>(s.ground_count());
+    })
+    FLY_EXPORT_SERIALIZE_PICKLE(fly::DSPgNetSet);
+
+// pg 片段提取：分区产物 NETS → 本区片段（S9 每分区合并任务写临时对象）
+FLY_EXPORT_FUNCTION("ds_collect_pg_net_slice",
+                    [](const fly::DSPartitionNets& nets) {
+    return nb::cast(fly::ds_collect_pg_net_slice(nets));
+});
+
+// pg 全局汇总：合并全部分区片段 → 两 set（跨分区副本 set 去重）
+FLY_EXPORT_FUNCTION("ds_build_pg_net_set", [](nb::list slices) {
+    fly::CMVector<const fly::DSPgNetSlice*> slice_ptrs;
+    for (nb::handle item : slices) {
+        slice_ptrs.push_back(&nb::cast<const fly::DSPgNetSlice&>(item));
+    }
+    fly::DSPgNetSet pg_set;
+    pg_set.finalize_from_flatten(slice_ptrs);
+    return nb::cast(std::move(pg_set));
+});
 
 // 四类聚合容器（分片中间形态 + 合并工作形态；Python 面 = 规模观测 +
 // 编排侧分片合并）
@@ -1388,9 +1499,9 @@ FLY_EXPORT_CLASS(fly::DSPartitionProduct, "EXDSPartitionProduct")
                                        -> const fly::DSPartInstConnections& {
         return p.inst_connections_;
     }, nb::rv_policy::reference_internal)
-    FLY_EXPORT_DEF("net_connections", [](const fly::DSPartitionProduct& p)
-                                      -> const fly::DSPartNetConnections& {
-        return p.net_connections_;
+    FLY_EXPORT_DEF("nets", [](const fly::DSPartitionProduct& p)
+                           -> const fly::DSPartitionNets& {
+        return p.nets_;
     }, nb::rv_policy::reference_internal)
     FLY_EXPORT_SERIALIZE_PICKLE(fly::DSPartitionProduct);
 
@@ -1574,16 +1685,16 @@ FLY_EXPORT_CLASS(fly::DSDesignCheckReport, "EXDSDesignCheckReport")
     FLY_EXPORT_SERIALIZE_PICKLE(fly::DSDesignCheckReport);
 
 // S10 分区级校验（每分区一任务调用；只读本分区四类正式产物——对象按类
-// 拆写为四对象，签名对齐产物形态）
+// 拆写为四对象，签名对齐产物形态；NETS 参数 = 2026-09-13 重组后的
+// DSPartitionNets 两表）
 FLY_EXPORT_FUNCTION("ds_verify_partition",
                     [](uint32_t partition_id, uint32_t xp, uint32_t yp,
                        const fly::DSPartitionGeometry& geometry,
                        const fly::DSPartInstances& instances,
                        const fly::DSPartInstConnections& inst_connections,
-                       const fly::DSPartNetConnections& net_connections) {
+                       const fly::DSPartitionNets& nets) {
     return nb::cast(fly::ds_verify_partition(
-        partition_id, xp, yp, geometry, instances, inst_connections,
-        net_connections));
+        partition_id, xp, yp, geometry, instances, inst_connections, nets));
 });
 
 // S10 全局校验（单任务）：损坏类写报告字段，不在此处 fatal——纯函数可

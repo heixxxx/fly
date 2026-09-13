@@ -151,13 +151,14 @@ public:
 };
 
 // S10 分区级校验（每分区一任务调用；只读本分区四类正式产物——分区对象
-// 按类拆写为四对象，签名对齐产物形态而非聚合容器）。
+// 按类拆写为四对象，签名对齐产物形态而非聚合容器；NETS 参数 = 重组后的
+// DSPartitionNets 两表，2026-09-13 裁定）。
 DSPartitionCheckResult ds_verify_partition(
     uint32_t partition_id, uint32_t xp, uint32_t yp,
     const DSPartitionGeometry& geometry,
     const DSPartInstances& instances,
     const DSPartInstConnections& inst_connections,
-    const DSPartNetConnections& net_connections);
+    const DSPartitionNets& nets);
 
 // 分区网格覆盖校验（损坏类，独立可测）：core 并集对 global_density 域
 // 无缝覆盖 = 全部 core 在域内 + 切线对齐格边界 + 两两不重叠（半开，
