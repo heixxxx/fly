@@ -26,6 +26,11 @@ S7 跨块连接归并：EXDSNetUnion（find/members/class_count/dangling 只读�
 ds_collect_net_union_slice（每父块 DEF 一收集）/ ds_build_net_union（全局
 汇总：两层化 + root 规范化 + 悬空计数）/ ds_net_union_child_indexes（编排
 辅助：def 序号 → 子定义序号集）。
+S10 汇总校验：EXDSIdDomain（id 连续性观测域）/ EXDSPartitionCheckResult
+（分区级校验结果，Python 面仅规模计数）/ EXDSDesignCheckReport（全局校验
+报告，正式对象 "verify_report"）+ ds_verify_partition（每分区一校验）/
+ds_verify_design（全局汇总校验）/ ds_verify_report_or_fatal（损坏类处置：
+非空即 fatal 退出码 80——阻断损坏库冻结）。
 """
 
 from _fly_emir_design import (
@@ -36,10 +41,12 @@ from _fly_emir_design import (
     EXDSDefNetsStats,
     EXDSDefParseStats,
     EXDSDesign,
+    EXDSDesignCheckReport,
     EXDSHierNode,
     EXDSHierTree,
     EXDSDensityGrid,
     EXDSGeomEntry,
+    EXDSIdDomain,
     EXDSInstance,
     EXDSInstanceStats,
     EXDSLayer,
@@ -61,6 +68,7 @@ from _fly_emir_design import (
     EXDSStack,
     EXDSNetUnion,
     EXDSNetUnionSlice,
+    EXDSPartitionCheckResult,
     EXDSViaCell,
     ds_build_hier_tree,
     ds_build_net_union,
@@ -78,4 +86,7 @@ from _fly_emir_design import (
     ds_parse_def_header,
     ds_parse_def_nets,
     ds_parse_tech_lef,
+    ds_verify_design,
+    ds_verify_partition,
+    ds_verify_report_or_fatal,
 )

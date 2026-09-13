@@ -350,11 +350,16 @@ S2 cell lef 解析（每文件一并行任务，无业务合并）
   - **前置：DEF obstruction 收录（D17 修订）**：S4 头扫描增 `defrSetBlockageCbk`（LAYER 型逐矩形收录 → `DSBlockBuildData.obstructions_`，block 局部坐标 × def_units 换全局 DBU；未定义层条目级丢弃 + 计数、多边形 BLOCKAGE 首版不收录 + 计数、PLACEMENT 型无几何跳过），flow 侧经临时对象转入 per-DEF 产物；S9 展开逐位置换全局坐标入 net 0 + obs 位。
   - **测试**：ds_flatten_test.cpp 12 用例（primary 恰一 + extend 副本 + 半开区间边界/子定义复合变换/几何副本不裁剪 + is_crossing/via 图形挂 net + 放置点 primary/OBS net 0 桶/非 pg 全量补全/pg 过滤/inst_connections 跟随副本/电源引脚预展开/merge 幂等 + 序列化往返）+ ds_def_adapter_test BLOCKAGE 收录断言 + QA S9 段（test_emir_partition.py '2x1' 双分区 + test_emir_project_design.py 单分区，全部手算锁定）。
 
-**S10 汇总校验 + 冻结** —— ⬜ 待实施
+**S10 汇总校验 + 冻结** —— ✅（2026-09-13 完成，十阶段收官）
 - 全局统计（实例/网/连接/图形计数、分区分布、跨分区网数、密度总量）。
 - 完整性校验：global id 无空洞重复；并查集连通性自洽；分区网格无缝覆盖 DIEAREA 包围盒；密度守恒（合并前后/切分前后总量一致）；namemap 双向一致。
 - **2026-09-13 裁定补记（校验分级定稿）**：**损坏类 → fatal message**（并查集不自洽 / 分区不无缝覆盖 / namemap 双向不一致——结构破坏，db 不能带病冻结）；**观测类 → user warn message**（id 连续性——空洞/重复可能丢数据但业务数据本身没有问题；密度守恒——仅影响分区结果，不损业务数据）。密度守恒按 **primary 口径**校验（Σ 各分区 primary 计数 = 树展开总数；副本不计——副本语义下分区总和必然大于全局）。任务组织：每分区一校验任务（并行读单分区产物）+ 全局汇总校验任务（id 连续性/覆盖/总量/namemap）。
 - 提交冻结任务（freeze task，flow 异步四步范式收尾，开发规则 §3）。
+- **实施备注（2026-09-13 落地）**：
+  - **结构与算法**：`src/emir/design/cpp/ds_verify.h/.cpp`（`DSIdDomain` id 连续性观测域 + `DSPartitionCheckResult` 分区级校验结果——计数 + 全局校验素材 id 集 + `DSDesignCheckReport` 全局报告——损坏类三字段 union_inconsistency_/coverage_gap_/namemap_inconsistency_ 非空即 fatal（`ds_verify_report_or_fatal` 逐项处置，DSGN::0019/0020/0021 码 80）+ 观测类三域 + density_variance_（DSGN::0022/0023）+ 全局统计（DSGN::0024 INFO）+ `ds_verify_partition`（每分区一调用，只读本分区四类正式产物）/ `ds_verify_design`（纯函数不直接 fatal——损坏类写报告字段，处置权在调用方））+ 导出面（EXDSIdDomain/EXDSPartitionCheckResult/EXDSDesignCheckReport + 三函数）+ `load_design_verify_report`（R9 wait_obj 形态）+ `VERIFY_REPORT_OBJ = "verify_report"`。
+  - **校验口径**（写清精确对齐）：①instance 域 expected = Σ 树节点 instance_count − (非 root 节点数) − 1（扣除各非 root 定义的 local 0 保留槽与 root 自身 global 0——root 无实体副本不入分区）；actual = 全部分区 INSTANCES distinct id 并集；duplicates = 多 primary 直方图超量（UNPLACED 实例是合法空洞）。②net 域 expected = Σ net_count（[0, Σ) 连续）；actual = 分区产物覆盖的 distinct 网 id（geometry 含非 OBS 条目的键——net 0 桶纯 OBS 不计 + crossing + 两类连接表键与端点引用）；空网（无几何无连接）是合法空洞。③via 域 actual = per-DEF 网产物 via_instances_ 键经 (节点 via_start + local − 1) 换算的并集（via instance 不入分区产物，权威存储只在 S5b 产物）。④密度守恒 primary 口径 = Σ 各分区 primary 计数 vs Σ 首份定义 (stats.instance_count − stats.unplaced_count)（树展开可放置实例总数——leaf/各级 block 实例/fake cell 实例恰一 global id 恰一 primary；UNPLACED 扣除；重名定义保留首份与树构建同语义）。⑤覆盖校验 = 分区 core 行列网格性质（切线集一致 + (xp,yp) 完整恰一次 + core 边界恰为切线段）+ 外沿与切线对齐 global_density 格网覆盖域（int64 域运算防 cols×bin 溢出；空表 + 未配置格网放行）。⑥namemap = cell/pin/via cell/layer 四全局 hasher + 每伴生 instance/net hasher 全查双向闭环（for_each (name,id) → get_name(id) == name）；树节点引用的 block 定义不在名字表并入 namemap 损坏描述。
+  - **flow 挂接形态**：校验链由 S9 plan 任务动态提交（merge 之后、freeze 之前——与 freeze 同一动态链）：每分区一校验任务并行（inputs 只声明本分区四类对象——不跨区读红线）→ 全局汇总校验任务（读全部校验结果临时对象 + 树 + DSDesign + stack + global_density + net_union + per-DEF blocks/nets/names）→ freeze（final_keys 增 verify_report、temp_keys 增校验结果临时对象）。损坏类 fatal = 进程码 80 退出 + master 联动，report 不落盘、freeze 依赖缺失——损坏库不冻结（fatal 语义 + 依赖挂接双保险）；观测类 warn 不阻断。
+  - **测试**：ds_verify_test.cpp 22 用例（分区计数与 id 素材/net 0 纯 OBS 不计覆盖/覆盖完整网格 + 单分区 + 缺格 + 行列边界 + 覆盖域不对齐 + 空设计放行/并查集自洽 + 两层破坏 + members 不一致/namemap 闭环 + 单向断裂/id 空洞重复计数（warn 不 fatal）/primary 守恒过 + 偏差报出/全局统计/报告序列化往返/fatal fork rc=80 ×3 + 干净报告不 fatal）+ QA S10 段（test_emir_partition '2x1' 全干净路径手算 + test_emir_project_design 单分区——UNPLACED top2 实例空洞 1 触发 DSGN::0022 观测 warn 不阻断冻结，统计手算锁定）。
 
 ### 3.3 并行机会汇总
 
@@ -636,7 +641,7 @@ src/emir/design/                      # 模块简写 DS（总流程裁定 12 已
 └── (lefdef 经 src/lefdef 模块引入，不经本目录 third_party)
 ```
 
-- flow 装配：`build_design_db(name, def_path, lef_paths, lib_db, settings, alpha)`（总流程 §5 API 表 + 裁定 18；design db 配置键表见本文 §6）；内部 S2/S4（每文件一并行任务 + 全局汇总）、S5a（每 DEF 两并行任务）、S5b（每 DEF 一任务，内部分批）为**并行任务形态，无业务合并，不使用 MapReduceJob**；S9 为两级任务（展开任务按 block 定义切分、小 DEF 按阈值聚合 + 每分区一合并任务——分区侧有真实合并语义）；S1/S3/S6/S7/S8/S10 为直接任务链；冻结任务依赖全部产物对象。
+- flow 装配：`build_design_db(name, def_path, lef_paths, lib_db, settings, alpha)`（总流程 §5 API 表 + 裁定 18；design db 配置键表见本文 §6）；内部 S2/S4（每文件一并行任务 + 全局汇总）、S5a（每 DEF 两并行任务）、S5b（每 DEF 一任务，内部分批）为**并行任务形态，无业务合并，不使用 MapReduceJob**；S9 为两级任务（展开任务按 block 定义切分、小 DEF 按阈值聚合 + 每分区一合并任务——分区侧有真实合并语义），S10 校验链由 S9 plan 任务动态提交（每分区一校验 + 全局汇总校验，merge 后 freeze 前）；S1/S3/S6/S7/S8 为直接任务链；冻结任务依赖全部产物对象（含 verify_report 校验报告）。
 - 消息注册：`DSGN::NNNN`（D21），典型条目——重复 macro 抛弃 / lef-lib 不匹配 / 悬空 port / UNPLACED 跳过计数 / 引用缺失 raise 前的最后报告。
 - 测试策略：单测（结构化断言 + 序列化往返 + 兜底语义，同 lib_parser_test 模式）+ QA e2e（多 block 层级小设计 → 建库 → 分区 → 校验断言，含并查集归并/global id 区间/密度守恒）。
 

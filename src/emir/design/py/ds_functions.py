@@ -105,6 +105,21 @@ def load_partition(db, xp: int, yp: int):
                  for kind in _PARTITION_KINDS)
 
 
+@wait_obj(inputs=lambda db: [db.get_full_name(DesignDb.VERIFY_REPORT_OBJ)])
+def load_design_verify_report(db):
+    """读取 S10 全局校验报告（EXDSDesignCheckReport：损坏类三字段
+    union_inconsistency/coverage_gap/namemap_inconsistency——非空即损坏
+    （正常冻结的 db 恒空串）；观测类 instance_ids/net_ids/via_ids 三域
+    （expected/actual/holes/duplicates）与 density_variance；全局统计
+    total_primary/total_instances/total_nets 等——DSGN::0024 INFO 同源）。
+
+    调用规范见模块 docstring：task 内调用须
+    `load_design_verify_report.deps(db)` 传播依赖 +
+    `run_direct(load_design_verify_report, db)` 直跑。
+    """
+    return db.read_object(DesignDb.VERIFY_REPORT_OBJ)
+
+
 @wait_obj(inputs=lambda db, pin_tables=False, pin_geometries=False: (
     [db.get_full_name(DesignDb.DESIGN_OBJ)]
     + ([db.get_full_name(DesignDb.PIN_TABLES_OBJ)] if pin_tables else [])

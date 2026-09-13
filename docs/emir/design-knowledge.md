@@ -193,7 +193,7 @@ EMIR（Electro-Migration 与 IR-Drop 分析）工具链的输入是芯片版图�
 | S7 | 并查集 port 连接归并（仅 port 相连网、两层树、root = 层级最高/同级最小 global id、悬空 port root=自身 + DSGN::0018 计数；`ds_union.h/.cpp` + `load_design_net_union`） | ✅ |
 | S8 | 密度图合并 + 分区决策（core/extend 双区域，非边缘扩 2×最高有效层宽、最外围 int32 极值；通道比重 6:2:2；三键优先级 target_partitions > partition_count > partition_target_density 默认 15 万；block instance bbox 不计局部密度） | ✅ |
 | S9 | flatten 展平 + 分区保存（展开任务按 block 定义切分 + 小 DEF 按阈值聚合 + 每分区一合并任务；归属 = 放置点 core 半开区间 primary 恰一 + extend 副本；四类对象 PART_{xp}_{yp}/{GEOMETRY,INSTANCES,INST_CONNECTIONS,NET_CONNECTIONS}——geometry 以 net id 组织（不换算 root）、OBS 入 net 0 + obs 位、非 pg 连接全量补全 / pg 靠 instance 维度拼装；电源引脚预展开 D18；复合变换存树节点使每份 DEF 数据只读一次；`ds_flatten.h/.cpp` + `load_partition`/`iter_design_partition`） | ✅ |
-| S10 | 校验 + DSDesign 冻结持久化 | 后续 |
+| S10 | 汇总校验 + 冻结前置（2026-09-13 校验分级裁定：**损坏类 fatal**——并查集不自洽 DSGN::0019 / 分区网格未无缝覆盖 DSGN::0020 / namemap 双向不一致 DSGN::0021，码 80 退出 + master 联动阻断冻结；**观测类 warn**——global id 连续性空洞/重复 DSGN::0022、密度守恒 primary 口径偏差 DSGN::0023，不阻断；统计汇总 DSGN::0024 INFO。每分区一校验任务并行读单分区产物（不跨区读）+ 全局汇总校验任务（由 S9 plan 动态提交排在 merge 后 freeze 前）；校验报告 `verify_report` 正式对象挂 freeze final_keys——校验未完成不冻结；密度守恒口径：Σ 各分区 primary 实例计数 = Σ 首份定义 (实例数 − UNPLACED)，副本不计；`ds_verify.h/.cpp` + `load_design_verify_report`） | ✅ |
 
 第二阶段重构批次 R1-R9 全部完成（2026-09-12）：R1 geometry 独立模块+GEOTransform、
 R2 layer id 化、R3 CM_FLAGS、R4 pin 三字段按 pin 维度、R5 port/block 复用+VIARULE 删除、

@@ -15,7 +15,9 @@ density_bin_size=1（bin 1000 DBU → 格网 4×2）+ target_partitions '2x1'。
 验证：S8 分区数、core/extend 坐标（最外围 int32 极值 / 内侧 ±2w）、全局密
 度三通道计数；S9 四类分区对象（primary 恰一 + extend 副本、geometry 副本
 不裁剪 + is_crossing、OBS → net 0 桶、非 pg 连接全量补全、电源引脚预展
-开、alpha 聚合阈值键）。
+开、alpha 聚合阈值键）；S10 汇总校验 + 冻结（verify_report 手算锁定：损
+坏类三字段空、id 域无空洞重复、primary 守恒、统计汇总 DSGN::0024，正常路
+径无 fatal/warn）。
 """
 import os
 import shutil
@@ -163,6 +165,57 @@ INFO("[OK] S9 connections: non-pg net fully completed in both partitions, "
 assert design_db.read_object(
     design_db.ALPHA_SETTINGS_OBJ).def_aggregate_threshold == 64 * 1024 * 1024
 INFO("[OK] S9 alpha def_aggregate_threshold persisted with default 64MiB")
+
+# ══ S10：汇总校验 + 冻结（2026-09-13 校验分级裁定：损坏类 fatal / 观测
+# 类 warn；verify_report 正式对象随冻结落盘）══
+# 手算锁定（单 def 层级树 1 节点：inst count 4 = 占位 + 3 实例、net 1、
+# via 0；'2x1' 双分区）：
+#   - 实例域：expected = 4 − 0(非根占位) − 1(root 自身) = 3、actual
+#     {1,2,3} = 3 → holes 0；primary {1,2(×p0), 3(×p1)} 无多 primary →
+#     duplicates 0；
+#   - 密度守恒 primary 口径：Σ primary = 3 = Σ 首份定义 (实例数 −
+#     UNPLACED) = 3 − 0 → 无偏差；
+#   - 网域：expected 1、actual {0}（n1 几何 + 连接 + 跨分区标记）→
+#     holes 0；via 域 expected 0 / actual 0；
+#   - 统计：primary 3、副本 4（inv3 extend 副本）、连接 3（nconn 两分区
+#     各 1 + iconn p0 1）、图形条目 3（p0 wire+obs、p1 wire）、跨分区网 1、
+#     密度 inst=3/metal=8/via=0（与 S8 手算一致）。
+from emir.design import load_design_verify_report
+report = load_design_verify_report(design_db)
+assert report.union_inconsistency == "", "frozen db must pass union check"
+assert report.coverage_gap == "", "frozen db must pass coverage check"
+assert report.namemap_inconsistency == "", \
+    "frozen db must pass namemap check"
+assert report.instance_ids.expected == 3 and report.instance_ids.actual == 3
+assert report.instance_ids.holes == 0 and report.instance_ids.duplicates == 0
+assert report.net_ids.holes == 0 and report.via_ids.holes == 0
+assert report.density_variance == ""
+assert report.partition_count == 2
+assert report.total_primary == 3 and report.total_instances == 4
+assert report.total_nets == 1 and report.total_connections == 3
+assert report.total_geometry_entries == 3
+assert report.total_crossing_nets == 1
+assert (report.density_instance_total, report.density_metal_total,
+        report.density_via_total) == (3, 8, 0)
+INFO("[OK] S10 verify report: clean fatal fields, id domains exact, "
+     "primary-conservation pass, stats hand-computed")
+
+# 正常路径无损坏类 fatal、观测类 warn 未触发、统计 INFO 已透出
+msgs_s10 = ""
+for root, _dirs, files in os.walk(LOG_DIR):
+    for fn in files:
+        if fn.endswith(".log"):
+            try:
+                with open(os.path.join(root, fn), errors="ignore") as fh:
+                    msgs_s10 += fh.read()
+            except OSError:
+                pass
+for bad_id in ("DSGN::0019", "DSGN::0020", "DSGN::0021", "DSGN::0022",
+               "DSGN::0023"):
+    assert bad_id not in msgs_s10, f"clean run must not emit {bad_id}"
+assert "DSGN::0024" in msgs_s10, "verify summary INFO should be emitted"
+INFO("[OK] S10 messages: no fatal/warn on clean path, DSGN::0024 summary "
+     "emitted")
 
 get_agent().stop()
 INFO("[PASS] test_emir_partition")

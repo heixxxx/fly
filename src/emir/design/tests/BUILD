@@ -186,6 +186,20 @@ cc_test(
     copts = ["-std=c++20"],
 )
 
+# S10 汇总校验 + 冻结（合成树 + 分区产物，同 ds_flatten_test 模式；fatal
+# 路径 fork 断言需要共享断言设施）
+cc_test(
+    name = "ds_verify_test",
+    srcs = ["ds_verify_test.cpp"],
+    deps = [
+        "@googletest//:gtest_main",
+        "//src/common/testing:fly_common_testing",
+        "//src/emir/design/cpp:fly_emir_design_ds_types",
+    ],
+    linkstatic = True,
+    copts = ["-std=c++20"],
+)
+
 # design flow 错误处理单测（流程错误处理范式 2026-09-13，dev-rules §7.2）
 py_test(
     name = "ds_flow_error_test",

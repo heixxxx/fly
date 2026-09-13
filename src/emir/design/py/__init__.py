@@ -15,10 +15,12 @@ from .ds_export import (  # noqa: F401
     EXDSDefNetsStats,
     EXDSDefParseStats,
     EXDSDesign,
+    EXDSDesignCheckReport,
     EXDSHierNode,
     EXDSHierTree,
     EXDSDensityGrid,
     EXDSGeomEntry,
+    EXDSIdDomain,
     EXDSInstance,
     EXDSInstanceStats,
     EXDSLayer,
@@ -40,6 +42,7 @@ from .ds_export import (  # noqa: F401
     EXDSStack,
     EXDSNetUnion,
     EXDSNetUnionSlice,
+    EXDSPartitionCheckResult,
     EXDSViaCell,
     ds_build_hier_tree,
     ds_build_net_union,
@@ -57,6 +60,9 @@ from .ds_export import (  # noqa: F401
     ds_parse_def_header,
     ds_parse_def_nets,
     ds_parse_tech_lef,
+    ds_verify_design,
+    ds_verify_partition,
+    ds_verify_report_or_fatal,
 )
 
 # 消息 id 注册（全局区直书，导入即生效）
@@ -73,6 +79,7 @@ from .ds_functions import (
     load_block_names,
     load_design,
     load_design_net_union,
+    load_design_verify_report,
     load_name_mapper,
     load_design_stack,
     load_design_with,

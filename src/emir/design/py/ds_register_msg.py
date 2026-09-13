@@ -39,6 +39,22 @@ import 本模块完成注册。仅注册过的 id 才会被 MSG 打印/发送，
   message 结束整个 run）
 - DSGN::0018: S7 悬空 port 网（连接表含 ("PIN", port) 引用但未连接任何
   父网——照常入表 root = 自身 + 计数提醒，2026-09-13 裁定 ④；不 raise）
+- DSGN::0019: S10 汇总校验损坏类——并查集不自洽（root_of_ 两层不变式
+  破坏 / members_of_ 与 root_of_ 双向不一致 = union 结构错误，数据损坏；
+  fatal message 码 80 退出 + master 联动，阻断损坏库冻结）
+- DSGN::0020: S10 汇总校验损坏类——分区网格未无缝覆盖（分区表损坏：
+  网格缺格/重复/行列边界不一致/与全局密度格网覆盖域不对齐；fatal 同上）
+- DSGN::0021: S10 汇总校验损坏类——namemap 双向不一致（cell/pin/via
+  cell/layer 四全局 hasher + 每伴生 instance/net hasher 全查闭环断裂 =
+  映射损坏；fatal 同上）
+- DSGN::0022: S10 汇总校验观测类——global id 连续性（instance/net/via
+  三域的空洞/重复计数；空洞含 UNPLACED 实例/空网/root 自身等合法形态，
+  可能丢数据但业务数据本身没问题；user warn，不阻断冻结）
+- DSGN::0023: S10 汇总校验观测类——密度守恒 primary 口径偏差（Σ 各分区
+  primary 实例计数 ≠ Σ 首份定义 (实例数 − UNPLACED)；仅影响分区结果；
+  user warn，不阻断冻结）
+- DSGN::0024: S10 全局统计汇总（分区数/实例 primary 与副本/网/连接/图形
+  条目/跨分区网/密度三通道总量；INFO）
 """
 
 from fly import register_message_id
@@ -61,3 +77,9 @@ register_message_id("DSGN::0015", "FATAL")
 register_message_id("DSGN::0016", "FATAL")
 register_message_id("DSGN::0017", "FATAL")
 register_message_id("DSGN::0018", "WARN")
+register_message_id("DSGN::0019", "FATAL")
+register_message_id("DSGN::0020", "FATAL")
+register_message_id("DSGN::0021", "FATAL")
+register_message_id("DSGN::0022", "WARN")
+register_message_id("DSGN::0023", "WARN")
+register_message_id("DSGN::0024", "INFO")

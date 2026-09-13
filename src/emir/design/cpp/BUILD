@@ -19,6 +19,7 @@ cc_library(
         "ds_partition.cpp",
         "ds_types.cpp",
         "ds_union.cpp",
+        "ds_verify.cpp",
     ],
     hdrs = [
         "ds_def_adapter.h",
@@ -33,6 +34,7 @@ cc_library(
         "ds_transform_util.h",
         "ds_types.h",
         "ds_union.h",
+        "ds_verify.h",
     ],
     strip_include_prefix = "/src",
     copts = ["-std=c++20"],

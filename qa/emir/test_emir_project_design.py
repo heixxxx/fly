@@ -33,6 +33,9 @@ name——pin 名经容器 pin hasher、实例/网名经 DSBlockNames_<i> 伴生
   - S9 任务组（flatten 展平 + 分区保存，2026-09-13 裁定补记①-⑤：两级
     任务 plan→展开→每分区合并→freeze；单分区场景全 primary + BLOCKAGE
     入 net 0 桶 + 电源引脚预展开 + 连接补全）；
+  - S10 任务组（汇总校验 + 冻结，2026-09-13 校验分级裁定：损坏类三检查
+    全过、verify_report 手算锁定——实例域 holes=1 为 UNPLACED 合法空洞
+    触发 DSGN::0022 观测 warn、primary 守恒过、统计 DSGN::0024，无 fatal）；
   - ⑱ load_design_with 统一加载注入 + load_project 动态还原。
 """
 import os
@@ -657,6 +660,62 @@ assert sorted((c.net_global_id, c.pin_name) for c in u1c) == \
 INFO("[OK] S9 connections: non-pg net completion follows net copies, "
      "inst connections follow instance copies (pg n2 reachable via "
      "instance dimension)")
+
+# ── S10：汇总校验 + 冻结（2026-09-13 校验分级裁定：损坏类 fatal / 观测
+# 类 warn；verify_report 正式对象随冻结落盘）──
+# 手算锁定（层级树 2 节点：root inst count 4 + child count 2、nets 1+2、
+# vias 0+1；单分区；top2 UNPLACED）：
+#   - 实例域：expected = (4+2) − 1(非根占位槽) − 1(root 自身) = 4、actual
+#     {1,3,5} = 3 → holes 1（global 2 = UNPLACED top2 合法空洞）→ 触发
+#     DSGN::0022 观测 warn（不阻断冻结）；
+#   - 密度守恒 primary 口径：Σ primary = 3 = Σ 首份定义 (实例数 −
+#     UNPLACED) = (1−0) + (3−1) → 无偏差、无 DSGN::0023；
+#   - 网域：expected 3、actual {0,1,2}（net 0 经 INST_CONNECTIONS 端点
+#     引用覆盖；geometry 的 net 0 桶仅 OBS 不计）→ holes 0；
+#   - via 域：expected 1（child VIA12 → global 0）、actual {0} → holes 0；
+#   - 统计：primary 3、副本 3、网 3、连接 9（nconn 2 + iconn 7：top1 1 +
+#     top3 3 + u1 2 + root 自身 port 连接（INST_CONNECTIONS 键 0）1）、
+#     图形条目 5（OBS 1 + n1 wire/via 4）、跨分区网 0、密度 inst=2/metal=1/
+#     via=1（与 S8 手算一致）。
+from emir.design import load_design_verify_report
+report = load_design_verify_report(design_db)
+assert report.union_inconsistency == "" and report.coverage_gap == "" \
+    and report.namemap_inconsistency == "", \
+    "frozen db must pass all corrupt-class checks"
+assert report.instance_ids.expected == 4
+assert report.instance_ids.actual == 3
+assert report.instance_ids.holes == 1, "UNPLACED top2 (global 2) is a hole"
+assert report.instance_ids.duplicates == 0
+assert report.net_ids.actual == 3 and report.net_ids.holes == 0
+assert report.via_ids.actual == 1 and report.via_ids.holes == 0
+assert report.density_variance == ""
+assert report.partition_count == 1
+assert report.total_primary == 3 and report.total_instances == 3
+assert report.total_nets == 3 and report.total_connections == 9
+assert report.total_geometry_entries == 5
+assert report.total_crossing_nets == 0
+assert (report.density_instance_total, report.density_metal_total,
+        report.density_via_total) == (2, 1, 1)
+INFO("[OK] S10 verify report: clean fatal fields, instance hole=1 "
+     "(UNPLACED), primary-conservation pass, stats hand-computed")
+
+# S10 消息透出：观测类 warn（实例空洞）+ 统计 INFO，损坏类 fatal 无
+msgs_s10 = ""
+for root, _dirs, files in os.walk(LOG_DIR):
+    for fn in files:
+        if fn.endswith(".log"):
+            try:
+                with open(os.path.join(root, fn), errors="ignore") as fh:
+                    msgs_s10 += fh.read()
+            except OSError:
+                pass
+for bad_id in ("DSGN::0019", "DSGN::0020", "DSGN::0021", "DSGN::0023"):
+    assert bad_id not in msgs_s10, f"this run must not emit {bad_id}"
+assert "DSGN::0022" in msgs_s10, \
+    "instance id hole (UNPLACED top2) should trigger continuity warn"
+assert "DSGN::0024" in msgs_s10, "verify summary INFO should be emitted"
+INFO("[OK] S10 messages: DSGN::0022 continuity warn + DSGN::0024 summary, "
+     "no fatal (observational-only run)")
 
 # ── load_project 动态还原 ──
 import fly

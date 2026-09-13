@@ -138,7 +138,6 @@ int ds_merge_def_header(DSDesign& dst, const CMVector<DSCell>& block_cells,
         const uint32_t pin_base =
             static_cast<uint32_t>(dst.pin_names_.name_table_.size());
         for (uint32_t pi = 0; pi < blk.pin_count(); ++pi) {
-            const DSPin& p = blk.pin_at(pi);
             if (pi >= port_names.size()) {
                 continue;  // 名单缺失（调用方契约错误，防御不越界）
             }

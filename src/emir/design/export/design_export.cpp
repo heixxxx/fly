@@ -30,6 +30,7 @@
 #include <emir/design/cpp/ds_net_pipeline.h>
 #include <emir/design/cpp/ds_types.h>
 #include <emir/design/cpp/ds_union.h>
+#include <emir/design/cpp/ds_verify.h>
 #include <emir/lib/cpp/lib_types.h>
 
 #include <nanobind/nanobind.h>
@@ -1318,6 +1319,134 @@ FLY_EXPORT_FUNCTION("ds_flatten_block",
         out.append(nb::make_tuple(pid, nb::cast(std::move(product))));
     }
     return out;
+});
+
+// ── S10 汇总校验 + 冻结（2026-09-13 校验分级裁定：损坏类 fatal / 观测
+// 类 warn；报告随 "verify_report" 正式对象落盘）────────────────────────
+
+// id 连续性观测域（expected = 树区间推导应达 id 数；actual = 分区产物
+// distinct 覆盖；holes/duplicates = 观测 warn 口径）
+FLY_EXPORT_CLASS(fly::DSIdDomain, "EXDSIdDomain")
+    FLY_EXPORT_INIT()
+    FLY_EXPORT_READONLY_ATTR("expected", &fly::DSIdDomain::expected_)
+    FLY_EXPORT_READONLY_ATTR("actual", &fly::DSIdDomain::actual_)
+    FLY_EXPORT_READONLY_ATTR("holes", &fly::DSIdDomain::holes_)
+    FLY_EXPORT_READONLY_ATTR("duplicates", &fly::DSIdDomain::duplicates_)
+    FLY_EXPORT_SERIALIZE_PICKLE(fly::DSIdDomain);
+
+// 分区级校验结果（每分区一任务产出；计数 + 全局校验素材 id 集——id 域
+// 判定集中在全局任务，Python 面仅规模计数）
+FLY_EXPORT_CLASS(fly::DSPartitionCheckResult, "EXDSPartitionCheckResult")
+    FLY_EXPORT_INIT()
+    FLY_EXPORT_READONLY_ATTR("partition_id",
+                             &fly::DSPartitionCheckResult::partition_id_)
+    FLY_EXPORT_READONLY_ATTR("primary_instance_count",
+                             &fly::DSPartitionCheckResult::primary_instance_count_)
+    FLY_EXPORT_READONLY_ATTR("instance_count",
+                             &fly::DSPartitionCheckResult::instance_count_)
+    FLY_EXPORT_READONLY_ATTR("net_count",
+                             &fly::DSPartitionCheckResult::net_count_)
+    FLY_EXPORT_READONLY_ATTR("crossing_net_count",
+                             &fly::DSPartitionCheckResult::crossing_net_count_)
+    FLY_EXPORT_READONLY_ATTR("geometry_entry_count",
+                             &fly::DSPartitionCheckResult::geometry_entry_count_)
+    FLY_EXPORT_READONLY_ATTR("connection_count",
+                             &fly::DSPartitionCheckResult::connection_count_)
+    FLY_EXPORT_SERIALIZE_PICKLE(fly::DSPartitionCheckResult);
+
+// 全局校验报告（S10 正式对象 "verify_report"；损坏类字段非空即 fatal，
+// 观测类字段随 warn 透出）
+FLY_EXPORT_CLASS(fly::DSDesignCheckReport, "EXDSDesignCheckReport")
+    FLY_EXPORT_INIT()
+    FLY_EXPORT_READONLY_ATTR("union_inconsistency",
+                             &fly::DSDesignCheckReport::union_inconsistency_)
+    FLY_EXPORT_READONLY_ATTR("coverage_gap",
+                             &fly::DSDesignCheckReport::coverage_gap_)
+    FLY_EXPORT_READONLY_ATTR("namemap_inconsistency",
+                             &fly::DSDesignCheckReport::namemap_inconsistency_)
+    FLY_EXPORT_READONLY_ATTR("instance_ids",
+                             &fly::DSDesignCheckReport::instance_ids_)
+    FLY_EXPORT_READONLY_ATTR("net_ids", &fly::DSDesignCheckReport::net_ids_)
+    FLY_EXPORT_READONLY_ATTR("via_ids", &fly::DSDesignCheckReport::via_ids_)
+    FLY_EXPORT_READONLY_ATTR("density_variance",
+                             &fly::DSDesignCheckReport::density_variance_)
+    FLY_EXPORT_READONLY_ATTR("expected_instances",
+                             &fly::DSDesignCheckReport::expected_instances_)
+    FLY_EXPORT_READONLY_ATTR("expected_nets",
+                             &fly::DSDesignCheckReport::expected_nets_)
+    FLY_EXPORT_READONLY_ATTR("expected_vias",
+                             &fly::DSDesignCheckReport::expected_vias_)
+    FLY_EXPORT_READONLY_ATTR("total_primary",
+                             &fly::DSDesignCheckReport::total_primary_)
+    FLY_EXPORT_READONLY_ATTR("total_instances",
+                             &fly::DSDesignCheckReport::total_instances_)
+    FLY_EXPORT_READONLY_ATTR("total_nets",
+                             &fly::DSDesignCheckReport::total_nets_)
+    FLY_EXPORT_READONLY_ATTR("total_connections",
+                             &fly::DSDesignCheckReport::total_connections_)
+    FLY_EXPORT_READONLY_ATTR("total_geometry_entries",
+                             &fly::DSDesignCheckReport::total_geometry_entries_)
+    FLY_EXPORT_READONLY_ATTR("total_crossing_nets",
+                             &fly::DSDesignCheckReport::total_crossing_nets_)
+    FLY_EXPORT_READONLY_ATTR("density_instance_total",
+                             &fly::DSDesignCheckReport::density_instance_total_)
+    FLY_EXPORT_READONLY_ATTR("density_metal_total",
+                             &fly::DSDesignCheckReport::density_metal_total_)
+    FLY_EXPORT_READONLY_ATTR("density_via_total",
+                             &fly::DSDesignCheckReport::density_via_total_)
+    FLY_EXPORT_READONLY_ATTR("partition_count",
+                             &fly::DSDesignCheckReport::partition_count_)
+    FLY_EXPORT_SERIALIZE_PICKLE(fly::DSDesignCheckReport);
+
+// S10 分区级校验（每分区一任务调用；只读本分区四类正式产物——对象按类
+// 拆写为四对象，签名对齐产物形态）
+FLY_EXPORT_FUNCTION("ds_verify_partition",
+                    [](uint32_t partition_id, uint32_t xp, uint32_t yp,
+                       const fly::DSPartitionGeometry& geometry,
+                       const fly::DSPartInstances& instances,
+                       const fly::DSPartInstConnections& inst_connections,
+                       const fly::DSPartNetConnections& net_connections) {
+    return nb::cast(fly::ds_verify_partition(
+        partition_id, xp, yp, geometry, instances, inst_connections,
+        net_connections));
+});
+
+// S10 全局校验（单任务）：损坏类写报告字段，不在此处 fatal——纯函数可
+// 测；调用方经 ds_verify_report_or_fatal 处置
+FLY_EXPORT_FUNCTION("ds_verify_design",
+                    [](const fly::DSHierTree& tree,
+                       const fly::DSDesign& design,
+                       const fly::DSStack& stack,
+                       const fly::DSDensityGrid& global_density,
+                       const fly::DSNetUnion& net_union, nb::list blocks,
+                       nb::list nets, nb::list names, nb::list checks) {
+    fly::CMVector<const fly::DSBlockBuildData*> block_ptrs;
+    for (nb::handle item : blocks) {
+        block_ptrs.push_back(&nb::cast<const fly::DSBlockBuildData&>(item));
+    }
+    fly::CMVector<const fly::DSNetBuildData*> net_ptrs;
+    for (nb::handle item : nets) {
+        net_ptrs.push_back(&nb::cast<const fly::DSNetBuildData&>(item));
+    }
+    fly::CMVector<const fly::DSBlockNames*> name_ptrs;
+    for (nb::handle item : names) {
+        name_ptrs.push_back(&nb::cast<const fly::DSBlockNames&>(item));
+    }
+    fly::CMVector<const fly::DSPartitionCheckResult*> check_ptrs;
+    for (nb::handle item : checks) {
+        check_ptrs.push_back(
+            &nb::cast<const fly::DSPartitionCheckResult&>(item));
+    }
+    return nb::cast(fly::ds_verify_design(
+        tree, design, stack, global_density, net_union, block_ptrs, net_ptrs,
+        name_ptrs, check_ptrs));
+});
+
+// 损坏类处置：报告损坏类字段非空即 MSG_FATAL_EXIT（码 80 退出 + master
+// 联动）——S10 全局校验任务调用，阻断损坏库冻结
+FLY_EXPORT_FUNCTION("ds_verify_report_or_fatal",
+                    [](const fly::DSDesignCheckReport& report) {
+    fly::ds_verify_report_or_fatal(report);
 });
 
 // ── R7 全局 name 组装（㊻ 注入式轻壳 + ㊵② 统一组装工厂）────────────

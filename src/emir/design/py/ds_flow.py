@@ -56,11 +56,20 @@
     每份 DEF 数据只读一次；ds_flatten_block 全位置展开 + 分区分流，每
     任务对全部分区各写一份分片临时对象）→ 每分区一合并任务（真实合并语
     义：merge 全部相关分片 → 四类正式对象 PART_{xp}_{yp}/{GEOMETRY,
-    INSTANCES,INST_CONNECTIONS,NET_CONNECTIONS} 唯一写定）→ freeze 任务
-    （依赖静态正式对象 + 全部分区对象；分片临时对象清理）
+    INSTANCES,INST_CONNECTIONS,NET_CONNECTIONS} 唯一写定）
+  → S10 任务组（汇总校验 + 冻结前置，由 S9 plan 任务动态提交排在 freeze
+    之前，2026-09-13 校验分级裁定）：每分区一校验任务（并行读单分区四类
+    正式产物——红线：不跨区读）→ 全局汇总校验任务（读全部校验结果 + 树
+    + DSDesign + stack + global_density + net_union + per-DEF 产物与伴生
+    名；损坏类——并查集不自洽/分区覆盖断裂/namemap 双向不一致——经
+    ds_verify_report_or_fatal fatal 退出（码 80 + master 联动），report
+    不落盘、freeze 依赖缺失——损坏库不冻结；观测类——id 连续性空洞/重复
+    DSGN::0022、密度守恒 primary 口径偏差 DSGN::0023——user warn 不阻断；
+    统计汇总 DSGN::0024 INFO；报告写 verify_report 正式对象）
   → freeze task（依赖 DSDesign/DSStack/DSPinTables/DSPinGeometry/
     DSBlock_*/DSBlockNames_*/DSNet_*/global_density/net_union/全部分区对
-    象写完 + 中间对象清理——由 S9 plan 任务动态提交）
+    象/verify_report 写完 + 中间对象清理（分片 + 校验结果临时对象）——
+    由 S9 plan 任务动态提交）
 
 流程入口 build_design_db 在 ds_db.py（UserDoc + Schema + @register_flow）。
 约定（择简，UserDoc 同步注明）：lef_paths[0] 为 tech lef（确立 DBU 基准
@@ -90,6 +99,9 @@ from .ds_export import (
     ds_merge_def_header,
     ds_merge_global_density,
     ds_net_union_child_indexes,
+    ds_verify_design,
+    ds_verify_partition,
+    ds_verify_report_or_fatal,
 )
 from .ds_utils import (
     ds_parse_cell_one,
@@ -551,14 +563,16 @@ def _net_union_summary_task(db, hier_key, slice_keys, union_key):
 
 @as_task(inputs=lambda db, design_key, global_density_key, hier_key,
          block_names_key, alpha_key, geoms_key, block_keys, net_keys,
-         names_keys, def_paths, slice_prefix, formal_keys, temp_keys: [
+         names_keys, def_paths, slice_prefix, verify_prefix, stack_key,
+         net_union_key, formal_keys, temp_keys: [
     db.get_full_name(design_key), db.get_full_name(global_density_key),
     db.get_full_name(hier_key), db.get_full_name(block_names_key),
     db.get_full_name(alpha_key),
 ])
 def _s9_plan_task(db, design_key, global_density_key, hier_key,
                   block_names_key, alpha_key, geoms_key, block_keys,
-                  net_keys, names_keys, def_paths, slice_prefix, formal_keys,
+                  net_keys, names_keys, def_paths, slice_prefix,
+                  verify_prefix, stack_key, net_union_key, formal_keys,
                   temp_keys):
     """S9 编排计划（依赖 S8 分区表 + S6 树 + block 名清单 + alpha 设置；
     worker 上动态提交展开/合并/freeze 链——同 solver kickoff 动态提交先
@@ -575,6 +589,10 @@ def _s9_plan_task(db, design_key, global_density_key, hier_key,
     首写（实例解析汇总）先于 S8 补分区重写，仅依赖 DSDesign 会在重写前
     被满足而读到无分区表的旧版本（竞态，2026-09-13 QA 实证）——依赖
     global_density 保证读到的是补齐 partitions_ 之后的 DSDesign。
+
+    本任务同时动态提交 S10 校验链（每分区一校验任务 + 全局汇总校验任务，
+    2026-09-13 校验分级裁定）——校验必须排在 merge 之后、freeze 之前：
+    损坏类 fatal 阻断冻结、verify_report 正式对象挂 freeze 依赖。
     """
     import os
     design = db.read_object(design_key)
@@ -629,15 +647,28 @@ def _s9_plan_task(db, design_key, global_density_key, hier_key,
     # 对象唯一写定
     for pid, xp, yp in partitions:
         _s9_partition_merge_task(db, slice_prefix, len(groups), pid, xp, yp)
-    # freeze：正式对象集（静态 + 全部分区对象）+ 中间对象清理（分片）
+    # S10 校验链（每分区一校验任务并行 + 全局汇总校验；2026-09-13 校验
+    # 分级裁定——损坏类 fatal 阻断冻结，观测类 warn 不阻断）
+    verify_keys = []
+    for pid, xp, yp in partitions:
+        verify_key = f"{verify_prefix}{pid}"
+        verify_keys.append(verify_key)
+        _s10_partition_verify_task(db, pid, xp, yp, verify_key)
+    report_key = DesignDb.VERIFY_REPORT_OBJ
+    _s10_design_verify_task(db, verify_keys, design_key, stack_key,
+                            global_density_key, net_union_key, hier_key,
+                            block_keys, net_keys, names_keys, report_key)
+    # freeze：正式对象集（静态 + 全部分区对象 + 校验报告）+ 中间对象清理
+    #（分片 + 校验结果临时对象）——verify_report 在 final_keys 中，校验
+    # 未完成（或 fatal 未产出报告）不冻结
     partition_keys = [DesignDb.partition_obj_name(xp, yp, kind)
                       for _, xp, yp in partitions
                       for kind in DesignDb.PARTITION_KINDS]
     slice_keys = [f"{slice_prefix}{g}_{pid}"
                   for g in range(len(groups))
                   for pid, _, _ in partitions]
-    _freeze_design_task(db, formal_keys + partition_keys,
-                        temp_keys + slice_keys)
+    _freeze_design_task(db, formal_keys + partition_keys + [report_key],
+                        temp_keys + slice_keys + verify_keys)
 
 
 @as_task(inputs=lambda db, design_key, geoms_key, hier_key, block_names_key,
@@ -704,6 +735,101 @@ def _s9_partition_merge_task(db, slice_prefix, n_groups, pid, xp, yp):
                     product.net_connections(), save_to_db=True)
     INFO(f"s9 partition ({xp},{yp}): {product.instance_count} instances, "
          f"{product.geometry_net_count} net geometry bucket(s)")
+
+
+# ── S10：汇总校验 + 冻结前置（2026-09-13 校验分级裁定：损坏类 fatal /
+# 观测类 warn；由 S9 plan 任务动态提交排在 merge 之后、freeze 之前）─────
+
+@as_task(inputs=lambda db, pid, xp, yp, result_key: [
+    db.get_full_name(DesignDb.partition_obj_name(xp, yp, kind))
+    for kind in DesignDb.PARTITION_KINDS
+])
+def _s10_partition_verify_task(db, pid, xp, yp, result_key):
+    """每分区一校验任务（并行读单分区产物——红线：不跨区读）：分区级计
+    数 + 全局校验素材 id 集提取；损坏类判定集中在全局汇总任务（fatal 单
+    点退出）。结果为临时对象，全局校验合并后由 freeze 清理。"""
+    geometry = db.read_object(DesignDb.partition_obj_name(xp, yp, "GEOMETRY"))
+    instances = db.read_object(
+        DesignDb.partition_obj_name(xp, yp, "INSTANCES"))
+    inst_connections = db.read_object(
+        DesignDb.partition_obj_name(xp, yp, "INST_CONNECTIONS"))
+    net_connections = db.read_object(
+        DesignDb.partition_obj_name(xp, yp, "NET_CONNECTIONS"))
+    result = ds_verify_partition(pid, xp, yp, geometry, instances,
+                                 inst_connections, net_connections)
+    db.write_object(result_key, result, save_to_db=False)
+
+
+@as_task(inputs=lambda db, verify_keys, design_key, stack_key, density_key,
+         union_key, hier_key, block_keys, net_keys, names_keys,
+         report_key: (
+    [db.get_full_name(k) for k in verify_keys]
+    + [db.get_full_name(k)
+       for k in (design_key, stack_key, density_key, union_key, hier_key)]
+    + [db.get_full_name(k) for k in block_keys]
+    + [db.get_full_name(k) for k in net_keys]
+    + [db.get_full_name(k) for k in names_keys]))
+def _s10_design_verify_task(db, verify_keys, design_key, stack_key,
+                            density_key, union_key, hier_key, block_keys,
+                            net_keys, names_keys, report_key):
+    """全局汇总校验任务（单任务）：树 + 全部分区校验结果 + net_union +
+    DSDesign（分区表/hashers）+ stack + global_density（覆盖域基准）+
+    per-DEF 产物（via id 域与 UNPLACED 计数）+ 伴生名（namemap 全查）。
+    分级处置：损坏类（并查集/分区覆盖/namemap）→ fatal 退出（码 80 +
+    master 联动）——report 不落盘、freeze 依赖缺失，损坏库不冻结；观测类
+    （id 连续性 DSGN::0022 / 密度守恒 primary 口径 DSGN::0023）→ user
+    warn 不阻断；统计汇总 DSGN::0024 INFO；报告写 verify_report 正式对象
+    （freeze final_keys 依赖——校验未完成不冻结）。"""
+    checks = [db.read_object(k) for k in verify_keys]
+    design = db.read_object(design_key)
+    stack = db.read_object(stack_key)
+    density = db.read_object(density_key)
+    union = db.read_object(union_key)
+    tree = db.read_object(hier_key)
+    blocks = [db.read_object(k) for k in block_keys]
+    nets = [db.read_object(k) for k in net_keys]
+    names = [db.read_object(k) for k in names_keys]
+    report = ds_verify_design(tree, design, stack, density, union, blocks,
+                              nets, names, checks)
+    # 损坏类逐项 fatal（首个非空项触发退出，损坏库到此终止）
+    ds_verify_report_or_fatal(report)
+    # 观测类（不阻断冻结）：id 连续性——空洞含 UNPLACED 实例/空网/root
+    # 自身等合法形态，重复 = instance 多 primary 超量
+    from fly import message
+    domains = []
+    for label, dom in (("instance", report.instance_ids),
+                       ("net", report.net_ids),
+                       ("via", report.via_ids)):
+        if dom.holes or dom.duplicates:
+            domains.append(
+                f"{label}: expected={dom.expected} actual={dom.actual} "
+                f"holes={dom.holes} duplicates={dom.duplicates}")
+    if domains:
+        message("DSGN::0022", 0,
+                "global id continuity (legal hole sources differ per "
+                "domain — instance: UNPLACED; net: empty net; via: none): "
+                + "; ".join(domains))
+    if report.density_variance:
+        message("DSGN::0023", 0,
+                f"density conservation: {report.density_variance}")
+    # 全局统计汇总（INFO）
+    message("DSGN::0024", 0,
+            f"design verify summary: partitions={report.partition_count}, "
+            f"instances {report.total_primary} primary / "
+            f"{report.total_instances} copies, nets "
+            f"{report.total_nets}/{report.expected_nets}, connections "
+            f"{report.total_connections}, geometry entries "
+            f"{report.total_geometry_entries}, crossing nets "
+            f"{report.total_crossing_nets}, density totals "
+            f"inst={report.density_instance_total} "
+            f"metal={report.density_metal_total} "
+            f"via={report.density_via_total}")
+    from log import INFO
+    INFO(f"design verify: partitions={report.partition_count}, "
+         f"primary={report.total_primary}, copies={report.total_instances}, "
+         f"nets={report.total_nets}, connections={report.total_connections}")
+    # 校验报告正式落盘（freeze final_keys 依赖本对象——校验未完成不冻结）
+    db.write_object(report_key, report, save_to_db=True)
 
 
 # ── freeze：依赖正式对象写完 + 中间对象清理（由 S9 plan 任务动态提交，
@@ -878,12 +1004,16 @@ def run_design_flow(db, lef_paths, def_paths, lib_db):
     # S9：flatten 展平 + 分区保存（依赖 S8 分区表 + S6 树 + 全部 per-DEF
     # 产物 + 伴生名；两级任务 + 小 DEF 聚合，plan 任务在 worker 上动态
     # 提交展开/合并任务并收尾 freeze——final_keys 需携带运行时确定的全
-    # 部分区对象名，故 freeze 由 plan 动态提交而非本函数静态提交）
+    # 部分区对象名，故 freeze 由 plan 动态提交而非本函数静态提交）。
+    # S10 校验链同由 plan 动态提交（merge 之后、freeze 之前；freeze 依赖
+    # verify_report 正式对象——校验未完成不冻结）
     slice_prefix = _tmp_key(uid, "s9_slice_")
+    verify_prefix = _tmp_key(uid, "s10_verify_")
     _s9_plan_task(
         db, design_key, global_density_key, hier_key, block_names_key,
         DesignDb.ALPHA_SETTINGS_OBJ, geoms_key, formal_block_keys,
-        formal_net_keys, names_keys, def_paths, slice_prefix,
+        formal_net_keys, names_keys, def_paths, slice_prefix, verify_prefix,
+        stack_key, net_union_key,
         [design_key, stack_key, tables_key, geoms_key] + formal_block_keys +
         names_keys + formal_net_keys + [global_density_key, net_union_key],
         temp_keys)
