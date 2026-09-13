@@ -916,7 +916,7 @@ workers_mutex_ 下的 send 同样禁止（reactor send 非阻塞，但含 encode
 - 2026-09-10: 新增 Section 2.2 模块类型前缀规范（前缀**全大写**裁定 + CM/DS/GEO/EX/FLY 归属表 + 独立模块独立前缀），原 2.2-2.5 顺延为 2.3-2.6；geometry 独立模块前缀 = GEO
 - 2026-09-10: Section 2.2 增补**模板类与实例化别名命名规则**：C++ 类模板命名以 T 结尾（`GEOTransformT<T>`）+ 无后缀业务别名（`GEOTransform = GEOTransformT<int32_t>`，使用点禁显式模板参数，多实例化测试例外）+ 别名禁带类型标识（I32 等不用，位宽切换只改别名定义一处）+ 适用边界（业务数据模板类适用；基础设施泛型容器与业务术语命名的非模板类不适用）
 - 2026-09-11: 新增 Section 17 业务 API 依赖声明与 wait_obj 包装规范（read_object 类 API 必须 wait_obj 包装 + task 调用方 inputs 传播 api.deps(db) + 函数体 run_direct 剥离直跑省冗余网络 IO；框架 deps/run_direct 由 design db R9 批次提供）
-- 2026-09-11: 新增 Section 2.7 业务代码命名禁用计划阶段编号（S/R 编号只存在于设计文档与 commit 说明，代码符号与用户文案一律业务语义命名——如 ds_parse_def_s5a → ds_parse_def_components）；同日记录：WSL 内存约束下后台子 agent 同一时间仅允许一个（会话工作规则）
+- 2026-09-11: 新增 Section 2.7 业务代码命名禁用计划阶段编号（S/R 编号只存在于设计文档与 commit 说明，代码符号与用户文案一律业务语义命名——如 ds_parse_def_s5a → ds_parse_def_components；**适用面含 alpha/settings 配置键名**——如 s5b_batch_threshold → net_batch_size、s9_def_aggregate_threshold → def_aggregate_threshold））；同日记录：WSL 内存约束下后台子 agent 同一时间仅允许一个（会话工作规则）
 - 2026-09-11: 新增 Section 2.8 导出函数参数形态（nanobind caster 兼容性源码核验：const T& 与 CMSharedPtr[const T] 参数对任何持有形态实例全兼容且零拷贝——py_deleter 别名构造；默认 const T&、共享所有权才 CMSharedPtr）
 - 2026-09-12: Section 4.2 补第三方类型外接序列化规则（FLY_SERIALIZE_EXTERNAL 宏字段版/自定义体版，禁裸 ADL serialize 函数——bitsery SelectSerializeFnc ADL 路由的宏包装，随 R8b htrie 桥接落地）
 

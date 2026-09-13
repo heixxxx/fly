@@ -452,8 +452,7 @@ build_design_db(name, def_path, lef_paths, lib_db, settings: dict, alpha: dict)
 | alpha | `target_partitions` | 直切分区数 '{x}x{y}'（跳过分区数计算与行列分布推导，切线仍按前缀和） | 未设置 | 2026-09-12 裁定 4 |
 | alpha | `partition_count` | 总分区数 N（行列分布按负载自适应） | 未设置 | 2026-09-12 裁定 4 |
 | alpha | `partition_target_density` | 目标每分区合成负载（N = ceil(总负载/目标)） | 150000 | 2026-09-12 裁定 4 |
-| alpha | `s5b_batch_threshold` | S5b 分批数据量阈值 | 512 MB | D24 |
-| alpha | `s9_def_aggregate_threshold` | S9 小 DEF 聚合阈值（预估展开数据规模） | 实施期标定 | D26 |
+| alpha | `def_aggregate_threshold` | 小 DEF 聚合阈值（预估展开数据规模，低于阈值的多个小 block 定义聚合到同一展开任务以减少任务数）——S9 实施时启用（原名 s9_def_aggregate_threshold，2026-09-13 按 Section 2.7 命名规范改业务语义名） | 实施期标定 | D26 |
 
 （S8 键优先级 target_partitions > partition_count > partition_target_density；非法值 DSGN::0013 提醒后回退，不 raise。原草案键 `partition_grid` 由 `target_partitions` 取代。）
 
