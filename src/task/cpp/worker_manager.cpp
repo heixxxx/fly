@@ -209,6 +209,15 @@ std::optional<std::reference_wrapper<WorkerInfo>> WorkerManager::get_worker(uint
     return std::nullopt;
 }
 
+std::optional<WorkerStatus> WorkerManager::worker_status_snapshot(uint64_t worker_id) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = workers_.find(worker_id);
+    if (it != workers_.end()) {
+        return it->second.status_;
+    }
+    return std::nullopt;
+}
+
 CMVector<uint64_t> WorkerManager::get_idle_workers() {
     std::lock_guard<std::mutex> lock(mutex_);
     CMVector<uint64_t> result;

@@ -89,6 +89,10 @@ public:
     CMString get_ip_address(uint64_t worker_id) const;
 
     std::optional<std::reference_wrapper<WorkerInfo>> get_worker(uint64_t worker_id);
+    // 状态快照（持锁拷贝返回）：get_worker 的 reference_wrapper 在锁外读
+    // status_ 与写侧构成数据竞争（锁只护查找、引用逃逸——review 2026-09-13
+    // 在轮询热路径放大后补齐）；轮询/观测一律用本接口
+    std::optional<WorkerStatus> worker_status_snapshot(uint64_t worker_id) const;
     CMVector<uint64_t> get_idle_workers();
     CMVector<uint64_t> get_workers_with_capability(const CMString& capability);
     CMVector<WorkerInfo> get_all_workers();

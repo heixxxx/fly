@@ -1057,12 +1057,41 @@ TEST_F(PeerRpcServerTest, InvalidConstructionAndClosedConnNoOps) {
     EXPECT_FALSE(bad1.finish());
 
     // 对已关连接构造：START 发送失败 → write no-op / finish false（不挂）。
+    // 前置顺序（竞态加固，2026-09-13）：warm-up RPC 往返 → close_all →
+    // 等 is_connected(rc)==false → 构造 writer。裸的 `!is_connected(rc)`
+    // 有二义：「已摘除」与「server 尚未 accept（表空同样返回 false）」不可
+    // 区分——曾致本用例在 accept 之前提前通过，随后 accept 注册的存活连接
+    // 使 START send 命中条目（dead.ok()==true，flaky）。warm-up 往返确认
+    // 连接曾真实存在于 server（handler 在 server_loop 线程、连接摘除前的
+    // DATA 处理中触发），此后 is_connected(rc)==false 才是「已摘除」的充分
+    // 条件（conn_id 单调分配不复用，本连接不会再出现在表中）。
+    auto warm_latch = std::make_shared<Latch<bool>>();
+    // server 侧 conn_id 参数显式核对 == 客户端侧 rc（两侧 next_conn_id_
+    // 各自计数，本单连接场景下数值巧合同为 1——断言把隐含假设变显式检查，
+    // review 2026-09-13：巧合不成立时后续 is_connected(rc) 轮询语义失效）
+    auto seen_conn_id = std::make_shared<uint64_t>(0);
     int port = srv->listen("127.0.0.1", 0,
-                           [](uint64_t, uint64_t, uint64_t, const CMString&,
-                              const PeerStreamReaderPtr&) { return std::nullopt; });
+                           [warm_latch, seen_conn_id](uint64_t conn_id, uint64_t,
+                                        uint64_t,
+                                        const CMString&,
+                                        const PeerStreamReaderPtr&) {
+                               *seen_conn_id = conn_id;
+                               warm_latch->store(true);
+                               return std::optional<CMString>{};
+                           });
     ASSERT_GT(port, 0);
     auto [raw, rc] = connect_raw(port);
     ASSERT_TRUE(raw != nullptr);
+    CMString warm_body;
+    warm_body.resize(16, '\0');
+    write_be64(warm_body.data(), /*rpc_id=*/1);
+    write_be64(warm_body.data() + 8, /*src=*/1);
+    ASSERT_TRUE(raw->send(rc, make_raw_frame(
+        static_cast<uint8_t>(MessageType::PEER_RPC_REQUEST), warm_body)) > 0);
+    ASSERT_TRUE(warm_latch->wait())
+        << "warm-up request must reach the server handler";
+    ASSERT_EQ(*seen_conn_id, rc)
+        << "server-side conn_id must match client-side rc (single-conn case)";
     raw->close_all();
     // 前置：server 侧 transport 已感知 FIN（conn 已从其表移除）——START 的
     // send 失败才有确定性。

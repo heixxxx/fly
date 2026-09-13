@@ -208,6 +208,7 @@ CMVector<TransportEvent> TcpConnectionManager::poll(int timeout_ms) {
             }
 
             uint64_t new_conn_id = register_connection(client_fd);
+            DBG("[TCP-ACCEPT] conn_id={} fd={}", new_conn_id, client_fd);
 
             TransportEvent ev;
             ev.type_ = TransportEventType::CONNECT;
@@ -236,6 +237,31 @@ CMVector<TransportEvent> TcpConnectionManager::poll(int timeout_ms) {
                 int error = 0;
                 socklen_t len = sizeof(error);
                 getsockopt(fd, SOL_SOCKET, SO_ERROR, &error, &len);
+
+                // 先交付已到达的对端数据，再报错误断连（TCP「先读后错」：
+                // RST/EPIPE 置位后内核仍允许读出已排队的接收数据，耗尽后才
+                // 返回错误）。跳过此步会把「最后一条消息 + 连接错误同时到达」
+                // 中的消息静默丢弃——实测丢失 graceful 退出声明（WORKER_EXIT
+                // 与对端 RST 竞速），master 误归异常断连进宽限/判死链；优雅
+                // 关闭握手（BYE_ACK）同受此契约保护：数据必须先于断连事件。
+                // 【顺序前提（review 2026-09-13 实证）】上方 getsockopt
+                // (SO_ERROR) 读取并清除内核 sk_err，drain 因此以 EOF（recv=0）
+                // 而非 ECONNRESET 终止、落入保留数据的分支；调换两步顺序
+                // （先 drain 再取错误码）会使 drain_socket 错误分支走到丢弃
+                // 路径——该分支已加 total>0 对称保护兜底，但此顺序仍应保持。
+                CMString pending = drain_socket(handle->get(), 65536);
+                // move 前快照字节数（moved-from 字符串的 size 未指定，
+                // review 2026-09-13：取证 DBG 不读 moved-from 值）
+                const size_t drained_bytes = pending.size();
+                if (!pending.empty()) {
+                    TransportEvent pending_ev;
+                    pending_ev.type_ = TransportEventType::DATA;
+                    pending_ev.conn_id_ = conn_id;
+                    pending_ev.data_ = std::move(pending);
+                    events.push_back(pending_ev);
+                    DBG("[TCP-ERRDATA] conn_id={} fd={} bytes={}",
+                        conn_id, fd, drained_bytes);
+                }
 
                 TransportEvent ev;
                 ev.type_ = TransportEventType::ERROR;
@@ -414,6 +440,12 @@ CMString TcpConnectionManager::drain_socket(int fd, size_t max_size) {
             if (errno == EAGAIN || errno == EWOULDBLOCK) {
                 break;
             }
+            // 错误分支与 EOF 分支对称（review 2026-09-13）：已读到的数据
+            // 先交付（DATA 事件），错误收尾留给随后的 ERROR 事件——直接
+            // clear 会丢弃已读数据。当前调用序（先 getsockopt(SO_ERROR)
+            // 清错再 drain）下本分支实际以 EOF 终结，此保护使正确性不
+            // 依赖调用顺序。
+            if (total > 0) break;
             buffer.clear();
             return buffer;
         }

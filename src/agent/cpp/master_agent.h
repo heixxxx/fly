@@ -408,9 +408,11 @@ public:
         handle_worker_death(worker_id);
     }
     // worker 状态读取（正常退出 EXITED vs 异常判死 DEAD 的归类断言）。
+    // 经持锁快照接口——get_worker 的锁外引用读取在轮询热路径下与写侧
+    // 构成数据竞争（review 2026-09-13 改 snapshot）。
     WorkerStatus worker_status_for_testing(uint64_t worker_id) {
-        auto info = worker_manager_->get_worker(worker_id);
-        return info ? info->get().status_ : WorkerStatus::DEAD;
+        auto status = worker_manager_->worker_status_snapshot(worker_id);
+        return status ? *status : WorkerStatus::DEAD;
     }
     // 正常退出归类标记的消费状态（on_disconnect 分派断言用）。
     bool shutdown_pending_for_testing(uint64_t worker_id) {

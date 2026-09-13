@@ -63,8 +63,12 @@ TEST_F(AgentNetworkTest, WorkerGracefulExitClassifiedAsExited) {
 
     worker.stop();
 
-    // 等 on_disconnect 完成（清表 + 三分派归类）。
-    wait_for([&]{ return master.get_connection_count() == 0; }, 100, 30);
+    // 等归类终态落位，而非等 count==0：conn_to_worker_ 的 erase 在 on_disconnect
+    // 入口，EXITED 归类（handle_worker_exit）在其尾部多步之后——count==0 不蕴含
+    // 归类完成，等 count 会与断言竞速（窗口内 status 仍 IDLE，低频 flaky）。
+    // 断言语义不变：终局仍由下方 EXPECT_EQ 校验（wait_for 超时时以实际值失败）。
+    wait_for([&]{ return master.worker_status_for_testing(1) == WorkerStatus::EXITED; },
+             100, 30);
 
     // 归类正确性的断言落在终态：WORKER_EXIT 先于 DISCONNECT（同串行 lane
     // FIFO）被消费，on_disconnect 走 handle_worker_exit → EXITED。瞬态标记
