@@ -37,13 +37,19 @@
   → S8 task（全局密度合并 + 分区决策，2026-09-12/13 裁定：层级树自底
     向上 + 格值面积比例分摊 D10 A → global_density 独立对象；行列前缀
     和切分 → DSDesign 补 partitions_ 重写。依赖 S6 树 + 全部 per-DEF
-    正式产物 + stack + alpha_settings 对象——S7 未实施不预留挂点。alpha
-    四键 target_partitions/partition_count/partition_target_density/
-    density_channel_weights 任务内 read_object 读回（2026-09-13 裁定：
-    声明式 DSAlphaSettings，非法值 WARN 回退不 raise））
+    正式产物 + stack + alpha_settings 对象。alpha 四键 target_partitions/
+    partition_count/partition_target_density/density_channel_weights 任务
+    内 read_object 读回（2026-09-13 裁定：声明式 DSAlphaSettings，非法值
+    WARN 回退不 raise））
+  → S7 任务组（跨块连接归并并查集，2026-09-13 裁定：仅 port 相连网、
+    两层树、单对象——与 S8 同级并行，依赖同为 S6 树 + S5b 产物）：
+    block 名清单小任务（DSBlockNames_<i> 的 block 名 → def 序号，slice
+    任务定位子定义网产物用）→ per-DEF slice 任务并行收集局部 (父网, 子
+    网) 边（对接键 = 同一块实例 + 同名 port）→ 汇总任务（两层化 + root
+    规范化 → net_union 正式对象 + slice 清理 + 悬空 port DSGN::0018）
   → freeze task（依赖 DSDesign/DSStack/DSPinTables/DSPinGeometry/
-    DSBlock_*/DSBlockNames_*/DSNet_*/global_density 对象写完 + 中间对象
-    清理）
+    DSBlock_*/DSBlockNames_*/DSNet_*/global_density/net_union 对象写完 +
+    中间对象清理）
 
 流程入口 build_design_db 在 ds_db.py（UserDoc + Schema + @register_flow）。
 约定（择简，UserDoc 同步注明）：lef_paths[0] 为 tech lef（确立 DBU 基准
@@ -58,15 +64,19 @@ from .ds_db import DesignDb
 from .ds_export import (
     EXDSBlockBuildData,
     EXDSDesign,
-    EXDSPinGeometry,
     EXDSHierTree,
     EXDSNetBuildData,
+    EXDSNetUnionSlice,
+    EXDSPinGeometry,
     ds_build_hier_tree,
+    ds_build_net_union,
+    ds_collect_net_union_slice,
     ds_decide_partitions,
     ds_merge_block_build,
     ds_merge_cell_lef,
     ds_merge_def_header,
     ds_merge_global_density,
+    ds_net_union_child_indexes,
 )
 from .ds_utils import (
     ds_parse_cell_one,
@@ -406,7 +416,8 @@ def _partition_task(db, stack_key, hier_key, block_keys, net_keys, design_key,
     from log import INFO
     # 依赖 S6 树（临时产物）+ 全部 per-DEF 正式产物（S5a 实例密度 +
     # S5b 网侧逐层密度）+ stack（w_eff 判定）+ alpha_settings 对象（建库
-    # 时写定）。S7 未实施、不预留挂点（红线：S8 只依赖 S6+S5b 产物）。
+    # 时写定）。S7 与本任务同级并行、互不依赖（红线：S8 只依赖 S6+S5b
+    # 产物）。
     stack = db.read_object(stack_key)
     tree = db.read_object(hier_key)
     blocks = [db.read_object(k) for k in block_keys]
@@ -439,6 +450,76 @@ def _partition_task(db, stack_key, hier_key, block_keys, net_keys, design_key,
     INFO(f"partition: {len(partitions)} partitions, global density "
          f"total={global_density.total_count} "
          f"metal={global_density.metal_total} via={global_density.via_total}")
+
+
+# ── S7：跨块连接归并（并查集；2026-09-13 裁定：id 域 = global net id、
+# 仅 port 相连网参与（internal net 绝不入表）、两层树 root = 层级最高的
+# 网/同级最小 global id、悬空 port 照常入表 + 计数、单对象不分块。两级
+# 任务：per-DEF slice 并行收集 + 单任务汇总——与 S8 同级并行，依赖同为
+# S6 树 + S5b 正式产物）──────────────────────────────────────────────
+
+@as_task(inputs=lambda db, names_keys, block_names_key: [
+    db.get_full_name(k) for k in names_keys
+])
+def _net_union_names_task(db, names_keys, block_names_key):
+    # block 名清单（def_paths 序）：slice 任务把树上 children 的 block
+    # cell 名映射回 def 序号（定位子定义网产物）。名字伴生对象轻量，
+    # N 次读仅此一遭——slice 任务据此只读本 def 引用的子定义网产物
+    #（避免每任务全量重复读，同 S9 按定义切分的 I/O 精神）
+    db.write_object(block_names_key,
+                    [db.read_object(k).block_name for k in names_keys],
+                    save_to_db=False)
+
+
+@as_task(inputs=lambda db, hier_key, block_names_key, net_keys, index,
+         slice_key: [
+    db.get_full_name(hier_key), db.get_full_name(block_names_key)
+] + [db.get_full_name(k) for k in net_keys])
+def _net_union_slice_task(db, hier_key, block_names_key, net_keys, index,
+                          slice_key):
+    # per-DEF 局部收集（每父块 DEF 一任务）：本 def 网产物 + 树 + 本 def
+    # 引用的各子定义网产物 → (父网, 子网) union 边 + 本 def port 网 local
+    # id 集（悬空判定素材）。对接键 = 同一块实例 + 同名 port（S5b 连接表
+    # 名字形态：父侧 (子实例名, port 名) × 子侧 ("PIN", port 名)，两侧都
+    # 是字符串）。slice 为临时对象，汇总合并后 remove
+    tree = db.read_object(hier_key)
+    block_names = db.read_object(block_names_key)
+    # 重名 def（已被 S4 DSGN::0001 / S6 emplace 保留首份 + WARN）：非首份
+    # 序号不收集——review 2026-09-13：其连接表会按 block 名反查命中首份
+    # 的实例化位置，产生首份定义中不存在的边造成错误归并；空 slice 在
+    # 汇总侧天然安全跳过（无 block_name 无边无 port 网）
+    if block_names.index(block_names[index]) != index:
+        db.write_object(slice_key, EXDSNetUnionSlice(), save_to_db=False)
+        return
+    own = db.read_object(net_keys[index])
+    child_nets = [db.read_object(net_keys[j]) for j in
+                  ds_net_union_child_indexes(tree, block_names, index)]
+    slice_obj = ds_collect_net_union_slice(tree, own, child_nets)
+    db.write_object(slice_key, slice_obj, save_to_db=False)
+
+
+@as_task(inputs=lambda db, hier_key, slice_keys, union_key: [
+    db.get_full_name(hier_key)
+] + [db.get_full_name(k) for k in slice_keys])
+def _net_union_summary_task(db, hier_key, slice_keys, union_key):
+    # 全局汇总（单任务）：合并全部局部边集 → 两层化 + root 规范化（层级
+    # 最高、同级最小 global id）→ net_union 正式对象唯一写定 + slice 清
+    # 理；悬空 port（root = 自身）DSGN::0018 计数提醒（不 raise，dev-rules
+    # §7）
+    tree = db.read_object(hier_key)
+    slices = [db.read_object(k) for k in slice_keys]
+    union = ds_build_net_union(tree, slices)
+    db.write_object(union_key, union, save_to_db=True)
+    for key in slice_keys:
+        db.remove_object(key)
+    from log import INFO
+    INFO(f"net union: {union.class_count} classes, "
+         f"{union.dangling_count} dangling port nets")
+    if union.dangling_count:
+        from fly import message
+        message("DSGN::0018", 0,
+                f"{union.dangling_count} dangling port net(s) not connected "
+                f"by any parent net (root = itself)")
 
 
 # ── freeze：依赖正式对象写完 + 中间对象清理 ──────────────────────────
@@ -584,17 +665,33 @@ def run_design_flow(db, lef_paths, def_paths, lib_db):
 
     # S8：全局密度合并 + 分区决策（依赖 S6 树 + 全部 per-DEF 正式产物 +
     # stack + alpha_settings 对象；DSDesign 补 partitions_ 重写 + global_
-    # density 独立对象写定。S7 未实施——依赖只挂 S6+S5b 产物，不预留 S7
-    # 挂点。alpha 四键任务内读回，2026-09-13 裁定）
+    # density 独立对象写定。与 S7 同级并行、互不依赖——见下方 S7 任务组。
+    # alpha 四键任务内读回，2026-09-13 裁定）
     global_density_key = DesignDb.GLOBAL_DENSITY_OBJ
     _partition_task(db, stack_key, hier_key, formal_block_keys,
                     formal_net_keys, design_key, global_density_key,
                     DesignDb.ALPHA_SETTINGS_OBJ)
 
+    # S7：跨块连接归并（与 S8 同级并行——依赖同为 S6 树 + S5b 正式产物；
+    # 两级任务：per-DEF slice 并行收集 + 单任务汇总，2026-09-13 裁定）。
+    # slice 为临时对象（汇总任务合并后自行 remove）；net_union 正式对象
+    # 挂 freeze final_keys
+    net_union_key = DesignDb.NET_UNION_OBJ
+    union_slice_keys = [_tmp_key(uid, f"net_union_slice_{i}")
+                        for i in range(len(def_paths))]
+    block_names_key = _tmp_key(uid, "block_names")
+    temp_keys.append(block_names_key)
+    _net_union_names_task(db, names_keys, block_names_key)
+    for i in range(len(def_paths)):
+        _net_union_slice_task(db, hier_key, block_names_key,
+                              formal_net_keys, i, union_slice_keys[i])
+    _net_union_summary_task(db, hier_key, union_slice_keys, net_union_key)
+
     # freeze：依赖正式对象集（含 per-DEF 实例/名字/网产物 + S8 全局密度
-    # 图——后写，使 freeze 排在 S8 重写 DSDesign 之后）；中间对象清理
+    # 图——后写，使 freeze 排在 S8 重写 DSDesign 之后 + S7 net_union 归并
+    # 结果）；中间对象清理
     _freeze_design_task(
         db,
         [design_key, stack_key, tables_key, geoms_key] + formal_block_keys +
-        names_keys + formal_net_keys + [global_density_key],
+        names_keys + formal_net_keys + [global_density_key, net_union_key],
         temp_keys)

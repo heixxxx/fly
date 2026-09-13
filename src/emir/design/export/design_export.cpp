@@ -28,6 +28,7 @@
 #include <emir/design/cpp/ds_name_mapper.h>
 #include <emir/design/cpp/ds_net_pipeline.h>
 #include <emir/design/cpp/ds_types.h>
+#include <emir/design/cpp/ds_union.h>
 #include <emir/lib/cpp/lib_types.h>
 
 #include <nanobind/nanobind.h>
@@ -1015,6 +1016,84 @@ FLY_EXPORT_FUNCTION("ds_decide_partitions",
     return nb::cast(fly::ds_decide_partitions(
         global, stack, weights, target_partitions, partition_count,
         target_density));
+});
+
+// ── S7 跨块连接归并（并查集；2026-09-13 裁定：仅 port 相连网、两层树、
+// 单对象）────────────────────────────────────────────────────────────
+
+// S7 正式产物只读面（find 恒一步——不在表 = 自身；members 升序含 root
+// 自身；class_count 含单成员悬空类）
+FLY_EXPORT_CLASS(fly::DSNetUnion, "EXDSNetUnion")
+    FLY_EXPORT_INIT()
+    FLY_EXPORT_READONLY_ATTR("dangling_count",
+                             &fly::DSNetUnion::dangling_count_)
+    FLY_EXPORT_READONLY_PROPERTY("class_count", [](const fly::DSNetUnion& u) {
+        return static_cast<int>(u.class_count());
+    })
+    FLY_EXPORT_DEF("find", [](const fly::DSNetUnion& u,
+                              uint64_t net_global_id) {
+        return u.find(net_global_id);
+    })
+    FLY_EXPORT_DEF("members", [](const fly::DSNetUnion& u, uint64_t root) {
+        nb::list out;
+        const auto* m = u.members(root);
+        if (m != nullptr) {
+            for (const uint64_t id : *m) out.append(id);
+        }
+        return out;
+    })
+    FLY_EXPORT_SERIALIZE_PICKLE(fly::DSNetUnion);
+
+// S7 per-DEF 局部收集产物（临时对象，汇总合并后 remove；观测面仅规模
+// 计数——边/端口明细消费在 C++ 汇总）
+FLY_EXPORT_CLASS(fly::DSNetUnionSlice, "EXDSNetUnionSlice")
+    FLY_EXPORT_INIT()
+    FLY_EXPORT_READONLY_ATTR("block_name", &fly::DSNetUnionSlice::block_name_)
+    FLY_EXPORT_READONLY_PROPERTY("edge_count",
+                                 [](const fly::DSNetUnionSlice& s) {
+        return static_cast<int>(s.edges_.size());
+    })
+    FLY_EXPORT_READONLY_PROPERTY("port_net_count",
+                                 [](const fly::DSNetUnionSlice& s) {
+        return static_cast<int>(s.port_net_ids_.size());
+    })
+    FLY_EXPORT_SERIALIZE_PICKLE(fly::DSNetUnionSlice);
+
+// S7 局部收集：每父块 DEF 一调用（child_nets = 该 def 引用的各子定义网
+// 产物列表，编排侧经 ds_net_union_child_indexes 定位）
+FLY_EXPORT_FUNCTION("ds_collect_net_union_slice",
+                    [](const fly::DSHierTree& tree,
+                       const fly::DSNetBuildData& parent_nets,
+                       nb::list child_nets) {
+    fly::CMVector<const fly::DSNetBuildData*> child_ptrs;
+    for (nb::handle item : child_nets) {
+        child_ptrs.push_back(&nb::cast<const fly::DSNetBuildData&>(item));
+    }
+    return nb::cast(
+        fly::ds_collect_net_union_slice(tree, parent_nets, child_ptrs));
+});
+
+// S7 全局汇总：合并全部局部边集 → 两层化 + root 规范化 + 悬空计数
+FLY_EXPORT_FUNCTION("ds_build_net_union",
+                    [](const fly::DSHierTree& tree, nb::list slices) {
+    fly::CMVector<const fly::DSNetUnionSlice*> slice_ptrs;
+    for (nb::handle item : slices) {
+        slice_ptrs.push_back(&nb::cast<const fly::DSNetUnionSlice&>(item));
+    }
+    return nb::cast(fly::ds_build_net_union(tree, slice_ptrs));
+});
+
+// S7 编排辅助：def 序号 → 其引用的子定义序号集（block_names = def_paths
+// 序 block 名清单；树扫描一遍，slice 任务据此只读所需子定义网产物）
+FLY_EXPORT_FUNCTION("ds_net_union_child_indexes",
+                    [](const fly::DSHierTree& tree, nb::list block_names,
+                       int index) {
+    fly::CMVector<CMString> names;
+    for (nb::handle item : block_names) {
+        names.push_back(nb::cast<CMString>(item));
+    }
+    return nb::cast(fly::ds_net_union_child_indexes(
+        tree, names, static_cast<uint32_t>(index)));
 });
 
 // ── R7 全局 name 组装（㊻ 注入式轻壳 + ㊵② 统一组装工厂）────────────

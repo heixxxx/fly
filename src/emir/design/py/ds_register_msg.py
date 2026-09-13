@@ -37,6 +37,8 @@ import 本模块完成注册。仅注册过的 id 才会被 MSG 打印/发送，
   2=S5b 网内容）
 - DSGN::0017: tech lef 文件语法/格式错误（层表来源损坏无法兜底，fatal
   message 结束整个 run）
+- DSGN::0018: S7 悬空 port 网（连接表含 ("PIN", port) 引用但未连接任何
+  父网——照常入表 root = 自身 + 计数提醒，2026-09-13 裁定 ④；不 raise）
 """
 
 from fly import register_message_id
@@ -58,3 +60,4 @@ register_message_id("DSGN::0014", "ERROR")
 register_message_id("DSGN::0015", "FATAL")
 register_message_id("DSGN::0016", "FATAL")
 register_message_id("DSGN::0017", "FATAL")
+register_message_id("DSGN::0018", "WARN")

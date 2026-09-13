@@ -19,7 +19,7 @@ PINS 1 ;
 END PINS
 
 NETS 1 ;
-    - n_top ( top1 A ) ( PIN TOP_IN ) ;
+    - n_top ( top1 A ) ( top3 PIN_IN ) ( PIN TOP_IN ) ;
 END NETS
 
 END DESIGN

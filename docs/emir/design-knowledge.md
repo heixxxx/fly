@@ -190,7 +190,7 @@ EMIR（Electro-Migration 与 IR-Drop 分析）工具链的输入是芯片版图�
 | S5a | COMPONENTS 责任链 ∥ 网名扫描 | ✅ |
 | S5b | 网内容责任链（分批控内存峰值） | ✅ |
 | S6 | 层级树构建 + 起始编号分配 | ✅ |
-| S7 | 并查集 port 连接归并 | 后续 |
+| S7 | 并查集 port 连接归并（仅 port 相连网、两层树、root = 层级最高/同级最小 global id、悬空 port root=自身 + DSGN::0018 计数；`ds_union.h/.cpp` + `load_design_net_union`） | ✅ |
 | S8 | 密度图合并 + 分区决策（core/extend 双区域，非边缘扩 2×最高有效层宽、最外围 int32 极值；通道比重 6:2:2；三键优先级 target_partitions > partition_count > partition_target_density 默认 15 万；block instance bbox 不计局部密度） | ✅ |
 | S9 | flatten 展平 + 分区保存 | 后续 |
 | S10 | 校验 + DSDesign 冻结持久化 | 后续 |

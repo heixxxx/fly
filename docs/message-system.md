@@ -260,6 +260,7 @@ worker 是独立子进程，用户在 master 脚本里调 `set_message_*_limit` 
 | `DSGN::0015` | FATAL | 全部 cell lef 文件解析失败 | `ds_flow.py` `_cell_lef_merge_task` | 0 | fatal：与 lib 全败同口径（范式 (a)） |
 | `DSGN::0016` | FATAL | DEF 文件语法/格式错误 | `ds_def_adapter.cpp` S4/S5a/S5b | 0=S4 头 / 1=S5a / 2=S5b | fatal：design db 数据不完整无意义（范式 (a)） |
 | `DSGN::0017` | FATAL | tech lef 文件语法/格式错误 | `ds_lef_adapter.cpp` `ds_parse_tech_lef` | 0 | fatal：层表来源损坏无法兜底（范式 (a)） |
+| `DSGN::0018` | WARN | S7 悬空 port 网（未连接任何父网，root = 自身） | `ds_flow.py` `_net_union_summary_task` | 0 | 2026-09-13 裁定 ④：照常入表 + 计数提醒，不 raise |
 | `SOLVER::0001` | INFO | RAS 求解进度 | `ras_graph.py` `ras_graph_check` | 2=每10轮 / 1=收敛 | 迭代收敛观察 |
 
 **注册位置**：C++ 侧 id 在 `MasterAgent::start()` 注册（`MessageRegistry::instance().register_id`）；Python 侧在模块顶层注册（`fly.register_message_id`，agent.py / ras_graph.py）。

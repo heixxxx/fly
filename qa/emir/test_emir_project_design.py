@@ -26,6 +26,10 @@ name——pin 名经容器 pin hasher、实例/网名经 DSBlockNames_<i> 伴生
     主 DEF = 唯一无父者（block_parent 实例化 block_child 的两层嵌套），
     DFS 序连续分配 instance/net/via 三类区间，树嵌正式 DSDesign
     （唯一写定前构建）→ 四接口/换算/format_tree 只读面；
+  - S7 任务组（跨块连接归并并查集，2026-09-13 裁定：仅 port 相连网、
+    两层树、单对象）：per-DEF slice (父网, 子网) 边收集（对接键 = 同一
+    块实例 + 同名 port）+ 单任务两层化 + root 规范化（层级最高/同级最
+    小 global id）→ net_union 正式对象 + 悬空 port DSGN::0018；
   - ⑱ load_design_with 统一加载注入 + load_project 动态还原。
 """
 import os
@@ -262,7 +266,10 @@ assert net0.density.layer_total(1, True) == 1    # VIA1 通孔
 
 net1 = design_db.read_object(design_db.net_obj_name(1))
 assert net1.block_name == "block_parent"
-assert net1.connections_of(1) == [("top1", "A"), ("PIN", "TOP_IN")]
+# S7 跨块连接数据（block_parent.def 的 n_top 增 ( top3 PIN_IN )）：
+# 连接 3 项 = 叶实例 + 子块实例 port + 顶层引脚
+assert net1.connections_of(1) == [("top1", "A"), ("top3", "PIN_IN"),
+                                  ("PIN", "TOP_IN")]
 assert net1.stats.wire_count == 0 and net1.stats.via_instance_count == 0
 INFO("[OK] S5b: net content (connections/wires/via instances, per-layer "
      "density channels, local net id aligned)")
@@ -311,6 +318,33 @@ assert "block_child as top3" in tree_text
 assert "inst=[4,6)" in tree_text
 INFO("[OK] S6: hierarchy tree (DFS numbering, ⑧ local-0 mapping, four "
      "interfaces, name-format text)")
+
+# ── S7：跨块连接归并（并查集；2026-09-13 裁定：仅 port 相连网、两层
+# 树、root = 层级最高/同级最小 global id、悬空 port 照常入表 root=自身）──
+# 数据形态：父网 n_top ( top3 PIN_IN ) × 子网 n1 ( PIN PIN_IN ) 对接（对
+# 接键 = 同一块实例 top3 + 同名 port PIN_IN）→ n1 归并入 n_top；n2 挂
+# child 的 PIN_OUT、父侧未连接 → 悬空 port 网（root = 自身 + 计数）；
+# internal net（无 PIN 引用）不入表——红线由 C++ 单测 ds_union_test 固化
+#（本数据无 internal 网）
+from emir.design import load_design_net_union
+union = load_design_net_union(design_db)
+g_n_top = hier.global_net_id(0, 1)  # 0：root 块 n_top（物理网展示名锚）
+g_n1 = hier.global_net_id(1, 1)     # 1：child n1（经 top3/PIN_IN 归并）
+g_n2 = hier.global_net_id(1, 2)     # 2：child n2（悬空）
+assert union.find(g_n1) == g_n_top, "child n1 must union into top n_top"
+assert union.find(g_n_top) == g_n_top, "root net self-map (two-layer)"
+assert sorted(union.members(g_n_top)) == sorted([g_n_top, g_n1]), \
+    f"members={union.members(g_n_top)}"
+# 悬空 port 网 n2：照常入表 root = 自身 + 单成员计数（DSGN::0018 口径）
+assert union.find(g_n2) == g_n2
+assert union.members(g_n2) == [g_n2]
+assert union.dangling_count == 1
+assert union.class_count == 2
+# 两层不变式：全表 find 恒一步（root 自映射）
+for member in union.members(g_n_top) + union.members(g_n2):
+    assert union.find(union.find(member)) == union.find(member)
+INFO("[OK] S7 net union: cross-block merge (n1 -> n_top), dangling port "
+     "net n2 root=self, two-layer invariant")
 
 # ── R7 ㊻：EXDSNameMapper 全局 name 组装（统一加载 API → 注入式轻壳，
 # 运行时构造不落盘；instance/net 两维度双向闭环）──
@@ -363,9 +397,10 @@ for root, _dirs, files in os.walk(LOG_DIR):
             except OSError:
                 pass
 for msg_id in ("DSGN::0001", "DSGN::0002", "DSGN::0003", "DSGN::0004",
-               "DSGN::0005", "DSGN::0007", "DSGN::0009"):
+               "DSGN::0005", "DSGN::0007", "DSGN::0009", "DSGN::0018"):
     assert msg_id in msgs, f"message {msg_id} should be emitted"
-INFO("[OK] DSGN messages 0001-0005 + 0009 emitted (warnings/info, no raise)")
+INFO("[OK] DSGN messages 0001-0005 + 0009 + 0018 emitted (warnings/info, "
+     "no raise)")
 
 # ── ⑧ 统一加载：注入 pin 表/几何后 get_cell 指针注入 ──
 from emir.design import load_design_with

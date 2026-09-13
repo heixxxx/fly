@@ -41,6 +41,9 @@ class DesignDb(Database):
     # S8 全局密度图（三通道独立对象，不进 DSDesign 容器——⑬ 大体量数据
     # 独立对象；S8 任务唯一写定）
     GLOBAL_DENSITY_OBJ = "global_density"
+    # S7 跨块连接归并（并查集，仅 port 相连网；单对象——2026-09-13 裁定
+    # 规模 port 级不分块；S7 汇总任务唯一写定）
+    NET_UNION_OBJ = "net_union"
     # 建库 alpha 设置对象（DSAlphaSettings，声明式五要素 2026-09-13 裁
     # 定；master 侧随建库写入，消费点 read_object 读回 + normalize 兜底）
     ALPHA_SETTINGS_OBJ = "alpha_settings"

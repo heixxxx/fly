@@ -144,6 +144,18 @@ cc_test(
     copts = ["-std=c++20"],
 )
 
+# S7 跨块连接归并（并查集；合成树 + 连接数据，同 ds_hier_test 模式）
+cc_test(
+    name = "ds_union_test",
+    srcs = ["ds_union_test.cpp"],
+    deps = [
+        "@googletest//:gtest_main",
+        "//src/emir/design/cpp:fly_emir_design_ds_types",
+    ],
+    linkstatic = True,
+    copts = ["-std=c++20"],
+)
+
 cc_test(
     name = "ds_lef_adapter_test",
     srcs = ["ds_lef_adapter_test.cpp"],

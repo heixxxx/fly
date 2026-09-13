@@ -21,6 +21,11 @@ ds_build_hier_tree（构建在 C++，多根/零根/环 raise D22）。
 S8 分区：EXDSSubPartition（core/extend 双区域，core/extend 四元组）+
 ds_merge_global_density（全局密度合并）/ ds_decide_partitions（分区决策，
 通道比重散参传入）。
+S7 跨块连接归并：EXDSNetUnion（find/members/class_count/dangling 只读面）
++ EXDSNetUnionSlice（per-DEF 局部收集临时产物，观测面仅规模计数）+
+ds_collect_net_union_slice（每父块 DEF 一收集）/ ds_build_net_union（全局
+汇总：两层化 + root 规范化 + 悬空计数）/ ds_net_union_child_indexes（编排
+辅助：def 序号 → 子定义序号集）。
 """
 
 from _fly_emir_design import (
@@ -46,14 +51,19 @@ from _fly_emir_design import (
     EXDSPinTables,
     EXDSSubPartition,
     EXDSStack,
+    EXDSNetUnion,
+    EXDSNetUnionSlice,
     EXDSViaCell,
     ds_build_hier_tree,
+    ds_build_net_union,
+    ds_collect_net_union_slice,
     ds_decide_partitions,
     ds_make_name_mapper,
     ds_merge_block_build,
     ds_merge_cell_lef,
     ds_merge_def_header,
     ds_merge_global_density,
+    ds_net_union_child_indexes,
     ds_parse_cell_lef,
     ds_parse_def_components,
     ds_parse_def_header,

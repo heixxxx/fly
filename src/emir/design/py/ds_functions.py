@@ -49,6 +49,18 @@ def load_global_density(db):
     return db.read_object(DesignDb.GLOBAL_DENSITY_OBJ)
 
 
+@wait_obj(inputs=lambda db: [db.get_full_name(DesignDb.NET_UNION_OBJ)])
+def load_design_net_union(db):
+    """读取 S7 跨块连接归并结果（EXDSNetUnion：find 恒一步（不在表 = 自
+    身）/ root → 成员枚举 / class_count / dangling_count——仅 port 相连
+    网，internal net 不在表）。
+
+    调用规范见模块 docstring：task 内调用须 `load_design_net_union.deps(db)`
+    传播依赖 + `run_direct(load_design_net_union, db)` 直跑。
+    """
+    return db.read_object(DesignDb.NET_UNION_OBJ)
+
+
 @wait_obj(inputs=lambda db, pin_tables=False, pin_geometries=False: (
     [db.get_full_name(DesignDb.DESIGN_OBJ)]
     + ([db.get_full_name(DesignDb.PIN_TABLES_OBJ)] if pin_tables else [])

@@ -315,10 +315,16 @@ S2 cell lef 解析（每文件一并行任务，无业务合并）
 - 深度优先序分配每块实例的 instance/net/via instance 三类起始编号；产出编号区间表（block instance id → [start, start+count)）。
 - 起始编号统一在 S9 flatten 展开时换算 global id（三类同式）；并行解析任务间无需编号协调（local id 先行、起始编号后置）。
 
-**S7 跨块连接归并（并查集）** —— ⬜ 待实施
+**S7 跨块连接归并（并查集）** —— ✅ 已完成（2026-09-13，按本节裁定补记实施）
 - 依赖 S6 与 S5b（跨块 port 连接信息在父块网数据内，S5b 才产出）。可按块分组并行 union（每父块独立合并其子 port），随后全局路径压缩一遍完成。
 - 产出：父表（压缩后）+ root 表 + root → 成员索引（§2.6）；悬空 port（未连接任何父网）计数提醒。
 - **2026-09-13 裁定补记（实施定稿）**：①**id 域 = global net id**（local + S6 起始编号换算参与 union——同一 block 定义多次实例化的网天然是不同 global id，语义正确）；②**仅 port 相连网参与 union，internal net 不入**（与高层网络无逻辑连接）——规模从全量网降至 port 级（数千级），**单对象存储不分块**（撤销区间分块预案）；③**union 树最终两层**：root = 顶层网 global id、叶子 = 成员网 global id（全路径压缩后 find 恒一步）；root 规范 = 等价类中层级最高（最接近树根）的网、同级取最小 global id——物理网身份锚在 top 层，root 网名即该物理网展示名；④**S9 分区产物不换算 root**——net id 保持 local + offset 形式，后续流程需要最顶层 global id 时自行加载 union 查询换算；⑤悬空 port（root = 自身）照常入表。
+- **实施备注（2026-09-13 落地）**：
+  - **两级任务形态**（同 S9 两级先例）：block 名清单小任务（读 DSBlockNames_<i> 的 block 名 → def 序号，slice 任务定位子定义网产物用——名字伴生对象轻量，N 次读仅此一遭）→ per-DEF slice 并行任务（读本 def 网产物 + 树 + 本 def 引用的各子定义网产物——经 `ds_net_union_child_indexes` 树扫描定位、只读所需，避免每任务全量重复读）收集 (父网, 子网) 边与本 def port 网 local id 集 → 单汇总任务合并（小规模路径压缩并查集）+ 两层化 + root 规范化（树深度最小优先、同级最小 global id；深度经 `block_of_net` 区间反查 + parent 链上溯，memo 化）+ 悬空计数 → `net_union` 正式对象（slice 临时对象汇总后 remove；freeze final_keys 挂 net_union；与 S8 同级并行，依赖同为 S6 树 + S5b 产物）。
+  - **local 0 对接形态（读 ConnectionParseNode 实现确认）**：S5b 连接表为名字形态且**无 local 0 条目**——block 自身占位仅在 instance 表（`init_placeholder`），port 引用按 defi 回调语义 instance_name = `"PIN"`（`DSNetConnection::is_port_ref`）；对接键 = 同一块实例 + 同名 port（父侧 (子实例名, port 名) × 子侧 ("PIN", port 名)，两侧皆字符串，无需 pin id）。
+  - **悬空判定**：不在任何边上的非 root 块 port 网（按位逐实例化位置换算 global id）→ 单成员类 root = 自身 + `dangling_count_` 计数 + DSGN::0018（WARN）提醒；root 块 port 网（顶层引脚连接）不入表不入悬空口径；internal net（无 PIN 引用）绝不入表。
+  - **结构与 API**：`src/emir/design/cpp/ds_union.h/.cpp`（`DSNetUnion`：root_of_ 成员→root + members_of_ root→成员反向索引（升序含 root 自身）+ find 恒一步/members/class_count；`DSNetUnionSlice` 临时产物）+ 导出面（EXDSNetUnion/EXDSNetUnionSlice + ds_collect_net_union_slice/ds_build_net_union/ds_net_union_child_indexes）+ `load_design_net_union`（R9 wait_obj 形态，ds_functions.py）。
+  - **测试**：ds_union_test.cpp 8 用例（局部收集/电气等价 + root 规范/三层嵌套 root=顶层/同定义两次实例化不互并/internal 不入 + 悬空计数/两层不变式含序列化往返/空输入兜底/编排辅助）+ QA S7 段（block_parent.def n_top 增 `( top3 PIN_IN )` 形成真实跨块连接：find/members/悬空 n2/两层不变式）。
 
 **S8 全局密度图合并 + 分区决策** —— ✅ 已完成（2026-09-13 落地；2026-09-12/13 用户裁定定稿）
 - 依赖 S5a（实例计数通道）+ S5b（金属/通孔计数通道，逐层分列）+ S6（块实例位置与树）。合并自底向上（树的后续遍历）：块实例的全局密度 = 其子块实例密度图按放置变换平移叠加（格值分摊，裁定 D10）+ 自身 local 密度图；多层嵌套逐级进行。
