@@ -507,6 +507,7 @@ TEST(DSNetBuildDataTest, SerializeRoundTrip) {
                                      GEOPoint(1000, 200)}});
     ctx.rects.push_back({"M2", GEORect(0, 0, 500, 500)});
     ctx.vias.push_back({"VIA12", 1000, 600, 1, 1, 0, 0});
+    ctx.use = DSNetUse::SCAN;  // use 收录（非 SIGNAL 才落存储）
     ds_make_nets_pipeline().run(ctx);
 
     CMString blob;
@@ -539,16 +540,61 @@ TEST(DSNetBuildDataTest, SerializeRoundTrip) {
     EXPECT_EQ(back.stats_.rect_count, 1u);
     EXPECT_EQ(back.stats_.via_instance_count, 1u);
     EXPECT_EQ(back.next_via_instance_id_, 2u);
+    // use 往返（2026-09-13 USE 全量补收：非 SIGNAL 条目随产物序列化）
+    EXPECT_EQ(back.net_use_of(1), DSNetUse::SCAN);
+    EXPECT_EQ(back.net_use_of(2), DSNetUse::SIGNAL);  // 未记录 = 缺省
+}
+
+// USE 文本解析纯函数（2026-09-13 USE 全量补收：八值全集 + 未知兜底 +
+// 字符串化）
+TEST(DSNetUseParseTest, ParsesAllEightDefUseValues) {
+    bool known = false;
+    EXPECT_EQ(ds_parse_net_use("SIGNAL", &known), DSNetUse::SIGNAL);
+    EXPECT_TRUE(known);
+    EXPECT_EQ(ds_parse_net_use("POWER", &known), DSNetUse::POWER);
+    EXPECT_EQ(ds_parse_net_use("GROUND", &known), DSNetUse::GROUND);
+    EXPECT_EQ(ds_parse_net_use("CLOCK", &known), DSNetUse::CLOCK);
+    EXPECT_EQ(ds_parse_net_use("TIEOFF", &known), DSNetUse::TIEOFF);
+    EXPECT_EQ(ds_parse_net_use("ANALOG", &known), DSNetUse::ANALOG);
+    EXPECT_EQ(ds_parse_net_use("RESET", &known), DSNetUse::RESET);
+    EXPECT_EQ(ds_parse_net_use("SCAN", &known), DSNetUse::SCAN);
+    EXPECT_TRUE(known);
+}
+
+TEST(DSNetUseParseTest, UnknownAndEmptyFallBackToSignal) {
+    bool known = true;
+    EXPECT_EQ(ds_parse_net_use("BOGUS", &known), DSNetUse::SIGNAL);
+    EXPECT_FALSE(known);  // 未知值 → SIGNAL 兜底 + known 上报（计数源）
+    EXPECT_EQ(ds_parse_net_use("", &known), DSNetUse::SIGNAL);
+    EXPECT_FALSE(known);
+    EXPECT_EQ(ds_parse_net_use(nullptr, nullptr), DSNetUse::SIGNAL);
+    // 大小写保留精确匹配（namemap 同口径）：小写不命中
+    EXPECT_EQ(ds_parse_net_use("power", &known), DSNetUse::SIGNAL);
+    EXPECT_FALSE(known);
+}
+
+TEST(DSNetUseParseTest, NameRoundTrip) {
+    for (const DSNetUse use : {DSNetUse::SIGNAL, DSNetUse::POWER,
+                               DSNetUse::GROUND, DSNetUse::CLOCK,
+                               DSNetUse::TIEOFF, DSNetUse::ANALOG,
+                               DSNetUse::RESET, DSNetUse::SCAN}) {
+        EXPECT_EQ(ds_parse_net_use(ds_net_use_name(use)), use);
+    }
 }
 
 // ── 6. 适配层全链：真 DEF 网内容（分批 2 强制多批落批）───────────────
 
 // nets_synth.def（UNITS 1000 / 恒基准 1000 = ×1）：
 //   n1  : 2 连接 + 2 wire（M1 缺省宽 70）+ 1 via（tech VIA12 plain 名）
-//   n2  : 2 连接（无几何）
-//   n3  : 1 连接（无几何）
+//         （无 USE 语句——非 SIGNAL 才落存储的缺省 SIGNAL 对照组）
+//   n2  : 2 连接（无几何）+ USE CLOCK（收录）
+//   n3  : 1 连接（无几何）+ USE TIEOFF（收录）
 //   VDD : 1 连接 + 2 special wire（显式宽 200）+ 1 RECT + 1 via
 //         （⑫ nets_blk::VIADEF1 前缀回退解析）+ 1 未定义 via 兜底跳过
+//         + USE POWER（special 位 ∨ use 位 → pg 派生）
+// 未知 USE 值形态：defi 解析器语法层即校验 USE 值（DEFPARS-5500，
+// DSGN::0016 fatal 域）——真 DEF 路径到不了业务兜底；ds_parse_net_use
+// 的未知值兜底语义由 DSNetUseParseTest 纯函数单测锁定。
 TEST(DsDefNetsTest, ParsesNetContentInBatches) {
     TestEnv env;
     DSBlockBuildData block_data = env.make_block_data();
@@ -602,6 +648,23 @@ TEST(DsDefNetsTest, ParsesNetContentInBatches) {
     EXPECT_EQ(net_data.density_.layer_total(2, false), 3);  // M2 金属
     EXPECT_EQ(net_data.density_.metal_total(), 6);
     EXPECT_EQ(net_data.density_.via_total(), 2);
+
+    // USE 全量补收（2026-09-13 裁定）：n2 CLOCK / n3 TIEOFF / VDD POWER
+    // 收录；n1 无 USE 语句 → 缺省 SIGNAL 不落存储；pg 派生（VDD =
+    // special ∨ USE POWER）；真 DEF 无未知值（defi 语法层拦截）→ 计数 0
+    EXPECT_EQ(stats.unknown_use_count, 0);
+    EXPECT_EQ(net_data.stats_.unknown_use_count, 0u);
+    EXPECT_EQ(net_data.net_use_of(1), DSNetUse::SIGNAL);
+    EXPECT_EQ(net_data.net_uses_.size(), 3u);  // 只记非 SIGNAL 条目
+    EXPECT_EQ(net_data.net_use_of(block_data.net_names_->get_id("n2")),
+              DSNetUse::CLOCK);
+    EXPECT_EQ(net_data.net_use_of(block_data.net_names_->get_id("n3")),
+              DSNetUse::TIEOFF);
+    const uint32_t vdd_use_id = block_data.net_names_->get_id("VDD");
+    EXPECT_EQ(net_data.net_use_of(vdd_use_id), DSNetUse::POWER);
+    EXPECT_TRUE(net_data.is_pg_net(vdd_use_id));
+    EXPECT_FALSE(net_data.is_pg_net(
+        block_data.net_names_->get_id("n3")));  // TIEOFF 非 pg
 }
 
 TEST(DsDefNetsTest, UnreadableFileRaises) {

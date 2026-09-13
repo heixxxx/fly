@@ -120,6 +120,8 @@ struct DSDefNetsStats {
                                       // rect 项；DSGN::0010）
     int skipped_net_count = 0;   // 网名不在 S5a namemap 的防御兜底计数
     int skipped_invalid_connection_count = 0;  // 无效连接项跳过（DSGN::0025）
+    int unknown_use_count = 0;   // 网 USE 语句未知值兜底（DSGN::0026，
+                                 // 2026-09-13 USE 全量补收裁定）
     int batch_count = 0;         // 分批批次数（③ 分批落批可观测）
 };
 

@@ -1,0 +1,38 @@
+VERSION 5.8 ;
+DESIGN debug_design ;
+UNITS DISTANCE MICRONS 1000 ;
+DIEAREA ( 0 0 ) ( 2000 2000 ) ;
+
+COMPONENTS 2 ;
+    - h1 INVIO + PLACED ( 100 100 ) N ;
+    - h2 INV_X1 + PLACED ( 500 100 ) N ;
+END COMPONENTS
+
+PINS 1 ;
+    - DBG_IN + NET sig1
+      + DIRECTION INPUT
+      + USE SIGNAL
+      + PORT
+        + LAYER M1 ( 900 50 ) ( 1000 150 )
+        + FIXED ( 950 100 ) N ;
+END PINS
+
+NETS 3 ;
+    - sig1 ( h1 BIDIR ) ( h2 A ) ( PIN DBG_IN )
+      + USE SIGNAL
+      + ROUTED M1 ( 100 100 ) ( 500 100 ) ( 950 100 ) ;
+    - tie1 ( h2 ZN )
+      + USE TIEOFF
+      + ROUTED M2 ( 500 150 ) ( 800 150 ) ;
+    - weird ( h2 A )
+      + USE ANALOG
+      + ROUTED M1 ( 500 200 ) ( 700 200 ) ;
+END NETS
+
+SPECIALNETS 1 ;
+    - VDD0 ( h1 VDDP )
+      + USE POWER
+      + ROUTED M1 200 ( 100 100 ) ( 1500 100 ) ;
+END SPECIALNETS
+
+END DESIGN

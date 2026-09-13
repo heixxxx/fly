@@ -22,6 +22,7 @@
 #include <export/cpp/export_macros.h>
 #include <emir/design/cpp/ds_def_adapter.h>
 #include <emir/design/cpp/ds_flatten.h>
+#include <emir/design/cpp/ds_id_map.h>
 #include <emir/design/cpp/ds_instance_pipeline.h>
 #include <emir/design/cpp/ds_lef_adapter.h>
 #include <emir/design/cpp/ds_merge.h>
@@ -149,6 +150,9 @@ FLY_EXPORT_CLASS(fly::DSCell, "EXDSCell")
     // ㉗/㉙ flags 只读面
     FLY_EXPORT_READONLY_PROPERTY("is_fake_cell", [](const fly::DSCell& c) {
         return c.is_fake_cell();
+    })
+    FLY_EXPORT_READONLY_PROPERTY("is_std_cell", [](const fly::DSCell& c) {
+        return c.is_std_cell();
     })
     FLY_EXPORT_READONLY_PROPERTY("is_lef_cell", [](const fly::DSCell& c) {
         return c.is_lef_cell();
@@ -340,6 +344,12 @@ FLY_EXPORT_CLASS(fly::DSNetBuildData, "EXDSNetBuildData")
         return std::optional(nb::make_tuple(v->via_cell_id_,
                                             v->pos_.get_x(),
                                             v->pos_.get_y()));
+    })
+    // 网 USE 属性（2026-09-13 全量补收：未记录 = "SIGNAL" 缺省——枚举
+    // 字符串化，不透出整型）
+    FLY_EXPORT_DEF("net_use_of", [](const fly::DSNetBuildData& n,
+                                    uint64_t net_id) {
+        return fly::ds_net_use_name(n.net_use_of(net_id));
     })
     FLY_EXPORT_SERIALIZE_PICKLE(fly::DSNetBuildData);
 
@@ -809,6 +819,8 @@ FLY_EXPORT_CLASS(fly::DSDefNetsStats, "EXDSDefNetsStats")
     FLY_EXPORT_READONLY_ATTR("skipped_invalid_connection_count",
                              &fly::DSDefNetsStats::
                                  skipped_invalid_connection_count)
+    FLY_EXPORT_READONLY_ATTR("unknown_use_count",
+                             &fly::DSDefNetsStats::unknown_use_count)
     FLY_EXPORT_READONLY_ATTR("batch_count", &fly::DSDefNetsStats::batch_count);
 
 FLY_EXPORT_CLASS(fly::DSDesign, "EXDSDesign")
@@ -893,6 +905,30 @@ FLY_EXPORT_CLASS(fly::DSDesign, "EXDSDesign")
     // R7 ㊱：pin 名反查（DSPin 不存 name；经 pin hasher 组合键取 pin 名段）
     FLY_EXPORT_DEF("pin_name_of", [](const fly::DSDesign& d, uint32_t pin_id) {
         const CMString name = d.pin_name_of(pin_id);
+        if (name.empty()) return std::optional<CMString>();
+        return std::optional<CMString>(name);
+    })
+    // pin 组合键全名反查（debug API convert_to_name(pin=…) 用；未登记/
+    // 空洞 None——与 pin_id_by_name 的组合键入参对称）
+    FLY_EXPORT_DEF("pin_key_by_id", [](const fly::DSDesign& d,
+                                       uint32_t pin_id) {
+        if (!fly::DSPinNameHasher::is_valid_id(pin_id) ||
+            pin_id >= d.pin_names_.name_table_.size()) {
+            return std::optional<CMString>();
+        }
+        const CMString key = d.pin_names_.get_name(pin_id);
+        if (key.empty()) return std::optional<CMString>();
+        return std::optional<CMString>(key);
+    })
+    // via cell id → 登记名（debug API convert_to_name(via_cell=…) 用；
+    // 未命中/空洞 None）
+    FLY_EXPORT_DEF("via_cell_name_by_id", [](const fly::DSDesign& d,
+                                             uint32_t via_cell_id) {
+        if (!fly::DSViaCellNameHasher::is_valid_id(via_cell_id) ||
+            via_cell_id >= d.via_cell_names_.name_table_.size()) {
+            return std::optional<CMString>();
+        }
+        const CMString name = d.via_cell_names_.get_name(via_cell_id);
         if (name.empty()) return std::optional<CMString>();
         return std::optional<CMString>(name);
     })
@@ -1299,7 +1335,9 @@ FLY_EXPORT_CLASS(fly::DSPartInstConnections, "EXDSPartInstConnections")
     }, nb::rv_policy::reference_internal)
     FLY_EXPORT_SERIALIZE_PICKLE(fly::DSPartInstConnections);
 
-// /NET_CONNECTIONS：net global id → 连接项列表（跟随 net 副本）
+// /NET_CONNECTIONS：net global id → 连接项列表（跟随 net 副本）+ per-net
+// use map（2026-09-13 USE 全量补收；未记录 = "SIGNAL" 缺省——枚举字符串
+// 化，不透出整型）
 FLY_EXPORT_CLASS(fly::DSPartNetConnections, "EXDSPartNetConnections")
     FLY_EXPORT_INIT()
     FLY_EXPORT_READONLY_PROPERTY("size",
@@ -1315,6 +1353,10 @@ FLY_EXPORT_CLASS(fly::DSPartNetConnections, "EXDSPartNetConnections")
         }
         return out;
     }, nb::rv_policy::reference_internal)
+    FLY_EXPORT_DEF("use_of", [](const fly::DSPartNetConnections& p,
+                                uint64_t net_global_id) {
+        return fly::ds_net_use_name(p.use_of(net_global_id));
+    })
     FLY_EXPORT_SERIALIZE_PICKLE(fly::DSPartNetConnections);
 
 // 四类聚合容器（分片中间形态 + 合并工作形态；Python 面 = 规模观测 +
@@ -1369,6 +1411,89 @@ FLY_EXPORT_FUNCTION("ds_flatten_block",
         out.append(nb::make_tuple(pid, nb::cast(std::move(product))));
     }
     return out;
+});
+
+// ── id → partition 反向映射（2026-09-13 debug 定位裁定：分段落盘按需
+// 加载——片段临时对象 / 段正式对象 / 段表轻对象 + merge 与提取）────────
+
+// 分区片段（S9 每分区合并任务写本区片段的临时对象；merge 后清理）
+FLY_EXPORT_CLASS(fly::DSIdPartitionSlice, "EXDSIdPartitionSlice")
+    FLY_EXPORT_INIT()
+    FLY_EXPORT_READONLY_PROPERTY("size", [](const fly::DSIdPartitionSlice& s) {
+        return static_cast<int>(s.size());
+    })
+    FLY_EXPORT_DEF("at", [](const fly::DSIdPartitionSlice& s, size_t i) {
+        return nb::make_tuple(s.ids_.at(i), s.pids_.at(i));
+    })
+    FLY_EXPORT_SERIALIZE_PICKLE(fly::DSIdPartitionSlice);
+
+// 段正式对象（id_partition_map/{kind}/S{k}：定长 pids 数组，kNoPartition
+// = 空洞；查询未命中返回 None——不透出哨兵）
+FLY_EXPORT_CLASS(fly::DSIdPartitionSegment, "EXDSIdPartitionSegment")
+    FLY_EXPORT_INIT()
+    FLY_EXPORT_READONLY_ATTR("id_start", &fly::DSIdPartitionSegment::id_start_)
+    FLY_EXPORT_READONLY_PROPERTY("size",
+                                 [](const fly::DSIdPartitionSegment& s) {
+        return static_cast<int>(s.size());
+    })
+    FLY_EXPORT_DEF("partition_of", [](const fly::DSIdPartitionSegment& s,
+                                      uint64_t id) {
+        const uint32_t pid = s.partition_of(id);
+        if (pid == fly::kIdMapNoPartition) {
+            return std::optional<uint32_t>();
+        }
+        return std::optional<uint32_t>(pid);
+    })
+    FLY_EXPORT_SERIALIZE_PICKLE(fly::DSIdPartitionSegment);
+
+// 段表轻对象（id_partition_map/{kind}：非空段起始 id 升序表）
+FLY_EXPORT_CLASS(fly::DSIdPartitionIndex, "EXDSIdPartitionIndex")
+    FLY_EXPORT_INIT()
+    FLY_EXPORT_READONLY_PROPERTY("segment_count",
+                                 [](const fly::DSIdPartitionIndex& ix) {
+        return static_cast<int>(ix.size());
+    })
+    FLY_EXPORT_DEF("has_segment", [](const fly::DSIdPartitionIndex& ix,
+                                     uint64_t id) {
+        return ix.has_segment(id);
+    })
+    // id 所在段起始 id（无此段 = None——段对象加载的键）
+    FLY_EXPORT_DEF("find_segment_start", [](const fly::DSIdPartitionIndex& ix,
+                                            uint64_t id) {
+        const uint64_t start = ix.find_segment_start(id);
+        if (start == fly::DSIdPartitionIndex::kIdMapNoSegment) {
+            return std::optional<uint64_t>();
+        }
+        return std::optional<uint64_t>(start);
+    })
+    FLY_EXPORT_SERIALIZE_PICKLE(fly::DSIdPartitionIndex);
+
+// 提取：分区产物 → 本区片段（instance_kind = true 取 primary 副本 id 集
+// / false 取 net 副本 id 集；partition_id = 本区 pid）
+FLY_EXPORT_FUNCTION("ds_collect_partition_id_slice",
+                    [](const fly::DSPartInstances& instances,
+                       const fly::DSPartitionGeometry& geometry,
+                       bool instance_kind, uint32_t partition_id) {
+    return nb::cast(fly::ds_collect_partition_id_slice(
+        instances, geometry, instance_kind, partition_id));
+});
+
+// merge：多分区片段 → (段表, 段集)——段集按 id_start 升序的
+// (id_start, segment) 列表透出（流程侧逐段写正式对象）
+FLY_EXPORT_FUNCTION("ds_merge_id_partition_slices", [](nb::list slices) {
+    fly::CMVector<const fly::DSIdPartitionSlice*> slice_ptrs;
+    for (nb::handle item : slices) {
+        slice_ptrs.push_back(&nb::cast<const fly::DSIdPartitionSlice&>(item));
+    }
+    fly::DSIdPartitionMapResult result =
+        fly::ds_merge_id_partition_slices(slice_ptrs);
+    nb::list segs;
+    for (auto& seg : result.segments) {
+        const uint64_t start = seg.get_id_start();
+        segs.append(nb::make_tuple(start, nb::cast(std::move(seg))));
+    }
+    return nb::make_tuple(nb::cast(std::move(result.index)),
+                          nb::cast(std::move(segs)));
 });
 
 // ── S10 汇总校验 + 冻结（2026-09-13 校验分级裁定：损坏类 fatal / 观测

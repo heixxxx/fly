@@ -58,6 +58,9 @@ import 本模块完成注册。仅注册过的 id 才会被 MSG 打印/发送，
 - DSGN::0025: S5b 连接项换 id 未命中（实例名未登记 / cell 无此 pin /
   port 未注册——兜底跳过该连接 + skipped_invalid_connection_count 计数，
   2026-09-13 连接 id 化裁定；不 raise）
+- DSGN::0026: S5b 网 USE 语句未知值（2026-09-13 USE 全量补收裁定：DEF
+  USE 规范八值 SIGNAL/POWER/GROUND/CLOCK/TIEOFF/ANALOG/RESET/SCAN 之外
+  的值 → SIGNAL 兜底 + unknown_use_count 计数；不 raise）
 """
 
 from fly import register_message_id
@@ -87,3 +90,4 @@ register_message_id("DSGN::0022", "WARN")
 register_message_id("DSGN::0023", "WARN")
 register_message_id("DSGN::0024", "INFO")
 register_message_id("DSGN::0025", "WARN")
+register_message_id("DSGN::0026", "WARN")

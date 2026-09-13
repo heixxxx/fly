@@ -186,6 +186,19 @@ cc_test(
     copts = ["-std=c++20"],
 )
 
+# id → partition 反向映射（2026-09-13 debug 定位裁定；提取/merge 分段/
+# 空洞段跳过/段表二分/序列化往返）
+cc_test(
+    name = "ds_id_map_test",
+    srcs = ["ds_id_map_test.cpp"],
+    deps = [
+        "@googletest//:gtest_main",
+        "//src/emir/design/cpp:fly_emir_design_ds_types",
+    ],
+    linkstatic = True,
+    copts = ["-std=c++20"],
+)
+
 # S10 汇总校验 + 冻结（合成树 + 分区产物，同 ds_flatten_test 模式；fatal
 # 路径 fork 断言需要共享断言设施）
 cc_test(

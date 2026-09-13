@@ -55,6 +55,19 @@ enum class DSDirection : uint8_t { HORIZONTAL, VERTICAL, NONE };
 // pin 类型：信号 / 电源 / 地 / 时钟（2026-09-13 裁定：CLOCK 补收——LEF
 // macro pin 的 USE CLOCK 语句原先落 SIGNAL，扩展为显式第四值）
 enum class DSPinType : uint8_t { SIGNAL, POWER, GROUND, CLOCK };
+// net 用途（2026-09-13 裁定：S5b 全量补收——DEF NET USE 语句规范全集
+// 八值，缺省 SIGNAL）。此前仅 power/ground 两值隐含在 pg 判定的字符串
+// 比较中，无显式 net 维度属性；本枚举随 S5b 解析收录、随 S9 入分区产物
+//（DSPartNetConnections 的 per-net use map，get_net 类 debug 消费）。
+enum class DSNetUse : uint8_t {
+    SIGNAL = 0, POWER, GROUND, CLOCK, TIEOFF, ANALOG, RESET, SCAN
+};
+// USE/DIRECTION 类文本 → DSNetUse（大小写保留精确匹配，namemap 同口径；
+// 未知值/空文本 → SIGNAL 兜底并经 known 出参上报——调用方计数 + 提醒，
+// 不 raise，dev-rules §7 同族）。known 可为 nullptr（不关心兜底形态）。
+DSNetUse ds_parse_net_use(const char* text, bool* known = nullptr);
+// DSNetUse → DEF 规范名（"SIGNAL"/"POWER"/…；消息与 debug API 字符串化用）
+const char* ds_net_use_name(DSNetUse use);
 // pin 方向：输入 / 输出 / 双向
 enum class DSPinDirection : uint8_t { INPUT, OUTPUT, INOUT };
 // pin 放置状态（P3 裁定：仅 port 场景有效；NONE = 非 port pin 的默认
@@ -660,11 +673,14 @@ public:
     // 无效连接项跳过数（2026-09-13 id 化裁定：实例名未登记 / cell 无此
     // pin / port 未注册——兜底跳过 + DSGN::0025 提醒，dev-rules §7）
     uint64_t skipped_invalid_connection_count = 0;
+    // 网 USE 语句未知值兜底数（2026-09-13 USE 全量补收裁定：未知值 →
+    // SIGNAL + DSGN::0026 提醒，不 raise）
+    uint64_t unknown_use_count = 0;
 
     FLY_SERIALIZE(net_count, connection_count, wire_count, rect_count,
                   via_instance_count, skipped_via_count,
                   skipped_layer_ref_count, skipped_net_count,
-                  skipped_invalid_connection_count)
+                  skipped_invalid_connection_count, unknown_use_count)
 };
 
 // per-DEF 网内容产物（③ 分批解析落批追加；⑬ 独立对象）：连接表 + 几何表
@@ -690,6 +706,12 @@ public:
     // 恒 1（序列化框架无 set 容器支持，map 充当 set——bitsery 适配面仅
     // map/vector/string）；S5b 连接解析节点记录。
     CMUnorderedMap<uint64_t, uint8_t> pg_nets_;
+    // 网 USE 属性（2026-09-13 全量补收裁定：S5b 解析收录、随 S9 入分区
+    // 产物 per-net use map）。键 = local net id、值 = DSNetUse 整型；
+    // **只记录非 SIGNAL 条目**（DEF 缺省 + 显式 USE SIGNAL 同语义，缺省
+    // 读取口径 = SIGNAL——省 90%+ 条目，典型设计绝大多数网为信号网）。
+    // 记录点 = 连接解析节点（local id 对齐成功后，与 pg_nets_ 并排）。
+    CMUnorderedMap<uint64_t, uint8_t> net_uses_;
     // 网侧密度（金属/通孔逐层分列通道，⑥；格网参数与实例面积通道一致，
     // 由 DIEAREA 配置）
     DSDensityGrid density_;
@@ -722,8 +744,22 @@ public:
         pg_nets_.emplace(local_net_id, 1);
     }
 
+    // 网 USE 属性收录/读取（S5b 收录、S9 flatten 与 debug 消费；读取
+    // 缺省 = SIGNAL——只记录非 SIGNAL 条目，见字段注释）
+    void record_net_use(uint64_t local_net_id, DSNetUse use) {
+        if (use != DSNetUse::SIGNAL) {
+            net_uses_.emplace(local_net_id, static_cast<uint8_t>(use));
+        }
+    }
+    DSNetUse net_use_of(uint64_t local_net_id) const {
+        const auto it = net_uses_.find(local_net_id);
+        return it == net_uses_.end()
+                   ? DSNetUse::SIGNAL
+                   : static_cast<DSNetUse>(it->second);
+    }
+
     FLY_SERIALIZE(block_name_, connections_, wires_, rects_, via_instances_,
-                  net_via_ids_, pg_nets_, density_, stats_,
+                  net_via_ids_, pg_nets_, net_uses_, density_, stats_,
                   next_via_instance_id_)
 };
 

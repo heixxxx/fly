@@ -92,12 +92,14 @@ from .ds_export import (
     ds_build_hier_tree,
     ds_build_net_union,
     ds_collect_net_union_slice,
+    ds_collect_partition_id_slice,
     ds_decide_partitions,
     ds_flatten_block,
     ds_merge_block_build,
     ds_merge_cell_lef,
     ds_merge_def_header,
     ds_merge_global_density,
+    ds_merge_id_partition_slices,
     ds_net_union_child_indexes,
     ds_verify_design,
     ds_verify_partition,
@@ -579,7 +581,7 @@ def _net_union_summary_task(db, hier_key, slice_keys, union_key):
 @as_task(inputs=lambda db, design_key, global_density_key, hier_key,
          block_names_key, alpha_key, block_keys, net_keys, names_keys,
          def_paths, slice_prefix, verify_prefix, stack_key,
-         net_union_key, formal_keys, temp_keys: [
+         net_union_key, id_slice_prefix, formal_keys, temp_keys: [
     db.get_full_name(design_key), db.get_full_name(global_density_key),
     db.get_full_name(hier_key), db.get_full_name(block_names_key),
     db.get_full_name(alpha_key),
@@ -587,8 +589,8 @@ def _net_union_summary_task(db, hier_key, slice_keys, union_key):
 def _s9_plan_task(db, design_key, global_density_key, hier_key,
                   block_names_key, alpha_key, block_keys,
                   net_keys, names_keys, def_paths, slice_prefix,
-                  verify_prefix, stack_key, net_union_key, formal_keys,
-                  temp_keys):
+                  verify_prefix, stack_key, net_union_key, id_slice_prefix,
+                  formal_keys, temp_keys):
     """S9 编排计划（依赖 S8 分区表 + S6 树 + block 名清单 + alpha 设置；
     worker 上动态提交展开/合并/freeze 链——同 solver kickoff 动态提交先
     例；分组信息依赖树运行时数据，无法静态提交）。
@@ -660,9 +662,14 @@ def _s9_plan_task(db, design_key, global_density_key, hier_key,
                         [net_keys[i] for i in group],
                         f"{slice_prefix}{g}_", len(partitions))
     # 每分区一合并任务（真实合并语义）：merge 全部相关分片 → 四类正式
-    # 对象唯一写定
+    # 对象唯一写定 + 本区 id→partition 片段临时对象（debug 定位裁定）
     for pid, xp, yp in partitions:
-        _s9_partition_merge_task(db, slice_prefix, len(groups), pid, xp, yp)
+        _s9_partition_merge_task(db, slice_prefix, len(groups), pid, xp, yp,
+                                 id_slice_prefix)
+    # id→partition 反向映射汇总（2026-09-13 debug 定位裁定：INST/NET 各
+    # 一任务，读全部分区片段 → 全空间分段正式对象 + 段表）
+    for kind in DesignDb.ID_MAP_KINDS:
+        _id_map_merge_task(db, id_slice_prefix, len(partitions), kind)
     # S10 校验链（每分区一校验任务并行 + 全局汇总校验；2026-09-13 校验
     # 分级裁定——损坏类 fatal 阻断冻结，观测类 warn 不阻断）
     verify_keys = []
@@ -674,16 +681,20 @@ def _s9_plan_task(db, design_key, global_density_key, hier_key,
     _s10_design_verify_task(db, verify_keys, design_key, stack_key,
                             global_density_key, net_union_key, hier_key,
                             block_keys, net_keys, names_keys, report_key)
-    # freeze：正式对象集（静态 + 全部分区对象 + 校验报告）+ 中间对象清理
-    #（分片 + 校验结果临时对象）——verify_report 在 final_keys 中，校验
-    # 未完成（或 fatal 未产出报告）不冻结
+    # freeze：正式对象集（静态 + 全部分区对象 + id→partition 段表 ×2 +
+    # 校验报告）+ 中间对象清理（分片 + 校验结果临时对象）——verify_report
+    # 在 final_keys 中，校验未完成（或 fatal 未产出报告）不冻结。段对象
+    # 与段表同任务写定（段表在即全部段对象已在），依赖段表即足。
     partition_keys = [DesignDb.partition_obj_name(xp, yp, kind)
                       for _, xp, yp in partitions
                       for kind in DesignDb.PARTITION_KINDS]
+    index_keys = [DesignDb.id_map_index_obj_name(kind)
+                  for kind in DesignDb.ID_MAP_KINDS]
     slice_keys = [f"{slice_prefix}{g}_{pid}"
                   for g in range(len(groups))
                   for pid, _, _ in partitions]
-    _freeze_design_task(db, formal_keys + partition_keys + [report_key],
+    _freeze_design_task(db, formal_keys + partition_keys + index_keys +
+                        [report_key],
                         temp_keys + slice_keys + verify_keys)
 
 
@@ -721,14 +732,18 @@ def _s9_expand_task(db, design_key, hier_key, block_names_key,
                         save_to_db=False)
 
 
-@as_task(inputs=lambda db, slice_prefix, n_groups, pid, xp, yp: [
+@as_task(inputs=lambda db, slice_prefix, n_groups, pid, xp, yp,
+         id_slice_prefix: [
     db.get_full_name(f"{slice_prefix}{g}_{pid}") for g in range(n_groups)
 ])
-def _s9_partition_merge_task(db, slice_prefix, n_groups, pid, xp, yp):
+def _s9_partition_merge_task(db, slice_prefix, n_groups, pid, xp, yp,
+                             id_slice_prefix):
     """每分区一合并任务（分区侧真实合并语义，裁定 ⑤）：merge 来自不同
     展开任务的同分区分片 → 四类正式对象
     PART_{xp}_{yp}/{GEOMETRY,INSTANCES,INST_CONNECTIONS,NET_CONNECTIONS}
-    唯一写定。"""
+    唯一写定。随后提取本区 id→partition 片段（2026-09-13 debug 定位裁定
+    ：INST = primary 副本 id 集、NET = net 副本 id 集——geometry 键集；
+    临时对象由 id→partition 汇总任务 merge 后清理）。"""
     from log import INFO
     product = EXDSPartitionProduct()
     for g in range(n_groups):
@@ -741,8 +756,50 @@ def _s9_partition_merge_task(db, slice_prefix, n_groups, pid, xp, yp):
                     product.inst_connections(), save_to_db=True)
     db.write_object(DesignDb.partition_obj_name(xp, yp, "NET_CONNECTIONS"),
                     product.net_connections(), save_to_db=True)
+    # 本区映射片段（临时对象；merge 幂等键覆盖后提取——恰一 primary /
+    # net 副本口径见 ds_collect_partition_id_slice）
+    db.write_object(
+        DesignDb.id_slice_obj_name(id_slice_prefix, pid, "INST"),
+        ds_collect_partition_id_slice(product.instances(), product.geometry(),
+                                      True, pid), save_to_db=False)
+    db.write_object(
+        DesignDb.id_slice_obj_name(id_slice_prefix, pid, "NET"),
+        ds_collect_partition_id_slice(product.instances(), product.geometry(),
+                                      False, pid), save_to_db=False)
     INFO(f"s9 partition ({xp},{yp}): {product.instance_count} instances, "
          f"{product.geometry_net_count} net geometry bucket(s)")
+
+
+# ── id → partition 反向映射汇总（2026-09-13 debug 定位裁定：多分区片段
+# → 全空间分段正式对象；由 S9 plan 任务动态提交在分区 merge 之后、freeze
+# 之前——段对象与段表同任务写定，freeze 依赖段表即依赖全部段对象）───────
+
+@as_task(inputs=lambda db, id_slice_prefix, n_parts, kind: [
+    db.get_full_name(DesignDb.id_slice_obj_name(id_slice_prefix, pid, kind))
+    for pid in range(n_parts)
+])
+def _id_map_merge_task(db, id_slice_prefix, n_parts, kind):
+    """id→partition 映射汇总任务（INST/NET 各一）：读全部分区片段 →
+    ds_merge_id_partition_slices 全空间分段（空洞段跳过）→ 段对象逐段
+    写正式对象 + 段表最后写定（段表在即全部段对象已在——freeze 依赖段
+    表）→ 片段清理。"""
+    slices = [db.read_object(DesignDb.id_slice_obj_name(id_slice_prefix,
+                                                        pid, kind))
+              for pid in range(n_parts)]
+    index, segments = ds_merge_id_partition_slices(slices)
+    for seg_start, segment in segments:
+        db.write_object(
+            DesignDb.id_map_segment_obj_name(
+                kind, seg_start >> DesignDb.ID_MAP_SEGMENT_BITS),
+            segment, save_to_db=True)
+    db.write_object(DesignDb.id_map_index_obj_name(kind), index,
+                    save_to_db=True)
+    for pid in range(n_parts):
+        db.remove_object(
+            DesignDb.id_slice_obj_name(id_slice_prefix, pid, kind))
+    from log import INFO
+    INFO(f"id partition map '{kind}': {index.segment_count} segment(s) "
+         f"merged from {n_parts} slice(s)")
 
 
 # ── S10：汇总校验 + 冻结前置（2026-09-13 校验分级裁定：损坏类 fatal /
@@ -1022,11 +1079,12 @@ def run_design_flow(db, lef_paths, def_paths, lib_db):
     # verify_report 正式对象——校验未完成不冻结）
     slice_prefix = _tmp_key(uid, "s9_slice_")
     verify_prefix = _tmp_key(uid, "s10_verify_")
+    id_slice_prefix = _tmp_key(uid, "id_slice_")
     _s9_plan_task(
         db, design_key, global_density_key, hier_key, block_names_key,
         DesignDb.ALPHA_SETTINGS_OBJ, formal_block_keys,
         formal_net_keys, names_keys, def_paths, slice_prefix, verify_prefix,
-        stack_key, net_union_key,
+        stack_key, net_union_key, id_slice_prefix,
         [design_key, stack_key, tables_key, geoms_key] + formal_block_keys +
         names_keys + formal_net_keys + [global_density_key, net_union_key],
         temp_keys)

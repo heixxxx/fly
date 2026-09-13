@@ -139,6 +139,11 @@ void DSPartitionProduct::merge_from(const DSPartitionProduct& src) {
         CMVector<DSPartConnection>& dst = net_connections_.items_[nid];
         dst.insert(dst.end(), conns.begin(), conns.end());
     }
+    // per-net use map 同键覆盖（同 global net 只属一个 block 定义，use
+    // 同源——重放幂等）
+    for (const auto& [nid, use] : src.net_connections_.uses_) {
+        net_connections_.uses_[nid] = use;
+    }
     for (const auto& [nid, entries] : src.geometry_.nets_) {
         CMVector<DSGeomEntry>& dst = geometry_.nets_[nid];
         dst.insert(dst.end(), entries.begin(), entries.end());
@@ -420,6 +425,15 @@ CMVector<std::pair<uint32_t, DSPartitionProduct>> ds_flatten_block(
 
             if (hit_pids.empty()) {
                 continue;  // 该网几何未落任何分区（越出全域的防御形态）
+            }
+            // per-net use 跟随 net 副本（2026-09-13 USE 全量补收裁定：
+            // 只记非 SIGNAL 条目——record 端已判别，此处直查直写）
+            const auto uit = nets.net_uses_.find(local_net);
+            if (uit != nets.net_uses_.end()) {
+                for (const uint32_t pid : hit_pids) {
+                    product_for(pid).net_connections_.uses_[global_net] =
+                        uit->second;
+                }
             }
             // is_crossing（裁定补记④）：成员图形散布多于一个分区
             if (hit_pids.size() > 1) {

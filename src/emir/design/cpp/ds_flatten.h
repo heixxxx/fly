@@ -26,7 +26,8 @@
 //                           （跟随 net 副本；非 pg 网全量补全——跨分区连
 //                           接也保存、本分区自足；pg 网不补全——仅本分区
 //                           instance 副本相关条目，靠 union + instance
-//                           维度拼装，补记②）。
+//                           维度拼装，补记②）+ per-net use map（2026-09-13
+//                           USE 全量补收裁定，跟随 net 副本）。
 //   DSPartitionProduct      四类聚合容器 = 分片（slice）中间形态 + 合并
 //                           工作形态；merge_from = 追加合并（幂等键覆盖
 //                           不叠加——instance 副本同 global id 只此一份）。
@@ -194,14 +195,27 @@ public:
 };
 
 // /NET_CONNECTIONS：net global id → 连接项列表（跟随 net 副本——仅几何
-// 副本所在分区；非 pg 全量补全 / pg 仅本区 instance 副本相关条目）。
+// 所在分区；非 pg 全量补全 / pg 仅本区 instance 副本相关条目）。
+// 2026-09-13 USE 全量补收裁定：增 per-net use map（键 = net global id、
+// 值 = DSNetUse 整型；只记非 SIGNAL 条目，缺省读取 SIGNAL——与
+// DSNetBuildData::net_uses_ 同口径），跟随 net 副本落分区，get_net 类
+// debug 消费直接读取、不查 S5b per-DEF 产物。
 class DSPartNetConnections {
 public:
     CMUnorderedMap<uint64_t, CMVector<DSPartConnection>> items_;
+    // per-net use map（键 = net global id；只记非 SIGNAL，缺省 SIGNAL）
+    CMUnorderedMap<uint64_t, uint8_t> uses_;
 
     size_t size() const { return items_.size(); }
+    // use 读取（未记录 = SIGNAL 缺省；DSNetUse 整型存取）
+    DSNetUse use_of(uint64_t net_global_id) const {
+        const auto it = uses_.find(net_global_id);
+        return it == uses_.end()
+                   ? DSNetUse::SIGNAL
+                   : static_cast<DSNetUse>(it->second);
+    }
 
-    FLY_SERIALIZE(items_)
+    FLY_SERIALIZE(items_, uses_)
 };
 
 // 四类聚合容器：展开任务产出的分片（slice）中间形态 + 分区合并任务的

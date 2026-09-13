@@ -741,6 +741,210 @@ assert "DSGN::0024" in msgs_s10, "verify summary INFO should be emitted"
 INFO("[OK] S10 messages: DSGN::0022 continuity warn + DSGN::0024 summary, "
      "no fatal (observational-only run)")
 
+# ── debug 读库 API（2026-09-13 裁定：DesignDb 六方法——id↔name 转换 +
+# 映射定位 + 按需加载 LRU；design db 数据手算锁定）──
+# id→partition 反向映射段读回：INST 段 {1,3,5}→pid0（top2 UNPLACED 无
+# primary 副本 = 空洞）；NET 段 {0,1}→pid0（键 0 = root 首网 n_top 与
+# OBS 桶共用——n_top 无几何无连接；n2 无几何不入映射）
+from emir.design import DesignDb
+inst_index = design_db.read_object(DesignDb.id_map_index_obj_name("INST"))
+assert inst_index.segment_count == 1
+inst_seg = design_db.read_object(
+    DesignDb.id_map_segment_obj_name("INST", 0))
+assert inst_seg.id_start == 0
+assert inst_seg.size == DesignDb.ID_MAP_SEGMENT_SIZE
+assert inst_seg.partition_of(1) == 0 and inst_seg.partition_of(5) == 0
+assert inst_seg.partition_of(2) is None, \
+    "UNPLACED top2 has no primary copy (hole in the map)"
+net_index = design_db.read_object(DesignDb.id_map_index_obj_name("NET"))
+assert net_index.segment_count == 1
+net_seg = design_db.read_object(DesignDb.id_map_segment_obj_name("NET", 0))
+assert net_seg.partition_of(0) == 0 and net_seg.partition_of(1) == 0
+assert net_seg.partition_of(2) is None, \
+    "geometry-less net n2 has no partition copy"
+INFO("[OK] id->partition map: segment index + direct-index pids, holes "
+     "for UNPLACED instance and geometry-less net")
+
+# get_instance：层级路径入参（pos (1350,700) 与 S9 段同源手算）
+inst = design_db.get_instance("block_parent/top3/u1")
+assert inst["id"] == 5 and inst["name"] == "block_parent/top3/u1"
+assert inst["pos"] == (1350, 700) and inst["orient"] == 0
+assert inst["placement_status"] == "PLACED"
+assert inst["primary_partition_id"] == 0
+assert inst["cell_id"] == inv_id and inst["cell_name"] == "INV_X1"
+assert [(c["net_id"], c["net_name"], c["pin_name"])
+        for c in inst["connections"]] == [
+    (1, "block_parent/top3/n1", "A"), (2, "block_parent/top3/n2", "ZN")]
+assert [(c["is_receiver"], c["is_driver"])
+        for c in inst["connections"]] == [(True, False), (False, True)]
+# id 入参（top1：连接 = root 网 n_top 的 A 端点）
+top1 = design_db.get_instance(1)
+assert top1["name"] == "block_parent/top1"
+assert [(c["net_id"], c["net_name"], c["pin_name"], c["is_port"])
+        for c in top1["connections"]] == \
+    [(0, "block_parent/n_top", "A", False)]
+# root 占位 id 0 / 越界 / 未知名 → None
+assert design_db.get_instance(0) is None, \
+    "root placeholder has no partition copy"
+assert design_db.get_instance(999) is None
+assert design_db.get_instance("block_parent/ghost") is None
+
+# get_net：非 pg 明细（端点实例名 + pin 名 name 化；port 条目 = 块实例
+# 层级名 + port 名）；无几何网查不到
+n1 = design_db.get_net("block_parent/top3/n1")
+assert n1["id"] == 1 and n1["use"] == "SIGNAL" and n1["is_pg"] is False
+assert n1["connection_count"] == 2
+assert n1["receiver_count"] == 2 and n1["driver_count"] == 0 \
+    and n1["hybrid_count"] == 0
+assert [(c["instance_id"], c["instance_name"], c["pin_name"], c["is_port"])
+        for c in n1["connections"]] == [
+    (5, "block_parent/top3/u1", "A", False),
+    (3, "block_parent/top3", "PIN_IN", True)]
+n_top = design_db.get_net("block_parent/n_top")
+assert n_top["id"] == 0 and n_top["connection_count"] == 0
+assert n_top["connections"] == []
+assert design_db.get_net("block_parent/top3/n2") is None, \
+    "geometry-less net has no partition copy"
+assert design_db.get_net(999) is None
+
+# get_cell / get_layer
+cell = design_db.get_cell("INV_X1")
+assert cell["id"] == inv_id and cell["pin_count"] == 3
+assert "lef_cell" in cell["flags"] and "lib_cell" in cell["flags"]
+assert cell["library_name"] == "minitest_typ"
+pins = {p["name"]: p for p in cell["pins"]}
+assert pins["A"]["direction"] == "INPUT" and pins["A"]["is_port"] is False
+assert pins["VDD"]["type"] == "POWER"
+block_cell = design_db.get_cell("block_child")
+assert "block_cell" in block_cell["flags"]
+assert block_cell["pins"][0]["is_port"] is True \
+    and block_cell["pins"][0]["name"] == "PIN_IN"
+layer = design_db.get_layer("M1")
+assert layer["id"] == 0 and layer["name"] == "M1"
+assert layer["type"] == "ROUTING" and layer["direction"] == "HORIZONTAL"
+assert layer["width"] == 70 and layer["pitch"] == 190 \
+    and layer["spacing"] == [70]
+assert design_db.get_layer("VIA1")["type"] == "CUT"
+assert design_db.get_layer("GHOST") is None and design_db.get_layer(99) is None
+
+# convert 双向（kind+name 形态 / kwargs 直写形态——convert_to_name(inst=10)
+# 为用户示例 kwargs 形态；inst/net 走层级路径 mapper、pin 组合键）
+assert design_db.convert_to_id("cell", "INV_X1") == inv_id
+assert design_db.convert_to_id(kind="cell", name="INV_X1") == inv_id
+assert design_db.convert_to_id(cell="INV_X1") == inv_id
+assert design_db.convert_to_name(cell=inv_id) == "INV_X1"
+assert design_db.convert_to_id(pin="INV_X1/A") == 0
+assert design_db.convert_to_name(pin=0) == "INV_X1/A"
+assert design_db.convert_to_id(layer="M2") == 2
+assert design_db.convert_to_name(layer=2) == "M2"
+via12 = design.via_cell_id_by_name("block_child::VIA12")
+assert design_db.convert_to_id(via_cell="block_child::VIA12") == via12
+assert design_db.convert_to_name(via_cell=via12) == "block_child::VIA12"
+assert design_db.convert_to_id(inst="block_parent/top3/u1") == 5
+assert design_db.convert_to_name(inst=5) == "block_parent/top3/u1"
+assert design_db.convert_to_name(inst=10) is None, \
+    "user example kwargs form: absent id returns None"
+assert design_db.convert_to_id(net="block_parent/n_top") == 0
+assert design_db.convert_to_name(net=0) == "block_parent/n_top"
+assert design_db.convert_to_id(cell="GHOST") is None
+INFO("[OK] debug API on design db: get_instance/get_net/get_cell/"
+     "get_layer/convert both directions (id+name paired, name-resolved)")
+
+# ── debug db（独立 lef 组 cells_debug.lef：INOUT pin cell）+ USE 八值
+# 收录 / hybrid 混合类型 / pg 网概要 / 分区 use 字段——debug API 手算
+# 锁定。手算 id 面：pin 平铺注册序 A=0/ZN=1/VDD=2/BIDIR=3/VDDP=4/
+# DBG_IN=5；cell INV_X1=0/FILLER01=1/INVIO=2/debug_design=3；instance
+# h1=1/h2=2；net local sig1=1/tie1=2/weird=3/VDD0=4 → global 0/1/2/3 ──
+DEBUG_DATA = os.path.join(SCRIPT_DIR, "data", "debug")
+DEBUG_DEF = os.path.join(DEBUG_DATA, "debug.def")
+CELLS_DEBUG = os.path.join(DEBUG_DATA, "cells_debug.lef")
+debug_db = proj.build_design_db(
+    name="design_debug",
+    def_paths=[DEBUG_DEF],
+    lef_paths=[TECH_LEF, CELLS_MAIN, CELLS_DEBUG],
+    lib_db=lib_db,
+)
+assert proj.wait_frozen("design_debug", timeout=180), \
+    "debug design db should freeze"
+INFO("[WAIT] debug design db frozen")
+
+# S5b 产物 use 收录（EXDSNetBuildData 面；字符串化导出——非 SIGNAL 才
+# 落存储，SIGNAL 缺省读取）
+dbg_net0 = debug_db.read_object(debug_db.net_obj_name(0))
+assert dbg_net0.net_use_of(1) == "SIGNAL", \
+    "explicit USE SIGNAL records nothing (default readback)"
+assert dbg_net0.net_use_of(2) == "TIEOFF"
+assert dbg_net0.net_use_of(3) == "ANALOG"
+assert dbg_net0.net_use_of(4) == "POWER"
+INFO("[OK] S5b USE collection: eight-value enum, non-SIGNAL recorded, "
+     "string-ized export")
+
+# get_net 手算：sig1 连接 3 条 = h1.BIDIR（INOUT → hybrid）+ h2.A
+#（INPUT → receiver）+ PIN DBG_IN（port 位 + INPUT → receiver）——
+# driver 0 / receiver 2 / hybrid 1 / port 1（三分类互斥单列口径）
+sig1 = debug_db.get_net("debug_design/sig1")
+assert sig1["id"] == 0 and sig1["use"] == "SIGNAL"
+assert sig1["connection_count"] == 3
+assert sig1["hybrid_count"] == 1, "INOUT endpoint = hybrid (third class)"
+assert sig1["driver_count"] == 0 and sig1["receiver_count"] == 2
+assert sig1["port_count"] == 1
+assert [(c["instance_name"], c["pin_name"], c["is_port"])
+        for c in sig1["connections"]] == [
+    ("debug_design/h1", "BIDIR", False),
+    ("debug_design/h2", "A", False),
+    ("debug_design", "DBG_IN", True)]
+# tie1/weird：USE 八值语义；VDD0：pg 网（USE POWER）无 connections 明细、
+# 计数概要数位（VDDP INPUT POWER → receiver 1 + power 1）
+tie1 = debug_db.get_net(1)
+assert tie1["name"] == "debug_design/tie1" and tie1["use"] == "TIEOFF"
+assert tie1["is_pg"] is False and tie1["driver_count"] == 1
+weird = debug_db.get_net("debug_design/weird")
+assert weird["use"] == "ANALOG" and weird["receiver_count"] == 1
+vdd0 = debug_db.get_net("debug_design/VDD0")
+assert vdd0["id"] == 3 and vdd0["use"] == "POWER" and vdd0["is_pg"] is True
+assert "connections" not in vdd0, \
+    "pg net must not return connection details (data guard red line)"
+assert vdd0["connection_count"] == 1 and vdd0["receiver_count"] == 1 \
+    and vdd0["power_count"] == 1
+INFO("[OK] get_net hand-computed: hybrid/driver/receiver/port counting "
+     "from flags bits, USE property, pg summary without details")
+
+# get_instance 手算：h1 连接 = sig1 的 BIDIR（hybrid）+ VDD0 的 VDDP
+#（receiver + power 位）；h2 连接 = sig1 A（receiver）+ tie1 ZN（driver）
+# + weird A（receiver）
+h1 = debug_db.get_instance("debug_design/h1")
+assert h1["id"] == 1 and h1["cell_name"] == "INVIO"
+assert h1["pos"] == (100, 100) and h1["orient"] == 0
+assert sorted((c["net_id"], c["net_name"], c["is_driver"], c["is_receiver"],
+                c["is_power"]) for c in h1["connections"]) == [
+    (0, "debug_design/sig1", True, True, False),
+    (3, "debug_design/VDD0", False, True, True)]
+h2 = debug_db.get_instance(2)
+assert h2["cell_name"] == "INV_X1"
+assert sorted((c["net_id"], c["is_receiver"], c["is_driver"])
+              for c in h2["connections"]) == [
+    (0, True, False), (1, False, True), (2, True, False)]
+assert debug_db.get_cell("INVIO")["pin_count"] == 2
+assert debug_db.get_instance(0) is None
+# debug db 映射段读回：INST {1,2}→0、NET {0,1,2,3}→0（四网全有几何）
+dbg_inst_seg = debug_db.read_object(
+    DesignDb.id_map_segment_obj_name("INST", 0))
+assert dbg_inst_seg.partition_of(1) == 0 and dbg_inst_seg.partition_of(2) == 0
+assert dbg_inst_seg.partition_of(3) is None
+dbg_net_seg = debug_db.read_object(
+    DesignDb.id_map_segment_obj_name("NET", 0))
+assert all(dbg_net_seg.partition_of(i) == 0 for i in range(4))
+# debug db S10 校验手算：primary 2 / 网 4 / 连接 12（nconn 6 + iconn 6：
+# h1 2 + h2 3 + root port 1）/ 图形条目 5（sig1 2 段 + tie1/weird/VDD0 各 1）
+dbg_report = debug_db.read_object(DesignDb.VERIFY_REPORT_OBJ)
+assert dbg_report.union_inconsistency == "" \
+    and dbg_report.namemap_inconsistency == ""
+assert dbg_report.total_primary == 2 and dbg_report.total_nets == 4
+assert dbg_report.total_connections == 12
+assert dbg_report.total_geometry_entries == 5
+INFO("[OK] debug db: partition use field, id map segments, S10 stats "
+     "hand-computed")
+
 # ── load_project 动态还原 ──
 import fly
 restored = fly.load_project(PROJ_PATH)

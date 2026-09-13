@@ -93,8 +93,12 @@ struct DSNetContext {
     CMString net_name;
     bool is_special = false;
     // pg 判定（S9 连接补全口径，2026-09-13 裁定补记②）= special net 或
-    // USE POWER/GROUND；适配层 extract_nets_net 判定，节点 1 记入产物
+    // USE POWER/GROUND；适配层 extract_nets_net 判定（2026-09-13 USE 全
+    // 量补收后由解析出的 use 枚举派生），节点 1 记入产物
     bool is_pg = false;
+    // 网 USE 属性（适配层解析收录，节点 1 随 local id 对齐记入产物
+    // net_uses_——非 SIGNAL 条目才落存储，缺省读取 SIGNAL）
+    DSNetUse use = DSNetUse::SIGNAL;
     CMVector<DSNetRawConnection> connections;
     CMVector<DSNetRawWire> wires;
     CMVector<DSNetRawRect> rects;

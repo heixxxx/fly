@@ -33,6 +33,11 @@ S10 汇总校验：EXDSIdDomain（id 连续性观测域）/ EXDSPartitionCheckRe
 报告，正式对象 "verify_report"）+ ds_verify_partition（每分区一校验）/
 ds_verify_design（全局汇总校验）/ ds_verify_report_or_fatal（损坏类处置：
 非空即 fatal 退出码 80——阻断损坏库冻结）。
+id → partition 反向映射（2026-09-13 debug 定位裁定）：EXDSIdPartitionSlice
+（S9 每分区合并任务的临时片段）/ EXDSIdPartitionSegment（段正式对象，
+定长 pids 数组 + 空洞哨兵）/ EXDSIdPartitionIndex（段表轻对象）+
+ds_collect_partition_id_slice（分区产物 → 本区片段：primary inst id 集 /
+net 副本 id 集）+ ds_merge_id_partition_slices（多片段 → (段表, 段集)）。
 """
 
 from _fly_emir_design import (
@@ -49,6 +54,9 @@ from _fly_emir_design import (
     EXDSDensityGrid,
     EXDSGeomEntry,
     EXDSIdDomain,
+    EXDSIdPartitionIndex,
+    EXDSIdPartitionSegment,
+    EXDSIdPartitionSlice,
     EXDSInstance,
     EXDSInstanceStats,
     EXDSLayer,
@@ -75,6 +83,7 @@ from _fly_emir_design import (
     ds_build_hier_tree,
     ds_build_net_union,
     ds_collect_net_union_slice,
+    ds_collect_partition_id_slice,
     ds_decide_partitions,
     ds_flatten_block,
     ds_make_name_mapper,
@@ -82,6 +91,7 @@ from _fly_emir_design import (
     ds_merge_cell_lef,
     ds_merge_def_header,
     ds_merge_global_density,
+    ds_merge_id_partition_slices,
     ds_net_union_child_indexes,
     ds_parse_cell_lef,
     ds_parse_def_components,

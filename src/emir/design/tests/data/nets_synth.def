@@ -27,12 +27,13 @@ NETS 3 ;
     - n1 ( u1 A ) ( PIN PIN_A )
       + ROUTED M1 ( 100 100 ) ( 500 100 )
         NEW M1 ( 500 100 ) VIA12 ( 500 300 ) ;
-    - n2 ( u1 ZN ) ( PIN POUT ) ;
-    - n3 ( u1 VDD ) ;
+    - n2 ( u1 ZN ) ( PIN POUT ) + USE CLOCK ;
+    - n3 ( u1 VDD ) + USE TIEOFF ;
 END NETS
 
 SPECIALNETS 1 ;
     - VDD ( u1 VDD )
+      + USE POWER
       + ROUTED M1 200 ( 0 0 ) ( 800 0 )
         NEW M2 200 ( 0 100 ) ( 800 100 )
       + RECT M2 ( -280 -160 ) ( 2120 160 )

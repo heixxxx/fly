@@ -4,10 +4,58 @@
 
 #include <algorithm>
 #include <cassert>
+#include <cstring>
 #include <functional>
 #include <utility>
 
 namespace fly {
+
+// —— 网 USE 解析（2026-09-13 全量补收裁定；ds_types.h 声明）——
+// DEF NET USE 语句规范全集八值精确匹配（大小写保留，namemap 同口径）；
+// 未知值/空文本 → SIGNAL 兜底 + known 出参上报（调用方计数 + DSGN::0026
+// 提醒，不 raise——dev-rules §7 同 fake cell/未定义 via 的先例语义）。
+
+namespace {
+
+struct DSNetUseEntry {
+    const char* name;
+    DSNetUse use;
+};
+
+constexpr DSNetUseEntry kNetUseTable[] = {
+    {"SIGNAL", DSNetUse::SIGNAL}, {"POWER", DSNetUse::POWER},
+    {"GROUND", DSNetUse::GROUND}, {"CLOCK", DSNetUse::CLOCK},
+    {"TIEOFF", DSNetUse::TIEOFF}, {"ANALOG", DSNetUse::ANALOG},
+    {"RESET", DSNetUse::RESET},   {"SCAN", DSNetUse::SCAN},
+};
+
+}  // namespace
+
+DSNetUse ds_parse_net_use(const char* text, bool* known) {
+    if (known != nullptr) {
+        *known = false;
+    }
+    if (text == nullptr) {
+        return DSNetUse::SIGNAL;
+    }
+    for (const DSNetUseEntry& e : kNetUseTable) {
+        if (std::strcmp(text, e.name) == 0) {
+            if (known != nullptr) {
+                *known = true;
+            }
+            return e.use;
+        }
+    }
+    return DSNetUse::SIGNAL;  // 未知值兜底（dev-rules §7，不 raise）
+}
+
+const char* ds_net_use_name(DSNetUse use) {
+    const auto index = static_cast<size_t>(use);
+    if (index < sizeof(kNetUseTable) / sizeof(kNetUseTable[0])) {
+        return kNetUseTable[index].name;
+    }
+    return "SIGNAL";  // 越域整型兜底（防御；正常路径不可达）
+}
 
 // —— DSStack ——
 

@@ -182,6 +182,10 @@ struct FlattenEnv {
         wp.points_ = {GEOPoint(0, 1500), GEOPoint(500, 1500)};
         top_nets.add_wire(2, std::move(wp));
         top_nets.mark_pg_net(2);
+        // use 收录（2026-09-13 USE 全量补收）：n_top → CLOCK（非 SIGNAL，
+        // 随分区产物）；n_pg → POWER（pg 网同收）
+        top_nets.record_net_use(1, DSNetUse::CLOCK);
+        top_nets.record_net_use(2, DSNetUse::POWER);
 
         // sub 定义：占位 + u1（全局 (1100,600)，p0 extend 内副本）
         sub.init_placeholder("sub", DSDesign::kInvalidId);
@@ -207,6 +211,11 @@ struct FlattenEnv {
         sub_nets.add_connection(2, make_conn(1, 2, false, false, true));
         sub_nets.add_connection(2, make_conn(0, 11, true, false, true));
         sub_nets.mark_pg_net(2);
+        // use 收录：sub n2 → POWER（pg 网）；n1 → TIEOFF（有几何非 pg，
+        // 随分区产物）；n1 未记录 SIGNAL 的对照组改由 n2 无几何形态承担
+        //（pg 无几何 → 无 net 副本 → use 不落分区）
+        sub_nets.record_net_use(1, DSNetUse::TIEOFF);
+        sub_nets.record_net_use(2, DSNetUse::POWER);
 
         // sub obstruction（DEF BLOCKAGE 等价物；全局 (1010,510,1060,560)）
         sub.obstructions_.push_back(DSShapeRef{2, GEORect(10, 10, 60, 60)});
@@ -600,6 +609,38 @@ TEST(DSFlattenTest, ProductSerializeRoundTrip) {
     ASSERT_NE(back.net_connections_.items_.find(2),
               back.net_connections_.items_.end());
     EXPECT_EQ(back.net_connections_.items_[2].size(), 2u);
+    // per-net use 往返（2026-09-13 USE 全量补收：跟随 net 副本）
+    EXPECT_EQ(back.net_connections_.use_of(2), DSNetUse::TIEOFF);
+    EXPECT_EQ(back.net_connections_.use_of(3), DSNetUse::SIGNAL);
+}
+
+TEST(DSFlattenTest, PartitionNetUseFollowsNetCopies) {
+    FlattenEnv env;
+    // top 展开：n_top（global 0，use CLOCK）几何跨两分区——两区各带 use；
+    // n_pg（global 1，use POWER）几何仅 p0——p1 未命中读 SIGNAL 缺省
+    const auto top_slices =
+        ds_flatten_block(env.tree, env.top, env.top_nets, env.design,
+                         env.parts);
+    const DSPartitionProduct* tp0 = product_of(top_slices, 0);
+    const DSPartitionProduct* tp1 = product_of(top_slices, 1);
+    ASSERT_NE(tp0, nullptr);
+    ASSERT_NE(tp1, nullptr);
+    EXPECT_EQ(tp0->net_connections_.use_of(0), DSNetUse::CLOCK);
+    EXPECT_EQ(tp1->net_connections_.use_of(0), DSNetUse::CLOCK);
+    EXPECT_EQ(tp0->net_connections_.use_of(1), DSNetUse::POWER);
+    EXPECT_EQ(tp1->net_connections_.use_of(1), DSNetUse::SIGNAL);
+    // sub 展开：n1（global 2，use TIEOFF）几何落 p0/p1；n2（global 3，
+    // use POWER 但 pg 无几何——无 net 副本，use 不落分区，读缺省）
+    const auto sub_slices =
+        ds_flatten_block(env.tree, env.sub, env.sub_nets, env.design,
+                         env.parts);
+    const DSPartitionProduct* sp0 = product_of(sub_slices, 0);
+    const DSPartitionProduct* sp1 = product_of(sub_slices, 1);
+    ASSERT_NE(sp0, nullptr);
+    ASSERT_NE(sp1, nullptr);
+    EXPECT_EQ(sp0->net_connections_.use_of(2), DSNetUse::TIEOFF);
+    EXPECT_EQ(sp1->net_connections_.use_of(2), DSNetUse::TIEOFF);
+    EXPECT_EQ(sp1->net_connections_.use_of(3), DSNetUse::SIGNAL);
 }
 
 TEST(DSFlattenTest, OutOfCorePointFallsBackToNearestPrimary) {

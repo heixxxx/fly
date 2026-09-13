@@ -70,6 +70,9 @@ void DSNetConnectionParseNode::handle(DSNetContext& ctx) {
     if (ctx.is_pg) {
         ctx.net_data->mark_pg_net(local_id);
     }
+    // 网 USE 收录（2026-09-13 全量补收裁定：随 local id 对齐记录，非
+    // SIGNAL 才落存储、缺省读取 SIGNAL——record_net_use 内部判别）
+    ctx.net_data->record_net_use(local_id, ctx.use);
 
     // 连接项 id 换算（2026-09-13 裁定：解析边界一次完成，S7/S9 内部链路
     // 零字符串匹配）：

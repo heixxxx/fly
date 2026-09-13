@@ -1,0 +1,28 @@
+VERSION 5.8 ;
+UNITS
+   DATABASE MICRONS 2000 ;
+END UNITS
+
+MACRO INVIO
+   CLASS CORE ;
+   SIZE 1.0 BY 1.0 ;
+   SITE site1 ;
+   PIN BIDIR
+      DIRECTION INOUT ;
+      USE SIGNAL ;
+      PORT
+         LAYER M1 ;
+            RECT 0.0 0.0 0.2 0.2 ;
+      END
+   END BIDIR
+   PIN VDDP
+      DIRECTION INPUT ;
+      USE POWER ;
+      PORT
+         LAYER M1 ;
+            RECT 0.0 0.8 1.0 1.0 ;
+      END
+   END VDDP
+END INVIO
+
+END LIBRARY

@@ -306,6 +306,7 @@ S2 cell lef 解析（每文件一并行任务，无业务合并）
 **S5b DEF 第二段：网内容全量分批解析（每 DEF 一任务，内部分批多阶段；依赖 S5a + S4b；2026-09-09 裁定 ③/⑨/⑪）** —— ✅ 已完成（2026-09-12，随 3588922 落地、3d65020 治理加固）
 - NETS/SPECIALNETS 全量解析：连接列表、布线路径展开（矩形串 + **拓扑连接性**，线宽来源优先级见 §2.4）、通孔实例（via instance id + via cell id + 位置，连层经 via cell 定义，裁定 ⑩）、金属图形/通孔计数密度通道统计（**逐层分列**，图形计数口径 §4.1）。
 - **连接项 id 化（2026-09-13 裁定，解析边界一次换算）**：连接条目 = `(instance_local_id, pin_id)`（均 id，name 不入库）——实例名 → local id 经 S5a 实例 hasher、pin 名 → 全局平铺 pin id 经容器 pin hasher 组合键 `"cell_name/pin_name"`、`("PIN", port)` port 条目 → 组合键 `"block_name/port_name"` + **port 位**（local 0 占位，⑧）。flags 位同点填写（换算 pin id 本就要定位所属 cell 的 pin，direction/type 顺手取得）：**port / driver / receiver / power / ground / clock 六位**（uint8，余 2 位扩展余量）——OUTPUT→driver、INPUT→receiver、INOUT→**hybrid**（driver+receiver 同置，显式第三分类；统计口径三分类互斥单列）、POWER/GROUND/CLOCK type 各对应位（与方向位正交组合）。未命中（实例名未登记 / cell 无此 pin / port 未注册）兜底跳过 + `skipped_invalid_connection_count` 计数 + DSGN::0025 提醒（dev-rules §7 不 raise）。
+- **网 USE 全量补收（2026-09-13 裁定，debug 点查与电源网筛选的显式属性）**：DEF NET USE 语句规范全集八值 `DSNetUse = {SIGNAL, POWER, GROUND, CLOCK, TIEOFF, ANALOG, RESET, SCAN}`（缺省 SIGNAL）——此前仅 power/ground 两值隐含在 pg 判定的字符串比较中，无显式 net 维度属性。收录点 = S5b 适配层解析 USE 文本（`ds_parse_net_use` 八值精确匹配）→ 责任链节点 1 随 local id 对齐记入 `DSNetBuildData.net_uses_`（**只记录非 SIGNAL 条目**——典型设计绝大多数网为信号网，省 90%+ 条目；缺省读取口径 = SIGNAL）。**pg 判定改由 use 枚举派生**（= special net ∨ use ∈ {POWER, GROUND}——special 位保留独立信号源，special net 无 USE 语句仍为 pg，语义与原字符串比较完全一致，侵入点仅 extract_nets_net 一处）。未知 USE 值 → SIGNAL 兜底 + `unknown_use_count` 计数 + DSGN::0026 提醒（不 raise）；**实施发现**：defi 解析器在语法层即校验 USE 值（DEFPARS-5500，DSGN::0016 fatal 域）——真 DEF 路径的未知值到不了业务兜底层，`ds_parse_net_use` 的兜底语义由纯函数单测锁定（防未来非 defi 数据源）。USE 属性随 S9 入分区产物（DSPartNetConnections 的 per-net use map，见 S9 节）。
 - **分批多阶段控内存峰值**：解析器本身流式（峰值与文件体积无关），内存峰值主体是网业务对象的全量积累——按数据量阈值分批（裁定 D24），批内「解析回调积累 → 转换为领域对象 → 写对象入 db → 清缓冲」，单遍流式读取，批界落盘释放；批间并行（需多遍读取）列为优化项。
 - **依赖 S5a + S4b，产物为 local net id**（裁定 ⑨/⑪）：per-DEF 解析阶段尚未 flatten，无法得到全局 net id——S6 前移无收益亦无必要；net 的 global id = local id + 起始编号，与 instance/via instance 一致，统一在 S9 flatten 展开时换算。
 - 统计：图形计数（网几何/通孔实例）与密度计数总量（S10 守恒校验用）。
@@ -345,6 +346,8 @@ S2 cell lef 解析（每文件一并行任务，无业务合并）
   - **结构与算法**：`src/emir/design/cpp/ds_flatten.h/.cpp`（`DSPartConnection`/`DSGeomEntry`/`DSPartitionGeometry`/`DSPartInstances`/`DSPartInstConnections`/`DSPartNetConnections` 四类正式对象 + `DSPartitionProduct` 分片聚合容器（merge_from 追加合并）+ `ds_flatten_block` 每定义一调用）+ 导出面（EXDS* + ds_flatten_block）。复合放置变换存入树节点（`DSHierNode.composite_transform_`，S6 DFS 递推回填）——展开任务只读单一 def 产物即可拿到任意出现位置的复合变换，保证「每份 DEF 数据只读一次」。归属判定 `assign_point`：core 半开区间包含 → primary（恰一）；无 core 命中（实例越出 DIEAREA 的输入形态）防御回退距最近 core 分区（tie 取小 id），恰一不变式恒成立；副本集 = extend 包含放置点的全部分区。UNPLACED 实例无物理放置、不入分区产物（D14 同族口径）。
   - **连接副本形态（2026-09-13 连接 id 化裁定后更新）**：`DSPartConnection{instance_global_id, net_global_id, pin_id, flags 六位}` 双向共用——INST_CONNECTIONS 按 instance global id 组织（端点挂网 global id）、NET_CONNECTIONS 按 net global id 组织；port 引用 → 端点实例 = 所属块实例自身 global id（⑧ local 0 映射）+ port 位，pin 全局平铺 id 直存（S9 连接处理零字符串匹配，flags 位自 S5b 条目整体直拷）。连接跟随全部副本（每持有该副本的分区一份）；pg 网判定 = special net 或 USE POWER/GROUND（S5b 连接解析节点记录进 `DSNetBuildData.pg_nets_`），pg 网 NET_CONNECTIONS 仅收本分区 instance 副本相关条目。
   - **net id 0 语义**：root 块 net_start_ = 0 且 local 从 1 起 → root 首网 global id = 0，与 OBS 桶同键共存（裁定补记③字面口径），obs 位判别（ds_flatten_test 锁定）。
+  - **per-net use map（2026-09-13 USE 全量补收裁定）**：`DSPartNetConnections` 增 `uses_`（键 = net global id、值 = DSNetUse 整型；只记非 SIGNAL 条目，缺省读取 SIGNAL）——flatten 时自 `DSNetBuildData.net_uses_` 换 global id 写入、跟随 net 副本（仅几何命中分区；无几何网无副本，use 缺省 SIGNAL），merge_from 同键覆盖幂等。get_net 类 debug 消费直接读分区产物、不查 S5b per-DEF 产物。
+  - **id → partition 反向映射（2026-09-13 debug 定位裁定，结构 `ds_id_map.h/.cpp`）**：按 id 直接索引的 `CMVector<uint32_t>`（值 = partition id，复用 `DSSubPartition.partition_id_`），按 id 区间**分段落盘按需加载**——段粒度 2^20 id（段对象 = 定长 pids 数组 ≈ 4 MiB，空洞条目 = kIdMapNoPartition 哨兵；空洞段省略存储、段表不登记）。inst/net 各一张全空间映射，三层结构：`DSIdPartitionSlice`（S9 每分区合并任务写本区片段的临时对象——INST = primary 副本 id 集〔依赖恰一 primary 不变式，不重复全空间校验〕/ NET = geometry 键集〔net 副本口径，与 NET_CONNECTIONS 落点一致〕+ 本区 pid）→ `DSIdPartitionSegment` 段正式对象（`id_partition_map/{INST,NET}/S{段号}`）→ `DSIdPartitionIndex` 段表轻对象（`id_partition_map/{INST,NET}`，非空段起始 id 升序）。flow：分区合并任务追加写片段 → `_id_map_merge_task`（INST/NET 各一，S9 plan 动态提交）读全部片段 → `ds_merge_id_partition_slices` 排序线性分段 → 段对象逐段写定 + 段表最后写定（freeze 依赖段表即依赖全部段对象）→ 片段清理。消费 = debug 读库 API（§6）按 id 定位分区后整分区对象按需加载（进程内 LRU）。
   - **via 条目形态**：经 `DSGeomEntry` 统一入 net 桶（保持「geometry 以 net 组织」总形态）——`{layer_id, 全局 rect, via_cell_id（kNoViaCell = 非 via）, obs 位, primary 位}`；via cell 的 cut/enclosure 矩形平移至放置点后经复合变换展开、逐矩形挂所属 net，primary 位按 via 放置点归属分区单独置位。
   - **电源引脚预展开（D18）~~：已实施后于 2026-09-13 翻转删除~~**（见上文翻转条目）：原形态为 `DSInstance.power_pins_`（`DSPowerPin{pin_id, pos}` 仅分区副本填充，锚点 = 该 pin 全部几何矩形聚合包围盒中心 × 复合变换）。翻转依据：预存服务对象错位——坐标消费者 ④ 提取按复现原则自取，⑫ 经 ④⑥ 绑定链路传递，全流程无此字段的消费者（10⁹ 级实例每实例白担一份 vector）。
   - **两级任务编排（ds_flow.py）**：plan 任务（依赖 S8 分区表 + S6 树 + block 名清单 + alpha；分组信息依赖树运行时数据，故在 worker 上**动态提交**下游任务——同 solver kickoff 先例）：预估 = DEF 文件大小 × 树上实例化次数，≥ alpha `def_aggregate_threshold` 独占任务、低于阈值按 def_paths 序贪心聚合（D26）→ per-组展开任务并行（每组只读本组 def 产物 + 每任务对全部分区各写一份分片临时对象，未触达分区写空产物保证合并依赖恒可解）→ 每分区一合并任务（merge 本分区全部分片 → 四类正式对象唯一写定）→ freeze（final_keys = 静态正式对象 + 运行时确定的全部分区对象名，由 plan 动态提交）。
@@ -491,6 +494,19 @@ build_design_db(name, def_path, lef_paths, lib_db, settings: dict, alpha: dict)
 | `iter_design_partition(db)` | 分区迭代器：矩形元数据 + 逐类型对象句柄（分区产物，容器外） |
 | `iter_design_partition_net(db, xp, yp)` | 分区内网迭代（连接/几何/通孔实例，含拓扑） |
 | `iter_design_partition_instance(db, xp, yp)` | 分区内实例迭代（cell id/位置/电源引脚坐标） |
+
+**debug 读库 API（2026-09-13 裁定：挂 db 句柄的 `DesignDb` 方法六个，`ds_db.py`；交互定位面——内部完成 id↔name 转换返回可读名称（id+name 成对），映射定位分区后整分区对象按需加载 + 进程内 LRU（段/分区两族容量定值 8 防撑爆）；方向/power/ground/clock 统计直接数连接 flags 位（S9 已存位，零推导）；pg 网（use POWER/GROUND）不返回 connections 明细——数据量保护，只返回属性与计数概要）**：
+
+| 接口 | 语义 |
+|------|------|
+| `get_cell(cell, with_pins=True)` | cell 全部信息（入参 id 或 name）：name/来源（library_name/def_path）/bbox/origin/种类 flags 名单/pin 数；with_pins 控制 pin 列表（每 pin name/type/direction/port 位） |
+| `get_instance(inst)` | 入参 global id 或层级全路径名自动判别：instance id/层级全路径名/全局坐标 pos 与 orient/placement_status/primary partition id/来源 cell（id+name）/instance connections（端点 net id + 层级名 + pin 名 + flags 概要）。无 primary 分区副本（UNPLACED/root 占位 id 0）返回 None |
+| `get_net(net)` | 入参 global id 或层级路径名：net id/层级名/use 属性（八值字符串，缺省 SIGNAL）/connections 数量/driver/receiver/hybrid 数（三分类互斥单列）与 power/ground/clock/port 端点计数；非 pg 网附 connections 明细（端点实例 id+层级名+pin id+pin 名+flags 概要——port 条目如实呈现为块实例名+port 名）；**pg 网不返回明细**。无几何副本的网返回 None（无分区数据可读） |
+| `get_layer(layer)` | id/name/type/direction/width/pitch/spacing/min_area |
+| `convert_to_id(kind=…, name=…)` | name → id；kind ∈ {cell, pin, layer, via_cell, inst, net}——inst/net 走层级路径 name mapper、pin 走组合键 `"cell_name/pin_name"`（D1）、其余走 hasher；支持 kwargs 直写形态 `convert_to_id(cell="INV_X1")`；未命中 None |
+| `convert_to_name(kind=…, id=…)` | id → name（与上对称；用户示例 kwargs 形态 `convert_to_name(inst=10)`）；inst/net 返回层级全路径名、pin 返回组合键全名；未命中 None |
+
+（映射对象名 API 与段常量在 `DesignDb`：`id_map_index_obj_name(kind)` = `id_partition_map/{kind}`、`id_map_segment_obj_name(kind, k)` = `id_partition_map/{kind}/S{k}`、`ID_MAP_SEGMENT_BITS = 20`。）
 
 高频结构（几何/连接/分区对象）C++ 实现 + 序列化（开发规则 4.2/4.3），Python 编排层一行调用。
 

@@ -753,15 +753,26 @@ void traverse_nets_path(const defiPath* path, DefNetsContext* ctx,
 }
 
 // defiNet → 单网原解析上下文（连接项 + wire/rect/via 原数据，坐标换算
-// 全局 DBU），入批并按批界冲刷。pg 判定（S9 连接补全口径）：special net
-// 或 USE POWER/GROUND。
+// 全局 DBU），入批并按批界冲刷。USE 全量补收（2026-09-13 裁定）：USE
+// 语句解析为 DSNetUse 八值枚举（未知值 → SIGNAL 兜底 + 计数 + DSGN::0026
+// 提醒，不 raise）；pg 判定改由 use 枚举派生（= special net 或 use ∈
+// {POWER, GROUND}——special 位保留独立信号源，special net 无 USE 语句
+// 仍为 pg，语义与原字符串比较完全一致）。
 void extract_nets_net(defiNet* net, bool is_special, DefNetsContext* ctx) {
     DSNetContext nctx;
     nctx.net_name = net->name();
     nctx.is_special = is_special;
-    nctx.is_pg = is_special || (net->hasUse() &&
-                                (std::strcmp(net->use(), "POWER") == 0 ||
-                                 std::strcmp(net->use(), "GROUND") == 0));
+    bool use_known = true;
+    nctx.use = ds_parse_net_use(net->hasUse() ? net->use() : "SIGNAL",
+                                &use_known);
+    nctx.is_pg = is_special || nctx.use == DSNetUse::POWER ||
+                 nctx.use == DSNetUse::GROUND;
+    if (!use_known) {
+        ++ctx->stats->unknown_use_count;
+        MSG("DSGN::0026", 0,
+            "net '{}' has unknown USE value '{}' — defaulted to SIGNAL",
+            nctx.net_name, net->use());
+    }
     nctx.stack = ctx->stack;
     nctx.design = ctx->design;
     nctx.block_data = ctx->block_data;
