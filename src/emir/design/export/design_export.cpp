@@ -491,7 +491,7 @@ FLY_EXPORT_CLASS(fly::DSDensityGrid, "EXDSDensityGrid")
 FLY_EXPORT_CLASS(fly::DSSubPartition, "EXDSSubPartition")
     FLY_EXPORT_INIT()
     FLY_EXPORT_READONLY_ATTR("partition_id", &fly::DSSubPartition::partition_id_)
-    // 分区网格坐标（S9 分区对象命名 PART_{xp}_{yp}/ 用）
+    // 分区网格坐标（S9 分区对象命名 PART_{xp}_{yp}. 用）
     FLY_EXPORT_READONLY_ATTR("xp", &fly::DSSubPartition::xp_)
     FLY_EXPORT_READONLY_ATTR("yp", &fly::DSSubPartition::yp_)
     FLY_EXPORT_READONLY_PROPERTY("core_rect", [](const fly::DSSubPartition& p) {
@@ -1390,8 +1390,8 @@ FLY_EXPORT_CLASS(fly::DSNet, "EXDSNet")
     })
     FLY_EXPORT_SERIALIZE_PICKLE(fly::DSNet);
 
-// /NETS：信号网 / pg 网分表（2026-09-13 重组裁定，取代
-// EXDSPartNetConnections；net_of 两表查、未命中 None）
+// /NETS 与 /NETS_PG（2026-09-14 拆分裁定：同一类两侧各一实例、单表化
+// ——net_of 单表查、未命中 None；加载侧按 is_pg 路由到对应侧对象）
 FLY_EXPORT_CLASS(fly::DSPartitionNets, "EXDSPartitionNets")
     FLY_EXPORT_INIT()
     FLY_EXPORT_READONLY_ATTR("part_id", &fly::DSPartitionNets::part_id_)
@@ -1404,20 +1404,15 @@ FLY_EXPORT_CLASS(fly::DSPartitionNets, "EXDSPartitionNets")
                             -> const fly::DSNet* {
         return p.net_of(net_global_id);
     }, nb::rv_policy::reference_internal)
-    // 两表键集只读视图（property 数据面——规模观测 / pg 分流核对手算用）
-    FLY_EXPORT_READONLY_PROPERTY("signal_ids", [](const fly::DSPartitionNets& p) {
+    // 本侧表键集只读视图（property 数据面——规模观测/分流核对手算用）
+    FLY_EXPORT_READONLY_PROPERTY("ids", [](const fly::DSPartitionNets& p) {
         nb::list out;
         for (const auto& [id, _] : p.nets_) out.append(id);
         return out;
     })
-    FLY_EXPORT_READONLY_PROPERTY("pg_ids", [](const fly::DSPartitionNets& p) {
-        nb::list out;
-        for (const auto& [id, _] : p.pg_nets_) out.append(id);
-        return out;
-    })
     FLY_EXPORT_SERIALIZE_PICKLE(fly::DSPartitionNets);
 
-// pg 网全局集分区片段（临时对象：本区 pg_nets_ 键按 use 分流）
+// pg 网全局集分区片段（临时对象：本区 NETS_PG 表键按 use 分流）
 FLY_EXPORT_CLASS(fly::DSPgNetSlice, "EXDSPgNetSlice")
     FLY_EXPORT_INIT()
     FLY_EXPORT_READONLY_PROPERTY("power_count",
@@ -1453,10 +1448,11 @@ FLY_EXPORT_CLASS(fly::DSPgNetSet, "EXDSPgNetSet")
     })
     FLY_EXPORT_SERIALIZE_PICKLE(fly::DSPgNetSet);
 
-// pg 片段提取：分区产物 NETS → 本区片段（S9 每分区合并任务写临时对象）
+// pg 片段提取：分区产物 NETS_PG 侧对象 → 本区片段（S9 每分区合并任务
+// 写临时对象）
 FLY_EXPORT_FUNCTION("ds_collect_pg_net_slice",
-                    [](const fly::DSPartitionNets& nets) {
-    return nb::cast(fly::ds_collect_pg_net_slice(nets));
+                    [](const fly::DSPartitionNets& nets_pg) {
+    return nb::cast(fly::ds_collect_pg_net_slice(nets_pg));
 });
 
 // pg 全局汇总：合并全部分区片段 → 两 set（跨分区副本 set 去重）
@@ -1470,26 +1466,27 @@ FLY_EXPORT_FUNCTION("ds_build_pg_net_set", [](nb::list slices) {
     return nb::cast(std::move(pg_set));
 });
 
-// 四类聚合容器（分片中间形态 + 合并工作形态；Python 面 = 规模观测 +
-// 编排侧分片合并）
+// 六类聚合容器（分片中间形态 + 合并工作形态；Python 面 = 规模观测 +
+// 编排侧分片合并。2026-09-14 拆分裁定：nets/geometry 分信号/pg 两侧四
+// 成员，访问器成对透出）
 FLY_EXPORT_CLASS(fly::DSPartitionProduct, "EXDSPartitionProduct")
     FLY_EXPORT_INIT()
     FLY_EXPORT_READONLY_PROPERTY("instance_count",
                                  [](const fly::DSPartitionProduct& p) {
         return static_cast<int>(p.instances_.size());
     })
-    FLY_EXPORT_READONLY_PROPERTY("geometry_net_count",
-                                 [](const fly::DSPartitionProduct& p) {
-        return static_cast<int>(p.geometry_.nets_.size());
-    })
     FLY_EXPORT_DEF("merge_from", [](fly::DSPartitionProduct& p,
                                     const fly::DSPartitionProduct& src) {
         p.merge_from(src);
     })
-    // 四类成员只读访问（merge 任务按类拆写四类正式对象；引用零拷贝）
+    // 六类成员只读访问（merge 任务按类拆写六类正式对象；引用零拷贝）
     FLY_EXPORT_DEF("geometry", [](const fly::DSPartitionProduct& p)
                                -> const fly::DSPartitionGeometry& {
         return p.geometry_;
+    }, nb::rv_policy::reference_internal)
+    FLY_EXPORT_DEF("geometry_pg", [](const fly::DSPartitionProduct& p)
+                                  -> const fly::DSPartitionGeometry& {
+        return p.geometry_pg_;
     }, nb::rv_policy::reference_internal)
     FLY_EXPORT_DEF("instances", [](const fly::DSPartitionProduct& p)
                                 -> const fly::DSPartInstances& {
@@ -1502,6 +1499,10 @@ FLY_EXPORT_CLASS(fly::DSPartitionProduct, "EXDSPartitionProduct")
     FLY_EXPORT_DEF("nets", [](const fly::DSPartitionProduct& p)
                            -> const fly::DSPartitionNets& {
         return p.nets_;
+    }, nb::rv_policy::reference_internal)
+    FLY_EXPORT_DEF("nets_pg", [](const fly::DSPartitionProduct& p)
+                              -> const fly::DSPartitionNets& {
+        return p.nets_pg_;
     }, nb::rv_policy::reference_internal)
     FLY_EXPORT_SERIALIZE_PICKLE(fly::DSPartitionProduct);
 
@@ -1538,7 +1539,7 @@ FLY_EXPORT_CLASS(fly::DSIdPartitionSlice, "EXDSIdPartitionSlice")
     })
     FLY_EXPORT_SERIALIZE_PICKLE(fly::DSIdPartitionSlice);
 
-// 段正式对象（id_partition_map/{kind}/S{k}：定长 pids 数组，kNoPartition
+// 段正式对象（id_partition_map.{kind}.S{k}：定长 pids 数组，kNoPartition
 // = 空洞；查询未命中返回 None——不透出哨兵）
 FLY_EXPORT_CLASS(fly::DSIdPartitionSegment, "EXDSIdPartitionSegment")
     FLY_EXPORT_INIT()
@@ -1580,13 +1581,15 @@ FLY_EXPORT_CLASS(fly::DSIdPartitionIndex, "EXDSIdPartitionIndex")
     FLY_EXPORT_SERIALIZE_PICKLE(fly::DSIdPartitionIndex);
 
 // 提取：分区产物 → 本区片段（instance_kind = true 取 primary 副本 id 集
-// / false 取 net 副本 id 集；partition_id = 本区 pid）
+// / false 取 GEOMETRY + GEOMETRY_PG 两对象键集并集；partition_id = 本区
+// pid——2026-09-14 拆分裁定）
 FLY_EXPORT_FUNCTION("ds_collect_partition_id_slice",
                     [](const fly::DSPartInstances& instances,
                        const fly::DSPartitionGeometry& geometry,
+                       const fly::DSPartitionGeometry& geometry_pg,
                        bool instance_kind, uint32_t partition_id) {
     return nb::cast(fly::ds_collect_partition_id_slice(
-        instances, geometry, instance_kind, partition_id));
+        instances, geometry, geometry_pg, instance_kind, partition_id));
 });
 
 // merge：多分区片段 → (段表, 段集)——段集按 id_start 升序的
@@ -1684,17 +1687,19 @@ FLY_EXPORT_CLASS(fly::DSDesignCheckReport, "EXDSDesignCheckReport")
                              &fly::DSDesignCheckReport::partition_count_)
     FLY_EXPORT_SERIALIZE_PICKLE(fly::DSDesignCheckReport);
 
-// S10 分区级校验（每分区一任务调用；只读本分区四类正式产物——对象按类
-// 拆写为四对象，签名对齐产物形态；NETS 参数 = 2026-09-13 重组后的
-// DSPartitionNets 两表）
+// S10 分区级校验（每分区一任务调用；只读本分区六类正式产物——对象按类
+// 拆写六对象，签名对齐产物形态；geometry/nets 各信号与 pg 两侧）
 FLY_EXPORT_FUNCTION("ds_verify_partition",
                     [](uint32_t partition_id, uint32_t xp, uint32_t yp,
                        const fly::DSPartitionGeometry& geometry,
+                       const fly::DSPartitionGeometry& geometry_pg,
                        const fly::DSPartInstances& instances,
                        const fly::DSPartInstConnections& inst_connections,
-                       const fly::DSPartitionNets& nets) {
+                       const fly::DSPartitionNets& nets,
+                       const fly::DSPartitionNets& nets_pg) {
     return nb::cast(fly::ds_verify_partition(
-        partition_id, xp, yp, geometry, instances, inst_connections, nets));
+        partition_id, xp, yp, geometry, geometry_pg, instances,
+        inst_connections, nets, nets_pg));
 });
 
 // S10 全局校验（单任务）：损坏类写报告字段，不在此处 fatal——纯函数可

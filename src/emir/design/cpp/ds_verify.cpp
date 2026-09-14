@@ -191,14 +191,15 @@ CMString ds_check_partition_coverage(
 }
 
 
-// —— 分区级校验（每分区一任务；只读本分区四类产物）────────────────────
+// —— 分区级校验（每分区一任务；只读本分区六类产物）────────────────────
 
 DSPartitionCheckResult ds_verify_partition(
     uint32_t partition_id, uint32_t xp, uint32_t yp,
     const DSPartitionGeometry& geometry,
+    const DSPartitionGeometry& geometry_pg,
     const DSPartInstances& instances,
     const DSPartInstConnections& inst_connections,
-    const DSPartitionNets& nets) {
+    const DSPartitionNets& nets, const DSPartitionNets& nets_pg) {
     DSPartitionCheckResult r;
     r.partition_id_ = partition_id;
     r.xp_ = xp;
@@ -214,37 +215,38 @@ DSPartitionCheckResult ds_verify_partition(
         }
     }
 
-    // 几何：条目计数 + 网覆盖素材。net 0 桶仅含 OBS 条目时不计为网 0 覆盖
-    //（OBS 与 root 首网同键共存，obs 位判别——OBS 不是网几何）
-    for (const auto& [net_id, entries] : geometry.nets_) {
-        r.geometry_entry_count_ += entries.size();
-        ++r.net_count_;
-        const bool has_real_geometry =
-            net_id != 0 ||
-            std::any_of(entries.begin(), entries.end(),
-                        [](const DSGeomEntry& e) { return !e.is_obs(); });
-        if (has_real_geometry) {
-            r.net_ids_.push_back(net_id);
+    // 几何（信号/pg 两侧合计——2026-09-14 拆分裁定，键域互斥单网单侧）
+    // ：条目计数 + 网覆盖素材。键 0 桶仅含 OBS 条目时不计为网 0 覆盖
+    //（obs 位判别防御校验——键 0 为 OBS 专属位，2026-09-14 裁定后恒纯
+    // OBS，此过滤保留为防御）
+    for (const DSPartitionGeometry* geo : {&geometry, &geometry_pg}) {
+        for (const auto& [net_id, entries] : geo->nets_) {
+            r.geometry_entry_count_ += entries.size();
+            ++r.net_count_;
+            const bool has_real_geometry =
+                net_id != 0 ||
+                std::any_of(entries.begin(), entries.end(),
+                            [](const DSGeomEntry& e) { return !e.is_obs(); });
+            if (has_real_geometry) {
+                r.net_ids_.push_back(net_id);
+            }
         }
-    }
-    r.crossing_net_count_ = geometry.crossing_nets_.size();
-    for (const uint64_t net_id : geometry.crossing_nets_) {
-        r.net_ids_.push_back(net_id);
-        r.crossing_net_ids_.push_back(net_id);
+        r.crossing_net_count_ += geo->crossing_nets_.size();
+        for (const uint64_t net_id : geo->crossing_nets_) {
+            r.net_ids_.push_back(net_id);
+            r.crossing_net_ids_.push_back(net_id);
+        }
     }
 
     // 连接表：条目计数 + 网覆盖素材（跟随网副本的键 + 跟随实例副本条目
-    // 的端点网 id；NETS 两表——信号网/pg 网同口径，素材取表键=网 id，
-    // 2026-09-13 重组裁定）。
-    for (const auto& [net_id, net] : nets.nets_) {
-        (void)net_id;
-        r.connection_count_ += net.connections_.size();
-        r.net_ids_.push_back(net_id);
-    }
-    for (const auto& [net_id, net] : nets.pg_nets_) {
-        (void)net_id;
-        r.connection_count_ += net.connections_.size();
-        r.net_ids_.push_back(net_id);
+    // 的端点网 id；NETS / NETS_PG 两侧同口径——素材取表键 = 网 id，
+    // 2026-09-14 拆分裁定两侧合计）。
+    for (const DSPartitionNets* side : {&nets, &nets_pg}) {
+        for (const auto& [net_id, net] : side->nets_) {
+            (void)net_id;
+            r.connection_count_ += net.connections_.size();
+            r.net_ids_.push_back(net_id);
+        }
     }
     for (const auto& [id, conns] : inst_connections.items_) {
         (void)id;
@@ -272,11 +274,15 @@ DSDesignCheckReport ds_verify_design(
     const CMVector<const DSPartitionCheckResult*>& checks) {
     DSDesignCheckReport r;
 
-    // 树区间推导期望域（口径见 ds_verify.h 文件头注释）
+    // 树区间推导期望域（口径见 ds_verify.h 文件头注释）。net 域：
+    // expected = 全域上界 − 空洞数 = Σ (net_count − 1)——net 区间长度含
+    // 每块一个 local 0 空洞位（2026-09-14 裁定，设计内合法空洞不占
+    // expected；统计口径 = net 数 = id 跨度 − 空洞数，不得直接用 Σ
+    // net_count——含洞会虚增节点数个）
     uint64_t inst_slots = 0;
     for (const DSHierNode& n : tree.nodes_) {
         inst_slots += n.instance_count_;
-        r.expected_nets_ += n.net_count_;
+        r.expected_nets_ += n.net_count_ > 0 ? n.net_count_ - 1 : 0;
         r.expected_vias_ += n.via_count_;
     }
     const size_t node_count = tree.node_count();

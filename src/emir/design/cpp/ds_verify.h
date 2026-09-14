@@ -22,14 +22,15 @@
 // 的 local 0 保留槽不对应真实实例）。副本不计——extend 副本语义下分区
 // 总和必然大于全局。fake cell 实例是真实实例，自然计入两侧。
 //
-// id 连续性口径（DSIdDomain 三域）：
+// id 连续性口径（DSIdDomain 三域；2026-09-14 net 区间空洞位裁定同步）：
 //   instance  expected = Σ 树节点 instance_count − (非 root 节点数) − 1
 //             （扣除保留槽与 root 自身）；actual = 全部分区 INSTANCES
 //             distinct id 并集；duplicates = 多 primary 直方图超量计数。
-//   net       expected = Σ 树节点 net_count（[0, Σ) 连续）；actual = 全
-//             部分区产物覆盖的 distinct 网 id（geometry 含非 OBS 条目的
-//             键 + crossing + 两类连接表）；空洞 = 无几何且无连接的空网
-//             （合法形态）。
+//   net       expected = 全域上界 − 空洞数 = Σ (net_count − 1)（net 区
+//             间长度含每块一个 local 0 空洞位——设计内合法空洞，不计入
+//             expected；等价于 Σ 真网数）；actual = 全部分区产物覆盖的
+//             distinct 真网 id（两几何对象含非 OBS 条目的键 + 两 crossing
+//             + 两侧连接表）；空洞 = 无几何且无连接的空网（合法形态）。
 //   via       expected = Σ 树节点 via_count；actual = per-DEF 网产物
 //             via_instances_ 键经 (节点 via_start + local − 1) 换算的并
 //             集（via instance 不入分区产物，权威存储只在 S5b 产物）。
@@ -84,9 +85,11 @@ public:
     uint64_t primary_instance_count_ = 0;
     // 实例副本数（含 primary）
     uint64_t instance_count_ = 0;
-    // geometry 出现的网数（键数，含 net 0 桶）
+    // geometry 出现的网数（两侧对象键数合计，含 net 0 桶——2026-09-14
+    // 拆分裁定两侧合计口径）
     uint64_t net_count_ = 0;
-    // crossing_nets_ 大小
+    // crossing_nets_ 两侧合计大小（拆分后各几何对象自带自己网的
+    // crossing 集——S10 统计两侧合计，口径不变）
     uint64_t crossing_net_count_ = 0;
     uint64_t geometry_entry_count_ = 0;
     // 两类连接条目总数
@@ -96,7 +99,8 @@ public:
     //    freeze 后随 temp 清理释放——当前阶段可接受，后续可区间化）——
     CMVector<uint64_t> primary_instance_ids_;
     CMVector<uint64_t> instance_ids_;
-    // 本分区产物覆盖的网 id（geometry 非 OBS 键 + crossing + 两类连接表）
+    // 本分区产物覆盖的网 id（两几何对象非 OBS 键 + 两 crossing + 两侧
+    // 连接表键 + iconn 端点引用）
     CMVector<uint64_t> net_ids_;
     CMVector<uint64_t> crossing_net_ids_;
 
@@ -150,15 +154,16 @@ public:
                   density_metal_total_, density_via_total_, partition_count_)
 };
 
-// S10 分区级校验（每分区一任务调用；只读本分区四类正式产物——分区对象
-// 按类拆写为四对象，签名对齐产物形态而非聚合容器；NETS 参数 = 重组后的
-// DSPartitionNets 两表，2026-09-13 裁定）。
+// S10 分区级校验（每分区一任务调用；只读本分区六类正式产物——2026-09-14
+// 拆分裁定：对象按类拆写六对象，签名对齐产物形态；geometry 与 nets 两
+// 侧（信号/pg）计数与素材合并口径不变——各对象单侧各自计数后合计）。
 DSPartitionCheckResult ds_verify_partition(
     uint32_t partition_id, uint32_t xp, uint32_t yp,
     const DSPartitionGeometry& geometry,
+    const DSPartitionGeometry& geometry_pg,
     const DSPartInstances& instances,
     const DSPartInstConnections& inst_connections,
-    const DSPartitionNets& nets);
+    const DSPartitionNets& nets, const DSPartitionNets& nets_pg);
 
 // 分区网格覆盖校验（损坏类，独立可测）：core 并集对 global_density 域
 // 无缝覆盖 = 全部 core 在域内 + 切线对齐格边界 + 两两不重叠（半开，

@@ -74,10 +74,11 @@ def load_design_pg_nets(db):
     return db.read_object(DesignDb.PG_NETS_OBJ)
 
 
-# S9 分区四类正式对象 kind 序（load_partition 返回元组序与之对齐；
-# 2026-09-13 裁定补记② + 同日重组终态——第四类 NET_CONNECTIONS 随
-# DSPartitionNets 重组更名为 NETS）
-_PARTITION_KINDS = ("GEOMETRY", "INSTANCES", "INST_CONNECTIONS", "NETS")
+# S9 分区六类正式对象 kind 序（load_partition 返回元组序与之对齐；
+# 2026-09-14 拆分裁定——GEOMETRY/NETS 各按 pg/信号拆两对象，GEOMETRY_PG/
+# NETS_PG 为 pg 侧独立对象，④ 提取首期电源网络只加载 pg 侧两小对象）
+_PARTITION_KINDS = ("GEOMETRY", "GEOMETRY_PG", "INSTANCES",
+                    "INST_CONNECTIONS", "NETS", "NETS_PG")
 
 
 @wait_obj(inputs=lambda db: [db.get_full_name(DesignDb.DESIGN_OBJ),
@@ -103,13 +104,14 @@ def iter_design_partition(db):
     + [db.get_full_name(DesignDb.partition_obj_name(xp, yp, kind))
        for kind in _PARTITION_KINDS]))
 def load_partition(db, xp: int, yp: int):
-    """读取 S9 一个分区的四类正式对象（R9 wait_obj 形态），返回四元组
-    (geometry, instances, inst_connections, nets)——
-    GEOMETRY（以 net global id 组织的几何条目集 + 跨分区网集合）、
+    """读取 S9 一个分区的六类正式对象（R9 wait_obj 形态），返回六元组
+    (geometry, geometry_pg, instances, inst_connections, nets, nets_pg)
+    ——GEOMETRY（信号网几何 + OBS 桶：net global id 组织的条目集 + 跨分
+    区网集合）、GEOMETRY_PG（pg 网几何，2026-09-14 拆分裁定独立对象）、
     INSTANCES（instance global id → 副本：全局 transform + primary 位）、
-    INST_CONNECTIONS（连接项列表，跟随 instance 副本）、NETS（2026-09-13
-    重组裁定 DSPartitionNets：信号网/pg 网分表，net_of 两表查；单网 =
-    id + use + 连接条目集）。
+    INST_CONNECTIONS（连接项列表，跟随 instance 副本）、NETS（信号网连
+    接，全量补全）、NETS_PG（pg 网连接，不补全——2026-09-14 拆分裁定独
+    立对象；单网 = id + use + 连接条目集，EXDSPartitionNets 单表形态）。
 
     调用规范见模块 docstring：task 内调用须
     `load_partition.deps(db, xp, yp)` 传播依赖 +

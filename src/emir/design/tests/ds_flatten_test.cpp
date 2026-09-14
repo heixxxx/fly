@@ -1,15 +1,19 @@
 // S9 flatten 展平 + 分区保存单测（方案 design-db-plan.md §3.2 S9 +
-// 2026-09-13 裁定补记①-⑤）：
+// 2026-09-13 裁定补记①-⑤ + 2026-09-14 拆分裁定 + 同日 net id 0 专属
+// OBS 裁定）：
 //   1. 归属：core 内 primary 恰一 / extend 副本非 primary / 半开区间边界
 //      （切线 x=1000 上的点不入左区 core、入右区 core——[xl, xh)）；
-//   2. via 图形挂 net + 放置点 primary；DEF OBS → net 0 + obs 位；
+//   2. via 图形挂 net + 放置点 primary；DEF OBS → net 0 + obs 位（键 0
+//      专属 OBS——不与真网混叠）；
 //   3. 非 pg net 全量补全（跨分区连接四条全在）；pg 不补全（仅本分区
 //      instance 副本相关条目）；
-//   4. is_crossing 标记；geometry extend 交叠副本（不裁剪）；
-//   5. id 换算三类（instance = start + local；net = start + local − 1；
-//      不换算 S7 root）——连接项 id + flags 六位直存（2026-09-13 裁定：
-//      S5b 解析边界换算完成，S9 零名字查询零 pin 几何依赖）；
-//   6. 合并：两 slice 同区 merge 幂等 + 序列化往返；
+//   4. 拆分（2026-09-14）：pg 网几何/连接落 _PG 侧对象、信号网落信号
+//      侧，两侧互斥；OBS 恒归信号侧 GEOMETRY；crossing 跟随侧别；
+//   5. id 换算三类（instance = start + local；net = start + local——
+//      区间含 local 0 空洞位无 −1，2026-09-14 裁定；不换算 S7 root）
+//      ——连接项 id + flags 六位直存（2026-09-13 裁定：S5b 解析边界换
+//      算完成，S9 零名字查询零 pin 几何依赖）；
+//   6. 合并：两 slice 同区 merge 幂等 + 序列化往返（含 pg 侧成员）；
 //   7. pg 网全局集（2026-09-13 重组裁定）：片段分流提取 + 汇总去重 +
 //      O(1) 查询口 + 序列化往返后 set 就绪（含空集）。
 // 期望值全部按实现口径手工推导（分区/坐标常数见 FlattenEnv），锁定行为。
@@ -31,10 +35,11 @@ constexpr int32_t kIntMax = std::numeric_limits<int32_t>::max();
 // —— 测试环境（手工合成树 + 分区表，同 ds_partition_test 模式）────────
 // 层级：root(top) → child csub(sub)（放置 (1000,500)——切线 x=1000 上）。
 // root inst [0,4)：local 1 = la@(100,100)、local 2 = lb@(900,100)、
-//   local 3 = csub；net [0,2)：n_top(local 1 → global 0)、n_pg(local 2 →
-//   global 1, pg)；via [0,0)。
+//   local 3 = csub；net [0,3)（区间长度含 local 0 空洞位——2026-09-14
+//   裁定）：n_top(local 1 → global 1)、n_pg(local 2 → global 2, pg)；
+//   via [0,0)。
 // sub inst [4,6)：local 1 = u1（local (100,100) → 全局 (1100,600)）；
-//   net [2,4)：n1(local 1 → global 2)、n2(local 2 → global 3, pg)；
+//   net [3,6)：n1(local 1 → global 4)、n2(local 2 → global 5, pg)；
 //   via [0,1)。
 // 分区 '2x1'：p0 core (0,0,1000,2000) extend (MIN,MIN,1140,MAX)、
 //   p1 core (1000,0,2000,2000) extend (860,MIN,MAX,MAX)。
@@ -124,7 +129,7 @@ struct FlattenEnv {
         root.instance_start_ = 0;
         root.instance_count_ = 4;
         root.net_start_ = 0;
-        root.net_count_ = 2;
+        root.net_count_ = 3;  // 真网 2 + local 0 空洞位（区间长度形态）
         root.via_start_ = 0;
         root.via_count_ = 0;
         tree.nodes_.push_back(root);
@@ -138,8 +143,8 @@ struct FlattenEnv {
             GEOTransform(GEOPoint(1000, 500), GEOOrientation::N);
         child.instance_start_ = 4;
         child.instance_count_ = 2;
-        child.net_start_ = 2;
-        child.net_count_ = 2;
+        child.net_start_ = 3;
+        child.net_count_ = 3;  // 真网 2 + 空洞位
         child.via_start_ = 0;
         child.via_count_ = 1;
         tree.nodes_.push_back(child);
@@ -324,11 +329,11 @@ TEST(DSFlattenTest, GeometryCopiesUncrossedAndCrossing) {
     ASSERT_NE(p0, nullptr);
     ASSERT_NE(p1, nullptr);
 
-    // n_top(global 0) wire (0,1800)-(2000,1800) w40 → 段矩形
+    // n_top(global 1) wire (0,1800)-(2000,1800) w40 → 段矩形
     // (−20,1780,2020,1820)（宽度向两端/两侧各扩 half_w=20，同 S5b 密度
     // 节点口径）：两分区 extend 均交叠 → 副本两份、原矩形不裁剪
-    const auto* e0 = p0->geometry_.entries_of(0);
-    const auto* e1 = p1->geometry_.entries_of(0);
+    const auto* e0 = p0->geometry_.entries_of(1);
+    const auto* e1 = p1->geometry_.entries_of(1);
     ASSERT_NE(e0, nullptr);
     ASSERT_NE(e1, nullptr);
     int wire0 = 0;
@@ -345,18 +350,21 @@ TEST(DSFlattenTest, GeometryCopiesUncrossedAndCrossing) {
     EXPECT_EQ(wire0, 1);
     ASSERT_EQ(e1->size(), 1u);
     EXPECT_FALSE((*e1)[0].is_obs());
-    // 跨分区 → is_crossing 两侧标记
-    EXPECT_TRUE(p0->geometry_.is_crossing(0));
-    EXPECT_TRUE(p1->geometry_.is_crossing(0));
+    // 跨分区 → is_crossing 两侧标记（信号网 crossing 在信号侧对象）
+    EXPECT_TRUE(p0->geometry_.is_crossing(1));
+    EXPECT_TRUE(p1->geometry_.is_crossing(1));
 
-    // n_pg(global 1) wire (0,1500)-(500,1500)：仅 p0 extend 命中 → 单区
-    // 副本、不标 crossing
-    const auto* pg0 = p0->geometry_.entries_of(1);
+    // n_pg(global 2) wire (0,1500)-(500,1500)：仅 p0 extend 命中 → 单区
+    // 副本、不标 crossing。2026-09-14 拆分裁定：pg 网几何入 GEOMETRY_PG
+    // 侧对象，信号侧不含
+    const auto* pg0 = p0->geometry_pg_.entries_of(2);
     ASSERT_NE(pg0, nullptr);
     EXPECT_EQ(pg0->size(), 1u);
-    EXPECT_EQ(p1->geometry_.entries_of(1), nullptr);
-    EXPECT_FALSE(p0->geometry_.is_crossing(1));
-    EXPECT_FALSE(p1->geometry_.is_crossing(1));
+    EXPECT_EQ(p1->geometry_pg_.entries_of(2), nullptr);
+    EXPECT_EQ(p0->geometry_.entries_of(2), nullptr);
+    EXPECT_EQ(p1->geometry_.entries_of(2), nullptr);
+    EXPECT_FALSE(p0->geometry_pg_.is_crossing(2));
+    EXPECT_FALSE(p1->geometry_pg_.is_crossing(2));
 }
 
 TEST(DSFlattenTest, ViaEntriesCarryCellIdAndPlacementPrimary) {
@@ -367,10 +375,10 @@ TEST(DSFlattenTest, ViaEntriesCarryCellIdAndPlacementPrimary) {
     const DSPartitionProduct* p1 = product_of(slices, 1);
     ASSERT_NE(p1, nullptr);
 
-    // n1(global 2) via @ local (500,100) → 全局 (1500,600)：放置点在 p1
+    // n1(global 4) via @ local (500,100) → 全局 (1500,600)：放置点在 p1
     // core → via 条目 primary 位仅 p1 置位；cut/enclosure 三组矩形按
     // via cell 定义展开、挂 via cell id
-    const auto* entries = p1->geometry_.entries_of(2);
+    const auto* entries = p1->geometry_.entries_of(4);
     ASSERT_NE(entries, nullptr);
     // wire 段 1 条（非 via）+ via 图形 3 条 = 4
     ASSERT_EQ(entries->size(), 4u);
@@ -412,7 +420,7 @@ TEST(DSFlattenTest, ViaEntriesCarryCellIdAndPlacementPrimary) {
     // via 图形越出 p0 extend（x ≥ 1450 > 1140）→ p0 无 via 条目
     const DSPartitionProduct* p0 = product_of(slices, 0);
     ASSERT_NE(p0, nullptr);
-    const auto* e0 = p0->geometry_.entries_of(2);
+    const auto* e0 = p0->geometry_.entries_of(4);
     ASSERT_NE(e0, nullptr);
     for (const auto& e : *e0) {
         EXPECT_FALSE(e.is_via());
@@ -462,13 +470,13 @@ TEST(DSFlattenTest, NonPgNetConnectionsFullyCompleted) {
     ASSERT_NE(p0, nullptr);
     ASSERT_NE(p1, nullptr);
 
-    // n_top(global 0, 非 pg) 四条连接（la/lb/csub/PIN）跨分区也全量保
+    // n_top(global 1, 非 pg) 四条连接（la/lb/csub/PIN）跨分区也全量保
     // 存——两分区各一份完整列表（pin id + flags 位直存；2026-09-13 重
     // 组裁定：条目 = DSNetConnEntry，net id 由 DSNet 键承载）
     for (const DSPartitionProduct* p : {p0, p1}) {
-        auto it = p->nets_.nets_.find(0);
+        auto it = p->nets_.nets_.find(1);
         ASSERT_NE(it, p->nets_.nets_.end());
-        EXPECT_EQ(it->second.net_id_, 0u);
+        EXPECT_EQ(it->second.net_id_, 1u);
         ASSERT_EQ(it->second.connections_.size(), 4u);
         const CMVector<DSNetConnEntry>& conns = it->second.connections_;
         EXPECT_EQ(conns[0].inst_id_, 1u);
@@ -499,21 +507,21 @@ TEST(DSFlattenTest, PgNetConnectionsFilteredToLocalInstances) {
     ASSERT_NE(p0, nullptr);
     ASSERT_NE(p1, nullptr);
 
-    // n_pg(global 1, pg)：几何仅 p0 → 仅 p0 有该网条目，且按本区
+    // n_pg(global 2, pg)：几何仅 p0 → 仅 p0 有该网条目，且按本区
     // instance 副本过滤：la ✓（p0 副本）、lb ✓（p0 副本）、port（root
     // 自身副本 p0）✓；p1 无该网条目（且 n2 无几何 → 全域无条目）。
-    // 2026-09-13 重组裁定：pg 网入 pg_nets_ 表、不混入信号网表（分流断
-    // 言——pg_ids/nets_ 两表互斥）
-    auto it0 = p0->nets_.pg_nets_.find(1);
-    ASSERT_NE(it0, p0->nets_.pg_nets_.end());
-    EXPECT_EQ(it0->second.net_id_, 1u);
+    // 2026-09-14 拆分裁定：pg 网入 NETS_PG 侧对象、不混入信号侧对象
+    //（分流断言——两对象互斥）
+    auto it0 = p0->nets_pg_.nets_.find(2);
+    ASSERT_NE(it0, p0->nets_pg_.nets_.end());
+    EXPECT_EQ(it0->second.net_id_, 2u);
     EXPECT_EQ(it0->second.use(), DSNetUse::POWER);
     ASSERT_EQ(it0->second.connections_.size(), 3u);
-    EXPECT_EQ(p1->nets_.pg_nets_.count(1), 0u);
-    EXPECT_EQ(p0->nets_.nets_.count(1), 0u);
-    EXPECT_EQ(p1->nets_.nets_.count(1), 0u);
-    EXPECT_EQ(p0->nets_.pg_nets_.count(3), 0u);
-    EXPECT_EQ(p1->nets_.pg_nets_.count(3), 0u);
+    EXPECT_EQ(p1->nets_pg_.nets_.count(2), 0u);
+    EXPECT_EQ(p0->nets_.nets_.count(2), 0u);
+    EXPECT_EQ(p1->nets_.nets_.count(2), 0u);
+    EXPECT_EQ(p0->nets_pg_.nets_.count(5), 0u);
+    EXPECT_EQ(p1->nets_pg_.nets_.count(5), 0u);
 }
 
 TEST(DSFlattenTest, InstConnectionsFollowCopies) {
@@ -526,8 +534,8 @@ TEST(DSFlattenTest, InstConnectionsFollowCopies) {
     ASSERT_NE(p0, nullptr);
     ASSERT_NE(p1, nullptr);
 
-    // u1(global 5) 两分区副本各带自身连接端点：n1(global 2) pin 1
-    // (receiver) + n2(global 3) pin 2 (driver)（n2 为 pg 无几何——
+    // u1(global 5) 两分区副本各带自身连接端点：n1(global 4) pin 1
+    // (receiver) + n2(global 5) pin 2 (driver)（n2 为 pg 无几何——
     // instance 维度仍可达，拼装口径）。两端点来自不同网（conn_bucket 按
     // 连接表 unordered 键序累积），按 (net, pin) 集合断言，不依赖桶序。
     const auto expect_conn_set = [](const CMVector<DSPartConnection>& conns,
@@ -547,7 +555,7 @@ TEST(DSFlattenTest, InstConnectionsFollowCopies) {
     for (const DSPartitionProduct* p : {p0, p1}) {
         auto it = p->inst_connections_.items_.find(5);
         ASSERT_NE(it, p->inst_connections_.items_.end());
-        expect_conn_set(it->second, {2, 1}, {3, 2});
+        expect_conn_set(it->second, {4, 1}, {5, 2});
     }
     // 块自身 port 引用（local 0 条目 PIN_IN/PIN_OUT）→ 挂 csub global
     // id 3（父块展开产出的副本位置——本测试只展开 sub，parent 视角由
@@ -557,11 +565,11 @@ TEST(DSFlattenTest, InstConnectionsFollowCopies) {
     ASSERT_EQ(it->second.size(), 2u);
     for (const auto& c : it->second) {
         EXPECT_TRUE(c.is_port());
-        if (c.net_global_id_ == 2u) {
+        if (c.net_global_id_ == 4u) {
             EXPECT_EQ(c.pin_id_, 10u);
             EXPECT_TRUE(c.is_receiver());
         } else {
-            EXPECT_EQ(c.net_global_id_, 3u);
+            EXPECT_EQ(c.net_global_id_, 5u);
             EXPECT_EQ(c.pin_id_, 11u);
             EXPECT_TRUE(c.is_driver());
         }
@@ -585,6 +593,10 @@ TEST(DSFlattenTest, MergeIsIdempotentForSameSlice) {
     merged.merge_from(*p1);  // 同 slice 重放：instance 键覆盖、不翻倍
     EXPECT_EQ(merged.instances_.size(), inst_count);
     EXPECT_EQ(merged.geometry_.nets_.size(), geom_count);
+    // 拆分裁定：pg 侧成员随分片合并（本分片无 pg 网/pg 几何 → 两侧空表）
+    EXPECT_TRUE(merged.nets_pg_.nets_.empty());
+    EXPECT_TRUE(merged.geometry_pg_.nets_.empty());
+    EXPECT_EQ(merged.nets_pg_.part_id_, merged.nets_.part_id_);
     // 连接列表拼接（同源重放会重复条目——重放仅发生在同任务重投语义，
     // 正常编排每 slice 只合并一次；此处锁定 merge 的追加语义）
     EXPECT_EQ(merged.inst_connections_.items_.at(5).size(),
@@ -608,34 +620,36 @@ TEST(DSFlattenTest, ProductSerializeRoundTrip) {
     const DSInstance* u1 = inst_of(back, 5);
     ASSERT_NE(u1, nullptr);
     EXPECT_TRUE(u1->is_primary());
-    // geometry：net 0（OBS 桶）与 net 2（wire+via）共存
+    // geometry：net 0（OBS 桶）与 net 4（wire+via）共存
     EXPECT_EQ(back.geometry_.nets_.size(), p1->geometry_.nets_.size());
-    ASSERT_NE(back.geometry_.entries_of(2), nullptr);
-    EXPECT_EQ(back.geometry_.entries_of(2)->size(), 4u);
-    EXPECT_TRUE(back.geometry_.is_crossing(2));
+    ASSERT_NE(back.geometry_.entries_of(4), nullptr);
+    EXPECT_EQ(back.geometry_.entries_of(4)->size(), 4u);
+    EXPECT_TRUE(back.geometry_.is_crossing(4));
+    EXPECT_TRUE(back.geometry_pg_.nets_.empty());
     // 连接表往返（INST_CONNECTIONS 条目形态对齐：inst_id 更名断言）
     ASSERT_NE(back.inst_connections_.items_.find(5),
               back.inst_connections_.items_.end());
     EXPECT_EQ(back.inst_connections_.items_[5].size(), 2u);
     EXPECT_EQ(back.inst_connections_.items_[5][0].inst_id_, 5u);
-    // NETS 往返（2026-09-13 重组裁定：sub n1(global 2, TIEOFF 信号网)
-    // 入 nets_ 表、pg 网 n2 无几何不落）
-    ASSERT_NE(back.nets_.nets_.find(2), back.nets_.nets_.end());
-    EXPECT_EQ(back.nets_.nets_.at(2).net_id_, 2u);
-    EXPECT_EQ(back.nets_.nets_.at(2).connections_.size(), 2u);
-    EXPECT_TRUE(back.nets_.pg_nets_.empty());
+    // NETS 往返（2026-09-14 拆分裁定：sub n1(global 4, TIEOFF 信号网)
+    // 入 NETS 侧对象、pg 网 n2 无几何不落、NETS_PG 侧空表）
+    ASSERT_NE(back.nets_.nets_.find(4), back.nets_.nets_.end());
+    EXPECT_EQ(back.nets_.nets_.at(4).net_id_, 4u);
+    EXPECT_EQ(back.nets_.nets_.at(4).connections_.size(), 2u);
+    EXPECT_TRUE(back.nets_pg_.nets_.empty());
     // use 随网往返（2026-09-13 USE 全量补收：DSNet.use_ 缺省 SIGNAL）
-    EXPECT_EQ(back.nets_.nets_.at(2).use(), DSNetUse::TIEOFF);
-    EXPECT_EQ(back.nets_.net_of(3), nullptr);
-    // part_id_ 分片归属往返
+    EXPECT_EQ(back.nets_.nets_.at(4).use(), DSNetUse::TIEOFF);
+    EXPECT_EQ(back.nets_.net_of(5), nullptr);
+    // part_id_ 分片归属往返（两侧同值）
     EXPECT_EQ(back.nets_.part_id_, p1->nets_.part_id_);
+    EXPECT_EQ(back.nets_pg_.part_id_, p1->nets_.part_id_);
 }
 
 TEST(DSFlattenTest, PartitionNetUseFollowsNetCopies) {
     FlattenEnv env;
-    // top 展开：n_top（global 0，use CLOCK）几何跨两分区——两区各带 use；
-    // n_pg（global 1，use POWER，pg）几何仅 p0——p1 无条目（net_of 两表
-    // 查未命中 nullptr）
+    // top 展开：n_top（global 1，use CLOCK）几何跨两分区——两区各带 use；
+    // n_pg（global 2，use POWER，pg）几何仅 p0——p1 无条目（单表查未命中
+    // nullptr；pg 网落 NETS_PG 侧对象——2026-09-14 拆分裁定）
     const auto top_slices =
         ds_flatten_block(env.tree, env.top, env.top_nets, env.design,
                          env.parts);
@@ -643,11 +657,11 @@ TEST(DSFlattenTest, PartitionNetUseFollowsNetCopies) {
     const DSPartitionProduct* tp1 = product_of(top_slices, 1);
     ASSERT_NE(tp0, nullptr);
     ASSERT_NE(tp1, nullptr);
-    EXPECT_EQ(tp0->nets_.nets_.at(0).use(), DSNetUse::CLOCK);
-    EXPECT_EQ(tp1->nets_.nets_.at(0).use(), DSNetUse::CLOCK);
-    EXPECT_EQ(tp0->nets_.pg_nets_.at(1).use(), DSNetUse::POWER);
-    EXPECT_EQ(tp1->nets_.net_of(1), nullptr);
-    // sub 展开：n1（global 2，use TIEOFF）几何落 p0/p1；n2（global 3，
+    EXPECT_EQ(tp0->nets_.nets_.at(1).use(), DSNetUse::CLOCK);
+    EXPECT_EQ(tp1->nets_.nets_.at(1).use(), DSNetUse::CLOCK);
+    EXPECT_EQ(tp0->nets_pg_.nets_.at(2).use(), DSNetUse::POWER);
+    EXPECT_EQ(tp1->nets_pg_.net_of(2), nullptr);
+    // sub 展开：n1（global 4，use TIEOFF）几何落 p0/p1；n2（global 5，
     // use POWER 但 pg 无几何——无 net 副本，全域无条目）
     const auto sub_slices =
         ds_flatten_block(env.tree, env.sub, env.sub_nets, env.design,
@@ -656,18 +670,21 @@ TEST(DSFlattenTest, PartitionNetUseFollowsNetCopies) {
     const DSPartitionProduct* sp1 = product_of(sub_slices, 1);
     ASSERT_NE(sp0, nullptr);
     ASSERT_NE(sp1, nullptr);
-    EXPECT_EQ(sp0->nets_.nets_.at(2).use(), DSNetUse::TIEOFF);
-    EXPECT_EQ(sp1->nets_.nets_.at(2).use(), DSNetUse::TIEOFF);
-    EXPECT_EQ(sp1->nets_.net_of(3), nullptr);
+    EXPECT_EQ(sp0->nets_.nets_.at(4).use(), DSNetUse::TIEOFF);
+    EXPECT_EQ(sp1->nets_.nets_.at(4).use(), DSNetUse::TIEOFF);
+    EXPECT_EQ(sp1->nets_pg_.net_of(5), nullptr);
 }
 
 TEST(DSFlattenTest, GeometryOnlyNetHasNoDSNetRecord) {
     // review 2026-09-13（get_net 显式 None 口径锁定）：有几何但无任何
     // 连接的网不落 DSNet（无连接则无聚合对象）——含 pg 形态（POWER +
-    // 几何 + 无连接）：两表均无条目，get_net 侧经 net_of 返回 None
+    // 几何 + 无连接）：两侧对象均无条目，get_net 侧经单表查返回 None
     //（旧兜底会把该网静默降级为「SIGNAL 非 pg 空概要」——已修正为
     // 显式 None）
     FlattenEnv env;
+    // 区间同步扩容（review：root 增 local 3/4 网——区间长度须覆盖，
+    // 3 → 5〔真网 2 + local 3/4 + 空洞位〕）
+    env.tree.nodes_[0].net_count_ = 5;
     // top 增一条悬浮 POWER 网（local 3）：有 wire、无连接、mark pg
     DSNetWire w;
     w.layer_id_ = 0;
@@ -686,16 +703,25 @@ TEST(DSFlattenTest, GeometryOnlyNetHasNoDSNetRecord) {
                          env.parts);
     const DSPartitionProduct* tp0 = product_of(slices, 0);
     ASSERT_NE(tp0, nullptr);
-    // global id：top 的 net_start = 0，local 3/4 → global 2/3（占 local
+    // global id：top 的 net_start = 0，local 3/4 → global 3/4（占 local
     // 1/2 之后的下一个——FlattenEnv top 定义 net local 序见构造注释）
-    // 两表均无 DSNet 记录（无连接不聚合；几何照常入 GEOMETRY 对象）
-    const uint64_t g3 = env.tree.global_net_id(0, 3);
-    const uint64_t g4 = env.tree.global_net_id(0, 4);
+    // 两侧对象均无 DSNet 记录（无连接不聚合；几何照常入 GEOMETRY 侧：
+    // 悬浮 pg 网入 GEOMETRY_PG、悬浮信号网入 GEOMETRY——2026-09-14 拆分）
+    const uint64_t g3 = 3;
+    const uint64_t g4 = 4;
     EXPECT_EQ(tp0->nets_.net_of(g3), nullptr);
+    EXPECT_EQ(tp0->nets_pg_.net_of(g3), nullptr);
     EXPECT_EQ(tp0->nets_.net_of(g4), nullptr);
+    EXPECT_EQ(tp0->nets_pg_.net_of(g4), nullptr);
     EXPECT_EQ(tp0->nets_.nets_.count(g3), 0u);
-    EXPECT_EQ(tp0->nets_.pg_nets_.count(g3), 0u);
+    EXPECT_EQ(tp0->nets_pg_.nets_.count(g3), 0u);
     EXPECT_EQ(tp0->nets_.nets_.count(g4), 0u);
+    // 几何侧别跟随：悬浮 pg 网 wire 入 GEOMETRY_PG、悬浮信号网 rect 入
+    // GEOMETRY（信号侧）
+    ASSERT_NE(tp0->geometry_pg_.entries_of(g3), nullptr);
+    EXPECT_EQ(tp0->geometry_.entries_of(g3), nullptr);
+    ASSERT_NE(tp0->geometry_.entries_of(g4), nullptr);
+    EXPECT_EQ(tp0->geometry_pg_.entries_of(g4), nullptr);
 }
 
 TEST(DSFlattenTest, OutOfCorePointFallsBackToNearestPrimary) {
@@ -736,10 +762,11 @@ TEST(DSFlattenTest, OutOfCorePointFallsBackToNearestPrimary) {
     EXPECT_EQ(primary_total, 4);  // la/lb/csub(切线归 p1)+far 各恰一
 }
 
-TEST(DSFlattenTest, RootFirstNetAndObsShareNetZeroBucket) {
-    // review 2026-09-13 补测（单测锁定，QA 外的独立防线）：root 首网
-    //（n_top local 1 → global 0）的真实几何与 DEF OBS 在 net 0 桶共存，
-    // obs 位判别 + net_entries/obs_entries 过滤视图正确
+TEST(DSFlattenTest, ObstructionOwnsNetZeroBucketExclusively) {
+    // 2026-09-14 裁定（键 0 专属 OBS）：net 区间空洞位形态下 root 首网
+    //（n_top local 1 → global 1）不再与 OBS 桶同键——信号侧 GEOMETRY 键
+    // 0 恒纯 OBS（obs 位判别保留为防御校验：net_entries(0) 恒空、
+    // obs_entries() = 键 0 全桶）；真实网几何在各自 global id 键
     FlattenEnv env;
     env.top.obstructions_.push_back(
         DSShapeRef{2, GEORect(10, 10, 60, 60)});  // M2 层局部矩形
@@ -749,18 +776,21 @@ TEST(DSFlattenTest, RootFirstNetAndObsShareNetZeroBucket) {
                          env.parts);
     const DSPartitionProduct* p0 = product_of(slices, 0);
     ASSERT_NE(p0, nullptr);
+    // 键 0 桶：恒纯 OBS（无真网条目共存）
     const auto* bucket = p0->geometry_.entries_of(0);
     ASSERT_NE(bucket, nullptr);
-    // 共存：n_top wire（非 obs）+ OBS 条目各 1
     int wire_count = 0, obs_count = 0;
     for (const auto& e : *bucket) {
         (e.is_obs() ? obs_count : wire_count) += 1;
     }
-    EXPECT_EQ(wire_count, 1);
+    EXPECT_EQ(wire_count, 0);
     EXPECT_EQ(obs_count, 1);
-    // 过滤视图：net_entries(0) 只含真实网几何；obs_entries 只含 OBS
-    EXPECT_EQ(p0->geometry_.net_entries(0).size(), 1u);
-    EXPECT_FALSE(p0->geometry_.net_entries(0)[0].is_obs());
+    // root 首网 n_top 真实几何在 global 1 键（不与 OBS 混叠）
+    EXPECT_EQ(p0->geometry_.net_entries(1).size(), 1u);
+    EXPECT_FALSE(p0->geometry_.net_entries(1)[0].is_obs());
+    // 过滤视图（防御校验口径）：net_entries(0) 恒空；obs_entries = 键 0
+    // 全桶
+    EXPECT_EQ(p0->geometry_.net_entries(0).size(), 0u);
     EXPECT_EQ(p0->geometry_.obs_entries().size(), 1u);
     EXPECT_TRUE(p0->geometry_.obs_entries()[0].is_obs());
     EXPECT_EQ(p0->geometry_.obs_entries()[0].layer_id_, 2u);
@@ -800,19 +830,19 @@ TEST(DSFlattenTest, ObstructionAndPartitionGeometryRoundTrip) {
 // ── 5. pg 网全局集：分流提取 + 汇总去重 + O(1) 查询 + 序列化往返 ────
 
 TEST(DSFlattenTest, PgNetSliceCollectAndFinalize) {
-    // FlattenEnv：top 展开 → p0 的 pg 表含 n_pg(global 1, POWER)；sub
-    // 展开 → n2(global 3, POWER) 无几何不落。片段分流 + 汇总去重（同网
-    // 跨分区副本——n_top 非 pg 不入集）
+    // FlattenEnv：top 展开 → p0 的 NETS_PG 侧对象含 n_pg(global 2,
+    // POWER)；sub 展开 → n2(global 5, POWER) 无几何不落。片段分流 +
+    // 汇总去重（同网跨分区副本——n_top 非 pg 不入集）
     FlattenEnv env;
     const auto top_slices =
         ds_flatten_block(env.tree, env.top, env.top_nets, env.design,
                          env.parts);
     const DSPartitionProduct* tp0 = product_of(top_slices, 0);
     ASSERT_NE(tp0, nullptr);
-    DSPgNetSlice top_slice = ds_collect_pg_net_slice(tp0->nets_);
+    DSPgNetSlice top_slice = ds_collect_pg_net_slice(tp0->nets_pg_);
     EXPECT_EQ(top_slice.power_ids_.size(), 1u);
     EXPECT_EQ(top_slice.ground_ids_.size(), 0u);
-    EXPECT_EQ(top_slice.power_ids_[0], 1u);  // n_pg global 1
+    EXPECT_EQ(top_slice.power_ids_[0], 2u);  // n_pg global 2
 
     DSPgNetSet pg_set;
     const DSPgNetSlice* slice_ptr = &top_slice;
@@ -822,10 +852,11 @@ TEST(DSFlattenTest, PgNetSliceCollectAndFinalize) {
     EXPECT_EQ(pg_set.power_count(), 1u);
     EXPECT_EQ(pg_set.ground_count(), 0u);
     // O(1) 查询口三态
-    EXPECT_TRUE(pg_set.is_power(1));
-    EXPECT_FALSE(pg_set.is_ground(1));
-    EXPECT_TRUE(pg_set.is_pg(1));
-    EXPECT_FALSE(pg_set.is_pg(0));   // n_top 信号网不入集
+    EXPECT_TRUE(pg_set.is_power(2));
+    EXPECT_FALSE(pg_set.is_ground(2));
+    EXPECT_TRUE(pg_set.is_pg(2));
+    EXPECT_FALSE(pg_set.is_pg(1));   // n_top 信号网不入集
+    EXPECT_FALSE(pg_set.is_pg(0));   // OBS 专属位非真网
     EXPECT_FALSE(pg_set.is_pg(999));
 }
 

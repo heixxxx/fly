@@ -9,10 +9,10 @@
 //   DSIdPartitionSlice    分区片段（S9 每分区合并任务写本区片段的临时对
 //                         象）：本区 primary inst id 集 / net 副本 id 集
 //                         + 本区 pid（平行数组，merge 前无序）。
-//   DSIdPartitionSegment  段正式对象（id_partition_map/{INST,NET}/S{k}）：
+//   DSIdPartitionSegment  段正式对象（id_partition_map.{INST,NET}.S{k}）：
 //                         段起始 id + 定长 pids 数组（下标 = id − 段起始，
 //                         值 = partition id；kNoPartition = 空洞）。
-//   DSIdPartitionIndex    段表轻对象（id_partition_map/{INST,NET}）：非
+//   DSIdPartitionIndex    段表轻对象（id_partition_map.{INST,NET}）：非
 //                         空段起始 id 升序表——查询先读段表（轻），命中
 //                         再按需加载段对象（段粒度 2^20 id ≈ 4 MiB/段，
 //                         空洞段省略存储）。
@@ -61,7 +61,7 @@ public:
     FLY_SERIALIZE(ids_, pids_)
 };
 
-// 段正式对象（id_partition_map/{INST,NET}/S{k}，k = id_start >> 20）：
+// 段正式对象（id_partition_map.{INST,NET}.S{k}，k = id_start >> 20）：
 // 按段 id 直接索引的 partition id 数组
 class DSIdPartitionSegment {
 public:
@@ -87,7 +87,7 @@ public:
     FLY_SERIALIZE(id_start_, pids_)
 };
 
-// 段表轻对象（id_partition_map/{INST,NET}）：非空段起始 id 升序表。
+// 段表轻对象（id_partition_map.{INST,NET}）：非空段起始 id 升序表。
 // 查询路径 = 二分定位段 → 按需读段对象（debug API 的 LRU 缓存粒度）
 class DSIdPartitionIndex {
 public:
@@ -127,10 +127,12 @@ DSIdPartitionMapResult ds_merge_id_partition_slices(
     const CMVector<const DSIdPartitionSlice*>& slices);
 
 // 提取：分区产物 → 本区片段（instance_kind = true 取 primary instance
-// 副本 id 集；false 取 net 副本 id 集——geometry 键集，与 NETS 两表
-// 跟随副本口径一致）。partition_id = 本区 pid。
+// 副本 id 集；false 取 net 副本 id 集——GEOMETRY + GEOMETRY_PG 两对象键
+// 集并集，2026-09-14 拆分裁定：网副本落点分侧两对象，切片结构不变）。
+// partition_id = 本区 pid。
 DSIdPartitionSlice ds_collect_partition_id_slice(
     const DSPartInstances& instances, const DSPartitionGeometry& geometry,
-    bool instance_kind, uint32_t partition_id);
+    const DSPartitionGeometry& geometry_pg, bool instance_kind,
+    uint32_t partition_id);
 
 }  // namespace fly

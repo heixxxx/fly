@@ -1,7 +1,9 @@
 """E2E test: S8 分区决策直切场景（target_partitions '2x1'，2026-09-12/13
 裁定 1/2/4）+ S9 flatten 展平 + 分区保存（2026-09-13 裁定补记①-⑤ + 同日
-partition 网数据结构重组终态：NET_CONNECTIONS → NETS = DSPartitionNets
-信号网/pg 网分表 + 全局 pg 网 id 集 "pg_nets"）。
+partition 网数据结构重组终态：NET_CONNECTIONS → NETS + 全局 pg 网 id 集
+"pg_nets" + 2026-09-14 拆分裁定：GEOMETRY/NETS 按 pg/信号各拆两对象
+（GEOMETRY_PG/NETS_PG）+ net id 0 专属 OBS 裁定：net 区间含 local 0 空洞
+位、global = start + local 无 −1——n1 global 1）。
 
 单 DEF 无嵌套（层级树 1 节点，合并恒等无分摊损失）+ alpha
 density_bin_size=1（bin 1000 DBU → 格网 4×2）+ target_partitions '2x1'。
@@ -15,11 +17,11 @@ density_bin_size=1（bin 1000 DBU → 格网 4×2）+ target_partitions '2x1'。
   - w_eff = M1 default_width 70（M2 为更高布线层但无金属——有效层判定
     物理最高有效层，自底向上层表序内位置最高），2w = 140
 验证：S8 分区数、core/extend 坐标（最外围 int32 极值 / 内侧 ±2w）、全局密
-度三通道计数；S9 四类分区对象（primary 恰一 + extend 副本、geometry 副本
-不裁剪 + is_crossing、OBS → net 0 桶、非 pg 连接全量补全、NETS 信号网表
-形态、pg 集空集形态、alpha 聚合阈值键）；S10 汇总校验 + 冻结（verify_
-report 手算锁定：损坏类三字段空、id 域无空洞重复、primary 守恒、统计汇
-总 DSGN::0024，正常路径无 fatal/warn）。
+度三通道计数；S9 六类分区对象（primary 恰一 + extend 副本、geometry 副本
+不裁剪 + is_crossing、OBS → net 0 桶专属、非 pg 连接全量补全入 NETS、
+GEOMETRY_PG/NETS_PG 空对象形态、pg 集空集形态、alpha 聚合阈值键）；S10 汇
+总校验 + 冻结（verify_report 手算锁定：损坏类三字段空、id 域无空洞重复、
+primary 守恒、统计汇总 DSGN::0024，正常路径无 fatal/warn）。
 """
 import os
 import shutil
@@ -94,20 +96,23 @@ INFO("[OK] S8 partitions: '2x1' direct cut at grid 2 (load prefix-sum "
 
 # ══ S9：flatten 展平 + 分区保存（两级任务；2026-09-13 裁定补记①-⑤）══
 # partition_demo 单 def（层级树 1 节点）：实例 inv1/inv2/inv3 local 1/2/3
-# → global 1/2/3（inst_start 0）；n1 local 1 → global 0（net_start 0）。
+# → global 1/2/3（inst_start 0）；n1 local 1 → global 1（net_start 0、
+# 区间长度含 local 0 空洞位——2026-09-14 裁定 global = start + local）。
 # 手算锁定（DBU@1000）：
 #   - inv1(100,100)/inv2(100,1100)：p0 core 内 primary 恰一，p1 extend 不含；
 #   - inv3(2100,100)：p1 core primary + p0 extend（x_high 2140）副本非 primary；
 #   - n1 wire M1 (0,1000)-(4000,1000) 缺省宽 70 → 段矩形 (−35,965,4035,1035)
 #     两分区 extend 均交叠 → 副本两份（不裁剪）+ is_crossing；
-#   - BLOCKAGE M2 (100,100)-(300,400)：仅 p0 → net 0 桶 + obs 位；
+#   - BLOCKAGE M2 (100,100)-(300,400)：仅 p0 → net 0 桶专属 + obs 位；
 #   - 非 pg 全量补全：n1 连接项两分区各一份完整列表（id 形态——inv1.A =
 #     全局 pin 0，INV_X1 A 为 S2 汇总首 pin；A/INPUT → receiver 位）。
 from emir.design import DesignDb, iter_design_partition, load_partition
 assert iter_design_partition(design_db) == [(0, 0), (1, 0)], \
     f"iter={iter_design_partition(design_db)}"
-geo0, inst0, iconn0, nets0 = load_partition(design_db, 0, 0)
-geo1, inst1, iconn1, nets1 = load_partition(design_db, 1, 0)
+geo0, geo_pg0, inst0, iconn0, nets0, nets_pg0 = \
+    load_partition(design_db, 0, 0)
+geo1, geo_pg1, inst1, iconn1, nets1, nets_pg1 = \
+    load_partition(design_db, 1, 0)
 
 # /INSTANCES：primary 恰一 + extend 副本 + 全局坐标（2026-09-13 裁定：
 # 电源引脚预展开删除——坐标归 ④ 提取自取）
@@ -125,55 +130,65 @@ assert (inv3_p1.pos_x, inv3_p1.pos_y) == (2100, 100)
 INFO("[OK] S9 instances: primary exactly-one + extend copy (inv3) + global "
      "pos")
 
-# /GEOMETRY：net 0 桶 = n1 wire + OBS 共存（obs 位判别）；副本不裁剪
+# /GEOMETRY：net 0 桶 = OBS 专属（2026-09-14 裁定：无真网共存——本数据
+# 无 root 首网几何，桶恒纯 OBS）；n1（global 1）wire 副本不裁剪
 e0 = geo0.entries_of(0)
 e1 = geo1.entries_of(0)
 wire0 = [x for x in e0 if not x.is_obs]
 obs0 = [x for x in e0 if x.is_obs]
-assert len(wire0) == 1 and len(obs0) == 1, f"p0 net0 {len(e0)} entries"
-assert wire0[0].layer_id == 0 and wire0[0].rect == (-35, 965, 4035, 1035), \
-    f"wire={wire0[0].rect}"
+assert len(wire0) == 0 and len(obs0) == 1, \
+    "net-0 bucket must be OBS-exclusive (key-0 ruling)"
 assert obs0[0].layer_id == 2 and obs0[0].rect == (100, 100, 300, 400) \
     and not obs0[0].is_primary
-assert len(e1) == 1 and not e1[0].is_obs, \
-    "obstruction must not copy into p1 (no extend overlap)"
-assert geo0.is_crossing(0) and geo1.is_crossing(0)
+assert len(e1) == 0, "obstruction must not copy into p1 (no extend overlap)"
+n1_0 = geo0.entries_of(1)
+n1_1 = geo1.entries_of(1)
+assert n1_0 is not None and len(n1_0) == 1 and not n1_0[0].is_obs
+assert n1_0[0].layer_id == 0 and n1_0[0].rect == (-35, 965, 4035, 1035), \
+    f"wire={n1_0[0].rect}"
+assert n1_1 is not None and len(n1_1) == 1 and not n1_1[0].is_obs
+assert geo0.is_crossing(1) and geo1.is_crossing(1)
+# 拆分裁定（2026-09-14）：pg 侧几何对象恒空（本数据无 pg 网）
+assert geo_pg0.net_count == 0 and geo_pg1.net_count == 0
 INFO("[OK] S9 geometry: wire copies both partitions unclipped + crossing, "
-     "OBS to net-0 bucket with obs flag (p0 only)")
+     "OBS owns net-0 bucket exclusively (p0 only), GEOMETRY_PG empty "
+     "(pg-free data)")
 
-# /NETS（2026-09-13 重组裁定：NET_CONNECTIONS → NETS = DSPartitionNets
-# 信号网/pg 网分表）：非 pg 全量补全（跨分区连接也保存——两分区各一份完
+# /NETS（2026-09-14 拆分裁定：信号网入 NETS 对象、pg 网入 NETS_PG 对象
+# ——本数据无 pg 网）：非 pg 全量补全（跨分区连接也保存——两分区各一份完
 # 整列表；n1 仅 (inv1 A) 一条连接，p1 虽无 inv1 副本仍全量保存）。
 # 连接 id 形态（2026-09-13 裁定）：(端点实例 global id, 全局 pin id)——
 # inv1.A = 全局 pin 0（INV_X1 的 A 为 S2 汇总首 pin）；网 id 由 DSNet 键
-# 承载（net_of 两表查命中）
+# 承载（net_of 单表查命中）
 expect_conns = [(1, 0)]
 for nets in (nets0, nets1):
-    net = nets.net_of(0)
-    assert net is not None, "n1 must be reachable via net_of both tables"
+    net = nets.net_of(1)
+    assert net is not None, "n1 must be reachable via net_of (signal side)"
     got = [(c.inst_id, c.pin_id) for c in net.connections]
     assert got == expect_conns, f"net conns={got}"
-    assert net.net_id == 0 and net.use == "SIGNAL"
-    assert nets.size == 1
+    assert net.net_id == 1 and net.use == "SIGNAL"
+    assert nets.size == 1 and sorted(nets.ids) == [1]
     assert [c.is_receiver for c in net.connections] == [True]
-    # 分流断言：n1 非 pg → 信号网表命中、pg 网表为空
-    assert nets.net_of(0) is not None and len(nets.pg_ids) == 0
+# 拆分断言：NETS_PG 侧对象恒空、与 NETS 互斥
+assert nets_pg0.size == 0 and nets_pg1.size == 0
+assert list(nets_pg0.ids) == [] and list(nets_pg1.ids) == []
 # /INST_CONNECTIONS：跟随 instance 副本（partition.def 仅 inv1 有连接项
 # ——inv1 端点只在 p0；inv2/inv3 无连接项不产条目）
 assert [(c.net_global_id, c.pin_id) for c in iconn0.connections_of(1)] \
-    == [(0, 0)]
+    == [(1, 0)]
 assert iconn1.connections_of(1) == [], "inv1 must not appear in p1"
 assert iconn0.size == 1 and iconn1.size == 0
 INFO("[OK] S9 connections: non-pg net fully completed in both partitions "
-     "(NETS signal table), inst connections follow copies")
+     "(NETS object), NETS_PG empty (split ruling), inst connections "
+     "follow copies")
 
 # 全局 pg 网 id 集（2026-09-13 重组裁定："pg_nets" 正式对象）：本数据无
 # pg 网（无 SPECIALNETS / 无 USE POWER|GROUND）→ 空 set、查询恒 False
 from emir.design import load_design_pg_nets
 pg_nets = load_design_pg_nets(design_db)
 assert pg_nets.power_count == 0 and pg_nets.ground_count == 0
-assert pg_nets.is_pg(0) is False and pg_nets.is_power(0) is False \
-    and pg_nets.is_ground(0) is False
+assert pg_nets.is_pg(0) is False and pg_nets.is_pg(1) is False \
+    and pg_nets.is_power(1) is False and pg_nets.is_ground(1) is False
 INFO("[OK] S9 pg net set: empty for pg-free data, O(1) queries false")
 
 # alpha settings 对象：S9 聚合阈值键随建库持久化（缺省 64 MiB）
@@ -190,11 +205,11 @@ INFO("[OK] S9 alpha def_aggregate_threshold persisted with default 64MiB")
 #     duplicates 0；
 #   - 密度守恒 primary 口径：Σ primary = 3 = Σ 首份定义 (实例数 −
 #     UNPLACED) = 3 − 0 → 无偏差；
-#   - 网域：expected 1、actual {0}（n1 几何 + 连接 + 跨分区标记）→
-#     holes 0；via 域 expected 0 / actual 0；
+#   - 网域：expected 1（= Σ (net_count − 1)，空洞位不占 expected）、
+#     actual {1}（n1 global 1）→ holes 0；via 域 expected 0 / actual 0；
 #   - 统计：primary 3、副本 4（inv3 extend 副本）、连接 3（NETS 两分区
-#     各 1 + iconn p0 1）、图形条目 3（p0 wire+obs、p1 wire）、跨分区网 1、
-#     密度 inst=3/metal=8/via=0（与 S8 手算一致）。
+#     各 1 + iconn p0 1）、图形条目 3（p0 obs + n1 wire 双副本）、跨分区
+#     网 1、密度 inst=3/metal=8/via=0（与 S8 手算一致）。
 from emir.design import load_design_verify_report
 report = load_design_verify_report(design_db)
 assert report.union_inconsistency == "", "frozen db must pass union check"
@@ -203,6 +218,7 @@ assert report.namemap_inconsistency == "", \
     "frozen db must pass namemap check"
 assert report.instance_ids.expected == 3 and report.instance_ids.actual == 3
 assert report.instance_ids.holes == 0 and report.instance_ids.duplicates == 0
+assert report.net_ids.expected == 1 and report.net_ids.actual == 1
 assert report.net_ids.holes == 0 and report.via_ids.holes == 0
 assert report.density_variance == ""
 assert report.partition_count == 2

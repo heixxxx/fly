@@ -302,7 +302,9 @@ INFO("[OK] S5b: net content (connections/wires/via instances, per-layer "
      "density channels, local net id aligned)")
 
 # ── S6：层级树 + 起始编号（⑧⑨⑮；block_parent 实例化 block_child →
-# block_parent 为唯一无父者 = 根；def_paths 序 child 在前不影响判定）──
+# block_parent 为唯一无父者 = 根；def_paths 序 child 在前不影响判定。
+# 2026-09-14 裁定：net 区间长度含 local 0 空洞位——root [0,2)、child
+# [2,5)，global = start + local 无 −1，root 空洞位 = global 0 = OBS 专属）
 hier = design.get_hier_tree()
 assert hier.node_count == 2 and hier.design_name == "block_parent"
 root = hier.node(0)
@@ -310,7 +312,7 @@ assert root.block_cell_name == "block_parent"
 assert root.instance_name == "block_parent"
 assert root.self_global_id == 0 and root.parent_id == 0
 assert root.instance_range == (0, 4), f"root inst={root.instance_range}"
-assert root.net_range == (0, 1)
+assert root.net_range == (0, 2), f"root net={root.net_range}"
 child = hier.node(1)
 assert child.block_cell_name == "block_child"
 assert child.instance_name == "top3"
@@ -318,24 +320,25 @@ assert child.parent_id == 0 and hier.children(0) == [1]
 # ⑧ child 自身 global id = 父块 inst 区间内 top3 的 local 3
 assert child.self_global_id == 3, f"self={child.self_global_id}"
 assert child.instance_range == (4, 6), f"child inst={child.instance_range}"
-assert child.net_range == (1, 3), f"child net={child.net_range}"
+assert child.net_range == (2, 5), f"child net={child.net_range}"
 # via 区间（S5b 统计计数）：root 0 个 → [0,0)；child 1 个（VIA12）→ [0,1)
 assert root.via_range == (0, 0), f"root via={root.via_range}"
 assert child.via_range == (0, 1), f"child via={child.via_range}"
 # 四接口：区间反查 / parent-children / format_tree
 assert hier.block_of_instance(3) == 0, "top3 itself belongs to parent seg"
 assert hier.block_of_instance(5) == 1, "child u1 belongs to child seg"
-assert hier.block_of_net(2) == 1
+assert hier.block_of_net(3) == 1
 assert hier.block_of_via_instance(0) == 1, "child VIA12 via instance"
 assert hier.block_of_via_instance(1) is None, "no more via instances"
 assert hier.parent(1) == 0
-# ⑨ global id 换算：local 0 → 自身（root → 0）；net/via local 从 1 起
+# ⑨ global id 换算：net 区间含空洞位（start + local 无 −1）；local 0 空
+# 洞位不映射（root 空洞位 = global 0 = OBS 专属）
 assert hier.global_instance_id(0, 0) == 0
 assert hier.global_instance_id(1, 0) == 3
 assert hier.global_instance_id(1, 1) == 5, "child u1 global id"
-assert hier.global_net_id(0, 1) == 0
-assert hier.global_net_id(1, 1) == 1
-assert hier.global_net_id(1, 2) == 2
+assert hier.global_net_id(0, 1) == 1, "n_top global id"
+assert hier.global_net_id(1, 1) == 3, "child n1 global id"
+assert hier.global_net_id(1, 2) == 4, "child n2 global id"
 assert hier.global_via_instance_id(0, 1) is None, "root has no via"
 assert hier.global_via_instance_id(1, 1) == 0, "child VIA12 global id"
 assert hier.global_via_instance_id(1, 2) is None
@@ -349,16 +352,16 @@ INFO("[OK] S6: hierarchy tree (DFS numbering, ⑧ local-0 mapping, four "
 # ── S7：跨块连接归并（并查集；2026-09-13 裁定：仅 port 相连网、两层
 # 树、root = 层级最高/同级最小 global id、悬空 port 照常入表 root=自身）──
 # 数据形态：父网 n_top ( top3 PIN_IN ) × 子网 n1 ( PIN PIN_IN ) 对接（id
-# 对接键 = top3 的 port pin 全局 id 相等——PIN_IN = pin 3，2026-09-13
+# 对接键 = 同一 port 的全局 pin id 相等——PIN_IN = pin 3，2026-09-13
 # 裁定后 S7 内部零字符串匹配）→ n1 归并入 n_top；n2 挂
 # child 的 PIN_OUT、父侧未连接 → 悬空 port 网（root = 自身 + 计数）；
 # internal net（无 port 位条目）不入表——红线由 C++ 单测 ds_union_test
 # 固化（本数据无 internal 网）
 from emir.design import load_design_net_union
 union = load_design_net_union(design_db)
-g_n_top = hier.global_net_id(0, 1)  # 0：root 块 n_top（物理网展示名锚）
-g_n1 = hier.global_net_id(1, 1)     # 1：child n1（经 top3/PIN_IN 归并）
-g_n2 = hier.global_net_id(1, 2)     # 2：child n2（悬空）
+g_n_top = hier.global_net_id(0, 1)  # 1：root 块 n_top（物理网展示名锚）
+g_n1 = hier.global_net_id(1, 1)     # 3：child n1（经 top3/PIN_IN 归并）
+g_n2 = hier.global_net_id(1, 2)     # 4：child n2（悬空）
 assert union.find(g_n1) == g_n_top, "child n1 must union into top n_top"
 assert union.find(g_n_top) == g_n_top, "root net self-map (two-layer)"
 assert sorted(union.members(g_n_top)) == sorted([g_n_top, g_n1]), \
@@ -393,9 +396,9 @@ assert mapper_i.get_full_name(1) == "block_parent/top1"
 assert mapper_i.get_global_id("block_parent/ghost") is None
 assert mapper_i.get_full_name(999) is None
 _, mapper_n = load_name_mapper(design_db, kind=1)  # net 维度（区间换算不同）
-assert mapper_n.get_global_id("block_parent/n_top") == 0
-assert mapper_n.get_global_id("block_parent/top3/n1") == 1
-assert mapper_n.get_full_name(2) == "block_parent/top3/n2"
+assert mapper_n.get_global_id("block_parent/n_top") == 1
+assert mapper_n.get_global_id("block_parent/top3/n1") == 3
+assert mapper_n.get_full_name(4) == "block_parent/top3/n2"
 INFO("[OK] R7 name mapper: instance/net both dimensions, bidirectional "
      "close-loop over hierarchy paths (injected lightweight shell)")
 
@@ -539,8 +542,8 @@ _, mapper_lcp = load_name_mapper(lcp_db, kind=0)
 assert mapper_lcp.get_global_id("block_parent/top3/u1") == 5
 assert mapper_lcp.get_full_name(5) == "block_parent/top3/u1"
 _, mapper_lcp_n = load_name_mapper(lcp_db, kind=1)
-assert mapper_lcp_n.get_global_id("block_parent/top3/n2") == 2
-assert mapper_lcp_n.get_full_name(2) == "block_parent/top3/n2"
+assert mapper_lcp_n.get_global_id("block_parent/top3/n2") == 4
+assert mapper_lcp_n.get_full_name(4) == "block_parent/top3/n2"
 INFO("[OK] R8d LCP name arena: hier tree + global mapper closed-loop over "
      "LCP rank backtrack")
 
@@ -606,18 +609,19 @@ INFO("[OK] S8 partitions: default alpha -> single partition, core = root "
      "DIEAREA grid coverage, extend = int32 extremes")
 
 # ── S9：flatten 展平 + 分区保存（两级任务；单分区 → extend 全域全
-# primary；2026-09-13 裁定补记①-⑤ + 同日重组终态（NET_CONNECTIONS →
-# NETS = DSPartitionNets 信号网/pg 网分表 + 全局 pg 网 id 集）手算锁定）──
-# 层级：root block_parent（inst [0,4) net [0,1)）→ child top3（block_child，
-# inst [4,6) net [1,3)）。block_parent UNITS 2000 → 坐标 ×0.5：top1 放置
+# primary；2026-09-13 裁定补记①-⑤ + 2026-09-14 拆分裁定（GEOMETRY/NETS
+# 按 pg/信号各拆两对象）+ 同日 net id 0 专属 OBS 裁定手算锁定）──
+# 层级：root block_parent（inst [0,4) net [0,2)）→ child top3（block_child，
+# inst [4,6) net [2,5)）。block_parent UNITS 2000 → 坐标 ×0.5：top1 放置
 # (500,500) → pos (250,250)（N 向 pos = t）；top3 放置 (1500,500) →
 # t (750,250)、P7 origin 修正 → pos (1250,500)；child 复合变换 =
 # translate(1250,500)，u1 local (100,200)（child UNITS 1000 ×1）→ 全局
-# (1350,700)；top2 UNPLACED 不入分区。
+# (1350,700)；top2 UNPLACED 不入分区。真网 id：n_top 1、n1 3、n2 4。
 from emir.design import iter_design_partition, load_design_pg_nets, \
     load_partition
 assert iter_design_partition(design_db) == [(0, 0)]
-geo_p, inst_p, iconn_p, nets_p = load_partition(design_db, 0, 0)
+geo_p, geo_pg_p, inst_p, iconn_p, nets_p, nets_pg_p = \
+    load_partition(design_db, 0, 0)
 assert inst_p.size == 3, f"instances={inst_p.size} (top2 UNPLACED excluded)"
 top1_i = inst_p.get(1)
 assert top1_i.is_primary and (top1_i.pos_x, top1_i.pos_y) == (250, 250)
@@ -632,14 +636,17 @@ assert 2 not in inst_p.ids(), "UNPLACED top2 (global 2) must be excluded"
 INFO("[OK] S9 instances: composite-transformed global pos (top3 pos = "
      "place_from_def (2000,750)), UNPLACED excluded")
 
-# /GEOMETRY：net 0 桶 = OBS（block_parent BLOCKAGE M2 (100,100)-(300,400)
-# units 2000 ×0.5 → (50,50,150,200)；n_top 无几何不产出条目）；child n1
-# （global 1）wire 段 + via 三组图形（复合 ×，via 挂 cell id + primary）
+# /GEOMETRY：net 0 桶 = OBS 专属（block_parent BLOCKAGE M2 (100,100)-
+# (300,400) units 2000 ×0.5 → (50,50,150,200)；2026-09-14 裁定：键 0 恒
+# 纯 OBS，n_top 无几何无条目）；child n1（global 3）wire 段 + via 三组
+# 图形（复合 ×，via 挂 cell id + primary）
 obs_entries = [e for e in geo_p.entries_of(0) if e.is_obs]
 assert len(obs_entries) == 1
 assert obs_entries[0].layer_id == 2
 assert obs_entries[0].rect == (50, 50, 150, 200)
-n1_entries = geo_p.entries_of(1)
+assert len(geo_p.entries_of(0)) == 1, \
+    "net-0 bucket must be OBS-exclusive (key-0 ruling)"
+n1_entries = geo_p.entries_of(3)
 assert n1_entries is not None and len(n1_entries) == 4
 wire_e = [e for e in n1_entries if not e.is_via]
 assert len(wire_e) == 1 and wire_e[0].layer_id == 0
@@ -652,23 +659,26 @@ assert sorted((e.layer_id, e.rect) for e in via_e) == [
     (1, (1710, 660, 1790, 740)),    # cut ±40 @ VIA1
     (2, (1600, 550, 1900, 850)),    # top ±150 @ M2
 ]
-assert not geo_p.is_crossing(1), "single partition must not mark crossing"
-INFO("[OK] S9 geometry: BLOCKAGE -> net 0 + obs flag, child n1 wire + via "
-     "graphics expanded by composite transform (via cell id + primary)")
+assert not geo_p.is_crossing(3), "single partition must not mark crossing"
+# 拆分裁定（2026-09-14）：本数据无 pg 网 → GEOMETRY_PG 对象恒空
+assert geo_pg_p.net_count == 0
+INFO("[OK] S9 geometry: BLOCKAGE owns net 0 exclusively + obs flag, child "
+     "n1 wire + via graphics expanded by composite transform (via cell id "
+     "+ primary), GEOMETRY_PG empty")
 
-# /NETS（2026-09-13 重组裁定：NET_CONNECTIONS → NETS = DSPartitionNets
-# 信号网/pg 网分表）：仅 child n1（有几何、非 pg）全量补全两条（入信号
-# 网表）；n_top/n2 无几何 → 不产条目（跟随 net 副本）。条目 = (端点实例
-# global id, 全局 pin id, port 位)——(5, 0) = u1.A、(3, 3) = top3 的
-# PIN_IN（port 位，端点实例 = 块实例自身 global id 3，⑧）；网 id 由
-# DSNet 键承载，net_of 两表查命中
-assert nets_p.size == 1
-n1_net = nets_p.net_of(1)
-assert n1_net is not None, "n1 must be reachable via net_of both tables"
-assert n1_net.net_id == 1 and n1_net.use == "SIGNAL"
+# /NETS（2026-09-14 拆分裁定：信号网入 NETS、pg 网入 NETS_PG——本数据无
+# pg 网）：仅 child n1（有几何、非 pg）全量补全两条（入 NETS 对象）；
+# n_top/n2 无几何 → 不产条目（跟随 net 副本）。条目 = (端点实例 global
+# id, 全局 pin id, port 位)——(5, 0) = u1.A、(3, 3) = top3 的 PIN_IN
+#（port 位，端点实例 = 块实例自身 global id 3，⑧）；网 id 由 DSNet 键承
+# 载，net_of 单表查命中
+assert nets_p.size == 1 and sorted(nets_p.ids) == [3]
+n1_net = nets_p.net_of(3)
+assert n1_net is not None, "n1 must be reachable via net_of (signal side)"
+assert n1_net.net_id == 3 and n1_net.use == "SIGNAL"
 assert [(c.inst_id, c.pin_id, c.is_port) for c in n1_net.connections] == [
     (5, 0, False), (3, 3, True)]
-assert len(nets_p.pg_ids) == 0 and len(nets_p.signal_ids) == 1
+assert nets_pg_p.size == 0 and list(nets_pg_p.ids) == []
 # 位直存（S9 flags 六位自 S5b 条目拷贝）：n1 两端点 u1.A / top3 的
 # PIN_IN 均 INPUT → receiver 位、无 driver（port 位另见上断言）
 assert [(c.is_receiver, c.is_driver) for c in n1_net.connections] == [
@@ -677,29 +687,29 @@ assert [(c.is_receiver, c.is_driver) for c in n1_net.connections] == [
 # pg 网 → 空集
 db_pg = load_design_pg_nets(design_db)
 assert db_pg.power_count == 0 and db_pg.ground_count == 0 \
-    and db_pg.is_pg(1) is False
+    and db_pg.is_pg(1) is False and db_pg.is_pg(3) is False
 # /INST_CONNECTIONS：跟随 instance 副本（含 pg 网 n2 的 instance 维度端点
 # ——下游 union 拼装口径）
 assert [(c.net_global_id, c.pin_id)
-        for c in iconn_p.connections_of(1)] == [(0, 0)]
+        for c in iconn_p.connections_of(1)] == [(1, 0)]
 t3c = iconn_p.connections_of(3)
 assert len(t3c) == 3
 t3_pairs = [(c.net_global_id, c.pin_id) for c in t3c]
-assert (0, 3) in t3_pairs, "parent-side endpoint on n_top (PIN_IN = pin 3)"
+assert (1, 3) in t3_pairs, "parent-side endpoint on n_top (PIN_IN = pin 3)"
 assert sorted((c.net_global_id, c.pin_id) for c in t3c if c.is_port) == \
-    [(1, 3), (2, 4)]
+    [(3, 3), (4, 4)]
 u1c = iconn_p.connections_of(5)
 assert sorted((c.net_global_id, c.pin_id) for c in u1c) == \
-    [(1, 0), (2, 1)]
+    [(3, 0), (4, 1)]
 # 位直存（S9 flags 六位自 S5b 条目拷贝）：n1 端点 u1.A receiver、top3
 # 的 PIN_IN port 条目 receiver、PIN_OUT port 条目 driver
-assert [(c.is_receiver, c.is_driver) for c in u1c if c.net_global_id == 1] \
+assert [(c.is_receiver, c.is_driver) for c in u1c if c.net_global_id == 3] \
     == [(True, False)]
 assert [(c.is_port, c.is_receiver, c.is_driver)
-        for c in t3c if c.net_global_id == 2] == [(True, False, True)]
+        for c in t3c if c.net_global_id == 4] == [(True, False, True)]
 INFO("[OK] S9 connections: non-pg net completion follows net copies "
-     "(NETS signal table), inst connections follow instance copies "
-     "(pg n2 reachable via instance dimension)")
+     "(NETS object, NETS_PG empty by split ruling), inst connections "
+     "follow instance copies (pg n2 reachable via instance dimension)")
 
 # ── S10：汇总校验 + 冻结（2026-09-13 校验分级裁定：损坏类 fatal / 观测
 # 类 warn；verify_report 正式对象随冻结落盘）──
@@ -710,8 +720,8 @@ INFO("[OK] S9 connections: non-pg net completion follows net copies "
 #     DSGN::0022 观测 warn（不阻断冻结）；
 #   - 密度守恒 primary 口径：Σ primary = 3 = Σ 首份定义 (实例数 −
 #     UNPLACED) = (1−0) + (3−1) → 无偏差、无 DSGN::0023；
-#   - 网域：expected 3、actual {0,1,2}（net 0 经 INST_CONNECTIONS 端点
-#     引用覆盖；geometry 的 net 0 桶仅 OBS 不计）→ holes 0；
+#   - 网域：expected 3、actual {1,3,4}（net 1 = n_top 经 INST_CONNECTIONS
+#     端点引用覆盖；geometry 的 net 0 桶仅 OBS 不计）→ holes 0；
 #   - via 域：expected 1（child VIA12 → global 0）、actual {0} → holes 0；
 #   - 统计：primary 3、副本 3、网 3、连接 9（nconn 2 + iconn 7：top1 1 +
 #     top3 3 + u1 2 + root 自身 port 连接（INST_CONNECTIONS 键 0）1）、
@@ -760,8 +770,9 @@ INFO("[OK] S10 messages: DSGN::0022 continuity warn + DSGN::0024 summary, "
 # ── debug 读库 API（2026-09-13 裁定：DesignDb 六方法——id↔name 转换 +
 # 映射定位 + 按需加载 LRU；design db 数据手算锁定）──
 # id→partition 反向映射段读回：INST 段 {1,3,5}→pid0（top2 UNPLACED 无
-# primary 副本 = 空洞）；NET 段 {0,1}→pid0（键 0 = root 首网 n_top 与
-# OBS 桶共用——n_top 无几何无连接；n2 无几何不入映射）
+# primary 副本 = 空洞）；NET 段 {0,3}→pid0（键 0 = OBS 专属桶——geometry
+# 键集；n_top（1）无几何不入映射；n2（4）无几何不入映射；2 = child 空
+# 洞位不入映射）
 from emir.design import DesignDb
 inst_index = design_db.read_object(DesignDb.id_map_index_obj_name("INST"))
 assert inst_index.segment_count == 1
@@ -775,11 +786,16 @@ assert inst_seg.partition_of(2) is None, \
 net_index = design_db.read_object(DesignDb.id_map_index_obj_name("NET"))
 assert net_index.segment_count == 1
 net_seg = design_db.read_object(DesignDb.id_map_segment_obj_name("NET", 0))
-assert net_seg.partition_of(0) == 0 and net_seg.partition_of(1) == 0
-assert net_seg.partition_of(2) is None, \
+assert net_seg.partition_of(0) == 0, \
+    "OBS-exclusive bucket key 0 enters the NET slice (geometry key)"
+assert net_seg.partition_of(3) == 0, "n1 has geometry in the partition"
+assert net_seg.partition_of(1) is None, \
+    "geometry-less net n_top has no partition copy"
+assert net_seg.partition_of(4) is None, \
     "geometry-less net n2 has no partition copy"
+assert net_seg.partition_of(2) is None, "local-0 hole slot is not a net"
 INFO("[OK] id->partition map: segment index + direct-index pids, holes "
-     "for UNPLACED instance and geometry-less net")
+     "for UNPLACED instance and geometry-less nets")
 
 # get_instance：层级路径入参（pos (1350,700) 与 S9 段同源手算）
 inst = design_db.get_instance("block_parent/top3/u1")
@@ -790,15 +806,15 @@ assert inst["primary_partition_id"] == 0
 assert inst["cell_id"] == inv_id and inst["cell_name"] == "INV_X1"
 assert [(c["net_id"], c["net_name"], c["pin_name"])
         for c in inst["connections"]] == [
-    (1, "block_parent/top3/n1", "A"), (2, "block_parent/top3/n2", "ZN")]
+    (3, "block_parent/top3/n1", "A"), (4, "block_parent/top3/n2", "ZN")]
 assert [(c["is_receiver"], c["is_driver"])
         for c in inst["connections"]] == [(True, False), (False, True)]
-# id 入参（top1：连接 = root 网 n_top 的 A 端点）
+# id 入参（top1：连接 = root 网 n_top（global 1）的 A 端点）
 top1 = design_db.get_instance(1)
 assert top1["name"] == "block_parent/top1"
 assert [(c["net_id"], c["net_name"], c["pin_name"], c["is_port"])
         for c in top1["connections"]] == \
-    [(0, "block_parent/n_top", "A", False)]
+    [(1, "block_parent/n_top", "A", False)]
 # root 占位 id 0 / 越界 / 未知名 → None
 assert design_db.get_instance(0) is None, \
     "root placeholder has no partition copy"
@@ -806,9 +822,9 @@ assert design_db.get_instance(999) is None
 assert design_db.get_instance("block_parent/ghost") is None
 
 # get_net：非 pg 明细（端点实例名 + pin 名 name 化；port 条目 = 块实例
-# 层级名 + port 名）；无几何网查不到
+# 层级名 + port 名）；无几何网查不到；id 0 = OBS 专属位非真网 → None
 n1 = design_db.get_net("block_parent/top3/n1")
-assert n1["id"] == 1 and n1["use"] == "SIGNAL" and n1["is_pg"] is False
+assert n1["id"] == 3 and n1["use"] == "SIGNAL" and n1["is_pg"] is False
 assert n1["connection_count"] == 2
 assert n1["receiver_count"] == 2 and n1["driver_count"] == 0 \
     and n1["hybrid_count"] == 0
@@ -825,6 +841,8 @@ assert n_top is None, \
     "geometry-less net (with connections) must return explicit None"
 assert design_db.get_net("block_parent/top3/n2") is None, \
     "geometry-less net has no partition copy"
+assert design_db.get_net(0) is None, \
+    "id 0 is the OBS-exclusive slot, not a real net (2026-09-14 ruling)"
 assert design_db.get_net(999) is None
 
 # get_cell / get_layer
@@ -864,17 +882,18 @@ assert design_db.convert_to_id(inst="block_parent/top3/u1") == 5
 assert design_db.convert_to_name(inst=5) == "block_parent/top3/u1"
 assert design_db.convert_to_name(inst=10) is None, \
     "user example kwargs form: absent id returns None"
-assert design_db.convert_to_id(net="block_parent/n_top") == 0
-assert design_db.convert_to_name(net=0) == "block_parent/n_top"
+assert design_db.convert_to_id(net="block_parent/n_top") == 1
+assert design_db.convert_to_name(net=1) == "block_parent/n_top"
 assert design_db.convert_to_id(cell="GHOST") is None
 INFO("[OK] debug API on design db: get_instance/get_net/get_cell/"
      "get_layer/convert both directions (id+name paired, name-resolved)")
 
 # ── debug db（独立 lef 组 cells_debug.lef：INOUT pin cell）+ USE 八值
-# 收录 / hybrid 混合类型 / pg 网概要 / 分区 use 字段——debug API 手算
-# 锁定。手算 id 面：pin 平铺注册序 A=0/ZN=1/VDD=2/BIDIR=3/VDDP=4/
+# 收录 / hybrid 混合类型 / pg 网概要 + 拆分裁定六对象分侧断言——debug API
+# 手算锁定。手算 id 面：pin 平铺注册序 A=0/ZN=1/VDD=2/BIDIR=3/VDDP=4/
 # DBG_IN=5；cell INV_X1=0/FILLER01=1/INVIO=2/debug_design=3；instance
-# h1=1/h2=2；net local sig1=1/tie1=2/weird=3/VDD0=4 → global 0/1/2/3 ──
+# h1=1/h2=2；net local sig1=1/tie1=2/weird=3/VDD0=4 →（区间含空洞位）
+# global 1/2/3/4 ──
 DEBUG_DATA = os.path.join(SCRIPT_DIR, "data", "debug")
 DEBUG_DEF = os.path.join(DEBUG_DATA, "debug.def")
 CELLS_DEBUG = os.path.join(DEBUG_DATA, "cells_debug.lef")
@@ -899,11 +918,11 @@ assert dbg_net0.net_use_of(4) == "POWER"
 INFO("[OK] S5b USE collection: eight-value enum, non-SIGNAL recorded, "
      "string-ized export")
 
-# get_net 手算：sig1 连接 3 条 = h1.BIDIR（INOUT → hybrid）+ h2.A
-#（INPUT → receiver）+ PIN DBG_IN（port 位 + INPUT → receiver）——
+# get_net 手算：sig1（global 1）连接 3 条 = h1.BIDIR（INOUT → hybrid）+
+# h2.A（INPUT → receiver）+ PIN DBG_IN（port 位 + INPUT → receiver）——
 # driver 0 / receiver 2 / hybrid 1 / port 1（三分类互斥单列口径）
 sig1 = debug_db.get_net("debug_design/sig1")
-assert sig1["id"] == 0 and sig1["use"] == "SIGNAL"
+assert sig1["id"] == 1 and sig1["use"] == "SIGNAL"
 assert sig1["connection_count"] == 3
 assert sig1["hybrid_count"] == 1, "INOUT endpoint = hybrid (third class)"
 assert sig1["driver_count"] == 0 and sig1["receiver_count"] == 2
@@ -913,47 +932,54 @@ assert [(c["instance_name"], c["pin_name"], c["is_port"])
     ("debug_design/h1", "BIDIR", False),
     ("debug_design/h2", "A", False),
     ("debug_design", "DBG_IN", True)]
-# tie1/weird：USE 八值语义；VDD0：pg 网（USE POWER）无 connections 明细、
-# 计数概要数位（VDDP INPUT POWER → receiver 1 + power 1）
-tie1 = debug_db.get_net(1)
+# tie1（global 2）/weird（global 3）：USE 八值语义；VDD0（global 4）：pg
+# 网（USE POWER）无 connections 明细、计数概要数位（VDDP INPUT POWER →
+# receiver 1 + power 1）
+tie1 = debug_db.get_net(2)
 assert tie1["name"] == "debug_design/tie1" and tie1["use"] == "TIEOFF"
 assert tie1["is_pg"] is False and tie1["driver_count"] == 1
 weird = debug_db.get_net("debug_design/weird")
 assert weird["use"] == "ANALOG" and weird["receiver_count"] == 1
 vdd0 = debug_db.get_net("debug_design/VDD0")
-assert vdd0["id"] == 3 and vdd0["use"] == "POWER" and vdd0["is_pg"] is True
+assert vdd0["id"] == 4 and vdd0["use"] == "POWER" and vdd0["is_pg"] is True
 assert "connections" not in vdd0, \
     "pg net must not return connection details (data guard red line)"
 assert vdd0["connection_count"] == 1 and vdd0["receiver_count"] == 1 \
     and vdd0["power_count"] == 1
+# 拆分裁定（2026-09-14）：get_net 按 is_pg 路由——VDD0 命中 NETS_PG 对
+# 象单表、其余命中 NETS 对象（两侧互斥断言见下方六对象读取）
 INFO("[OK] get_net hand-computed: hybrid/driver/receiver/port counting "
-     "from flags bits, USE property, pg summary without details")
+     "from flags bits, USE property, pg summary without details, "
+     "is_pg-routed single-table lookup")
 
-# get_instance 手算：h1 连接 = sig1 的 BIDIR（hybrid）+ VDD0 的 VDDP
-#（receiver + power 位）；h2 连接 = sig1 A（receiver）+ tie1 ZN（driver）
-# + weird A（receiver）
+# get_instance 手算：h1 连接 = sig1（1）的 BIDIR（hybrid）+ VDD0（4）的
+# VDDP（receiver + power 位）；h2 连接 = sig1 A（receiver）+ tie1 ZN
+#（driver）+ weird A（receiver）
 h1 = debug_db.get_instance("debug_design/h1")
 assert h1["id"] == 1 and h1["cell_name"] == "INVIO"
 assert h1["pos"] == (100, 100) and h1["orient"] == 0
 assert sorted((c["net_id"], c["net_name"], c["is_driver"], c["is_receiver"],
                 c["is_power"]) for c in h1["connections"]) == [
-    (0, "debug_design/sig1", True, True, False),
-    (3, "debug_design/VDD0", False, True, True)]
+    (1, "debug_design/sig1", True, True, False),
+    (4, "debug_design/VDD0", False, True, True)]
 h2 = debug_db.get_instance(2)
 assert h2["cell_name"] == "INV_X1"
 assert sorted((c["net_id"], c["is_receiver"], c["is_driver"])
               for c in h2["connections"]) == [
-    (0, True, False), (1, False, True), (2, True, False)]
+    (1, True, False), (2, False, True), (3, True, False)]
 assert debug_db.get_cell("INVIO")["pin_count"] == 2
 assert debug_db.get_instance(0) is None
-# debug db 映射段读回：INST {1,2}→0、NET {0,1,2,3}→0（四网全有几何）
+# debug db 映射段读回：INST {1,2}→0、NET {0,1,2,3,4}（键 0 = OBS 桶——
+# 本数据无 BLOCKAGE 不存在，1-4 四网全有几何）
 dbg_inst_seg = debug_db.read_object(
     DesignDb.id_map_segment_obj_name("INST", 0))
 assert dbg_inst_seg.partition_of(1) == 0 and dbg_inst_seg.partition_of(2) == 0
 assert dbg_inst_seg.partition_of(3) is None
 dbg_net_seg = debug_db.read_object(
     DesignDb.id_map_segment_obj_name("NET", 0))
-assert all(dbg_net_seg.partition_of(i) == 0 for i in range(4))
+assert dbg_net_seg.partition_of(0) is None, \
+    "no BLOCKAGE in this design: no OBS bucket key in the slice"
+assert all(dbg_net_seg.partition_of(i) == 0 for i in range(1, 5))
 # debug db S10 校验手算：primary 2 / 网 4 / 连接 12（nconn 6 + iconn 6：
 # h1 2 + h2 3 + root port 1）/ 图形条目 5（sig1 2 段 + tie1/weird/VDD0 各 1）
 dbg_report = debug_db.read_object(DesignDb.VERIFY_REPORT_OBJ)
@@ -963,14 +989,34 @@ assert dbg_report.total_primary == 2 and dbg_report.total_nets == 4
 assert dbg_report.total_connections == 12
 assert dbg_report.total_geometry_entries == 5
 # 全局 pg 网 id 集（2026-09-13 重组裁定）：VDD0（SPECIALNETS + USE POWER
-# → global 3）为唯一 pg 网 → power set = {3}；sig1/tie1/weird 不入集
+# → global 4）为唯一 pg 网 → power set = {4}；sig1/tie1/weird 不入集
 dbg_pg = load_design_pg_nets(debug_db)
 assert dbg_pg.power_count == 1 and dbg_pg.ground_count == 0
-assert dbg_pg.is_power(3) is True and dbg_pg.is_pg(3) is True
+assert dbg_pg.is_power(4) is True and dbg_pg.is_pg(4) is True
 assert dbg_pg.is_pg(0) is False and dbg_pg.is_pg(1) is False \
-    and dbg_pg.is_pg(2) is False
-INFO("[OK] debug db: partition use field, pg net set {3}, id map segments, "
-     "S10 stats hand-computed")
+    and dbg_pg.is_pg(2) is False and dbg_pg.is_pg(3) is False
+# 拆分裁定（2026-09-14）六对象分侧断言：VDD0（pg）几何/连接落 _PG 侧对
+# 象、sig1/tie1/weird 落信号侧对象——④ 提取首期只加载 GEOMETRY_PG +
+# NETS_PG 即电源网络输入全集的受益形态
+dbg_geo = debug_db.read_object(
+    DesignDb.partition_obj_name(0, 0, "GEOMETRY"))
+dbg_geo_pg = debug_db.read_object(
+    DesignDb.partition_obj_name(0, 0, "GEOMETRY_PG"))
+dbg_nets = debug_db.read_object(DesignDb.partition_obj_name(0, 0, "NETS"))
+dbg_nets_pg = debug_db.read_object(
+    DesignDb.partition_obj_name(0, 0, "NETS_PG"))
+assert dbg_geo.net_count == 3 and len(dbg_geo.entries_of(4)) == 0
+assert dbg_geo_pg.net_count == 1 and len(dbg_geo_pg.entries_of(4)) == 1
+assert not dbg_geo_pg.entries_of(4)[0].is_obs
+assert dbg_nets.size == 3 and dbg_nets.net_of(4) is None
+assert sorted(dbg_nets.ids) == [1, 2, 3]
+assert dbg_nets_pg.size == 1 and sorted(dbg_nets_pg.ids) == [4]
+vdd_pg = dbg_nets_pg.net_of(4)
+assert vdd_pg is not None and vdd_pg.use == "POWER" \
+    and vdd_pg.connection_count == 1
+INFO("[OK] debug db: partition use field, pg net set {4}, id map segments, "
+     "S10 stats, split-rule six objects (VDD0 isolated in GEOMETRY_PG + "
+     "NETS_PG) hand-computed")
 
 # ── load_project 动态还原 ──
 import fly

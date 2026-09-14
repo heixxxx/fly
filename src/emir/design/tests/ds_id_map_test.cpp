@@ -1,7 +1,8 @@
-// id → partition 反向映射单测（2026-09-13 debug 定位裁定）：
+// id → partition 反向映射单测（2026-09-13 debug 定位裁定；2026-09-14 拆
+// 分裁定 NET 片段源 = 两几何对象键集并集）：
 //   1. 提取：分区产物 → 本区片段（inst 维度 = primary 副本 id 集——非
-//      primary extend 副本不入；net 维度 = geometry 键集——跟随 net 副本
-//      口径）；
+//      primary extend 副本不入；net 维度 = GEOMETRY + GEOMETRY_PG 两对象
+//      键集并集——跟随 net 副本口径）；
 //   2. merge：多片段条目排序线性分段——段表升序、段内 pids 直接索引、
 //      空洞 kIdMapNoPartition、跨段 id 分属两段、中间空洞段不落段表；
 //   3. 同 id 多片段取首个（依赖 S9 primary 恰一不变式的确定性防御——
@@ -21,7 +22,7 @@ namespace {
 
 using namespace fly;
 
-// —— 提取：inst 维度只收 primary、net 维度取 geometry 键集 ————————
+// —— 提取：inst 维度只收 primary、net 维度取两几何对象键集并集 ————————
 
 TEST(DSIdMapTest, CollectSlicePrimaryInstancesAndGeometryNets) {
     DSPartInstances instances;
@@ -32,32 +33,40 @@ TEST(DSIdMapTest, CollectSlicePrimaryInstancesAndGeometryNets) {
     instances.items_[8] = std::move(extend_inst);
 
     DSPartitionGeometry geometry;
-    geometry.add_entry(3, DSGeomEntry{});   // net 副本（含 OBS 桶混装键）
+    geometry.add_entry(3, DSGeomEntry{});   // net 副本（含 OBS 桶键）
     geometry.add_entry(3, DSGeomEntry{});   // 同键多条目只入一次片段
-    DSGeomEntry obs;                        // net 0 纯 OBS 桶——键 0 仍入
+    DSGeomEntry obs;                        // 键 0 纯 OBS 桶——键 0 仍入
     obs.set_obs();
     geometry.add_entry(0, std::move(obs));
+    DSPartitionGeometry geometry_pg;        // pg 侧对象（2026-09-14 拆分）
+    geometry_pg.add_entry(9, DSGeomEntry{});  // pg 网副本键入并集
 
     const DSIdPartitionSlice inst_slice =
-        ds_collect_partition_id_slice(instances, geometry, true, 2);
+        ds_collect_partition_id_slice(instances, geometry, geometry_pg, true,
+                                      2);
     ASSERT_EQ(inst_slice.size(), 1u);
     EXPECT_EQ(inst_slice.ids_[0], 7u);
     EXPECT_EQ(inst_slice.pids_[0], 2u);
 
+    // net 维度 = GEOMETRY + GEOMETRY_PG 两对象键集并集（拆分裁定）
     const DSIdPartitionSlice net_slice =
-        ds_collect_partition_id_slice(instances, geometry, false, 2);
-    ASSERT_EQ(net_slice.size(), 2u);
+        ds_collect_partition_id_slice(instances, geometry, geometry_pg,
+                                      false, 2);
+    ASSERT_EQ(net_slice.size(), 3u);
     EXPECT_EQ(net_slice.ids_[0], 0u);
     EXPECT_EQ(net_slice.ids_[1], 3u);
+    EXPECT_EQ(net_slice.ids_[2], 9u);
     EXPECT_EQ(net_slice.pids_[0], 2u);
     EXPECT_EQ(net_slice.pids_[1], 2u);
+    EXPECT_EQ(net_slice.pids_[2], 2u);
 }
 
 TEST(DSIdMapTest, CollectSliceEmptyProducts) {
     DSPartInstances instances;
     DSPartitionGeometry geometry;
     const DSIdPartitionSlice s =
-        ds_collect_partition_id_slice(instances, geometry, true, 0);
+        ds_collect_partition_id_slice(instances, geometry,
+                                      DSPartitionGeometry(), true, 0);
     EXPECT_EQ(s.size(), 0u);
 }
 

@@ -235,7 +235,7 @@ TEST(DSNetUnionTest, MergesEquivalentParentNetsWithCanonicalRoot) {
     CMVector<const DSNetUnionSlice*> slices = {&t2_slice, &cb_slice};
     const DSNetUnion u = ds_build_net_union(tree, slices);
 
-    // net 区间：t2 [0,2)、cb [2,3) → na=0、nb=1、nc=2
+    // net 区间（长度含空洞位）：t2 [0,3)、cb [3,5) → na=1、nb=2、nc=4
     const uint64_t na = tree.global_net_id(0, 1);
     const uint64_t nb = tree.global_net_id(0, 2);
     const uint64_t nc = tree.global_net_id(1, 1);

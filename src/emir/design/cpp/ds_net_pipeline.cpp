@@ -66,7 +66,7 @@ void DSNetConnectionParseNode::handle(DSNetContext& ctx) {
     }
     ctx.local_net_id = local_id;
     ++ctx.net_data->stats_.net_count;
-    // pg 判定记录（S9 分流口径：pg 网 NETS pg_nets_ 表不全量补全）
+    // pg 判定记录（S9 分侧口径：pg 网 NETS_PG 对象不全量补全）
     if (ctx.is_pg) {
         ctx.net_data->mark_pg_net(local_id);
     }

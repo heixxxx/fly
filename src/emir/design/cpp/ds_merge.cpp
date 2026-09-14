@@ -431,8 +431,13 @@ DSHierTree ds_build_hier_tree(const CMVector<const DSBlockBuildData*>& blocks,
             node.instance_count_ =
                 static_cast<uint64_t>(block.instance_total());
             inst_start += node.instance_count_;
+            // net 区间：长度 = 真网数 + 1（含 local 0 空洞位，2026-09-14
+            // 裁定——global = start + local 直接相加无 −1；root 块 start 0
+            // 的空洞位 = global 0 = OBS 专属位，真网 id 不再与 OBS 桶键
+            // 混叠；与 instance 区间的 local 0 占位形态完全同构）
             node.net_start_ = net_start;
-            node.net_count_ = static_cast<uint64_t>(block.net_count());
+            node.net_count_ =
+                static_cast<uint64_t>(block.net_count()) + 1;
             net_start += node.net_count_;
             // via instance 区间：计数 = S5b 产物统计（与 S5a 计数同构
             // 入参），local id 从 1 起（⑨，换算同 net 语义）

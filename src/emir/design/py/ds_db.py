@@ -60,10 +60,13 @@ class DesignDb(Database):
     # 定；master 侧随建库写入，消费点 read_object 读回 + normalize 兜底）
     ALPHA_SETTINGS_OBJ = "alpha_settings"
 
-    # S9 分区四类正式对象 kind（partition_obj_name 的 kind 入参；
-    # 2026-09-13 裁定补记② + 同日 partition 网数据结构重组终态——第四类
-    # NET_CONNECTIONS 随 DSPartitionNets 重组更名为 NETS）
-    PARTITION_KINDS = ("GEOMETRY", "INSTANCES", "INST_CONNECTIONS", "NETS")
+    # S9 分区六类正式对象 kind（partition_obj_name 的 kind 入参；
+    # 2026-09-14 拆分裁定：原四类中 GEOMETRY/NETS 各按 pg/信号拆分——
+    # GEOMETRY_PG/NETS_PG 为 pg 侧独立对象（信号大文件与 pg 小文件物理
+    # 分离，④ 提取首期专注电源网络时只加载 GEOMETRY_PG + NETS_PG 两个
+    # 小对象），每分区一合并任务唯一写定）
+    PARTITION_KINDS = ("GEOMETRY", "GEOMETRY_PG", "INSTANCES",
+                       "INST_CONNECTIONS", "NETS", "NETS_PG")
     # 全局 pg 网 id 集（DSPgNetSet："pg_nets" 正式对象，S9 汇总任务唯一
     # 写定——power/ground 两 unordered_set，debug API is_pg 快速判定）
     PG_NETS_OBJ = "pg_nets"
@@ -83,21 +86,23 @@ class DesignDb(Database):
 
     @staticmethod
     def partition_obj_name(xp: int, yp: int, kind: str) -> str:
-        """S9 分区正式对象名（PART_{xp}_{yp}/{kind}；kind ∈
-        PARTITION_KINDS，每分区一合并任务唯一写定）。"""
-        return f"PART_{xp}_{yp}/{kind}"
+        """S9 分区正式对象名（PART_{xp}_{yp}.{kind}；kind ∈
+        PARTITION_KINDS，每分区一合并任务唯一写定；GEOMETRY_PG/NETS_PG
+        为 pg 侧独立对象——2026-09-14 拆分裁定。`.` 作层级分隔——对象名
+        字符集仅允许字母/数字/`.`/`_`，2026-09-14 裁定）。"""
+        return f"PART_{xp}_{yp}.{kind}"
 
     @staticmethod
     def id_map_index_obj_name(kind: str) -> str:
-        """id→partition 映射段表对象名（id_partition_map/{kind}；kind ∈
+        """id→partition 映射段表对象名（id_partition_map.{kind}；kind ∈
         ID_MAP_KINDS——轻对象，非空段起始 id 升序表）。"""
-        return f"id_partition_map/{kind}"
+        return f"id_partition_map.{kind}"
 
     @staticmethod
     def id_map_segment_obj_name(kind: str, seg_index: int) -> str:
-        """id→partition 映射段对象名（id_partition_map/{kind}/S{seg_index}
+        """id→partition 映射段对象名（id_partition_map.{kind}.S{seg_index}
         ——段号 = 段起始 id >> ID_MAP_SEGMENT_BITS；段对象按需加载）。"""
-        return f"id_partition_map/{kind}/S{seg_index}"
+        return f"id_partition_map.{kind}.S{seg_index}"
 
     @staticmethod
     def id_slice_obj_name(id_slice_prefix: str, pid: int, kind: str) -> str:
@@ -379,10 +384,11 @@ class DesignDb(Database):
 
     def get_net(self, net):
         """查 net（入参 global id 或层级路径名自动判别；未命中——无几何
-        副本不落分区的网（无几何——含 root 首网：虽可经 OBS 桶键 0
-        混叠定位分区，但 NETS 无 DSNet 记录），或**有几何但无任何
+        副本不落分区的网（无几何——含 root 首网），或**有几何但无任何
         连接的悬浮网**（无连接则无聚合对象，几何仍在 GEOMETRY 对
-        象）——一律返回显式 None（2026-09-13 review 修正：旧兜底
+        象）、id 0（OBS 桶专属位、非真网 id——2026-09-14 裁定）、
+        或 special 无 USE 网（入 NETS_PG 但全局 pg 集不含——is_pg
+        路由至信号侧不命中）——一律返回显式 None（2026-09-13 review 修正：旧兜底
         曾静默降级为空概要；这些网的真实连接见 S5b 产物与
         net_union）。
 
@@ -394,7 +400,8 @@ class DesignDb(Database):
         （数据量保护——只返回属性与计数概要）；非 pg 网附 connections 列
         表：端点实例 id + 层级名 + pin id + pin 名 + flags 概要（port 条
         目如实呈现——端点实例 = 块实例层级名 + port 名）。is_pg 判定经
-        全局 pg 网 id 集（O(1) 快速路径，DSPgNetSet）。
+        全局 pg 网 id 集（O(1) 快速路径，DSPgNetSet），并据此路由加载
+        NETS_PG / NETS 对应侧对象单表查（2026-09-14 拆分裁定）。
         """
         _, _, net_mapper = self._ensure_mappers()
         gid = self._to_id("net", net)
@@ -406,9 +413,12 @@ class DesignDb(Database):
         partition_id, (xp, yp) = located
         name = net_mapper.get_full_name(gid)
         # is_pg 经全局 pg 网 id 集（2026-09-13 重组裁定：快速路径——原
-        # use 字符串比较口径与集内容一致：pg 集 = use POWER/GROUND 的网）
+        # use 字符串比较口径与集内容一致：pg 集 = use POWER/GROUND 的网
+        # ；2026-09-14 拆分裁定：is_pg 即路由键——pg 网读 NETS_PG 对象、
+        # 信号网读 NETS 对象，各自单表查）
         is_pg = self._cached_pg_nets().is_pg(gid)
-        net_conns = self._load_partition_obj(xp, yp, "NETS")
+        net_conns = self._load_partition_obj(
+            xp, yp, "NETS_PG" if is_pg else "NETS")
         net_obj = net_conns.net_of(gid)
         if net_obj is None:
             # 显式口径（review 2026-09-13 修正）：NETS 产物无此网记录

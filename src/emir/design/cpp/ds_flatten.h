@@ -2,9 +2,10 @@
 
 // =============================================================================
 // S9 flatten 展平 + 分区保存（方案 design-db-plan.md §3.2 S9 + 2026-09-13
-// 裁定补记①-⑤ 定稿 + 同日 partition 网数据结构重组终态）。
+// 裁定补记①-⑤ 定稿 + 同日 partition 网数据结构重组终态 + 2026-09-14
+// 分区产物 pg/信号拆分裁定 + 同日 net id 0 专属 OBS 裁定）。
 //
-// 数据结构（分区产物四类 + 分片中间形态）：
+// 数据结构（分区产物六类 + 分片中间形态）：
 //   DSNetConnEntry          NETS 侧连接条目 = (端点实例 global id, 端点
 //                           pin 全局平铺 id, flags 六位)——沿用原
 //                           DSPartConnection 的 NET 维度语义（网 id 由所
@@ -20,36 +21,45 @@
 //                           via 专属字段（via cell id，kNoViaCell = 非
 //                           via）+ obs 位（DEF obstruction）+ primary 位
 //                           （仅 via 条目有意义——放置点归属，补记①）。
-//   DSPartitionGeometry     /GEOMETRY：net global id → 条目集（net 0 =
-//                           OBS 桶，与 root 块首网 global 0 条目共存、
-//                           obs 位判别）+ 跨分区网集合（is_crossing，
-//                           补记④：成员图形散布 > 1 分区，S10 统计口径）。
+//   DSPartitionGeometry     /GEOMETRY 与 /GEOMETRY_PG（2026-09-14 拆分
+//                           裁定：信号网几何与 pg 网几何分两个对象保存，
+//                           类定义同一、两侧各一实例）：net global id →
+//                           条目集 + 跨分区网集合（is_crossing，补记④：
+//                           成员图形散布 > 1 分区，S10 统计口径——两侧
+//                           各带自己网的 crossing 集，合计口径不变）。
+//                           信号侧 GEOMETRY 键 0 = OBS 桶专属（2026-09-14
+//                           裁定：OBS 是设计级阻挡非网数据，归信号侧——
+//                           pg 侧保持纯净只含 pg 网条目；net 区间空洞位
+//                           形态下键 0 不再与 root 首网混叠，obs 位判别
+//                           保留为防御校验）。
 //   DSPartInstances         /INSTANCES：instance global id → DSInstance
 //                           副本（全局 transform + primary 位）。
 //   DSPartInstConnections   /INST_CONNECTIONS：instance global id → 连接
 //                           项列表（跟随 instance 副本）。
 //   DSNet                   单网聚合 = net id + use（DSNetUse，缺省
 //                           SIGNAL）+ 连接条目集（几何不进本结构——仍在
-//                           分区 GEOMETRY 对象按 net 组织）。
-//   DSPartitionNets         /NETS（2026-09-13 重组裁定，取代原
-//                           DSPartNetConnections/NET_CONNECTIONS）：每分
-//                           区一份、信号网 / pg 网分表（nets_ / pg_nets_）。
-//                           信号网（use 非 POWER/GROUND）= 全量补全连接副
-//                           本（跨分区连接也保存、本分区自足）；pg 网 =
-//                           不补全（仅本分区 instance 副本相关条目，靠
-//                           union + instance 维度拼装，补记②）。use 随
-//                           DSNet 写入（自 S5b net_uses_，USE 全量补收
-//                           裁定），get_net 类 debug 消费直接读取、不查
-//                           S5b per-DEF 产物。
-//   DSPgNetSlice            pg 网全局集分区片段（临时对象）：本区
-//                           pg_nets_ 表键按 use 分流的两 id 列表。
+//                           分区 GEOMETRY/GEOMETRY_PG 对象按 net 组织）。
+//   DSPartitionNets         /NETS 与 /NETS_PG（2026-09-14 拆分裁定：原
+//                           一个对象内信号网/pg 网两表拆为两个独立对象，
+//                           类单表化——各持 part_id_ + 本侧表一份）。
+//                           信号网（use 非 POWER/GROUND）= 全量补全连接
+//                           副本（跨分区连接也保存、本分区自足）；pg 网
+//                           = 不补全（仅本分区 instance 副本相关条目，
+//                           靠 union + instance 维度拼装，补记②）。use
+//                           随 DSNet 写入（自 S5b net_uses_，USE 全量
+//                           补收裁定），get_net 类 debug 消费经 is_pg
+//                           路由到对应侧对象单表查。
+//   DSPgNetSlice            pg 网全局集分区片段（临时对象）：本区 NETS_PG
+//                           对象表键按 use 分流的两 id 列表。
 //   DSPgNetSet              全局 pg 网 id 集（"pg_nets" 正式对象）：
 //                           power/ground 两 unordered_set（O(1) 判定，
 //                           2026-09-13 用户定稿结构；运行时结构与序列化
 //                           格式解耦已消解——序列化宏已接 set 全族直存）。
-//   DSPartitionProduct      四类聚合容器 = 分片（slice）中间形态 + 合并
-//                           工作形态；merge_from = 追加合并（幂等键覆盖
-//                           不叠加——instance 副本同 global id 只此一份）。
+//   DSPartitionProduct      六类聚合容器 = 分片（slice）中间形态 + 合并
+//                           工作形态（instances/inst_connections + nets/
+//                           nets_pg + geometry/geometry_pg 四对成员）；
+//                           merge_from = 追加合并（幂等键覆盖不叠加——
+//                           instance 副本同 global id 只此一份）。
 //
 // 展开算法（每 block 定义一调用，方案：每份 DEF 数据只读一次）：
 //   ds_flatten_block  收集该定义在层级树上的全部出现位置（每位置 = 一个
@@ -63,16 +73,18 @@
 //                     cell 图形展开）与各分区 extend_rect 交叠即放副本
 //                     （无 primary 概念、跨多区多副本，坐标分量判定——
 //                     禁 width()/height()，补记④/⑦）；DEF obstruction →
-//                     net 0 + obs 位（补记③）；cell 级 pin/macro OBS 几何
-//                     绝不入产物（复现原则）。（2026-09-13 裁定：电源引脚
-//                     预展开（D18）删除——电源引脚坐标归 ④ 提取按复现原则
-//                     自 instance + transform + cell pin 几何自取。）
+//                     net 0 + obs 位（补记③；恒入信号侧 GEOMETRY）；
+//                     cell 级 pin/macro OBS 几何绝不入产物（复现原则）。
+//                     （2026-09-13 裁定：电源引脚预展开（D18）删除——电源
+//                     引脚坐标归 ④ 提取按复现原则自 instance + transform
+//                     + cell pin 几何自取。）
 //
 // 编排（ds_flow.py 两级任务）：展开任务按 block 定义切分（小 DEF 按
 // alpha def_aggregate_threshold 聚合），每任务产出所涉各分区的分片；每
-// 分区一合并任务 merge 全部相关分片 → 四类正式对象（NETS 连接写入按
-// is_pg_net 分流：pg → pg_nets_、信号 → nets_）。net id 保持
-// local + offset 形式不换算 root（S7 裁定④）。
+// 分区一合并任务 merge 全部相关分片 → 六类正式对象（连接与几何写入按
+// S5b is_pg_net 分流：pg → NETS_PG / GEOMETRY_PG、信号 → NETS /
+// GEOMETRY）。net id 保持 local + offset 形式不换算 root（S7 裁定④；
+// global = net_start + local，区间含空洞位——2026-09-14 裁定）。
 // =============================================================================
 
 #include <common/serialization/cpp/serialization_macros.h>
@@ -149,11 +161,17 @@ public:
     FLY_SERIALIZE(layer_id_, rect_, via_cell_id_, flags_)
 };
 
-// /GEOMETRY：net global id → 几何条目集 + 跨分区网集合。
+// /GEOMETRY 与 /GEOMETRY_PG（2026-09-14 拆分裁定：同一类两侧各一实例
+// ——信号侧 GEOMETRY / pg 侧 GEOMETRY_PG；④ 提取首期专注电源网络时只
+// 加载 GEOMETRY_PG + NETS_PG 两个小对象）：net global id → 几何条目集 +
+// 跨分区网集合。信号侧键 0 = OBS 桶专属（2026-09-14 裁定：net 区间空洞
+// 位形态下 root 首网 global 1 起，键 0 不再与真网混叠；OBS 是设计级阻挡
+// 非网数据、归信号侧——pg 侧保持纯净只含 pg 网条目）；obs 位判别保留为
+// 防御校验（net_entries(0) 恒空、obs_entries() = 键 0 全桶）。
 class DSPartitionGeometry {
 public:
-    // net 0 = OBS 桶（与 root 块首网 global id 0 的条目共存，obs 位判别
-    // ——root 块 net_start_ = 0、local 1 → global 0，为合法网 id）
+    // 信号侧键 0 = OBS 桶（obs 位判别——2026-09-14 起恒纯 OBS，与真网
+    // 无同键共存；pg 侧无此键）
     CMUnorderedMap<uint64_t, CMVector<DSGeomEntry>> nets_;
     // 跨分区网（is_crossing，补记④）：成员图形散布多于一个分区的
     // global net id 集（本分区有副本的网才登记；S10 统计口径）。
@@ -178,10 +196,9 @@ public:
         return it == nets_.end() ? nullptr : &it->second;
     }
 
-    // —— 同键共存防误用便捷接口（review 2026-09-13 建议：net 0 桶混装
-    //    root 首网几何与 OBS 条目，按 net id 直取全桶会把 OBS 误当网几何
-    //    ——下游消费一律用以下两个过滤视图，勿裸用 entries_of）——
-    // 某网的真实几何条目（过滤 OBS；含 net 0 的 root 首网条目）
+    // —— OBS 桶过滤便捷接口（键 0 专属 OBS 后混叠风险已消，保留为防御
+    //    校验与 OBS 单独消费口——勿以 net_entries(0) 取「网几何」）——
+    // 某网的真实几何条目（过滤 OBS；键 0 恒空——0 为 OBS 专属位）
     CMVector<DSGeomEntry> net_entries(uint64_t net_global_id) const {
         CMVector<DSGeomEntry> out;
         const auto* all = entries_of(net_global_id);
@@ -250,34 +267,35 @@ public:
     FLY_SERIALIZE(net_id_, use_, connections_)
 };
 
-// /NETS（2026-09-13 重组裁定，取代原 DSPartNetConnections/NET_CONNECTIONS
-// 对象）：每分区一份、信号网 / pg 网分表。信号网（use 非 POWER/GROUND）
-// = 全量补全连接副本（跨分区连接也保存、本分区自足）；pg 网 = 不补全
+// /NETS 与 /NETS_PG（2026-09-14 拆分裁定：原 DSPartitionNets 信号网/pg 网
+// 两表单对象拆为两个独立正式对象，类单表化——删 pg_nets_ 成员，两侧复用
+// 同一类、各持 part_id_ + 本侧表；④ 提取首期与 GEOMETRY_PG 配对只加载
+// pg 侧两个小对象）。信号网对象 /NETS（use 非 POWER/GROUND）= 全量补全
+// 连接副本（跨分区连接也保存、本分区自足）；pg 网对象 /NETS_PG = 不补全
 // （仅本分区 instance 副本相关条目，靠 union + instance 维度拼装，补记
-// ②）。net_of 两表查（pg 表优先级仅影响同键双表的不一致防御形态——正
-// 常建库单网单表）。
+// ②）。pg 判定源 = S5b is_pg_net（special ∨ use ∈ {POWER, GROUND}）。
+// debug 消费 get_net 经全局 pg 网 id 集 is_pg 路由到对应侧对象单表查。
 class DSPartitionNets {
 public:
     // 本分区 id（ds_flatten_block 分片产出时回填；merge 幂等——同分区
-    // 分片同 id）
+    // 分片同 id。NETS / NETS_PG 两侧同值）
     uint32_t part_id_ = 0;
-    // 信号网表（use 非 POWER/GROUND；键 = net global id）
+    // 本侧网表（键 = net global id；信号侧全量补全 / pg 侧不补全）
     CMUnorderedMap<uint64_t, DSNet> nets_;
-    // pg 网表（不补全语义；键 = net global id）
-    CMUnorderedMap<uint64_t, DSNet> pg_nets_;
 
-    size_t size() const { return nets_.size() + pg_nets_.size(); }
-    // 两表查（未命中 nullptr；引用读取零拷贝）
+    size_t size() const { return nets_.size(); }
+    // 单表查（未命中 nullptr；引用读取零拷贝——加载侧按 is_pg 路由到
+    // 对应侧对象，本类不再承担两表分派）
     const DSNet* net_of(uint64_t net_id) const;
-    // 两表查可写版（构建期接入用）
     DSNet* net_of(uint64_t net_id);
 
-    FLY_SERIALIZE(part_id_, nets_, pg_nets_)
+    FLY_SERIALIZE(part_id_, nets_)
 };
 
 // pg 网全局集分区片段（S9 每分区合并任务写本区片段的临时对象；汇总合
-// 并后清理）：本区 pg_nets_ 表键按 DSNet.use_ 分流的两 id 列表（use 非
-// POWER/GROUND 的 special 网不入 pg 全局集——is_pg 判定口径 = use 枚举）。
+// 并后清理）：本区 NETS_PG 对象表键按 DSNet.use_ 分流的两 id 列表（use
+// 非 POWER/GROUND 的 special 网不入 pg 全局集——is_pg 判定口径 = use 枚
+// 举）。
 class DSPgNetSlice {
 public:
     CMVector<uint64_t> power_ids_;
@@ -313,20 +331,27 @@ public:
     FLY_SERIALIZE(power_, ground_)
 };
 
-// 四类聚合容器：展开任务产出的分片（slice）中间形态 + 分区合并任务的
-// 工作形态。merge_from = 追加合并（同 global id 的 instance 副本键覆盖
-// ——global id 全局唯一，同键仅同源重放；连接项列表拼接；NETS 两表同键
-// DSNet 连接条目拼接；几何条目拼接；crossing 集并）。
+// 六类聚合容器：展开任务产出的分片（slice）中间形态 + 分区合并任务的
+// 工作形态（2026-09-14 拆分裁定：nets_ / nets_pg_ / geometry_ /
+// geometry_pg_ 四成员分侧承载）。merge_from = 追加合并（同 global id 的
+// instance 副本键覆盖——global id 全局唯一，同键仅同源重放；连接项列表
+// 拼接；两侧 NETS 表同键 DSNet 连接条目拼接；两侧几何条目拼接；两侧
+// crossing 集并）。
 class DSPartitionProduct {
 public:
     DSPartInstances instances_;
     DSPartInstConnections inst_connections_;
+    // 信号网连接 → 正式对象 /NETS；pg 网连接 → /NETS_PG
     DSPartitionNets nets_;
+    DSPartitionNets nets_pg_;
+    // 信号网几何 + OBS 桶（键 0）→ /GEOMETRY；pg 网几何 → /GEOMETRY_PG
     DSPartitionGeometry geometry_;
+    DSPartitionGeometry geometry_pg_;
 
     void merge_from(const DSPartitionProduct& src);
 
-    FLY_SERIALIZE(instances_, inst_connections_, nets_, geometry_)
+    FLY_SERIALIZE(instances_, inst_connections_, nets_, nets_pg_, geometry_,
+                  geometry_pg_)
 };
 
 // S9 展开算法（每 block 定义一调用；方案「每份 DEF 数据只读一次」）：
@@ -340,9 +365,9 @@ CMVector<std::pair<uint32_t, DSPartitionProduct>> ds_flatten_block(
     const DSNetBuildData& nets, const DSDesign& design,
     const CMVector<DSSubPartition>& partitions);
 
-// pg 网全局集分区片段提取（S9 每分区合并任务调用）：本区 pg_nets_ 表键
-// 按 DSNet.use_ 分流（POWER → power_ids_ / GROUND → ground_ids_；use 非
-// POWER/GROUND 的 special 网不入 pg 全局集）。
-DSPgNetSlice ds_collect_pg_net_slice(const DSPartitionNets& nets);
+// pg 网全局集分区片段提取（S9 每分区合并任务调用）：本区 NETS_PG 对象
+// 表键按 DSNet.use_ 分流（POWER → power_ids_ / GROUND → ground_ids_；
+// use 非 POWER/GROUND 的 special 网不入 pg 全局集）。
+DSPgNetSlice ds_collect_pg_net_slice(const DSPartitionNets& nets_pg);
 
 }  // namespace fly

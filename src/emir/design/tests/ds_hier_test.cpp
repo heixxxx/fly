@@ -186,19 +186,20 @@ TEST(DSHierTreeTest, AssignsContiguousNonOverlappingRangesInDfsOrder) {
     EXPECT_EQ(i1s + i1c, i2s);
     EXPECT_EQ(i2s + i2c, i3s);
 
-    // net 区间：top 2 + mid 1 + bottom×2 各 1
+    // net 区间：长度 = 真网数 + 1（含 local 0 空洞位——2026-09-14 裁定）
+    // ：top 2 + mid 1 + bottom×2 各 1 真网 → 长度 3/2/2/2
     const auto [n0s, n0c] = tree.net_range(0);
     const auto [n1s, n1c] = tree.net_range(1);
     const auto [n2s, n2c] = tree.net_range(2);
     const auto [n3s, n3c] = tree.net_range(3);
     EXPECT_EQ(n0s, 0u);
-    EXPECT_EQ(n0c, 2u);
-    EXPECT_EQ(n1s, 2u);
-    EXPECT_EQ(n1c, 1u);
-    EXPECT_EQ(n2s, 3u);
-    EXPECT_EQ(n2c, 1u);
-    EXPECT_EQ(n3s, 4u);
-    EXPECT_EQ(n3c, 1u);
+    EXPECT_EQ(n0c, 3u);
+    EXPECT_EQ(n1s, 3u);
+    EXPECT_EQ(n1c, 2u);
+    EXPECT_EQ(n2s, 5u);
+    EXPECT_EQ(n2c, 2u);
+    EXPECT_EQ(n3s, 7u);
+    EXPECT_EQ(n3c, 2u);
     EXPECT_EQ(n0s + n0c, n1s);
     EXPECT_EQ(n1s + n1c, n2s);
     EXPECT_EQ(n2s + n2c, n3s);
@@ -242,13 +243,16 @@ TEST(DSHierTreeTest, BlockOfReverseLookup) {
     EXPECT_EQ(tree.block_of_instance(9), 3u);
     EXPECT_EQ(tree.block_of_instance(11), DSDesign::kInvalidId);  // 越界
 
-    // net 反查：[0,2) → top、[2,3) → mid、[3,4) → bottom#1、[4,5) → #2
+    // net 反查（区间含空洞位）：[0,3) → top（0 = OBS 专属空洞位仍属
+    // top 区间）、[3,5) → mid、[5,7) → bottom#1、[7,9) → #2
     EXPECT_EQ(tree.block_of_net(0), 0u);
     EXPECT_EQ(tree.block_of_net(1), 0u);
-    EXPECT_EQ(tree.block_of_net(2), 1u);
-    EXPECT_EQ(tree.block_of_net(3), 2u);
-    EXPECT_EQ(tree.block_of_net(4), 3u);
-    EXPECT_EQ(tree.block_of_net(5), DSDesign::kInvalidId);
+    EXPECT_EQ(tree.block_of_net(2), 0u);
+    EXPECT_EQ(tree.block_of_net(3), 1u);
+    EXPECT_EQ(tree.block_of_net(4), 1u);
+    EXPECT_EQ(tree.block_of_net(5), 2u);
+    EXPECT_EQ(tree.block_of_net(7), 3u);
+    EXPECT_EQ(tree.block_of_net(9), DSDesign::kInvalidId);
 
     // via 反查：[0,2) → top、[2,3) → mid；bottom 零长区间不含任何 id
     EXPECT_EQ(tree.block_of_via_instance(0), 0u);
@@ -277,13 +281,14 @@ TEST(DSHierTreeTest, GlobalIdConversionAndLocalZeroMapping) {
     EXPECT_EQ(tree.global_instance_id(2, 1), 8u);  // bottom#1 的 leaf
     EXPECT_EQ(tree.global_instance_id(0, 4), DSDesign::kInvalidId);  // 越界
 
-    // net：local id 从 1 起（0 保留未用），global = start + local − 1
-    EXPECT_EQ(tree.global_net_id(0, 1), 0u);
-    EXPECT_EQ(tree.global_net_id(0, 2), 1u);
-    EXPECT_EQ(tree.global_net_id(1, 1), 2u);
-    EXPECT_EQ(tree.global_net_id(2, 1), 3u);
-    EXPECT_EQ(tree.global_net_id(3, 1), 4u);
-    EXPECT_EQ(tree.global_net_id(0, 0), DSDesign::kInvalidId);  // 0 未用
+    // net：区间长度含 local 0 空洞位，global = start + local（无 −1，
+    // 2026-09-14 裁定；local 0 空洞位不映射）
+    EXPECT_EQ(tree.global_net_id(0, 1), 1u);
+    EXPECT_EQ(tree.global_net_id(0, 2), 2u);
+    EXPECT_EQ(tree.global_net_id(1, 1), 4u);
+    EXPECT_EQ(tree.global_net_id(2, 1), 6u);
+    EXPECT_EQ(tree.global_net_id(3, 1), 8u);
+    EXPECT_EQ(tree.global_net_id(0, 0), DSDesign::kInvalidId);  // 空洞位
     EXPECT_EQ(tree.global_net_id(1, 2), DSDesign::kInvalidId);  // 越界
 
     // via instance：同 net 语义（local 从 1 起 → start + local − 1）；
@@ -334,7 +339,7 @@ TEST(DSHierTreeTest, SerializeRoundTrip) {
     EXPECT_EQ(back.node(2).get_self_global_id(), 5u);
     EXPECT_EQ(back.instance_range(2).first, 7u);
     EXPECT_EQ(back.instance_range(2).second, 2u);
-    EXPECT_EQ(back.net_range(3).first, 4u);
+    EXPECT_EQ(back.net_range(3).first, 7u);
     EXPECT_EQ(back.via_range(1).first, 2u);
     EXPECT_EQ(back.via_range(1).second, 1u);
     // 反查与换算在往返后仍正确

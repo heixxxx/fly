@@ -58,11 +58,13 @@ DSIdPartitionMapResult ds_merge_id_partition_slices(
 }
 
 // 提取：分区产物 → 本区片段。instance 维度取 primary 副本（每对象恰一
-// primary，补记①）；net 维度取 geometry 键集（跟随 net 副本口径——
-// NETS 两表均以几何命中分区为落点）。
+// primary，补记①）；net 维度取 GEOMETRY + GEOMETRY_PG 两对象键集并集
+// （2026-09-14 拆分裁定：网副本落点分侧两对象——跟随 net 副本口径不变，
+// 信号侧键 0 = OBS 桶专属位照常入片段）。
 DSIdPartitionSlice ds_collect_partition_id_slice(
     const DSPartInstances& instances, const DSPartitionGeometry& geometry,
-    bool instance_kind, uint32_t partition_id) {
+    const DSPartitionGeometry& geometry_pg, bool instance_kind,
+    uint32_t partition_id) {
     DSIdPartitionSlice out;
     if (instance_kind) {
         for (const auto& [gid, inst] : instances.items_) {
@@ -72,6 +74,10 @@ DSIdPartitionSlice ds_collect_partition_id_slice(
         }
     } else {
         for (const auto& [gid, _] : geometry.nets_) {
+            (void)_;
+            out.add(gid, partition_id);
+        }
+        for (const auto& [gid, _] : geometry_pg.nets_) {
             (void)_;
             out.add(gid, partition_id);
         }

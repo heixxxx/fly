@@ -115,7 +115,8 @@ IdT DSNameMapperT<IdT>::get_global_id(const CMString& full_hier_name) const {
         return kInvalidId;
     }
     // 区间换算（⑨）：instance = start + local（local 0 → 自身 ⑧，hasher
-    // 不登记 local 0、防御分支）；net = start + local − 1（local 从 1 起）
+    // 不登记 local 0、防御分支）；net = start + local（区间长度含 local 0
+    // 空洞位，2026-09-14 裁定——无 −1）
     if (kind_ == DSNameMapperKind::INSTANCE) {
         if (local == 0) {
             return cur.get_self_global_id();
@@ -125,10 +126,11 @@ IdT DSNameMapperT<IdT>::get_global_id(const CMString& full_hier_name) const {
         }
         return cur.get_instance_start() + local;
     }
-    if (local == 0 || local > cur.get_net_count()) {
-        return kInvalidId;  // net local 0 保留未用 / 越界
+    if (local == 0 || local >= cur.get_net_count()) {
+        return kInvalidId;  // net local 0 = 空洞位（不登记名）/ 越界
     }
-    return cur.get_net_start() + local - 1;
+    // 区间长度含空洞位（2026-09-14 裁定）：global = start + local 无 −1
+    return cur.get_net_start() + local;
 }
 
 // —— get_full_name：区间反查 → 叶层 hasher → 递归向上拼 prefix ——
@@ -168,9 +170,10 @@ CMString DSNameMapperT<IdT>::get_full_name(IdT global_id) const {
     if (it == injected_.end()) {
         return {};
     }
-    const CMString& name = it->second->get_name(global_id - n.get_net_start() + 1);
+    const CMString& name =
+        it->second->get_name(global_id - n.get_net_start());
     if (name.empty()) {
-        return {};
+        return {};  // 空洞（local 0 空洞位 / 未登记下标）
     }
     return hier_path_of(*tree_, node_id) + "/" + name;
 }

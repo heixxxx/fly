@@ -607,10 +607,14 @@ uint64_t DSHierTree::global_instance_id(uint32_t node_id,
 
 uint64_t DSHierTree::global_net_id(uint32_t node_id, uint64_t local_id) const {
     if (node_id >= nodes_.size() || local_id == 0 ||
-        local_id > nodes_[node_id].net_count_) {
-        return kNoNode;  // net local id 从 1 起，0 保留未用
+        local_id >= nodes_[node_id].net_count_) {
+        return kNoNode;  // local 0 = 空洞位（每块一个、不映射真网——root
+                         // 块空洞位 = global 0 = OBS 专属位）
     }
-    return nodes_[node_id].net_start_ + local_id - 1;
+    // global = start + local（2026-09-14 裁定：区间长度含 local 0 空洞位，
+    // 直接相加无 −1；真网占 [start+1, start+count)，与 instance 的
+    // start + local 形态同构）
+    return nodes_[node_id].net_start_ + local_id;
 }
 
 uint64_t DSHierTree::global_via_instance_id(uint32_t node_id,

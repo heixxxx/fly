@@ -53,7 +53,7 @@ class DSNetBuildData;
 struct DSSubPartition {
     // 行主序分区号（(xp, yp) → yp*nx + xp，产出序）
     uint32_t partition_id_ = 0;
-    // 分区网格坐标（S9 分区对象命名 PART_{xp}_{yp}/ 用；产出时回填）
+    // 分区网格坐标（S9 分区对象命名 PART_{xp}_{yp}. 用；产出时回填）
     uint32_t xp_ = 0;
     uint32_t yp_ = 0;
     // 密度网格切分直接产出（全局 DBU，格边界吸附）

@@ -35,11 +35,12 @@ struct LeafHashers {
     DSNetNameHasher& net = *names->net_names_;
 };
 
-// 测试层级（节点区间与 ds_hier_test 的标准场景同构）：
-//   #0 top   (self 0, inst [0,4),  net [0,2))  local: i1/i2/i3
-//    └ #1 mid  (self 2, inst [4,7),  net [2,3))  local: i1/i2（bottom ×2）
-//        ├ #2 bottom#1 (self 5, inst [7,9),  net [3,4))  local: i1
-//        └ #3 bottom#2 (self 6, inst [9,11), net [4,5))  local: i1
+// 测试层级（节点区间与 ds_hier_test 的标准场景同构；net 区间长度含
+// local 0 空洞位——2026-09-14 裁定）：
+//   #0 top   (self 0, inst [0,4),  net [0,3))  local: i1/i2/i3
+//    └ #1 mid  (self 2, inst [4,7),  net [3,5))  local: i1/i2（bottom ×2）
+//        ├ #2 bottom#1 (self 5, inst [7,9),  net [5,7))  local: i1
+//        └ #3 bottom#2 (self 6, inst [9,11), net [7,9))  local: i1
 struct MapperEnv {
     DSHierTree tree;
     LeafHashers top;
@@ -57,7 +58,7 @@ struct MapperEnv {
         root.instance_start_ = 0;
         root.instance_count_ = 4;
         root.net_start_ = 0;
-        root.net_count_ = 2;
+        root.net_count_ = 3;  // 2 真网 + local 0 空洞位（区间长度形态）
         root.via_start_ = 0;
         root.via_count_ = 0;
 
@@ -69,8 +70,8 @@ struct MapperEnv {
         mid_node.self_global_id_ = 2;
         mid_node.instance_start_ = 4;
         mid_node.instance_count_ = 3;
-        mid_node.net_start_ = 2;
-        mid_node.net_count_ = 1;
+        mid_node.net_start_ = 3;
+        mid_node.net_count_ = 2;  // 1 真网 + 空洞位
         mid_node.via_start_ = 0;
         mid_node.via_count_ = 0;
 
@@ -82,8 +83,8 @@ struct MapperEnv {
         b1.self_global_id_ = 5;
         b1.instance_start_ = 7;
         b1.instance_count_ = 2;
-        b1.net_start_ = 3;
-        b1.net_count_ = 1;
+        b1.net_start_ = 5;
+        b1.net_count_ = 2;  // 1 真网 + 空洞位
 
         DSHierNode b2;
         b2.id_ = 3;
@@ -93,8 +94,8 @@ struct MapperEnv {
         b2.self_global_id_ = 6;
         b2.instance_start_ = 9;
         b2.instance_count_ = 2;
-        b2.net_start_ = 4;
-        b2.net_count_ = 1;
+        b2.net_start_ = 7;
+        b2.net_count_ = 2;  // 1 真网 + 空洞位
 
         tree.nodes_.push_back(std::move(root));
         tree.nodes_.push_back(std::move(mid_node));
@@ -255,7 +256,7 @@ TEST(DSNameMapperTest, SetBlockHasherByCellName) {
     EXPECT_EQ(mapper.injected_count(), 2u);
 }
 
-// ── 4. net 维度（区间换算 start + local − 1，local 从 1 起）─────────
+// ── 4. net 维度（区间含空洞位：start + local 无 −1，local 从 1 起）────
 
 TEST(DSNameMapperTest, NetDimensionMapping) {
     MapperEnv env;
@@ -265,21 +266,22 @@ TEST(DSNameMapperTest, NetDimensionMapping) {
     mapper.set_block_hasher(1, env.mid.names->net_names_);
     mapper.set_block_hasher(2, env.bottom.names->net_names_);
 
-    // top net [0,2)：n0 → local 1 → 0 + 1 − 1 = 0；n1 → 1
-    EXPECT_EQ(mapper.get_global_id("top/n0"), 0u);
-    EXPECT_EQ(mapper.get_global_id("top/n1"), 1u);
-    // mid net [2,3)；bottom#1 net [3,4)、bottom#2 net [4,5)
-    EXPECT_EQ(mapper.get_global_id("top/i2/n0"), 2u);
-    EXPECT_EQ(mapper.get_global_id("top/i2/i1/n0"), 3u);
-    EXPECT_EQ(mapper.get_global_id("top/i2/i2/n0"), 4u);
+    // top net [0,3)：n0 → local 1 → 0 + 1 = 1；n1 → 2
+    EXPECT_EQ(mapper.get_global_id("top/n0"), 1u);
+    EXPECT_EQ(mapper.get_global_id("top/n1"), 2u);
+    // mid net [3,5)；bottom#1 net [5,7)、bottom#2 net [7,9)
+    EXPECT_EQ(mapper.get_global_id("top/i2/n0"), 4u);
+    EXPECT_EQ(mapper.get_global_id("top/i2/i1/n0"), 6u);
+    EXPECT_EQ(mapper.get_global_id("top/i2/i2/n0"), 8u);
 
     // 反向（含嵌套 prefix）
-    EXPECT_EQ(mapper.get_full_name(0), "top/n0");
-    EXPECT_EQ(mapper.get_full_name(2), "top/i2/n0");
-    EXPECT_EQ(mapper.get_full_name(4), "top/i2/i2/n0");
-    EXPECT_EQ(mapper.get_full_name(5), "");  // 越界
+    EXPECT_EQ(mapper.get_full_name(1), "top/n0");
+    EXPECT_EQ(mapper.get_full_name(4), "top/i2/n0");
+    EXPECT_EQ(mapper.get_full_name(8), "top/i2/i2/n0");
+    EXPECT_EQ(mapper.get_full_name(9), "");  // 越界
+    EXPECT_STREQ(mapper.get_full_name(0).c_str(), "");  // 空洞位（review 2026-09-14：root local 0 → global 0，无名返回空）
 
-    // net 无 local 0（保留未用）：换算不可达路径防御
+    // net local 0 = 空洞位（不登记名）：换算不可达路径防御
     EXPECT_EQ(mapper.get_global_id("top/ghost"),
               DSNetNameMapper::kInvalidId);
 }

@@ -700,9 +700,10 @@ public:
     // via instance id 列表）
     CMUnorderedMap<uint64_t, DSViaInstance> via_instances_;
     CMUnorderedMap<uint64_t, CMVector<uint64_t>> net_via_ids_;
-    // pg 网判定（S9 连接分流口径，2026-09-13 裁定补记②：pg 判定 =
-    // special net 或 USE POWER/GROUND；pg 网的分区 NETS pg_nets_ 表不做
-    // 全量补全——靠 union + instance 维度拼装）。键 = local net id。
+    // pg 网判定（S9 分侧口径，2026-09-13 裁定补记② + 2026-09-14 拆分
+    // 裁定：pg 判定 = special net 或 USE POWER/GROUND；pg 网的分区
+    // NETS_PG 对象不做全量补全——靠 union + instance 维度拼装）。
+    // 键 = local net id。
     // （2026-09-13 修正：原「CMUnorderedMap<uint64_t, uint8_t> 值恒 1 充
     // 当 set」系序列化宏无 set 支持时期的妥协——宏已接 set 全族，回归
     // CMUnorderedSet 直存；S5b local id 生产表，与全局 DSPgNetSet
@@ -917,7 +918,10 @@ public:
     // transform。存于节点使 S9 展开任务只读单一 def 产物即可拿到任意
     // 位置的复合变换，无需父块产物）
     GEOTransform composite_transform_;
-    // 三类编号区间（[start, start + count)；㊳ 64 位）
+    // 三类编号区间（[start, start + count)；㊳ 64 位）。net 区间长度含
+    // local 0 空洞位（2026-09-14 裁定：count = 真网数 + 1、global =
+    // start + local 无 −1——root 块空洞位 = global 0 = OBS 专属位，与
+    // instance 的 local 0 占位形态同构；instance/via 区间不变）
     uint64_t instance_start_ = 0;
     uint64_t instance_count_ = 0;
     uint64_t net_start_ = 0;

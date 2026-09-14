@@ -48,20 +48,21 @@
     网) 边（对接键 = 同一块实例 + 同名 port）→ 汇总任务（两层化 + root
     规范化 → net_union 正式对象 + slice 清理 + 悬空 port DSGN::0018）
   → S9 任务组（flatten 展平 + 分区保存，两级任务 + 小 DEF 聚合，2026-09-13
-    裁定补记①-⑤ + D26 + 同日 partition 网数据结构重组终态；依赖 S8 分区
-    表 + S6 树 + 全部 per-DEF 产物 + DSDesign）：plan 任务（分组编排：预
-    估 = DEF 文件大小 × 树上实例化次数，≥ alpha def_aggregate_threshold
-    独占任务、低于阈值贪心聚合；重名定义保留首份；worker 上动态提交下
-    游任务——同 solver kickoff 先例）→ per-组展开任务并行（每组只读本组
-    def 产物——每份 DEF 数据只读一次；ds_flatten_block 全位置展开 + 分
-    区分流，每任务对全部分区各写一份分片临时对象）→ 每分区一合并任务
-    （真实合并语义：merge 全部相关分片 → 四类正式对象
-    PART_{xp}_{yp}/{GEOMETRY,INSTANCES,INST_CONNECTIONS,NETS} 唯一写定
-    + id 映射片段 + pg 网片段临时对象）→ 全局 pg 网 id 集汇总任务（2026-
-    09-13 重组裁定：读全部分区 pg 片段 → 两 set 去重合并 → "pg_nets" 正
-    式对象——debug API is_pg O(1) 判定数据源）
+    裁定补记①-⑤ + D26 + 同日 partition 网数据结构重组终态 + 2026-09-14
+    拆分裁定与 net id 0 专属 OBS 裁定；依赖 S8 分区表 + S6 树 + 全部
+    per-DEF 产物 + DSDesign）：plan 任务（分组编排：预估 = DEF 文件大小
+    × 树上实例化次数，≥ alpha def_aggregate_threshold 独占任务、低于阈
+    值贪心聚合；重名定义保留首份；worker 上动态提交下游任务——同 solver
+    kickoff 先例）→ per-组展开任务并行（每组只读本组 def 产物——每份
+    DEF 数据只读一次；ds_flatten_block 全位置展开 + 分区分流，每任务对
+    全部分区各写一份分片临时对象）→ 每分区一合并任务（真实合并语义：
+    merge 全部相关分片 → 六类正式对象
+    PART_{xp}_{yp}.{GEOMETRY,GEOMETRY_PG,INSTANCES,INST_CONNECTIONS,
+    NETS,NETS_PG} 唯一写定 + id 映射片段 + pg 网片段临时对象）→ 全局 pg
+    网 id 集汇总任务（2026-09-13 重组裁定：读全部分区 pg 片段 → 两 set
+    去重合并 → "pg_nets" 正式对象——debug API is_pg O(1) 判定数据源）
   → S10 任务组（汇总校验 + 冻结前置，由 S9 plan 任务动态提交排在 freeze
-    之前，2026-09-13 校验分级裁定）：每分区一校验任务（并行读单分区四类
+    之前，2026-09-13 校验分级裁定）：每分区一校验任务（并行读单分区六类
     正式产物——红线：不跨区读）→ 全局汇总校验任务（读全部校验结果 + 树
     + DSDesign + stack + global_density + net_union + per-DEF 产物与伴生
     名；损坏类——并查集不自洽/分区覆盖断裂/namemap 双向不一致——经
@@ -667,7 +668,7 @@ def _s9_plan_task(db, design_key, global_density_key, hier_key,
                         [block_keys[i] for i in group],
                         [net_keys[i] for i in group],
                         f"{slice_prefix}{g}_", len(partitions))
-    # 每分区一合并任务（真实合并语义）：merge 全部相关分片 → 四类正式
+    # 每分区一合并任务（真实合并语义）：merge 全部相关分片 → 六类正式
     # 对象唯一写定 + 本区 id→partition 片段临时对象（debug 定位裁定）+
     # 本区 pg 网片段临时对象（2026-09-13 重组裁定：pg 全局集汇总素材）
     for pid, xp, yp in partitions:
@@ -751,42 +752,52 @@ def _s9_expand_task(db, design_key, hier_key, block_names_key,
 def _s9_partition_merge_task(db, slice_prefix, n_groups, pid, xp, yp,
                              id_slice_prefix, pg_slice_prefix):
     """每分区一合并任务（分区侧真实合并语义，裁定 ⑤）：merge 来自不同
-    展开任务的同分区分片 → 四类正式对象
-    PART_{xp}_{yp}/{GEOMETRY,INSTANCES,INST_CONNECTIONS,NETS}
-    唯一写定（2026-09-13 重组裁定：NET_CONNECTIONS → NETS =
-    DSPartitionNets 信号网/pg 网分表）。随后提取本区 id→partition 片段
-    （2026-09-13 debug 定位裁定：INST = primary 副本 id 集、NET = net 副
-    本 id 集——geometry 键集；临时对象由 id→partition 汇总任务 merge 后
-    清理）+ 本区 pg 网片段（重组裁定：pg_nets_ 键按 use 分流，临时对象
-    由 pg 全局集汇总任务合并后清理）。"""
+    展开任务的同分区分片 → 六类正式对象
+    PART_{xp}_{yp}.{GEOMETRY,GEOMETRY_PG,INSTANCES,INST_CONNECTIONS,
+    NETS,NETS_PG} 唯一写定（2026-09-14 拆分裁定：GEOMETRY/NETS 各按
+    pg/信号拆两对象——信号网大文件与 pg 小文件物理分离，④ 提取首期
+    专注电源网络时只加载 GEOMETRY_PG + NETS_PG 两个小对象）。随后提取
+    本区 id→partition 片段（2026-09-13 debug 定位裁定：INST = primary
+    副本 id 集、NET = 两几何对象键集并集——net 副本 id 集；临时对象由
+    id→partition 汇总任务 merge 后清理）+ 本区 pg 网片段（拆分裁定：
+    NETS_PG 侧对象表键按 use 分流，临时对象由 pg 全局集汇总任务合并后
+    清理）。"""
     from log import INFO
     product = EXDSPartitionProduct()
     for g in range(n_groups):
         product.merge_from(db.read_object(f"{slice_prefix}{g}_{pid}"))
     db.write_object(DesignDb.partition_obj_name(xp, yp, "GEOMETRY"),
                     product.geometry(), save_to_db=True)
+    db.write_object(DesignDb.partition_obj_name(xp, yp, "GEOMETRY_PG"),
+                    product.geometry_pg(), save_to_db=True)
     db.write_object(DesignDb.partition_obj_name(xp, yp, "INSTANCES"),
                     product.instances(), save_to_db=True)
     db.write_object(DesignDb.partition_obj_name(xp, yp, "INST_CONNECTIONS"),
                     product.inst_connections(), save_to_db=True)
     db.write_object(DesignDb.partition_obj_name(xp, yp, "NETS"),
                     product.nets(), save_to_db=True)
+    db.write_object(DesignDb.partition_obj_name(xp, yp, "NETS_PG"),
+                    product.nets_pg(), save_to_db=True)
     # 本区映射片段（临时对象；merge 幂等键覆盖后提取——恰一 primary /
-    # net 副本口径见 ds_collect_partition_id_slice）
+    # net 副本口径见 ds_collect_partition_id_slice，NET = 两几何键集并集）
     db.write_object(
         DesignDb.id_slice_obj_name(id_slice_prefix, pid, "INST"),
         ds_collect_partition_id_slice(product.instances(), product.geometry(),
-                                      True, pid), save_to_db=False)
+                                      product.geometry_pg(), True, pid),
+        save_to_db=False)
     db.write_object(
         DesignDb.id_slice_obj_name(id_slice_prefix, pid, "NET"),
         ds_collect_partition_id_slice(product.instances(), product.geometry(),
-                                      False, pid), save_to_db=False)
-    # 本区 pg 网片段（临时对象：本区 pg_nets_ 表键按 use 分流）
+                                      product.geometry_pg(), False, pid),
+        save_to_db=False)
+    # 本区 pg 网片段（临时对象：NETS_PG 侧表键按 use 分流）
     db.write_object(f"{pg_slice_prefix}{pid}",
-                    ds_collect_pg_net_slice(product.nets()), save_to_db=False)
+                    ds_collect_pg_net_slice(product.nets_pg()),
+                    save_to_db=False)
     INFO(f"s9 partition ({xp},{yp}): {product.instance_count} instances, "
-         f"{product.geometry_net_count} net geometry bucket(s), "
-         f"{product.nets().size} net(s)")
+         f"geometry {product.geometry().net_count} bucket(s) / pg "
+         f"{product.geometry_pg().net_count}, nets {product.nets().size} "
+         f"/ pg {product.nets_pg().size}")
 
 
 # ── 全局 pg 网 id 集汇总（2026-09-13 重组裁定：多分区 pg 片段 → 两 set
@@ -855,15 +866,19 @@ def _id_map_merge_task(db, id_slice_prefix, n_parts, kind):
 def _s10_partition_verify_task(db, pid, xp, yp, result_key):
     """每分区一校验任务（并行读单分区产物——红线：不跨区读）：分区级计
     数 + 全局校验素材 id 集提取；损坏类判定集中在全局汇总任务（fatal 单
-    点退出）。结果为临时对象，全局校验合并后由 freeze 清理。"""
+    点退出）。结果为临时对象，全局校验合并后由 freeze 清理。六类对象按
+    2026-09-14 拆分裁定读取（geometry/nets 各信号与 pg 两侧）。"""
     geometry = db.read_object(DesignDb.partition_obj_name(xp, yp, "GEOMETRY"))
+    geometry_pg = db.read_object(
+        DesignDb.partition_obj_name(xp, yp, "GEOMETRY_PG"))
     instances = db.read_object(
         DesignDb.partition_obj_name(xp, yp, "INSTANCES"))
     inst_connections = db.read_object(
         DesignDb.partition_obj_name(xp, yp, "INST_CONNECTIONS"))
     nets = db.read_object(DesignDb.partition_obj_name(xp, yp, "NETS"))
-    result = ds_verify_partition(pid, xp, yp, geometry, instances,
-                                 inst_connections, nets)
+    nets_pg = db.read_object(DesignDb.partition_obj_name(xp, yp, "NETS_PG"))
+    result = ds_verify_partition(pid, xp, yp, geometry, geometry_pg,
+                                 instances, inst_connections, nets, nets_pg)
     db.write_object(result_key, result, save_to_db=False)
 
 
@@ -914,7 +929,9 @@ def _s10_design_verify_task(db, verify_keys, design_key, stack_key,
     if domains:
         message("DSGN::0022", 0,
                 "global id continuity (legal hole sources differ per "
-                "domain — instance: UNPLACED; net: empty net; via: none): "
+                "domain — instance: UNPLACED; net: empty net, plus one "
+                "local-0 hole slot per block which is by-design and "
+                "excluded from expected; via: none): "
                 + "; ".join(domains))
     if report.density_variance:
         message("DSGN::0023", 0,

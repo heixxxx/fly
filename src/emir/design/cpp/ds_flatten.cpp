@@ -125,23 +125,16 @@ PointAssignment assign_point(const I64Point& p,
 
 }  // namespace
 
-// —— DSPartitionNets ——（两表查：信号网表 → pg 网表；未命中 nullptr）
+// —— DSPartitionNets ——（单表查：本侧网表；未命中 nullptr——加载侧按
+// is_pg 路由到 NETS / NETS_PG 对应侧对象，本类不承担分派）
 const DSNet* DSPartitionNets::net_of(uint64_t net_id) const {
-    const auto sit = nets_.find(net_id);
-    if (sit != nets_.end()) {
-        return &sit->second;
-    }
-    const auto pit = pg_nets_.find(net_id);
-    return pit == pg_nets_.end() ? nullptr : &pit->second;
+    const auto it = nets_.find(net_id);
+    return it == nets_.end() ? nullptr : &it->second;
 }
 
 DSNet* DSPartitionNets::net_of(uint64_t net_id) {
-    auto sit = nets_.find(net_id);
-    if (sit != nets_.end()) {
-        return &sit->second;
-    }
-    auto pit = pg_nets_.find(net_id);
-    return pit == pg_nets_.end() ? nullptr : &pit->second;
+    auto it = nets_.find(net_id);
+    return it == nets_.end() ? nullptr : &it->second;
 }
 
 // —— DSPgNetSet ——（全局汇总：各分区片段键集并集——set 天然去重，
@@ -158,7 +151,8 @@ void DSPgNetSet::finalize_from_flatten(
 }
 
 // —— DSPartitionProduct ——（分片追加合并；同 global id 的 instance 副本
-// 键覆盖——global id 全局唯一、同键仅同源重放；列表类字段拼接）
+// 键覆盖——global id 全局唯一、同键仅同源重放；列表类字段拼接。2026-09-14
+// 拆分裁定：nets_ / nets_pg_ / geometry_ / geometry_pg_ 四成员分侧合并）
 void DSPartitionProduct::merge_from(const DSPartitionProduct& src) {
     for (const auto& [gid, inst] : src.instances_.items_) {
         instances_.items_[gid] = inst;
@@ -167,7 +161,7 @@ void DSPartitionProduct::merge_from(const DSPartitionProduct& src) {
         CMVector<DSPartConnection>& dst = inst_connections_.items_[gid];
         dst.insert(dst.end(), conns.begin(), conns.end());
     }
-    // NETS 两表分别合并：同键 DSNet 连接条目追加；use/net_id 同键覆盖
+    // 两侧 NETS 分别合并：同键 DSNet 连接条目追加；use/net_id 同键覆盖
     //（同 global net 只属一个 block 定义，use 同源——重放幂等）
     for (const auto& [nid, net] : src.nets_.nets_) {
         DSNet& dst = nets_.nets_[nid];
@@ -177,8 +171,8 @@ void DSPartitionProduct::merge_from(const DSPartitionProduct& src) {
                                 net.connections_.begin(),
                                 net.connections_.end());
     }
-    for (const auto& [nid, net] : src.nets_.pg_nets_) {
-        DSNet& dst = nets_.pg_nets_[nid];
+    for (const auto& [nid, net] : src.nets_pg_.nets_) {
+        DSNet& dst = nets_pg_.nets_[nid];
         dst.net_id_ = net.net_id_;
         dst.use_ = net.use_;
         dst.connections_.insert(dst.connections_.end(),
@@ -186,9 +180,12 @@ void DSPartitionProduct::merge_from(const DSPartitionProduct& src) {
                                 net.connections_.end());
     }
     // part_id_ 分片归属回填（0 = 未回填缺省，与分区 0 的合法 pid 值一致
-    // ——同分区 id 恒一致，条件覆盖对空分片/重放均幂等）
+    // ——同分区 id 恒一致，条件覆盖对空分片/重放均幂等；两侧同值）
     if (src.nets_.part_id_ != 0) {
         nets_.part_id_ = src.nets_.part_id_;
+    }
+    if (src.nets_pg_.part_id_ != 0) {
+        nets_pg_.part_id_ = src.nets_pg_.part_id_;
     }
     for (const auto& [nid, entries] : src.geometry_.nets_) {
         CMVector<DSGeomEntry>& dst = geometry_.nets_[nid];
@@ -196,6 +193,13 @@ void DSPartitionProduct::merge_from(const DSPartitionProduct& src) {
     }
     for (const uint64_t nid : src.geometry_.crossing_nets_) {
         geometry_.mark_crossing(nid);
+    }
+    for (const auto& [nid, entries] : src.geometry_pg_.nets_) {
+        CMVector<DSGeomEntry>& dst = geometry_pg_.nets_[nid];
+        dst.insert(dst.end(), entries.begin(), entries.end());
+    }
+    for (const uint64_t nid : src.geometry_pg_.crossing_nets_) {
+        geometry_pg_.mark_crossing(nid);
     }
 }
 
@@ -226,7 +230,7 @@ CMVector<std::pair<uint32_t, DSPartitionProduct>> ds_flatten_block(
     }
 
     // 分区产物下标（pid → out 下标，仅产出非空分区；part_id_ 随分片回填
-    // ——merge 链与正式对象携带分区归属）
+    // ——merge 链与正式对象携带分区归属；NETS 两侧同值，2026-09-14 拆分）
     CMUnorderedMap<uint32_t, size_t> product_index;
     const auto product_for = [&](uint32_t pid) -> DSPartitionProduct& {
         auto it = product_index.find(pid);
@@ -234,6 +238,7 @@ CMVector<std::pair<uint32_t, DSPartitionProduct>> ds_flatten_block(
             out.emplace_back(pid, DSPartitionProduct{});
             it = product_index.emplace(pid, out.size() - 1).first;
             out[it->second].second.nets_.part_id_ = pid;
+            out[it->second].second.nets_pg_.part_id_ = pid;
         }
         return out[it->second].second;
     };
@@ -272,7 +277,9 @@ CMVector<std::pair<uint32_t, DSPartitionProduct>> ds_flatten_block(
         //（单遍扫描连接表 O(conns)，供 INST_CONNECTIONS 跟随副本挂接）
         CMUnorderedMap<uint64_t, CMVector<DSPartConnection>> conn_bucket;
         for (const auto& [local_net, conns] : nets.connections_) {
-            const uint64_t global_net = net_start + local_net - 1;
+            // global = net_start + local（区间含 local 0 空洞位，无 −1
+            // ——2026-09-14 裁定；root 块空洞位 = global 0 = OBS 专属）
+            const uint64_t global_net = net_start + local_net;
             for (const DSNetConnection& c : conns) {
                 DSPartConnection pc;
                 if (!make_connection(c, global_net, pc)) {
@@ -351,7 +358,14 @@ CMVector<std::pair<uint32_t, DSPartitionProduct>> ds_flatten_block(
         }
 
         for (const uint64_t local_net : geo_nets) {
-            const uint64_t global_net = net_start + local_net - 1;
+            // global = net_start + local（区间含 local 0 空洞位，无 −1
+            // ——2026-09-14 裁定）
+            const uint64_t global_net = net_start + local_net;
+            // 侧别分流（2026-09-14 拆分裁定）：pg 判定源 = S5b is_pg_net
+            //（special ∨ use ∈ {POWER, GROUND}，与原 DSPartitionNets 分表
+            // 口径一致）——pg 网几何/连接落 _PG 侧对象，信号网落信号侧；
+            // OBS 桶（下方 obstruction 段）恒归信号侧 GEOMETRY
+            const bool net_is_pg = nets.is_pg_net(local_net);
             CMUnorderedSet<uint32_t> hit_pids;
 
             // 全局矩形铺入 extend 交叠分区：每命中分区一份条目（坐标分
@@ -382,8 +396,10 @@ CMVector<std::pair<uint32_t, DSPartitionProduct>> ds_flatten_block(
                     if (static_cast<int32_t>(pid) == primary_pid) {
                         e.set_primary();
                     }
-                    product_for(pid).geometry_.add_entry(global_net,
-                                                         std::move(e));
+                    DSPartitionGeometry& geo =
+                        net_is_pg ? product_for(pid).geometry_pg_
+                                  : product_for(pid).geometry_;
+                    geo.add_entry(global_net, std::move(e));
                     hit_pids.insert(pid);
                 }
             };
@@ -472,16 +488,22 @@ CMVector<std::pair<uint32_t, DSPartitionProduct>> ds_flatten_block(
             if (hit_pids.empty()) {
                 continue;  // 该网几何未落任何分区（越出全域的防御形态）
             }
-            // is_crossing（裁定补记④）：成员图形散布多于一个分区
+            // is_crossing（裁定补记④）：成员图形散布多于一个分区——
+            // crossing 跟随侧别（2026-09-14 拆分裁定：各几何对象自带自
+            // 己网的 crossing 集，pg 网在 GEOMETRY_PG、信号网在 GEOMETRY
+            // ——S10 统计两侧合计，口径不变）
             if (hit_pids.size() > 1) {
                 for (const uint32_t pid : hit_pids) {
-                    product_for(pid).geometry_.mark_crossing(global_net);
+                    DSPartitionGeometry& geo =
+                        net_is_pg ? product_for(pid).geometry_pg_
+                                  : product_for(pid).geometry_;
+                    geo.mark_crossing(global_net);
                 }
             }
 
-            // NETS（2026-09-13 重组裁定：跟随 net 副本——仅几何所在分区；
-            // is_pg_net 分流——pg → pg_nets_ 仅本区 instance 副本相关条目
-            // 不补全 / 信号 → nets_ 全量补全本分区自足；use 自 S5b
+            // NETS（2026-09-14 拆分裁定：跟随 net 副本——仅几何所在分区
+            // ；is_pg_net 分侧——pg → nets_pg_ 仅本区 instance 副本相关
+            // 条目不补全 / 信号 → nets_ 全量补全本分区自足；use 自 S5b
             // net_uses_ 随网写入，缺省 SIGNAL——USE 全量补收裁定）
             const auto* conns = nets.connections_of(local_net);
             if (conns == nullptr || conns->empty()) {
@@ -492,7 +514,6 @@ CMVector<std::pair<uint32_t, DSPartitionProduct>> ds_flatten_block(
                 uit != nets.net_uses_.end()
                     ? uit->second
                     : static_cast<uint8_t>(DSNetUse::SIGNAL);
-            const bool is_pg = nets.is_pg_net(local_net);
             CMVector<DSNetConnEntry> full;
             CMVector<CMVector<uint32_t>> entry_pids;
             for (const DSNetConnection& c : *conns) {
@@ -529,7 +550,7 @@ CMVector<std::pair<uint32_t, DSPartitionProduct>> ds_flatten_block(
                 net.connections_ = std::move(entries);
                 return net;
             };
-            if (is_pg) {
+            if (net_is_pg) {
                 for (const uint32_t pid : hit_pids) {
                     CMVector<DSNetConnEntry> part;
                     for (size_t i = 0; i < full.size(); ++i) {
@@ -540,7 +561,7 @@ CMVector<std::pair<uint32_t, DSPartitionProduct>> ds_flatten_block(
                         }
                     }
                     if (!part.empty()) {
-                        product_for(pid).nets_.pg_nets_[global_net] =
+                        product_for(pid).nets_pg_.nets_[global_net] =
                             make_net(std::move(part));
                     }
                 }
@@ -553,7 +574,9 @@ CMVector<std::pair<uint32_t, DSPartitionProduct>> ds_flatten_block(
         }
 
         // —— DEF obstruction（net 0 + obs 位；每位置一份副本，无
-        // primary 概念——裁定补记③）——
+        // primary 概念——裁定补记③。2026-09-14 裁定：OBS 是设计级阻挡
+        // 非网数据，恒归信号侧 GEOMETRY 键 0 桶（该键为 OBS 专属位）——
+        // pg 侧 GEOMETRY_PG 保持纯净只含 pg 网条目）——
         for (const DSShapeRef& obs : block.obstructions_) {
             const I64Rect g = t.apply_box(to_i64(obs.rect_));
             for (uint32_t pid = 0; pid < partitions.size(); ++pid) {
@@ -583,12 +606,13 @@ CMVector<std::pair<uint32_t, DSPartitionProduct>> ds_flatten_block(
     return out;
 }
 
-// —— pg 网全局集分区片段提取（S9 每分区合并任务调用）——本区 pg_nets_
-// 表键按 DSNet.use_ 分流（use 非 POWER/GROUND 的 special 网不入 pg 全局
-// 集——is_pg 判定口径 = use 枚举；同网跨分区副本由汇总侧 set 去重）。
-DSPgNetSlice ds_collect_pg_net_slice(const DSPartitionNets& nets) {
+// —— pg 网全局集分区片段提取（S9 每分区合并任务调用）——本区 NETS_PG
+// 对象表键按 DSNet.use_ 分流（use 非 POWER/GROUND 的 special 网不入 pg
+// 全局集——is_pg 判定口径 = use 枚举；同网跨分区副本由汇总侧 set 去重；
+// 2026-09-14 拆分裁定：提取源 = pg 侧 NETS_PG 对象单表）。
+DSPgNetSlice ds_collect_pg_net_slice(const DSPartitionNets& nets_pg) {
     DSPgNetSlice slice;
-    for (const auto& [nid, net] : nets.pg_nets_) {
+    for (const auto& [nid, net] : nets_pg.nets_) {
         (void)nid;
         if (net.use() == DSNetUse::POWER) {
             slice.power_ids_.push_back(net.net_id_);

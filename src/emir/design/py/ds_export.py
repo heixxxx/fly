@@ -28,23 +28,28 @@ S7 跨块连接归并：EXDSNetUnion（find/members/class_count/dangling 只读�
 ds_collect_net_union_slice（每父块 DEF 一收集）/ ds_build_net_union（全局
 汇总：两层化 + root 规范化 + 悬空计数）/ ds_net_union_child_indexes（编排
 辅助：def 序号 → 子定义序号集）。
-S9 flatten（2026-09-13 重组裁定）：EXDSPartitionProduct（分片中间形态，
-merge_from + 四类成员访问）/ EXDSGeomEntry / EXDSPartConnection
-（INST_CONNECTIONS 条目）/ EXDSNetConnEntry / EXDSNet / EXDSPartitionNets
-（NETS 信号网/pg 网分表，net_of 两表查）/ EXDSPgNetSlice /
-EXDSPgNetSet（全局 pg 网 id 集，is_power/is_ground/is_pg O(1) 查询口）+
-ds_flatten_block（每定义一调用展开）/ ds_collect_pg_net_slice（分区 NETS
-→ pg 片段）/ ds_build_pg_net_set（全部分区片段 → 两 set 去重合并）。
+S9 flatten（2026-09-13 重组裁定 + 2026-09-14 拆分裁定）：
+EXDSPartitionProduct（分片中间形态，merge_from + 六类成员访问——nets/
+nets_pg/geometry/geometry_pg 分侧四成员）/ EXDSGeomEntry /
+EXDSPartConnection（INST_CONNECTIONS 条目）/ EXDSNetConnEntry / EXDSNet /
+EXDSPartitionNets（/NETS 与 /NETS_PG 共用类——单表形态，net_of 单表查；
+2026-09-14 拆分裁定：原信号网/pg 网两表单对象拆为两个独立正式对象）/
+EXDSPgNetSlice / EXDSPgNetSet（全局 pg 网 id 集，is_power/is_ground/is_pg
+O(1) 查询口）+ ds_flatten_block（每定义一调用展开）/
+ds_collect_pg_net_slice（分区 NETS_PG 对象 → pg 片段）/
+ds_build_pg_net_set（全部分区片段 → 两 set 去重合并）。
 S10 汇总校验：EXDSIdDomain（id 连续性观测域）/ EXDSPartitionCheckResult
 （分区级校验结果，Python 面仅规模计数）/ EXDSDesignCheckReport（全局校验
 报告，正式对象 "verify_report"）+ ds_verify_partition（每分区一校验）/
 ds_verify_design（全局汇总校验）/ ds_verify_report_or_fatal（损坏类处置：
 非空即 fatal 退出码 80——阻断损坏库冻结）。
-id → partition 反向映射（2026-09-13 debug 定位裁定）：EXDSIdPartitionSlice
+id → partition 反向映射（2026-09-13 debug 定位裁定；2026-09-14 拆分裁
+定 NET 片段源 = 两几何对象键集并集）：EXDSIdPartitionSlice
 （S9 每分区合并任务的临时片段）/ EXDSIdPartitionSegment（段正式对象，
 定长 pids 数组 + 空洞哨兵）/ EXDSIdPartitionIndex（段表轻对象）+
 ds_collect_partition_id_slice（分区产物 → 本区片段：primary inst id 集 /
-net 副本 id 集）+ ds_merge_id_partition_slices（多片段 → (段表, 段集)）。
+两几何对象键集并集）+ ds_merge_id_partition_slices（多片段 → (段表, 段
+集)）。
 """
 
 from _fly_emir_design import (

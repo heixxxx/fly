@@ -32,12 +32,14 @@ namespace {
 using namespace fly;
 
 // —— 测试环境（手工合成，同 ds_flatten_test 模式）────────────────────
-// 树：root(top) → child csub(sub)。root inst [0,4) net [0,3) via [0,2)；
-// child inst [4,6) net [3,5) via [2,3)。推导口径：
+// 树：root(top) → child csub(sub)。root inst [0,4) net [0,4)（区间长度
+// 含空洞位：3 真网 + local 0 洞）via [0,2)；child inst [4,6) net [4,7)
+// （2 真网 + 洞）via [2,3)。推导口径：
 //   可用实例 id = Σ count − (非 root local 0 保留槽) − root 自身
 //              = (4 + 2) − 1 − 1 = 4 → {1,2,3,5}（top1/top2/top3/u1）
-//   net 期望域 = 3 + 2 = 5；via 期望域 = 2 + 1 = 3（top 两过孔 → {0,1}、
-//   sub 一过孔 → {2}）
+//   net 期望域 = Σ (net_count − 1)（空洞位不占 expected）= 3 + 2 = 5，
+//   真网 id：root local 1/2/3 → 1/2/3、child local 1/2 → 5/6；
+//   via 期望域 = 2 + 1 = 3（top 两过孔 → {0,1}、sub 一过孔 → {2}）
 // 分区 '2x1'：p0 core (0,0,1000,2000)、p1 core (1000,0,2000,2000)；密度
 // 格网 bin 1000、2×2 格 → 覆盖域 (0,0)-(2000,2000) 与 core 并集一致。
 struct VerifyEnv {
@@ -109,7 +111,7 @@ struct VerifyEnv {
         root.instance_start_ = 0;
         root.instance_count_ = 4;
         root.net_start_ = 0;
-        root.net_count_ = 3;
+        root.net_count_ = 4;  // 3 真网 + local 0 空洞位（区间长度形态）
         root.via_start_ = 0;
         root.via_count_ = 2;
         tree.nodes_.push_back(root);
@@ -121,8 +123,8 @@ struct VerifyEnv {
         child.self_global_id_ = 3;
         child.instance_start_ = 4;
         child.instance_count_ = 2;
-        child.net_start_ = 3;
-        child.net_count_ = 2;
+        child.net_start_ = 4;
+        child.net_count_ = 3;  // 2 真网 + 空洞位
         child.via_start_ = 2;
         child.via_count_ = 1;
         tree.nodes_.push_back(child);
@@ -176,11 +178,11 @@ struct VerifyEnv {
 };
 
 // —— 分区产物（手工合成，primary 语义自洽；期望值见各用例断言）──────
-// p0：inst {1 primary, 2 primary, 3 副本}；geometry {0: wire, 1: wire,
-//     2: via(primary)} + crossing {0}；iconn {1: [net0, net1]}；
-//     nconn {0: [2 条]}
-// p1：inst {3 primary, 5 primary}；geometry {3: wire, 4: wire}；
-//     iconn {5: [net3, net4]}；nconn {3: [1 条]}
+// p0：inst {1 primary, 2 primary, 3 副本}；geometry {1: wire, 2: wire,
+//     3: via(primary)} + crossing {1}；iconn {1: [net1, net2]}；
+//     nconn {1: [2 条]}
+// p1：inst {3 primary, 5 primary}；geometry {5: wire, 6: wire}；
+//     iconn {5: [net5, net6]}；nconn {5: [1 条]}
 struct PartitionPair {
     DSPartitionProduct p0;
     DSPartitionProduct p1;
@@ -190,36 +192,36 @@ PartitionPair make_products() {
     PartitionPair pp;
     DSPartConnection c1;
     c1.inst_id_ = 1;
-    c1.net_global_id_ = 0;
+    c1.net_global_id_ = 1;
     pp.p0.inst_connections_.items_[1].push_back(c1);
     DSPartConnection c2;
     c2.inst_id_ = 1;
-    c2.net_global_id_ = 1;
+    c2.net_global_id_ = 2;
     pp.p0.inst_connections_.items_[1].push_back(c2);
-    // NETS 信号网表（键 0；条目 = DSNetConnEntry——2026-09-13 重组裁定）
+    // NETS 信号侧对象（键 1；条目 = DSNetConnEntry——2026-09-13 重组裁定）
     DSPartitionNets& n0 = pp.p0.nets_;
-    n0.nets_[0].net_id_ = 0;
+    n0.nets_[1].net_id_ = 1;
     DSNetConnEntry e1;
     e1.inst_id_ = 1;
-    n0.nets_[0].connections_.push_back(e1);
+    n0.nets_[1].connections_.push_back(e1);
     DSNetConnEntry e2;
     e2.inst_id_ = 2;
-    n0.nets_[0].connections_.push_back(e2);
+    n0.nets_[1].connections_.push_back(e2);
     DSGeomEntry g0;
     g0.layer_id_ = 0;
     g0.rect_ = GEORect(0, 100, 500, 140);
-    pp.p0.geometry_.add_entry(0, std::move(g0));
+    pp.p0.geometry_.add_entry(1, std::move(g0));
     DSGeomEntry g1;
     g1.layer_id_ = 0;
     g1.rect_ = GEORect(0, 200, 300, 240);
-    pp.p0.geometry_.add_entry(1, std::move(g1));
+    pp.p0.geometry_.add_entry(2, std::move(g1));
     DSGeomEntry g2;
     g2.layer_id_ = 1;
     g2.rect_ = GEORect(400, 300, 500, 400);
     g2.via_cell_id_ = 0;
     g2.set_primary();
-    pp.p0.geometry_.add_entry(2, std::move(g2));
-    pp.p0.geometry_.mark_crossing(0);
+    pp.p0.geometry_.add_entry(3, std::move(g2));
+    pp.p0.geometry_.mark_crossing(1);
     DSInstance i1;
     i1.set_cell_id(0);
     i1.set_primary();
@@ -234,25 +236,25 @@ PartitionPair make_products() {
 
     DSPartConnection c3;
     c3.inst_id_ = 5;
-    c3.net_global_id_ = 3;
+    c3.net_global_id_ = 5;
     pp.p1.inst_connections_.items_[5].push_back(c3);
     DSPartConnection c4;
     c4.inst_id_ = 5;
-    c4.net_global_id_ = 4;
+    c4.net_global_id_ = 6;
     pp.p1.inst_connections_.items_[5].push_back(c4);
     DSPartitionNets& n1 = pp.p1.nets_;
-    n1.nets_[3].net_id_ = 3;
+    n1.nets_[5].net_id_ = 5;
     DSNetConnEntry e3;
     e3.inst_id_ = 5;
-    n1.nets_[3].connections_.push_back(e3);
+    n1.nets_[5].connections_.push_back(e3);
     DSGeomEntry g3;
     g3.layer_id_ = 0;
     g3.rect_ = GEORect(1100, 100, 1500, 140);
-    pp.p1.geometry_.add_entry(3, std::move(g3));
+    pp.p1.geometry_.add_entry(5, std::move(g3));
     DSGeomEntry g4;
     g4.layer_id_ = 0;
     g4.rect_ = GEORect(1100, 200, 1400, 240);
-    pp.p1.geometry_.add_entry(4, std::move(g4));
+    pp.p1.geometry_.add_entry(6, std::move(g4));
     DSInstance i3b;
     i3b.set_cell_id(1);
     i3b.set_primary();
@@ -267,12 +269,12 @@ PartitionPair make_products() {
 // 校验结果对（环境 + 产物 → 两分区校验结果；供全局校验各用例复用）
 CMVector<DSPartitionCheckResult> check_products(const PartitionPair& pp) {
     CMVector<DSPartitionCheckResult> checks;
-    checks.push_back(
-        ds_verify_partition(0, 0, 0, pp.p0.geometry_, pp.p0.instances_,
-                            pp.p0.inst_connections_, pp.p0.nets_));
-    checks.push_back(
-        ds_verify_partition(1, 1, 0, pp.p1.geometry_, pp.p1.instances_,
-                            pp.p1.inst_connections_, pp.p1.nets_));
+    checks.push_back(ds_verify_partition(
+        0, 0, 0, pp.p0.geometry_, pp.p0.geometry_pg_, pp.p0.instances_,
+        pp.p0.inst_connections_, pp.p0.nets_, pp.p0.nets_pg_));
+    checks.push_back(ds_verify_partition(
+        1, 1, 0, pp.p1.geometry_, pp.p1.geometry_pg_, pp.p1.instances_,
+        pp.p1.inst_connections_, pp.p1.nets_, pp.p1.nets_pg_));
     return checks;
 }
 
@@ -302,27 +304,28 @@ TEST(DSVerifyTest, PartitionCheckCountsAndIdSets) {
     VerifyEnv env;
     PartitionPair pp = make_products();
     DSPartitionCheckResult r0 = ds_verify_partition(
-        0, 0, 0, pp.p0.geometry_, pp.p0.instances_, pp.p0.inst_connections_,
-        pp.p0.nets_);
+        0, 0, 0, pp.p0.geometry_, pp.p0.geometry_pg_, pp.p0.instances_,
+        pp.p0.inst_connections_, pp.p0.nets_, pp.p0.nets_pg_);
     EXPECT_EQ(r0.partition_id_, 0u);
     EXPECT_EQ(r0.primary_instance_count_, 2u);          // 1/2 primary
     EXPECT_EQ(r0.instance_count_, 3u);                  // 1/2/3（3 = 副本）
     EXPECT_EQ(r0.geometry_entry_count_, 3u);            // 2 wire + 1 via
-    EXPECT_EQ(r0.crossing_net_count_, 1u);              // net 0
+    EXPECT_EQ(r0.crossing_net_count_, 1u);              // net 1
     EXPECT_EQ(r0.connection_count_, 4u);                // iconn 2 + nconn 2
-    // 网覆盖素材：geometry {0,1,2} ∪ nconn {0} ∪ iconn {0,1} ∪ crossing {0}
+    // 网覆盖素材：geometry {1,2,3} ∪ nconn {1} ∪ iconn {1,2} ∪ crossing
+    // {1}
     ASSERT_EQ(r0.net_ids_.size(), 3u);
     EXPECT_EQ((CMVector<uint64_t>{r0.net_ids_[0], r0.net_ids_[1],
                                   r0.net_ids_[2]}),
-              (CMVector<uint64_t>{0, 1, 2}));
+              (CMVector<uint64_t>{1, 2, 3}));
     ASSERT_EQ(r0.instance_ids_.size(), 3u);
     ASSERT_EQ(r0.primary_instance_ids_.size(), 2u);
     EXPECT_EQ(r0.primary_instance_ids_[0], 1u);
     EXPECT_EQ(r0.primary_instance_ids_[1], 2u);
 
     DSPartitionCheckResult r1 = ds_verify_partition(
-        1, 1, 0, pp.p1.geometry_, pp.p1.instances_, pp.p1.inst_connections_,
-        pp.p1.nets_);
+        1, 1, 0, pp.p1.geometry_, pp.p1.geometry_pg_, pp.p1.instances_,
+        pp.p1.inst_connections_, pp.p1.nets_, pp.p1.nets_pg_);
     EXPECT_EQ(r1.primary_instance_count_, 2u);          // 3/5 primary
     EXPECT_EQ(r1.instance_count_, 2u);
     EXPECT_EQ(r1.geometry_entry_count_, 2u);
@@ -330,12 +333,12 @@ TEST(DSVerifyTest, PartitionCheckCountsAndIdSets) {
     EXPECT_EQ(r1.connection_count_, 3u);                // iconn 2 + nconn 1
     ASSERT_EQ(r1.net_ids_.size(), 2u);
     EXPECT_EQ((CMVector<uint64_t>{r1.net_ids_[0], r1.net_ids_[1]}),
-              (CMVector<uint64_t>{3, 4}));
+              (CMVector<uint64_t>{5, 6}));
 }
 
 TEST(DSVerifyTest, ObsOnlyNetZeroBucketNotCountedAsCoverage) {
-    // net 0 桶仅含 OBS 条目时不计为网 0 覆盖（obs 位判别——root 首网与
-    // OBS 同键共存，OBS 不是网几何）
+    // 键 0 桶仅含 OBS 条目时不计为网 0 覆盖（obs 位判别防御校验——
+    // 2026-09-14 裁定后键 0 恒纯 OBS，此过滤保留为防御）
     DSPartitionGeometry geometry;
     DSGeomEntry obs;
     obs.layer_id_ = 1;
@@ -345,8 +348,10 @@ TEST(DSVerifyTest, ObsOnlyNetZeroBucketNotCountedAsCoverage) {
     DSPartInstances instances;
     DSPartInstConnections iconns;
     DSPartitionNets nconns;
+    DSPartitionNets nconns_pg;
     const DSPartitionCheckResult r = ds_verify_partition(
-        0, 0, 0, geometry, instances, iconns, nconns);
+        0, 0, 0, geometry, DSPartitionGeometry(), instances, iconns, nconns,
+        nconns_pg);
     EXPECT_EQ(r.geometry_entry_count_, 1u);
     EXPECT_TRUE(r.net_ids_.empty());
 }
@@ -615,7 +620,7 @@ TEST(DSVerifyTest, GlobalStatsAggregated) {
     EXPECT_EQ(report.total_nets_, 5u);             // 覆盖 distinct 网 id
     EXPECT_EQ(report.total_connections_, 7u);      // iconn 4 + nconn 3
     EXPECT_EQ(report.total_geometry_entries_, 5u);
-    EXPECT_EQ(report.total_crossing_nets_, 1u);    // net 0 跨分区
+    EXPECT_EQ(report.total_crossing_nets_, 1u);    // net 1 跨分区
     EXPECT_EQ(report.expected_instances_, 4u);
     EXPECT_EQ(report.expected_nets_, 5u);
     EXPECT_EQ(report.expected_vias_, 3u);
