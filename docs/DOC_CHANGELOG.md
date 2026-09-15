@@ -3,6 +3,25 @@
 ---
 ---
 
+## 2026-09-15: timing db 测试数据三维度版本（网络/引脚/混合）+ 解析器混合形态裁定
+
+用户裁定（2026-09-15）：网络维度与引脚维度两个版本都需要有、都需要测试；
+解析器实现必须支持同一 TWF 文件内**混合**两种维度条目的形态（同
+CAUSED_BY 分组内 NET 与 PIN 并存）。`twf_gen.tcl` 扩展为一次运行产出三份
+（`qa/emir/data/timing/`）：`tm_design.twf` 网络维度（7 条）/ 
+`tm_design_pins.twf` 引脚维度（19 条实例引脚，含未连接引脚 IQ/IQN 的 `*`
+缺省形态与数据端点到达 = 输入延迟的互补补全）/ `tm_design_mixed.twf` 混合
+维度（26 条）。三份均确定性验证（同环境重复运行逐字节一致、跨工具链重建
+数值不变）。解析器新增两组真实文件单测（GeneratedPinDimensionFile /
+GeneratedMixedDimensionFile）：维度标记（pin_kind）逐条目断言、跨维度
+数值一致（n2 ≡ u_nand/ZN、q1 ≡ u_d1/Q、nclk ≡ u_cb/Z，零线负载下网条目
+值 = 驱动引脚条目值）、维度互补（网络维度 d 窗口 * vs 引脚维度
+u_d1/D 到达 0.05ns）、富余量弃收计数（22/34）。解析器本体零改动（NET/PIN
+关键字分派与按名合并既有语义已覆盖混合形态）。
+
+---
+---
+
 ## 2026-09-15: timing db 途径二产出——Nangate45 + OpenSTA 确定性测试数据链落地
 
 `qa/emir/data/timing/`：全公开工具链自造的 lib/design/timing 三库配套输入件——

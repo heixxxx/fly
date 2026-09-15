@@ -243,6 +243,109 @@ TEST_F(TmParserTest, GeneratedRealTimingFile) {
     EXPECT_EQ(r.cd_flag_d_count_, 6u);
 }
 
+// 途径二引脚维度版本（-pin 风味，键 = 实例/引脚名）：19 条实例引脚条目；
+// 未连接引脚（IQ/IQN）窗口 * 缺省形态；输入延迟在数据端点可见
+TEST_F(TmParserTest, GeneratedPinDimensionFile) {
+    const TMTimingFile r =
+        tm_parse_twf_file(data_path("tm_design_pins.twf").string());
+    ASSERT_EQ(r.entries_.size(), 19u);
+    size_t pin_kind_count = 0;
+    for (const TMNameTiming& e : r.entries_) {
+        if (e.is_pin_kind()) ++pin_kind_count;
+    }
+    EXPECT_EQ(pin_kind_count, 19u);
+
+    // 时钟网输入引脚（C 类，clk 组）：时钟两沿
+    const TMNameTiming* cba = r.find_entry("u_cb/A");
+    ASSERT_NE(cba, nullptr);
+    EXPECT_EQ(cba->clock_id_, 0u);
+    expect_range(cba->rise_arrival_, 0.0, 0.0);
+    expect_range(cba->fall_arrival_, 0.5, 0.5);
+
+    // 时钟缓冲输出：与网络维度 nclk 同值（值取自同一驱动引脚）
+    const TMNameTiming* cbz = r.find_entry("u_cb/Z");
+    ASSERT_NE(cbz, nullptr);
+    EXPECT_EQ(cbz->clock_id_, 0u);
+    EXPECT_NEAR(cbz->rise_arrival_.max_, 0.026037, 1e-6);
+    EXPECT_NEAR(cbz->fall_arrival_.max_, 0.525140, 1e-6);
+
+    // 数据端点：输入延迟 0.05 作为到达（网络维度 d 网发 * 的互补形态）
+    const TMNameTiming* d1d = r.find_entry("u_d1/D");
+    ASSERT_NE(d1d, nullptr);
+    expect_range(d1d->rise_arrival_, 0.05, 0.05);
+    EXPECT_EQ(d1d->clock_id_, kTMNoClock);
+
+    // 寄存器数据端点 = 驱动输出（零线负载）：u_d2/D ≡ 网络维度 n2 窗口
+    const TMNameTiming* d2d = r.find_entry("u_d2/D");
+    ASSERT_NE(d2d, nullptr);
+    EXPECT_NEAR(d2d->rise_arrival_.min_, 0.064366, 1e-6);
+    EXPECT_NEAR(d2d->rise_arrival_.max_, 0.092367, 1e-6);
+
+    // 未连接引脚：窗口缺省、翻转时间零值对
+    const TMNameTiming* iq = r.find_entry("u_d1/IQ");
+    ASSERT_NE(iq, nullptr);
+    EXPECT_FALSE(iq->is_rise_arrival());
+    EXPECT_FALSE(iq->is_fall_arrival());
+    EXPECT_TRUE(iq->is_rise_slew());
+
+    EXPECT_EQ(r.dropped_slack_count_, 22u);
+    EXPECT_EQ(r.dropped_source_res_count_, 0u);
+    EXPECT_EQ(r.bad_record_count_, 0u);
+    EXPECT_EQ(r.cd_flag_c_count_, 1u);
+    EXPECT_EQ(r.cd_flag_d_count_, 18u);
+}
+
+// 途径二混合维度版本（同一 CAUSED_BY 分组内 NET 与 PIN 条目并存——解析
+// 必须支持的形态，2026-09-15 裁定）：26 条 = 7 网络 + 19 引脚；跨维度条目
+// 名互不冲突、数值一致
+TEST_F(TmParserTest, GeneratedMixedDimensionFile) {
+    const TMTimingFile r =
+        tm_parse_twf_file(data_path("tm_design_mixed.twf").string());
+    ASSERT_EQ(r.entries_.size(), 26u);
+    size_t pin_kind_count = 0;
+    for (const TMNameTiming& e : r.entries_) {
+        if (e.is_pin_kind()) ++pin_kind_count;
+    }
+    EXPECT_EQ(pin_kind_count, 19u);
+
+    // 同一时钟分组含两种维度条目
+    const TMNameTiming* net_clk = r.find_entry("clk");
+    const TMNameTiming* pin_cba = r.find_entry("u_cb/A");
+    ASSERT_NE(net_clk, nullptr);
+    ASSERT_NE(pin_cba, nullptr);
+    EXPECT_EQ(net_clk->clock_id_, 0u);
+    EXPECT_EQ(pin_cba->clock_id_, 0u);
+    EXPECT_FALSE(net_clk->is_pin_kind());
+    EXPECT_TRUE(pin_cba->is_pin_kind());
+
+    // 跨维度数值一致：网条目值 = 其驱动引脚条目值（零线负载）
+    const TMNameTiming* n2 = r.find_entry("n2");
+    const TMNameTiming* nand_zn = r.find_entry("u_nand/ZN");
+    ASSERT_NE(n2, nullptr);
+    ASSERT_NE(nand_zn, nullptr);
+    EXPECT_EQ(n2->rise_arrival_.min_, nand_zn->rise_arrival_.min_);
+    EXPECT_EQ(n2->rise_arrival_.max_, nand_zn->rise_arrival_.max_);
+    EXPECT_EQ(n2->rise_slew_.max_, nand_zn->rise_slew_.max_);
+    const TMNameTiming* q1 = r.find_entry("q1");
+    const TMNameTiming* d1q = r.find_entry("u_d1/Q");
+    ASSERT_NE(q1, nullptr);
+    ASSERT_NE(d1q, nullptr);
+    EXPECT_EQ(q1->rise_arrival_.max_, d1q->rise_arrival_.max_);
+
+    // 维度互补：网络维度 d 窗口 *、引脚维度端点 u_inv/A 到达 = 输入延迟
+    const TMNameTiming* d = r.find_entry("d");
+    const TMNameTiming* inv_a = r.find_entry("u_inv/A");
+    ASSERT_NE(d, nullptr);
+    ASSERT_NE(inv_a, nullptr);
+    EXPECT_FALSE(d->is_rise_arrival());
+    expect_range(inv_a->rise_arrival_, 0.05, 0.05);
+
+    EXPECT_EQ(r.dropped_slack_count_, 34u);
+    EXPECT_EQ(r.bad_record_count_, 0u);
+    EXPECT_EQ(r.cd_flag_c_count_, 2u);
+    EXPECT_EQ(r.cd_flag_d_count_, 24u);
+}
+
 TEST(TmParserErrorTest, EntryLevelRecoveryKeepsStream) {
     // 单条破损记录跳过后，后续记录照常入库
     const TMTimingFile r = tm_parse_twf_text(

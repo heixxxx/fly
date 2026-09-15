@@ -1,6 +1,6 @@
 (TIMING_WINDOWS
 (HEADER
-(VERSION "fly-twf-gen 1.0")
+(VERSION "fly-twf-gen 1.1")
 (DESIGN "tm_design")
 (DELIMITERS "/[]")
 (TIME_SCALE 1.000E-09)
