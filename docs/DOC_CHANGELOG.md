@@ -3,6 +3,37 @@
 ---
 ---
 
+## 2026-09-15: timing db 解析器立项（TWF 时序窗口文件 C++ 解析器）
+
+调研结论先行（独立调研后与 emir-data-flow.md 比对，方向吻合 + 两处修正）：
+TWF（Timing Window File）数据清单 = 逐引脚/网络到达窗口（rise/fall
+early/late）+ 翻转时间（slew min/max）+ 时钟域 + 频率/周期 + 常量标记；
+EMIR 消费点 = 静态功耗查表（输入翻转维度 + 频率）与动态类分析（窗口
+对齐电流波形 / minTW 类评估口径 / 方均根电迁移场景）。开源现状（GitHub
+认证全站检索）：**不存在任何语言的完整开源 TWF 解析器**；楷登 Innovus
+`write_timing_windows` 手册（25.10 版，公开镜像）给出**完整字节级格式
+规范**——S 表达式，NET/PIN 条目八对字段（RTW/Rt/RDr/RSlk + FTW/Ft/
+FDr/FSlk）、HEADER 头部构造、WAVEFORM 时钟定义、CAUSED_BY 时钟源分组、
+CONSTANT 常量条目、TIME_SCALE 单位因子；真实样例数据 = CircuitNet-N28
+数据集（Google Drive/百度网盘公开下载）。emir-data-flow.md ⑦/⑩ 表述待
+立项时扩展（⑦ 产出不止「时序窗口」——翻转时间/频率是 ⑩ 静态功耗刚需
+输入；格式方言需裁定为楷登 Innovus 格式）。
+
+解析器落地（首版自研 C++，dev-rules §4）：`src/emir/timing/cpp/`
+`tm_types.h/.cpp`（TMRange/TMClock/TMNameTiming/TMTimingFile 解析边界
+结构——名字保持原文形态，id 换算归 db flow）+ `tm_parser.h/.cpp`
+（`tm_parse_twf_file`/`tm_parse_twf_text`，token 流两遍扫描：第一遍
+HEADER+WAVEFORM 建时钟表、第二遍 CAUSED_BY 条目；单位统一换算 ns；
+同名跨分组合并取并集 + multi_source；源电阻/富余量弃收计数；C/D 标记
+计数不入库；条目级破损跳过计数、流级破损抛异常）+ 单测 11 例（手册
+样例构造，含序列化往返）。py/export 与 db flow 随建库流程立项补全
+（三段式结构标准不变）；建库 flow 裁定：不等待 design db 冻结（仅等
+名字映射器/id_partition_map 等必要对象）、不用 MapReduce（直接任务链
++ 字节区间切块，为单文件分布式流式解析增强留路径）。
+
+---
+---
+
 ## 2026-09-07: lib db 改造与增强 + 全仓库 export 导入层落地（lib-enhancement-plan A+B）
 
 lib db 增强（A）：lib 模块 py 目录七文件重组（export/db/flow/register_msg/
