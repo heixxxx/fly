@@ -8,6 +8,7 @@ cc_test(
     data = [
         "data/bad_syntax.twf",
         "data/sample.twf",
+        "data/tm_design.twf",
     ],
     deps = [
         "@googletest//:gtest_main",

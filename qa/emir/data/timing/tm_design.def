@@ -1,0 +1,41 @@
+VERSION 5.8 ;
+DIVIDERCHAR "/" ;
+BUSBITCHARS "[]" ;
+DESIGN tm_design ;
+UNITS DISTANCE MICRONS 1000 ;
+DIEAREA ( 0 0 ) ( 20000 10000 ) ;
+
+COMPONENTS 5 ;
+    - u_cb CLKBUF_X1 + PLACED ( 1000 1000 ) N ;
+    - u_inv INV_X1 + PLACED ( 3000 1000 ) N ;
+    - u_d1 DFF_X1 + PLACED ( 5000 1000 ) N ;
+    - u_nand NAND2_X1 + PLACED ( 7000 1000 ) N ;
+    - u_d2 DFF_X1 + PLACED ( 9000 1000 ) N ;
+END COMPONENTS
+
+PINS 3 ;
+    - clk + NET clk
+      + DIRECTION INPUT + USE CLOCK
+      + LAYER metal1 ( -50 -50 ) ( 50 50 )
+      + FIXED ( 500 1000 ) N ;
+    - d + NET d
+      + DIRECTION INPUT + USE SIGNAL
+      + LAYER metal1 ( -50 -50 ) ( 50 50 )
+      + FIXED ( 500 3000 ) N ;
+    - q + NET q
+      + DIRECTION OUTPUT + USE SIGNAL
+      + LAYER metal1 ( -50 -50 ) ( 50 50 )
+      + FIXED ( 19500 1000 ) N ;
+END PINS
+
+NETS 7 ;
+    - clk ( PIN clk ) ( u_cb A ) ;
+    - d ( PIN d ) ( u_inv A ) ( u_d1 D ) ;
+    - nclk ( u_cb Z ) ( u_d1 CK ) ( u_d2 CK ) ;
+    - n1 ( u_inv ZN ) ( u_nand A1 ) ;
+    - q1 ( u_d1 Q ) ( u_nand A2 ) ;
+    - n2 ( u_nand ZN ) ( u_d2 D ) ;
+    - q ( u_d2 Q ) ( PIN q ) ;
+END NETS
+
+END DESIGN

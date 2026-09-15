@@ -185,6 +185,64 @@ TEST(TmParserErrorTest, StreamLevelErrors) {
                  std::runtime_error);
 }
 
+// 途径二真实生成文件（Nangate45 + OpenSTA，见 qa/emir/data/timing/README.md）：
+// 真实静态时序引擎数值 + 名字与 tm_design.def 对齐；文件已提交为确定性产物
+TEST_F(TmParserTest, GeneratedRealTimingFile) {
+    const TMTimingFile r =
+        tm_parse_twf_file(data_path("tm_design.twf").string());
+    EXPECT_EQ(r.design_, "tm_design");
+    EXPECT_DOUBLE_EQ(r.time_scale_sec_, 1e-9);
+    ASSERT_EQ(r.clocks_.size(), 1u);
+    EXPECT_EQ(r.clocks_[0].name_, "clk");
+    EXPECT_NEAR(r.clocks_[0].period_, 1.0, 1e-9);
+    EXPECT_NEAR(r.clocks_[0].negedge_, 0.5, 1e-9);
+    ASSERT_EQ(r.entries_.size(), 7u);
+
+    // 时钟网（时钟源引脚驱动，clk 组）：上升沿 0、下降沿半周期
+    const TMNameTiming* clk = r.find_entry("clk");
+    ASSERT_NE(clk, nullptr);
+    EXPECT_EQ(clk->clock_id_, 0u);
+    expect_range(clk->rise_arrival_, 0.0, 0.0);
+    expect_range(clk->fall_arrival_, 0.5, 0.5);
+
+    // 时钟缓冲输出（clk 组）：缓冲延迟 0.026 / 半周期 + 延迟 0.525
+    const TMNameTiming* nclk = r.find_entry("nclk");
+    ASSERT_NE(nclk, nullptr);
+    EXPECT_EQ(nclk->clock_id_, 0u);
+    EXPECT_NEAR(nclk->rise_arrival_.max_, 0.026037, 1e-6);
+    EXPECT_NEAR(nclk->fall_arrival_.max_, 0.525140, 1e-6);
+
+    // 输入端口网：窗口缺省（*）、翻转时间存在（生成器已知局限形态）
+    const TMNameTiming* d = r.find_entry("d");
+    ASSERT_NE(d, nullptr);
+    EXPECT_FALSE(d->is_rise_arrival());
+    EXPECT_FALSE(d->is_fall_arrival());
+    EXPECT_TRUE(d->is_rise_slew());
+    EXPECT_EQ(d->clock_id_, kTMNoClock);
+
+    // 组合网（NULL 组）：双路径真实 min:max 窗口
+    const TMNameTiming* n2 = r.find_entry("n2");
+    ASSERT_NE(n2, nullptr);
+    EXPECT_EQ(n2->clock_id_, kTMNoClock);
+    EXPECT_LT(n2->rise_arrival_.min_, n2->rise_arrival_.max_);
+    EXPECT_NEAR(n2->rise_arrival_.min_, 0.064366, 1e-6);
+    EXPECT_NEAR(n2->rise_arrival_.max_, 0.092367, 1e-6);
+
+    // 寄存器输出网：CLK→Q 真实时序
+    const TMNameTiming* q1 = r.find_entry("q1");
+    ASSERT_NE(q1, nullptr);
+    EXPECT_NEAR(q1->rise_arrival_.max_, 0.085276, 1e-6);
+
+    // 计数：富余量逐条有值弃收（clk 1 + nclk 1 + d 2 + n1/n2/q/q1 各 2 = 12）
+    EXPECT_EQ(r.dropped_slack_count_, 12u);
+    EXPECT_EQ(r.dropped_source_res_count_, 0u);
+    EXPECT_EQ(r.bad_record_count_, 0u);
+    EXPECT_EQ(r.unknown_construct_count_, 0u);
+    EXPECT_EQ(r.missing_clock_count_, 0u);
+    EXPECT_EQ(r.cd_flag_c_count_, 1u);
+    EXPECT_EQ(r.cd_flag_d_count_, 6u);
+}
+
 TEST(TmParserErrorTest, EntryLevelRecoveryKeepsStream) {
     // 单条破损记录跳过后，后续记录照常入库
     const TMTimingFile r = tm_parse_twf_text(

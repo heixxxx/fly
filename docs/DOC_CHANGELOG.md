@@ -3,6 +3,42 @@
 ---
 ---
 
+## 2026-09-15: timing db 途径二产出——Nangate45 + OpenSTA 确定性测试数据链落地
+
+`qa/emir/data/timing/`：全公开工具链自造的 lib/design/timing 三库配套输入件——
+Nangate45 平台文件（Liberty typical + tech/macro LEF，Apache-2.0 随附许可）+
+小型确定性设计 tm_design（5 单元网表 + SDC + DEF，网名与 TWF 对齐的确定性
+来源）+ `twf_gen.tcl`（OpenSTA 引脚属性 → Innovus 手册 25.10 版 TWF 格式）+
+生成产物 `tm_design.twf`（真实静态时序数值：时钟缓冲延迟 0.026ns、组合双路
+径窗口 0.064:0.092ns、寄存器 CLK→Q 0.085ns；同环境两次生成逐字节一致）。
+真实文件入解析器单测（tm_parser_test GeneratedRealTimingFile，逐值断言）。
+README 记录两个 OpenSTA master 上游缺陷与脚本内置绕法（pinArrival 缺
+ensureGraph 致 SIGSEGV——report_checks 先行 + slew 触发建图；get_nets
+-of_objects 对时钟源端口引脚返回字面 NULL——按名兜底）与语义弱化（数据网
+归 CAUSED_BY NULL 组、输入端口网窗口列 *）。工具链构建记录：CUDD
+（OpenROAD fork）本地安装 + OpenSTA 3.1.0 master。flow 与 timing 模块
+（py/export）开发待裁定启动。
+
+---
+---
+
+## 2026-09-15: timing db 测试数据三途径裁定 + 途径二实施启动
+
+用户裁定（2026-09-15）：timing db 测试数据三途径中，**途径一（CircuitNet-N28
+数据集：真实 Innovus 产物 cts.twf + 布线后 DEF，BSD-3-Clause，不含 Liberty
+故定位为解析器真实文件交叉验证）与途径三（仓库内合成生成器：现有 LEF/DEF
+测试数据 + 确定性窗口值，QA 用）保留于文档**；**途径二（Nangate45 公开
+Liberty/LEF + OpenSTA 自造链）尝试实施**——OpenSTA 引脚属性接口实证齐全
+（`arrival_min/max_rise/fall`、`slew_min/max_rise/fall`、`slack_*`、
+`clocks`/`clock_domains`/`activity`，源码 search/Property.cc），自写 Tcl 按
+Innovus 手册格式 dump TWF，配小型确定性设计（Nangate45 单元网表 + SDC +
+DEF）构成 lib/design/timing 三库全链输入件。**建库 flow 与 timing 模块
+（py/export 六文件）开发待确定性测试数据就绪后启动**。三途径记录见
+docs/emir/module.md timing 行。
+
+---
+---
+
 ## 2026-09-15: timing db 解析器立项（TWF 时序窗口文件 C++ 解析器）
 
 调研结论先行（独立调研后与 emir-data-flow.md 比对，方向吻合 + 两处修正）：
