@@ -31,6 +31,11 @@ namespace {
 // 以 fatal 码退出，不悬挂）。
 constexpr int64_t kFatalExitJoinTimeoutS = 30;
 
+// ~MasterAgent 等待在飞 detached 停机线程离场的上界：fatal 线程自身
+// kFatalExitJoinTimeoutS 兜底后必 _exit（进程终结，等待自然结束）；SIGTERM
+// 线程 stop_impl 各 join 均有界。取 fatal 兜底 + 余量，仅防未知悬挂。
+constexpr int64_t kDetachedStopJoinTimeoutS = 35;
+
 }  // namespace
 
 std::atomic<uint64_t> MasterAgent::remote_task_counter_{100000};
@@ -42,6 +47,23 @@ MasterAgent::MasterAgent(const CMString& host, uint16_t port)
 }
 
 MasterAgent::~MasterAgent() {
+    // 解释器终结路径（Py_Finalize 析构本对象）必须先等在飞 detached 停机线程
+    //（worker fatal 联动 / SIGTERM）离场：它们可能仍在 stop_impl 中 join 常驻
+    // 线程，此刻成员线程尚 joinable、running_/reactor_ 等成员仍被并发访问——
+    // 直接析构 = std::thread::~thread terminate（子 fly 退出码 77 根因）。
+    // 有界兜底：fatal 线程自身 kFatalExitJoinTimeoutS 后必 _exit（进程终结，
+    // 本等待不再有意义）；SIGTERM 线程各 join 均有界。超时继续析构并 WARN
+    // 留证（宁可持续性可见的异常退出，不无限 hang）。
+    const auto detach_deadline = std::chrono::steady_clock::now() +
+                                 std::chrono::seconds(kDetachedStopJoinTimeoutS);
+    while (detached_stop_threads_.load() > 0 &&
+           std::chrono::steady_clock::now() < detach_deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    if (detached_stop_threads_.load() > 0) {
+        WARN("MasterAgent destroyed with {} detached stop thread(s) still running",
+             detached_stop_threads_.load());
+    }
     stop();
 }
 
@@ -4118,9 +4140,14 @@ void MasterAgent::trigger_graceful_shutdown() {
     // 幂等：只拉起一次退出线程。stop_impl 内部 draining_.exchange(true) 亦防重入。
     if (graceful_stop_started_.exchange(true)) return;
     INFO("Graceful shutdown requested (SIGTERM), starting fast_exit (skip drain)");
+    // 在飞登记先于线程启动：~MasterAgent 等离场再析构（详见析构注释）。
+    detached_stop_threads_.fetch_add(1);
     // 独立线程执行：fast_exit 会 join 本（heartbeat）线程，不能在自身上调用。
     std::thread([this]() {
         fast_exit("SIGTERM received");
+        // 离场登记：fast_exit 返回 = stop_impl 完成、常驻线程全部 join，
+        // 本线程此后不再访问 this，析构侧可安全接管。
+        detached_stop_threads_.fetch_sub(1);
     }).detach();
 }
 
@@ -4874,6 +4901,9 @@ void MasterAgent::on_fatal_message(uint64_t conn_id, const FatalMessage& msg) {
 void MasterAgent::start_fatal_exit_thread(int32_t exit_code, const CMString& reason) {
     // 幂等：只拉起一次（worker fatal 与 master 自身 fatal 分发共用）。
     if (fatal_exit_started_.exchange(true)) return;
+    // 在飞登记先于线程启动（happens-before 由 thread 构造建立）：~MasterAgent
+    // 等本计数归零才析构线程成员，防解释器终结与本线程赛跑（详见析构注释）。
+    detached_stop_threads_.fetch_add(1);
     std::thread([this, exit_code, reason]() {
         // 本线程自己的 WARN 记录（立即 flush）：fast_exit 若因 draining_ 已被
         // 优雅 stop 占用而防重入 return，reason 不会经 stop_impl 的 WARN 落盘
@@ -4895,6 +4925,9 @@ void MasterAgent::start_fatal_exit_thread(int32_t exit_code, const CMString& rea
         // DEBUG/INFO 走自动 flush 阈值判定、可能仍留在用户态缓冲——_exit 跳过
         // 静态析构前显式收口，保证 debug log 零丢失。
         Logger::instance()->flush();
+        // 离场登记是本线程对 this 的最后一次访问，紧随 _exit：~MasterAgent 看到
+        // 计数归零即可安全析构（此窗口内本线程只碰 Logger 单例与 _exit）。
+        detached_stop_threads_.fetch_sub(1);
         // fast_exit（stop_impl）完成 = 停机善后完成，进程以 fatal 码退出
         //（跳过静态析构；日志/message.log 各路径已显式 flush）。
         ::_exit(exit_code);

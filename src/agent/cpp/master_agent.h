@@ -495,6 +495,12 @@ private:
     // fast_exit 请求标志：打断 stop() 的 drain 等待（SIGTERM/致命错误到达时，
     // 正在优雅等待的 drain 转快速路径——先 fail 善后再走 StopNow 广播）。
     std::atomic<bool> fast_exit_requested_{false};
+    // 在飞 detached 停机线程计数（worker fatal 联动 / SIGTERM 拉起）。启动前置位、
+    // 线程最后一次访问 this 之后减计——~MasterAgent 据此等待其离场再析构线程
+    // 成员：解释器终结（Py_Finalize）析构本对象时这些线程可能仍在 stop_impl 中
+    // join 常驻线程，joinable std::thread 析构 = std::terminate（表现为子 fly
+    // 退出码 77 而非 fatal 码），成员并发访问 = UAF。
+    std::atomic<int> detached_stop_threads_{0};
     std::mutex drain_mutex_;
     std::condition_variable drain_cv_;
     // stop()/fast_exit() 的统一实现（fast=true 跳过 drain 等待 + fail 善后 +
