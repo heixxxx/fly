@@ -21,12 +21,13 @@
 // 对接形态（S5b 连接表 id 形态，DSNetConnectionParseNode 在解析边界完成
 // 名字 → id 换算；port 引用条目带 port 位、instance_local_id_ = 0 占位）：
 // 父网连接条目 (子实例 local id, port pin 全局 id) × 子网连接条目 (local 0,
-// 同一 port pin 全局 id)——同一 port 的全局 pin id 唯一（pin 组合键
-// "block_cell_name/port_name" 注册于容器 pin hasher），直接相等对接，S7
-// 内部链路零字符串匹配（2026-09-13 裁定）；同一子网连接多个 port 且这些
-// port 在父层连到不同父网 → 两父网 union（电气等价，合法形态）。顶层引脚
-// 连接（root 块的 port 位条目）不产生跨层 union（root 候选，root 块
-// port 网不入悬空口径）。
+// 同一 port pin 全局 id)——2026-09-16 裁定 3 后 pin id = 全局 pin 名字
+// 空间 id（同名 port 跨 block 共享 id），对接键**升维为 (子 block cell
+// id, port pin id)** 定义级 port 身份（否则不同子定义的同名 port 网误
+// 并），S7 内部链路零字符串匹配；同一子网连接多个 port 且这些 port 在
+// 父层连到不同父网 → 两父网 union（电气等价，合法形态）。顶层引脚连接
+//（root 块的 port 位条目）不产生跨层 union（root 候选，root 块 port 网
+// 不入悬空口径）。
 // =============================================================================
 
 #include <common/serialization/cpp/serialization_macros.h>

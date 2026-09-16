@@ -288,9 +288,11 @@ struct CellContext {
     DSPinGeometry* geometry;
     CMVector<DSViaCell>* vias;
     DSLefParseStats* stats;
-    // R4：局部 pin id 平铺分配器（part 内跨 cell 单调——T6 汇总重挂按
-    // 「pin_base + 局部 id」平移，要求局部 id 跨 cell 唯一）
-    CMPinId next_pin_id = CMPinId{0};
+    // 2026-09-16 裁定 3：局部 pin 名字空间（键 = 裸 pin 名，part 内同名
+    // pin 共享局部 id——与全局名字空间同构）；pin 几何是 (cell, pin) 属
+    // 性，局部几何键 = (cell_seq, pin id)，cell_seq = part 容器 cells_
+    // 下标（macro 收录序）
+    uint32_t cell_seq = 0;
 
     // 当前 macro 构建状态（MacroBegin 置位，MacroCbk 收录/弃置）
     bool macro_valid = false;
@@ -348,6 +350,9 @@ int cell_macro_begin_cbk(lefrCallbackType_e, const char* name,
         ++ctx->stats->skipped_macro_count;
         return 0;
     }
+    // cell_seq = 本 macro 收录后的 cells_ 下标（顺序读取：收录序 =
+    // 回调序；局部 pin 几何的 cell 维度键）
+    ctx->cell_seq = static_cast<uint32_t>(ctx->design->cells_.size());
     ctx->current_cell = DSCell{};
     ctx->current_cell.set_name(name);
     ctx->current_pin_geoms.clear();
@@ -365,25 +370,22 @@ int cell_pin_cbk(lefrCallbackType_e, lefiPin* p, lefiUserData ud) {
                                                           : "INPUT"));
     // R4：局部 pin id 平铺分配（part 内跨 cell 单调）+ 局部 pin hasher
     // 注册；全局平铺 id 由 T6 汇总重排后回填 cell.pins_ 的 pin_id_
-    // （ds_merge_cell_lef 经 hasher 反查组合键重挂的数据源）
     const CMString pin_name = p->name();
     ctx->current_cell.add_pin(std::move(pin));
-    const CMPinId local_pin_id = ctx->next_pin_id++;
-    ctx->design->register_pin(ctx->current_cell.get_name(), pin_name,
-                              local_pin_id);
-    // R4：pin id 分配即回填 DSPin::pin_id_（局部平铺 id；R7 ㊱ 汇总
-    // ds_merge_cell_lef 按此 id 反查局部 hasher 组合键重挂——缺失则
-    // 全部 pin 落在 id 0 造成重挂污染）
+    // 2026-09-16 裁定 3：局部 pin 名字空间幂等分配（同名 pin 跨 cell 共
+    // 享局部 id——与全局重挂后的共享形态同构）；id 分配即回填
+    // DSPin::pin_id_（重挂数据源）
+    const CMPinId local_pin_id = ctx->design->register_pin(pin_name);
     ctx->current_cell.pins_.back().set_pin_id(local_pin_id);
     ++ctx->stats->pin_count;
 
-    // ⑰：pin 几何不进简化 pin——收独立对象（R4：按局部平铺 pin id 逐
-    // pin 落位；全局平铺 id 由 T6 汇总重排后按新 id 重挂）
+    // ⑰：pin 几何不进简化 pin——收独立对象（局部键 = (cell_seq, 局部
+    // pin id)；全局 (cell id, pin id) 由 T6 汇总重挂）
     for (int i = 0; i < p->numPorts(); ++i) {
         collect_lef_geoms(p->port(i), ctx, /*to_obs=*/false);
     }
     if (!ctx->current_pin_geoms.empty()) {
-        ctx->geometry->add_geometries(local_pin_id,
+        ctx->geometry->add_geometries(CMCellId{ctx->cell_seq}, local_pin_id,
                                       std::move(ctx->current_pin_geoms));
         ctx->current_pin_geoms.clear();
     }

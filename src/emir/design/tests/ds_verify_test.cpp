@@ -72,7 +72,7 @@ struct VerifyEnv {
         vdd.pin_id_ = CMPinId{7};
         inv.add_pin(std::move(vdd));
         design.add_cell(std::move(inv));
-        design.register_pin("INV", "VDD", CMPinId{7});
+        design.register_pin("VDD");  // id 7
         // sub block cell（id 1）+ via cell（id 0）
         DSCell sub_cell;
         sub_cell.set_name("sub");

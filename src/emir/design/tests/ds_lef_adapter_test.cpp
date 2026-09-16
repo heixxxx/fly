@@ -209,24 +209,24 @@ TEST(DsCellLefTest, ParseMacrosPinsGeometryAndVias) {
 
     // pin 几何入独立对象（R4：键 = 局部平铺 pin id，每 pin 一条目），
     // 层名 → layer id
-    const CMVector<DSShapeRef>* a_geoms = pin_geoms.geometry_of(CMPinId{0});
+    const CMVector<DSShapeRef>* a_geoms = pin_geoms.geometry_of(CMCellId{0}, CMPinId{0});
     ASSERT_NE(a_geoms, nullptr);
     ASSERT_EQ(a_geoms->size(), 1u);  // A 一个 rect
     EXPECT_EQ((*a_geoms)[0].get_layer_id(), 0u);  // A 在 M1
     EXPECT_EQ((*a_geoms)[0].get_rect().get_x_high(), 100);
-    const CMVector<DSShapeRef>* zn_geoms = pin_geoms.geometry_of(CMPinId{1});
+    const CMVector<DSShapeRef>* zn_geoms = pin_geoms.geometry_of(CMCellId{0}, CMPinId{1});
     ASSERT_NE(zn_geoms, nullptr);
     EXPECT_EQ((*zn_geoms)[0].get_layer_id(), 2u);  // ZN 在 M2
     EXPECT_EQ((*zn_geoms)[0].get_rect().get_x_low(), 300);
-    const CMVector<DSShapeRef>* vdd_geoms = pin_geoms.geometry_of(CMPinId{2});
+    const CMVector<DSShapeRef>* vdd_geoms = pin_geoms.geometry_of(CMCellId{0}, CMPinId{2});
     ASSERT_NE(vdd_geoms, nullptr);
     EXPECT_EQ((*vdd_geoms)[0].get_layer_id(), 0u);  // VDD 在 M1
     EXPECT_EQ((*vdd_geoms)[0].get_rect().get_y_low(), 600);
     // DFF_X1 的 2 pin（D=3/Q=4，几何各自一条）
-    ASSERT_NE(pin_geoms.geometry_of(CMPinId{3}), nullptr);
-    EXPECT_EQ(pin_geoms.geometry_of(CMPinId{3})->size(), 1u);
-    ASSERT_NE(pin_geoms.geometry_of(CMPinId{4}), nullptr);
-    EXPECT_EQ(pin_geoms.geometry_of(CMPinId{4})->size(), 1u);
+    ASSERT_NE(pin_geoms.geometry_of(CMCellId{1}, CMPinId{3}), nullptr);
+    EXPECT_EQ(pin_geoms.geometry_of(CMCellId{1}, CMPinId{3})->size(), 1u);
+    ASSERT_NE(pin_geoms.geometry_of(CMCellId{1}, CMPinId{4}), nullptr);
+    EXPECT_EQ(pin_geoms.geometry_of(CMCellId{1}, CMPinId{4})->size(), 1u);
 
     // OBS 几何入 cell（D19）
     ASSERT_EQ(inv.obs_count(), 2u);
@@ -250,14 +250,14 @@ TEST(DsCellLefTest, ParseMacrosPinsGeometryAndVias) {
     EXPECT_EQ(design.find_cell("INV_X1"), &design.cells_[0]);
     EXPECT_EQ(design.find_cell("DFF_X1"), &design.cells_[1]);
 
-    // R4：S2 局部 pin namemap 注册（局部 id = part 内跨 cell 平铺；全局
-    // 平铺 id 由 T6 汇总重排后回填）——ds_merge_cell_lef 重挂与 pin_id
-    // 回填的数据源
-    EXPECT_EQ(design.pin_names_.get_id("INV_X1/A"), 0u);
-    EXPECT_EQ(design.pin_names_.get_id("INV_X1/ZN"), 1u);
-    EXPECT_EQ(design.pin_names_.get_id("INV_X1/VDD"), 2u);
-    EXPECT_EQ(design.pin_names_.get_id("DFF_X1/D"), 3u);
-    EXPECT_EQ(design.pin_names_.get_id("DFF_X1/Q"), 4u);
+    // 2026-09-16 裁定 3：S2 局部 pin 名字空间（键 = 裸 pin 名，part 内
+    // 同名 pin 共享局部 id——全局重挂后共享形态同构）；id 分配即回填
+    // pin_id_（重挂数据源）。本数据 pin 名唯一 → id 0..4
+    EXPECT_EQ(design.pin_names_.get_id("A"), 0u);
+    EXPECT_EQ(design.pin_names_.get_id("ZN"), 1u);
+    EXPECT_EQ(design.pin_names_.get_id("VDD"), 2u);
+    EXPECT_EQ(design.pin_names_.get_id("D"), 3u);
+    EXPECT_EQ(design.pin_names_.get_id("Q"), 4u);
     EXPECT_EQ(design.pin_names_.size(), 5u);
 }
 
@@ -319,7 +319,7 @@ TEST(DsLefNegativeTest, UndefinedLayerReferenceDroppedAndCounted) {
     EXPECT_EQ(vias.size(), 0u);                    // via 整条丢弃
     EXPECT_EQ(design.cells_.size(), 2u);           // macro 本体不牵连
     EXPECT_EQ(stats.skipped_layer_ref_count, 8);   // 条目级计数
-    EXPECT_TRUE(pin_geoms.pin_geometry_.empty());  // 几何逐 rect 丢弃
+    EXPECT_TRUE(pin_geoms.cell_pin_geometry_.empty());  // 几何逐 rect 丢弃
     EXPECT_EQ(design.cells_[0].obs_count(), 0u);   // OBS rect 丢弃
 }
 
@@ -361,7 +361,7 @@ TEST(DsLefNegativeTest, CellLefSyntaxErrorFallsBackToEmptyProducts) {
     EXPECT_EQ(stats.parse_failed_count, 1);  // 失败标记置位
     EXPECT_EQ(stats.macro_count, 0);         // stats 清零（部分产物不残留）
     EXPECT_TRUE(design.cells_.empty());      // 产物清空（空 DSDesign）
-    EXPECT_TRUE(pin_geoms.pin_geometry_.empty());  // pin 几何空
+    EXPECT_TRUE(pin_geoms.cell_pin_geometry_.empty());  // pin 几何空
     EXPECT_TRUE(cell_vias.empty());          // via 空
 }
 
@@ -400,16 +400,20 @@ TEST(DsLefRoundTripTest, ProductsSerializeRoundTrip) {
     EXPECT_EQ(design_back.cells_[0].obs_at(1).get_rect().get_x_high(), 600);
     ASSERT_NE(design_back.find_cell("DFF_X1"), nullptr);
 
-    // DSPinGeometry 往返（R4：键 = 局部平铺 pin id）
+    // DSPinGeometry 往返（裁定 3：键 = (cell_seq, 局部 pin id)）
     CMString geom_blob;
     FLY_ENCODE(pin_geoms, geom_blob);
     DSPinGeometry geoms_back;
     FLY_DECODE(geom_blob, DSPinGeometry, geoms_back);
-    ASSERT_NE(geoms_back.geometry_of(CMPinId{0}), nullptr);
-    EXPECT_EQ(geoms_back.geometry_of(CMPinId{0})->size(), 1u);  // INV_X1/A 一条
-    EXPECT_EQ(geoms_back.geometry_of(CMPinId{0})->at(0).get_layer_id(), 0u);
-    ASSERT_NE(geoms_back.geometry_of(CMPinId{4}), nullptr);     // DFF_X1/Q
-    EXPECT_EQ(geoms_back.geometry_of(CMPinId{4})->at(0).get_layer_id(), 2u);
+    ASSERT_NE(geoms_back.geometry_of(CMCellId{0}, CMPinId{0}), nullptr);
+    EXPECT_EQ(geoms_back.geometry_of(CMCellId{0}, CMPinId{0})->size(),
+              1u);  // INV_X1/A 一条
+    EXPECT_EQ(geoms_back.geometry_of(CMCellId{0}, CMPinId{0})->at(0)
+                  .get_layer_id(), 0u);
+    ASSERT_NE(geoms_back.geometry_of(CMCellId{1}, CMPinId{4}),
+              nullptr);  // DFF_X1/Q
+    EXPECT_EQ(geoms_back.geometry_of(CMCellId{1}, CMPinId{4})->at(0)
+                  .get_layer_id(), 2u);
 
     // DSViaCell 集合往返
     ViaList via_list{vias};

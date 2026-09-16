@@ -53,7 +53,7 @@ struct MapperEnv {
         root.id_ = 0;
         root.parent_id_ = 0;
         root.block_cell_name_ = "top";
-        root.instance_name_ = "top";
+        root.instance_name_ = "";  // 裁定 2：root 实例名恒空串
         root.self_global_id_ = CMInstanceId{0};
         root.instance_start_ = CMInstanceId{0};
         root.instance_count_ = 4;
@@ -146,32 +146,30 @@ TEST(DSNameMapperTest, GetGlobalIdResolvesHierarchyPaths) {
     MapperEnv env;
     const DSInstanceNameMapper mapper = make_full_instance_mapper(env);
 
-    // 叶层实例（叶层 hasher local + 区间 start）
-    EXPECT_EQ(mapper.get_global_id("top/i1"), 1u);
-    EXPECT_EQ(mapper.get_global_id("top/i3"), 3u);
+    // 2026-09-16 裁定 1/2：路径不含设计名前缀——顶层实例 = 单段名
+    EXPECT_EQ(mapper.get_global_id("i1"), 1u);
+    EXPECT_EQ(mapper.get_global_id("i3"), 3u);
     // block instance 本身：父块 hasher 中登记的 local id（= 节点
     // self_global_id，两路等价）
-    EXPECT_EQ(mapper.get_global_id("top/i2"), 2u);
+    EXPECT_EQ(mapper.get_global_id("i2"), 2u);
     // 两层嵌套（mid 内实例）
-    EXPECT_EQ(mapper.get_global_id("top/i2/i1"), 5u);
-    EXPECT_EQ(mapper.get_global_id("top/i2/i2"), 6u);
+    EXPECT_EQ(mapper.get_global_id("i2/i1"), 5u);
+    EXPECT_EQ(mapper.get_global_id("i2/i2"), 6u);
     // 三层嵌套（bottom 内 leaf）
-    EXPECT_EQ(mapper.get_global_id("top/i2/i1/i1"), 8u);
+    EXPECT_EQ(mapper.get_global_id("i2/i1/i1"), 8u);
     // 同一 block 定义多次实例化：各自区间独立换算
-    EXPECT_EQ(mapper.get_global_id("top/i2/i2/i1"), 10u);
+    EXPECT_EQ(mapper.get_global_id("i2/i2/i1"), 10u);
 
     // 未命中场景（㊴ 哨兵）
-    EXPECT_EQ(mapper.get_global_id("top/ghost"),
+    EXPECT_EQ(mapper.get_global_id("ghost"),
               DSInstanceNameMapper::kInvalidId);
-    EXPECT_EQ(mapper.get_global_id("top/i2/ghost"),
+    EXPECT_EQ(mapper.get_global_id("i2/ghost"),
               DSInstanceNameMapper::kInvalidId);
-    // root 段不匹配 / 路径断裂 / 空路径
-    EXPECT_EQ(mapper.get_global_id("ghost/i1"),
+    // 路径断裂 / 空路径
+    EXPECT_EQ(mapper.get_global_id("i1/deeper"),
               DSInstanceNameMapper::kInvalidId);
-    EXPECT_EQ(mapper.get_global_id("top/i1/deeper"),
-              DSInstanceNameMapper::kInvalidId);
-    EXPECT_EQ(mapper.get_global_id("top"), DSInstanceNameMapper::kInvalidId);
-    EXPECT_EQ(mapper.get_global_id(""), DSInstanceNameMapper::kInvalidId);
+    // 裁定 2 对称语义：空串 = root 自身（global id 0，仅 instance 维度）
+    EXPECT_EQ(mapper.get_global_id(""), 0u);
 }
 
 // ── 2. get_full_name：global id → 层级路径（含 local 0 → self 路径）─
@@ -180,17 +178,17 @@ TEST(DSNameMapperTest, GetFullNameBuildsHierarchyPrefix) {
     MapperEnv env;
     const DSInstanceNameMapper mapper = make_full_instance_mapper(env);
 
-    // root local 0 → 自身实例名路径（⑧ root global 0 = top）
-    EXPECT_EQ(mapper.get_full_name(0), "top");
+    // 裁定 2 对称语义：root（global 0）→ 空串（root 实例名恒空串）
+    EXPECT_EQ(mapper.get_full_name(0), "");
     // block instance 自身（self_global_id 落在父块区间）→ 自身路径
-    EXPECT_EQ(mapper.get_full_name(2), "top/i2");
-    EXPECT_EQ(mapper.get_full_name(5), "top/i2/i1");
-    EXPECT_EQ(mapper.get_full_name(6), "top/i2/i2");
-    // 叶实例 → prefix + 实例名
-    EXPECT_EQ(mapper.get_full_name(1), "top/i1");
-    EXPECT_EQ(mapper.get_full_name(3), "top/i3");
-    EXPECT_EQ(mapper.get_full_name(8), "top/i2/i1/i1");
-    EXPECT_EQ(mapper.get_full_name(10), "top/i2/i2/i1");
+    EXPECT_EQ(mapper.get_full_name(2), "i2");
+    EXPECT_EQ(mapper.get_full_name(5), "i2/i1");
+    EXPECT_EQ(mapper.get_full_name(6), "i2/i2");
+    // 叶实例 → prefix + 实例名（顶层叶 = 单段名）
+    EXPECT_EQ(mapper.get_full_name(1), "i1");
+    EXPECT_EQ(mapper.get_full_name(3), "i3");
+    EXPECT_EQ(mapper.get_full_name(8), "i2/i1/i1");
+    EXPECT_EQ(mapper.get_full_name(10), "i2/i2/i1");
 
     // 未命中（越界区间反查）→ 空名
     EXPECT_EQ(mapper.get_full_name(11), "");
@@ -203,8 +201,8 @@ TEST(DSNameMapperTest, GlobalIdAndFullNameRoundTrip) {
 
     // 双向闭环：登记过的每个 global id，name → id → name 恒等
     const CMVector<CMString> paths = {
-        "top/i1", "top/i2", "top/i3",  "top/i2/i1",
-        "top/i2/i2", "top/i2/i1/i1", "top/i2/i2/i1",
+        "i1", "i2", "i3",  "i2/i1",
+        "i2/i2", "i2/i1/i1", "i2/i2/i1",
     };
     for (const CMString& p : paths) {
         const uint64_t gid = mapper.get_global_id(p);
@@ -222,13 +220,13 @@ TEST(DSNameMapperTest, PartialInjectionQueries) {
     mapper.set_block_hasher(0, env.top.names->instance_names_);  // 仅注入 top
 
     // top 域内可查
-    EXPECT_EQ(mapper.get_global_id("top/i1"), 1u);
-    EXPECT_EQ(mapper.get_full_name(1), "top/i1");
-    EXPECT_EQ(mapper.get_full_name(2), "top/i2");  // self 路径不经 hasher
+    EXPECT_EQ(mapper.get_global_id("i1"), 1u);
+    EXPECT_EQ(mapper.get_full_name(1), "i1");
+    EXPECT_EQ(mapper.get_full_name(2), "i2");  // self 路径不经 hasher
     // mid/bottom 域未注入 → 哨兵 / 空名
-    EXPECT_EQ(mapper.get_global_id("top/i2/i1"),
+    EXPECT_EQ(mapper.get_global_id("i2/i1"),
               DSInstanceNameMapper::kInvalidId);
-    EXPECT_EQ(mapper.get_global_id("top/i2/i1/i1"),
+    EXPECT_EQ(mapper.get_global_id("i2/i1/i1"),
               DSInstanceNameMapper::kInvalidId);
     EXPECT_EQ(mapper.get_full_name(5), "");
     EXPECT_EQ(mapper.get_full_name(8), "");
@@ -242,14 +240,14 @@ TEST(DSNameMapperTest, SetBlockHasherByCellName) {
     mapper.set_block_hasher("top", env.top.names->instance_names_);
     mapper.set_block_hasher("bottom", env.bottom.names->instance_names_);
 
-    EXPECT_EQ(mapper.get_global_id("top/i1"), 1u);
-    EXPECT_EQ(mapper.get_global_id("top/i2/i1/i1"), 8u);
+    EXPECT_EQ(mapper.get_global_id("i1"), 1u);
+    EXPECT_EQ(mapper.get_global_id("i2/i1/i1"), 8u);
     // mid 未注入：mid 域全部未命中（含 block instance 自身的名字 i2——
     // ㊻ 局部注入 = 局部可查；同名 bottom 节点 ×2 共享同一份 hasher，
     // 注入按 block 定义一次覆盖全部实例）
-    EXPECT_EQ(mapper.get_global_id("top/i2/i1"),
+    EXPECT_EQ(mapper.get_global_id("i2/i1"),
               DSInstanceNameMapper::kInvalidId);
-    EXPECT_EQ(mapper.get_global_id("top/i2/i2"),
+    EXPECT_EQ(mapper.get_global_id("i2/i2"),
               DSInstanceNameMapper::kInvalidId);
     // 未知 cell name 便利口：不注册、不生效
     mapper.set_block_hasher("ghost_block", env.top.names->instance_names_);
@@ -266,23 +264,24 @@ TEST(DSNameMapperTest, NetDimensionMapping) {
     mapper.set_block_hasher(1, env.mid.names->net_names_);
     mapper.set_block_hasher(2, env.bottom.names->net_names_);
 
-    // top net [0,3)：n0 → local 1 → 0 + 1 = 1；n1 → 2
-    EXPECT_EQ(mapper.get_global_id("top/n0"), 1u);
-    EXPECT_EQ(mapper.get_global_id("top/n1"), 2u);
+    // top net [0,3)：n0 → local 1 → 0 + 1 = 1；n1 → 2（裁定 1：顶层网
+    // = 单段名）
+    EXPECT_EQ(mapper.get_global_id("n0"), 1u);
+    EXPECT_EQ(mapper.get_global_id("n1"), 2u);
     // mid net [3,5)；bottom#1 net [5,7)、bottom#2 net [7,9)
-    EXPECT_EQ(mapper.get_global_id("top/i2/n0"), 4u);
-    EXPECT_EQ(mapper.get_global_id("top/i2/i1/n0"), 6u);
-    EXPECT_EQ(mapper.get_global_id("top/i2/i2/n0"), 8u);
+    EXPECT_EQ(mapper.get_global_id("i2/n0"), 4u);
+    EXPECT_EQ(mapper.get_global_id("i2/i1/n0"), 6u);
+    EXPECT_EQ(mapper.get_global_id("i2/i2/n0"), 8u);
 
     // 反向（含嵌套 prefix）
-    EXPECT_EQ(mapper.get_full_name(1), "top/n0");
-    EXPECT_EQ(mapper.get_full_name(4), "top/i2/n0");
-    EXPECT_EQ(mapper.get_full_name(8), "top/i2/i2/n0");
+    EXPECT_EQ(mapper.get_full_name(1), "n0");
+    EXPECT_EQ(mapper.get_full_name(4), "i2/n0");
+    EXPECT_EQ(mapper.get_full_name(8), "i2/i2/n0");
     EXPECT_EQ(mapper.get_full_name(9), "");  // 越界
     EXPECT_STREQ(mapper.get_full_name(0).c_str(), "");  // 空洞位（review 2026-09-14：root local 0 → global 0，无名返回空）
 
     // net local 0 = 空洞位（不登记名）：换算不可达路径防御
-    EXPECT_EQ(mapper.get_global_id("top/ghost"),
+    EXPECT_EQ(mapper.get_global_id("ghost"),
               DSNetNameMapper::kInvalidId);
 }
 
@@ -316,7 +315,7 @@ TEST(DSNameMapperTest, MapperIsLightweightShell) {
     // 的——mid.inst 无 "i3"，覆盖后原先可查的 top 域 leaf 失效
     mapper.set_block_hasher(0, env.mid.names->instance_names_);
     EXPECT_EQ(mapper.injected_count(), 1u);
-    EXPECT_EQ(mapper.get_global_id("top/i3"),
+    EXPECT_EQ(mapper.get_global_id("i3"),
               DSInstanceNameMapper::kInvalidId);
 }
 
@@ -325,14 +324,14 @@ TEST(DSNameMapperTest, EmptyTreeAndDefaults) {
     attach_cell_ids(env);
     // 无树（默认构造）：一切查询未命中
     DSInstanceNameMapper bare;
-    EXPECT_EQ(bare.get_global_id("top/i1"),
+    EXPECT_EQ(bare.get_global_id("i1"),
               DSInstanceNameMapper::kInvalidId);
     EXPECT_EQ(bare.get_full_name(0), "");
     // 有树未注入：一切查询未命中（任务书裁定：叶层只走注入 hasher，
     // 树仅提供层级结构——树自身无 leaf 名空间；local 0 的路径反查除外，
     // ⑧ 结构性占位）
     DSInstanceNameMapper mapper(&env.tree, DSNameMapperKind::INSTANCE);
-    EXPECT_EQ(mapper.get_global_id("top/i1"),
+    EXPECT_EQ(mapper.get_global_id("i1"),
               DSInstanceNameMapper::kInvalidId);
     EXPECT_EQ(mapper.get_full_name(2), "");
     EXPECT_EQ(mapper.get_full_name(1), "");
@@ -367,7 +366,7 @@ struct DispatchEnv {
         }
         DSHierNode& root = tree.nodes_[0];
         root.block_cell_name_ = "top";
-        root.instance_name_ = "top";
+        root.instance_name_ = "";  // 裁定 2：root 实例名恒空串
         DSHierNode& mid = tree.nodes_[1];
         mid.parent_id_ = 0;
         mid.block_cell_name_ = "mid";
@@ -417,8 +416,7 @@ TEST(DSNameMapperDispatchTest, MultiLayerMultiFanoutMatchesExpectation) {
 
     // 全叶节点 × 全叶名逐条对齐独立计算的期望 id（50 × 4 = 200 条全量）
     for (int k = 0; k < 50; ++k) {
-        const CMString prefix =
-            "top/m1/leaf_" + std::to_string(k) + "/";
+        const CMString prefix = "m1/leaf_" + std::to_string(k) + "/";
         for (uint64_t local = 1; local <= DispatchEnv::kLeafLocalCount;
              ++local) {
             const CMString path = prefix + "f" + std::to_string(local - 1);
@@ -429,7 +427,7 @@ TEST(DSNameMapperDispatchTest, MultiLayerMultiFanoutMatchesExpectation) {
     // block instance 自身路径（两路等价：父块 hasher 未注入 → 分派命中
     // 叶节点后叶段走叶 hasher；此处查的是叶节点自身名作叶段的场景——
     // m1 未注入 → 哨兵）
-    EXPECT_EQ(mapper.get_global_id("top/m1"),
+    EXPECT_EQ(mapper.get_global_id("m1"),
               DSInstanceNameMapper::kInvalidId);
     // 双向闭环抽样
     for (int k : {0, 17, 49}) {
@@ -437,7 +435,7 @@ TEST(DSNameMapperDispatchTest, MultiLayerMultiFanoutMatchesExpectation) {
              ++local) {
             const uint64_t gid = env.expect_id(k, local);
             const CMString path =
-                "top/m1/leaf_" + std::to_string(k) + "/f" +
+                "m1/leaf_" + std::to_string(k) + "/f" +
                 std::to_string(local - 1);
             EXPECT_EQ(mapper.get_full_name(gid), path);
         }
@@ -466,7 +464,7 @@ TEST(DSNameMapperDispatchTest, SameNameSiblingsResolveToFirstNode) {
     mapper.set_block_hasher(DispatchEnv::kLeafCellId,
                             env.leaf_names->instance_names_);
     // 分派命中首个（node 2，区间起点 2 的后继）而非后登记者（node 52）
-    EXPECT_EQ(mapper.get_global_id("top/m1/leaf_0/f0"),
+    EXPECT_EQ(mapper.get_global_id("m1/leaf_0/f0"),
               env.expect_id(0, 1));
 }
 
@@ -476,32 +474,32 @@ TEST(DSNameMapperDispatchTest, IllegalPathsStayInvalid) {
     mapper.set_block_hasher(DispatchEnv::kLeafCellId,
                             env.leaf_names->instance_names_);
 
-    // 首段不匹配（索引键皆以 root 实例名开头）
+    // 首段不匹配（索引键皆以顶层实例名开头）
     EXPECT_EQ(mapper.get_global_id("ghost/m1/leaf_0/f0"),
               DSInstanceNameMapper::kInvalidId);
     // 空中间段（连续分隔符）
-    EXPECT_EQ(mapper.get_global_id("top//leaf_0/f0"),
+    EXPECT_EQ(mapper.get_global_id("m1//leaf_0/f0"),
               DSInstanceNameMapper::kInvalidId);
     // 首段为空（前导分隔符）
-    EXPECT_EQ(mapper.get_global_id("/top/m1/leaf_0/f0"),
+    EXPECT_EQ(mapper.get_global_id("/m1/leaf_0/f0"),
               DSInstanceNameMapper::kInvalidId);
     // 叶段为空（尾随分隔符）
-    EXPECT_EQ(mapper.get_global_id("top/m1/leaf_0/"),
+    EXPECT_EQ(mapper.get_global_id("m1/leaf_0/"),
               DSInstanceNameMapper::kInvalidId);
-    // 无分隔单段
-    EXPECT_EQ(mapper.get_global_id("top"),
+    // 无分隔单段（m1 是 block instance 自身，未注入 mid hasher → 哨兵）
+    EXPECT_EQ(mapper.get_global_id("m1"),
               DSInstanceNameMapper::kInvalidId);
-    // 多余尾段（叶段之后还有段——原实现中间段断裂语义，保持未命中）
-    EXPECT_EQ(mapper.get_global_id("top/m1/leaf_0/f0/extra"),
+    // 多余尾段（叶段之后还有段——中间段断裂语义，保持未命中）
+    EXPECT_EQ(mapper.get_global_id("m1/leaf_0/f0/extra"),
               DSInstanceNameMapper::kInvalidId);
     // 中间段断裂
-    EXPECT_EQ(mapper.get_global_id("top/m9/leaf_0/f0"),
+    EXPECT_EQ(mapper.get_global_id("m9/leaf_0/f0"),
               DSInstanceNameMapper::kInvalidId);
     // 叶名未登记
-    EXPECT_EQ(mapper.get_global_id("top/m1/leaf_0/f9"),
+    EXPECT_EQ(mapper.get_global_id("m1/leaf_0/f9"),
               DSInstanceNameMapper::kInvalidId);
-    // 空路径
-    EXPECT_EQ(mapper.get_global_id(""), DSInstanceNameMapper::kInvalidId);
+    // 空路径（instance 维度 = root 自身，global id 0——裁定 2 对称语义）
+    EXPECT_EQ(mapper.get_global_id(""), 0u);
 }
 
 TEST(DSNameMapperDispatchTest, SetTreeRebuildsDispatchIndex) {
@@ -515,20 +513,20 @@ TEST(DSNameMapperDispatchTest, SetTreeRebuildsDispatchIndex) {
     mapper.set_tree(&env.tree);
     mapper.set_block_hasher(DispatchEnv::kLeafCellId,
                             env.leaf_names->instance_names_);
-    EXPECT_EQ(mapper.get_global_id("top/m1/leaf_0/f0"),
+    EXPECT_EQ(mapper.get_global_id("m1/leaf_0/f0"),
               env.expect_id(0, 1));
     // 换树 → 旧键失效、新树键生效（自动重建，无忘重建静默错）
     attach_cell_ids(other_env);
     mapper.set_tree(&other_env.tree);
     mapper.set_block_hasher(2, other_env.bottom.names->instance_names_);
-    EXPECT_EQ(mapper.get_global_id("top/m1/leaf_0/f0"),
+    EXPECT_EQ(mapper.get_global_id("m1/leaf_0/f0"),
               DSInstanceNameMapper::kInvalidId);
-    EXPECT_EQ(mapper.get_global_id("top/i2/i1/i1"), 8u);
+    EXPECT_EQ(mapper.get_global_id("i2/i1/i1"), 8u);
     // 显式重建入口（树原地修改后的兜底）：空树重建后一切未命中
     mapper.set_kind(DSNameMapperKind::INSTANCE);
     other_env.tree.nodes_.clear();
     mapper.rebuild_dispatch_index();
-    EXPECT_EQ(mapper.get_global_id("top/i2/i1/i1"),
+    EXPECT_EQ(mapper.get_global_id("i2/i1/i1"),
               DSInstanceNameMapper::kInvalidId);
 }
 

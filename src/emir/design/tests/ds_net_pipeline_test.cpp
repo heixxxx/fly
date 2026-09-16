@@ -94,11 +94,11 @@ struct TestEnv {
         inv.add_pin(std::move(clk));
         design.add_cell(std::move(inv));
         // pin 组合键注册（S2 汇总同构；全局平铺 id 手工分配）
-        design.register_pin("INV_X1", "A", CMPinId{0});
-        design.register_pin("INV_X1", "ZN", CMPinId{1});
-        design.register_pin("INV_X1", "VDD", CMPinId{2});
-        design.register_pin("INV_X1", "VSS", CMPinId{3});
-        design.register_pin("INV_X1", "CLK", CMPinId{4});
+        design.register_pin("A");  // id 0
+        design.register_pin("ZN");  // id 1
+        design.register_pin("VDD");  // id 2
+        design.register_pin("VSS");  // id 3
+        design.register_pin("CLK");  // id 4
         design.cells_[0].pins_[0].set_pin_id(CMPinId{0});
         design.cells_[0].pins_[1].set_pin_id(CMPinId{1});
         design.cells_[0].pins_[2].set_pin_id(CMPinId{2});
@@ -119,8 +119,8 @@ struct TestEnv {
         pout.direction_ = DSPinDirection::OUTPUT;
         blk.add_pin(std::move(pout));
         design.add_cell(std::move(blk));
-        design.register_pin("nets_blk", "PIN_A", CMPinId{5});
-        design.register_pin("nets_blk", "POUT", CMPinId{6});
+        design.register_pin("PIN_A");  // id 5
+        design.register_pin("POUT");  // id 6
         design.cells_[1].pins_[0].set_pin_id(CMPinId{5});
         design.cells_[1].pins_[1].set_pin_id(CMPinId{6});
     }

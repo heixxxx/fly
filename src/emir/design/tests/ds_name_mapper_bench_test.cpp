@@ -197,13 +197,15 @@ void run_grid(int depth, int fanout, uint64_t names_count,
     mapper.set_block_hasher(kLeafCellId, leaf_hasher);
 
     // 查询样本：随机叶节点 × 随机叶名（固定 seed 可复现）
-    // 路径 = "top/m1/.../leaf_<k>/n%07d"；期望 id = 叶区间起点 + local
+    // 路径 = "m1/.../leaf_<k>/n%07d"（裁定 1：不含设计名前缀）；期望
+    // id = 叶区间起点 + local
     std::mt19937 rng(42);
     std::uniform_int_distribution<int> leaf_pick(0, fanout - 1);
     std::uniform_int_distribution<uint64_t> name_pick(0, names_count - 1);
-    std::string base = "top";
+    std::string base;
     for (int d = 1; d + 1 < depth; ++d) {
-        base += "/m" + std::to_string(d);
+        if (d > 1) base += "/";
+        base += "m" + std::to_string(d);
     }
     char leaf_name[32];
     std::vector<CMString> paths(static_cast<size_t>(kQueryCount));

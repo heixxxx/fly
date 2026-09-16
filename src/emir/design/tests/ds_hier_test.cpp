@@ -131,7 +131,8 @@ TEST(DSHierTreeTest, BuildsTreeFromDefsDfsNumbering) {
     // 根 = 唯一无父者 top（非 def_paths 首位——主 DEF 判定按引用关系）
     const DSHierNode& root = tree.node(0);
     EXPECT_EQ(root.get_block_cell_name(), "top");
-    EXPECT_EQ(root.get_instance_name(), "top");  // root 实例名 = block 名
+    // 2026-09-16 裁定 2：root 实例名恒空串（不再 block 名自指）
+    EXPECT_EQ(root.get_instance_name(), "");
     EXPECT_EQ(root.get_parent_id(), 0u);         // root 无父（自指哨兵）
     EXPECT_EQ(root.get_self_global_id(), 0u);    // ⑧ global id 0 = 根
 
@@ -311,7 +312,8 @@ TEST(DSHierTreeTest, FormatsNamedIndentedTree) {
     const CMString text = tree.format_tree();
 
     // name 表示（block cell 名 + 实例名）+ 缩进层级
-    EXPECT_NE(text.find("top as top"), CMString::npos);
+    // 裁定 2：root 行实例名以 "(top)" 占位显示
+    EXPECT_NE(text.find("top as (top)"), CMString::npos);
     EXPECT_NE(text.find("  mid as i2"), CMString::npos);       // 一层缩进
     EXPECT_NE(text.find("    bottom as i1"), CMString::npos);  // 两层缩进
     EXPECT_NE(text.find("    bottom as i2"), CMString::npos);  // 同定义再次实例化

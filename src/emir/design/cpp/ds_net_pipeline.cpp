@@ -76,12 +76,14 @@ void DSNetConnectionParseNode::handle(DSNetContext& ctx) {
     ctx.net_data->record_net_use(local_id, ctx.use);
 
     // 连接项 id 换算（2026-09-13 裁定：解析边界一次完成，S7/S9 内部链路
-    // 零字符串匹配）：
+    // 零字符串匹配；2026-09-16 裁定 3：pin 查询 = 裸 pin 名直查全局名
+    // 字空间）：
     //   instance 条目：实例名 → local id（S5a 实例 hasher，任务输入已注
-    //   入）→ cell id → DSCell 名 + pin 名组合键查容器 pin hasher（design
-    //   对象 = S2/S4 汇总后全局快照，pin hasher 已就绪）；
-    //   "PIN" port 条目：组合键 "block_name/port_name"（defi 回调语义
-    //   ( PIN portName ) 移植为 port 位 + local 0 占位）。
+    //   入）→ 所属 cell → pin 名查容器 pin hasher 得全局 id——**并校验
+    //   所属 cell 定义内确有此 pin**（全局命中不代表该 cell 有此 pin，
+    //   裁定 3 后 id 空间为库级 pin 名集）；
+    //   "PIN" port 条目：port 名查全局名字空间 + block cell 定义校验
+    //  （defi 回调语义 ( PIN portName ) 移植为 port 位 + local 0 占位）。
     // flags 六位（port/driver/receiver/power/ground/clock）换 id 时一并
     // 填写：定位到的 DSPin 的 direction/type 顺手取得（cell 内 pin 无名
     // R7——pin_id 匹配遍历，cell pin 数量级小）。
@@ -91,9 +93,10 @@ void DSNetConnectionParseNode::handle(DSNetContext& ctx) {
     const CMString& block_name = ctx.block_data->get_block_name();
     // pin_id → direction/type 匹配经 cell 内线性遍历：std cell pin 数
     // <20 无负担；block cell（port 条目）pin 数当前 10³-10⁴ 级可接受
-    //（review 注记：port 数上万时可改用 pin_base 连续性直接定位）
+    //（review 注记：port 数上万时可改用 pin id 直等定位）。返回 false =
+    // 该 cell 定义内无此 pin id（裁定 3 存在性校验）
     const auto fill_pin_flags = [](DSNetConnection& conn, const DSCell& cell,
-                                   CMPinId pin_id) {
+                                   CMPinId pin_id) -> bool {
         for (const DSPin& p : cell.pins_) {
             if (p.pin_id_ != pin_id) {
                 continue;
@@ -115,16 +118,24 @@ void DSNetConnectionParseNode::handle(DSNetContext& ctx) {
             } else if (type == DSPinType::CLOCK) {
                 conn.set_clock();
             }
-            break;
+            return true;
         }
+        return false;
     };
     for (DSNetRawConnection& raw : ctx.connections) {
         DSNetConnection conn;
         if (raw.instance_name == "PIN") {
             const CMPinId port_pin{
-                ctx.design->pin_names_.get_id(block_name + "/" +
-                                              raw.pin_name)};
-            if (!port_pin.is_valid()) {
+                ctx.design->pin_names_.get_id(raw.pin_name)};
+            const CMCellId block_cell_id{
+                ctx.design->cell_names_.get_id(block_name)};
+            const bool cell_known = block_cell_id.is_valid() &&
+                                    block_cell_id < ctx.design->cells_.size();
+            // 裁定 3 存在性校验：port pin 须在 block cell 定义内
+            if (!port_pin.is_valid() || !cell_known ||
+                !fill_pin_flags(
+                    conn, ctx.design->cells_[block_cell_id.value()],
+                    port_pin)) {
                 ++ctx.net_data->stats_.skipped_invalid_connection_count;
                 MSG("DSGN::0025", 0,
                     "net '{}' references unregistered port '{}' — "
@@ -133,15 +144,6 @@ void DSNetConnectionParseNode::handle(DSNetContext& ctx) {
             }
             conn.pin_id_ = port_pin;
             conn.set_port();
-            // port pin 的方向/type 位：block cell 的 port pin 同在 cell 表
-            const CMCellId block_cell_id{
-                ctx.design->cell_names_.get_id(block_name)};
-            if (block_cell_id.is_valid() &&
-                block_cell_id < ctx.design->cells_.size()) {
-                fill_pin_flags(conn,
-                               ctx.design->cells_[block_cell_id.value()],
-                               port_pin);
-            }
         } else {
             const CMInstanceId inst_local{
                 ctx.block_data->instance_names_
@@ -170,9 +172,9 @@ void DSNetConnectionParseNode::handle(DSNetContext& ctx) {
             const DSCell& cell =
                 ctx.design->cells_[iit->second.get_cell_id().value()];
             const CMPinId pin_id{
-                ctx.design->pin_names_.get_id(cell.name_ + "/" +
-                                              raw.pin_name)};
-            if (!pin_id.is_valid()) {
+                ctx.design->pin_names_.get_id(raw.pin_name)};
+            // 裁定 3 存在性校验：全局名字命中 ≠ 该 cell 有此 pin
+            if (!pin_id.is_valid() || !fill_pin_flags(conn, cell, pin_id)) {
                 ++ctx.net_data->stats_.skipped_invalid_connection_count;
                 MSG("DSGN::0025", 0,
                     "net '{}' references undefined pin '{}' of cell '{}' — "
@@ -182,7 +184,6 @@ void DSNetConnectionParseNode::handle(DSNetContext& ctx) {
             }
             conn.instance_local_id_ = inst_local;
             conn.pin_id_ = pin_id;
-            fill_pin_flags(conn, cell, pin_id);
         }
         ctx.net_data->add_connection(ctx.local_net_id, std::move(conn));
     }

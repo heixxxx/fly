@@ -214,9 +214,14 @@ struct DSShapeRef {
 // 简化 pin（裁定 ⑰）：基础属性 + R4 的全局 id 与放置状态 + R5 的 port
 // 复用标记（㉙：port = DSPin，不再有独立 DSPort 类型）。
 // R7 ㊱ name 分层存储：**DSPin 不存 name**（跨 cell 同名 pin 过多）——
-// pin 名仅在 DSDesign 的 DSPinNameHasher（键 = "cell_name/pin_name"），
-// pin 身份 = 全局平铺 pin_id_（D1）；名字查询经 DSDesign::pin_name_of
-// （或 pin hasher 组合键反查）。
+// pin 名仅在 DSDesign 的 DSPinNameHasher；名字查询经
+// DSDesign::pin_name_of。
+// 2026-09-16 裁定 3（推翻 D1 组合键）：pin id 按**唯一 pin 名**分配——
+// 同名 pin 跨 cell 共享同一 id（全局 pin 名字空间，键 = 裸 pin 名）；
+// 方向/类型是 (cell, pin) 属性随 DSPin 存于所属 cell，LEF 几何/功耗时
+// 序表改挂 DSPinGeometry/DSPinTables 的 cell 维度。建库链路（S2 cell
+// lef / S4 DEF port）在 register_pin 分配 id 时同步回填；merge 重排后
+// 回填发生在重挂后（ds_merge_cell_lef）。
 class DSPin {
 public:
     // 信号 / 电源 / 地 / 时钟（DSPinType 枚举定型存储，2026-09-16 裁定；
@@ -224,9 +229,7 @@ public:
     DSPinType type_ = DSPinType::SIGNAL;
     // 输入 / 输出 / 双向（DSPinDirection）
     DSPinDirection direction_ = DSPinDirection::INPUT;
-    // 全局平铺 pin id（D1，与 DSDesign pin hasher 同源）：建库链路
-    // （S2 cell lef / S4 DEF port）在 register_pin 分配全局 id 时同步
-    // 回填；merge 重排后回填发生在重挂后（ds_merge_cell_lef）。
+    // 全局 pin 名字空间 id（2026-09-16 裁定 3；键 = 裸 pin 名）。
     // 强类型 id：CMPinId（默认哨兵——登记路径显式赋值）
     CMPinId pin_id_;
     // 放置状态（DSPinPlacementStatus 枚举定型存储；P3：仅 port 场景有
@@ -582,9 +585,10 @@ public:
 // 连接项（local 拓扑保留，S7 并查集的输入）：instance pin 引用或 block
 // 级 port 引用。id 化形态（2026-09-13 裁定：S5b 解析边界一次完成名字 →
 // id 换算，S7/S9 内部链路零字符串匹配）——端点实例 = local id（⑧：0 =
-// block 自身——port 引用条目的占位）、端点 pin = 全局平铺 pin id（D1；
-// instance 条目经 cell 名 + pin 名组合键查 pin hasher，port 引用 = block
-// cell 的 port pin 全局 id，组合键 "block_name/port_name"）。
+// block 自身——port 引用条目的占位）、端点 pin = 全局 pin 名字空间 id
+// （2026-09-16 裁定 3：键 = 裸 pin 名；instance 条目换算时校验所属
+// cell 定义内确有此 pin——全局命中不代表该 cell 有此 pin，port 引用 =
+// block cell 的 port pin 全局 id）。
 // flags 六位（2026-09-13 裁定 + 同日多次裁定补充，S5b 换 id 时一并填写
 // ——换算 pin id 本就要定位所属 cell 的 pin，direction/type 顺手取得）：
 //   port 位 = block 端口引用（原 instance_name == "PIN" 判别语义移植）；
@@ -837,48 +841,57 @@ public:
 
 // —— 2.7 独立对象：pin 表数据集 / pin 几何数据集 ——
 
-// pin 表数据集：按全局 pin id 组织（R4，P1 裁定 pin 三字段按 pin 维度），
-// 只存 lib 侧表数据；条目仅含该 pin 自己的表（不再整 cell 混装一个
-// vector）。表以值语义存储（CMVector<CMLookupTable>）：序列化宏不支持
-// shared_ptr 元素，且对象级共享语义已由 CMSharedPtr<DSPinTables> 保证
-// （⑰ 注入零拷贝）；lib 侧表本为值存，design 侧沿用。
+// pin 表数据集：按 (cell id, pin id) 组织（2026-09-16 裁定 3 重挂——
+// pin id 收敛为全局 pin 名字空间 id 后，功耗/时序表是 (cell, pin) 属性：
+// 同名 pin 跨 cell 共享 id，单 pin id 键会跨 cell 冲突），只存 lib 侧表
+// 数据；条目仅含该 pin 自己的表（不再整 cell 混装一个 vector）。表以值
+// 语义存储（CMVector<CMLookupTable>）：序列化宏不支持 shared_ptr 元素，
+// 且对象级共享语义已由 CMSharedPtr<DSPinTables> 保证（⑰ 注入零拷贝）；
+// lib 侧表本为值存，design 侧沿用。
 class DSPinTables {
 public:
-    // 全局 pin id → 功耗表集（rise_power/fall_power 等）
-    CMUnorderedMap<CMPinId, CMVector<CMLookupTable>> internal_power_tables_;
-    // 全局 pin id → 时序表集（cell_rise/cell_fall 等）
-    CMUnorderedMap<CMPinId, CMVector<CMLookupTable>> timing_tables_;
+    // (cell id, pin id) → 功耗表集（rise_power/fall_power 等）
+    CMUnorderedMap<CMCellId, CMUnorderedMap<CMPinId, CMVector<CMLookupTable>>>
+        internal_power_tables_;
+    // (cell id, pin id) → 时序表集（cell_rise/cell_fall 等）
+    CMUnorderedMap<CMCellId, CMUnorderedMap<CMPinId, CMVector<CMLookupTable>>>
+        timing_tables_;
 
     // 构建期接口（整体接管表集，避免逐表拷贝）
-    void add_internal_power_tables(CMPinId pin_id,
+    void add_internal_power_tables(CMCellId cell_id, CMPinId pin_id,
                                    CMVector<CMLookupTable>&& tables);
-    void add_timing_tables(CMPinId pin_id, CMVector<CMLookupTable>&& tables);
+    void add_timing_tables(CMCellId cell_id, CMPinId pin_id,
+                           CMVector<CMLookupTable>&& tables);
 
     // 该 pin 任一类表存在即 true
-    bool pin_has_tables(CMPinId pin_id) const;
+    bool pin_has_tables(CMCellId cell_id, CMPinId pin_id) const;
     // 未命中返回 nullptr（引用读取零拷贝）
     const CMVector<CMLookupTable>* internal_power_tables_of(
-        CMPinId pin_id) const;
-    const CMVector<CMLookupTable>* timing_tables_of(CMPinId pin_id) const;
+        CMCellId cell_id, CMPinId pin_id) const;
+    const CMVector<CMLookupTable>* timing_tables_of(
+        CMCellId cell_id, CMPinId pin_id) const;
 
     FLY_SERIALIZE(internal_power_tables_, timing_tables_)
 };
 
-// pin 几何数据集：全局 pin id → lef 逐层 pin 几何（DSShapeRef 值存；
-// R4 键从 cell id 改为全局 pin id——block port 几何同样挂 port 的全局
-// pin id）。cell 维度聚合视图由 DSDesign::cell_pin_geometries 便利方法
-// 提供（遍历 cell 的 pin id 逐个取聚合）。
+// pin 几何数据集：(cell id, pin id) → lef 逐层 pin 几何（DSShapeRef 值
+// 存；2026-09-16 裁定 3 重挂——几何是 (cell, pin) 属性：同名 pin 跨
+// cell 共享 id，单 pin id 键会跨 cell 冲突；block port 几何同样挂
+// (block cell, port pin id)）。
 class DSPinGeometry {
 public:
-    CMUnorderedMap<CMPinId, CMVector<DSShapeRef>> pin_geometry_;
+    CMUnorderedMap<CMCellId, CMUnorderedMap<CMPinId, CMVector<DSShapeRef>>>
+        cell_pin_geometry_;
 
-    void add_geometry(CMPinId pin_id, DSShapeRef&& ref);
-    void add_geometries(CMPinId pin_id, CMVector<DSShapeRef>&& geos);
+    void add_geometry(CMCellId cell_id, CMPinId pin_id, DSShapeRef&& ref);
+    void add_geometries(CMCellId cell_id, CMPinId pin_id,
+                        CMVector<DSShapeRef>&& geos);
 
-    bool pin_has_geometry(CMPinId pin_id) const;
-    const CMVector<DSShapeRef>* geometry_of(CMPinId pin_id) const;
+    bool pin_has_geometry(CMCellId cell_id, CMPinId pin_id) const;
+    const CMVector<DSShapeRef>* geometry_of(CMCellId cell_id,
+                                            CMPinId pin_id) const;
 
-    FLY_SERIALIZE(pin_geometry_)
+    FLY_SERIALIZE(cell_pin_geometry_)
 };
 
 // —— 2.9 层级树（S6；裁定 ⑧⑨⑮）——
@@ -1027,10 +1040,10 @@ public:
 // —— 2.8 DSDesign 容器（裁定 ⑬）——
 
 // design db 顶层容器：cell id = cells_ 下标、via cell id = via_cells_
-// 下标（各 id 空间独立 uint32；block cell 与 macro 同一 cell 编号空间，
-// ㉙——独立 blocks_ 表与 block namemap 已删除，block 查找走 cell
-// namemap + is_block_cell()）；pin id 全局平铺单调分配（D1），pin
-// namemap 键 = "cell_name/pin_name"。
+// 下标（各 id 空间独立；block cell 与 macro 同一 cell 编号空间，㉙——
+// 独立 blocks_ 表与 block namemap 已删除，block 查找走 cell namemap +
+// is_block_cell()）；pin id 按唯一 pin 名分配（2026-09-16 裁定 3：全局
+// pin 名字空间，键 = 裸 pin 名，同名 pin 跨 cell 共享 id）。
 class DSDesign {
 public:
     // —— 序列化字段 ——
@@ -1045,8 +1058,8 @@ public:
     CMUnorderedMap<CMCellId, CMString> lib_link_;
 
     // name ↔ id 双向 hasher（R7 ㊲/㊸：原三套散装 map+vector 收编进
-    // hasher 底座，双向语义不变；pin 键 = "cell_name/pin_name"（D1 组合
-    // 键）。32 位组（id 十万级以内，㊳）。
+    // hasher 底座，双向语义不变；pin 键 = 裸 pin 名——2026-09-16 裁定 3
+    // 全局 pin 名字空间。32 位组（id 十万级以内，㊳）。
     DSCellNameHasher cell_names_;
     DSPinNameHasher pin_names_;
     DSViaCellNameHasher via_cell_names_;
@@ -1074,17 +1087,16 @@ public:
     // hasher 同步注册。仅汇总任务串行调用。
     void add_cell_at(CMCellId cell_id, DSCell&& cell);
     CMViaCellId add_via_cell(DSViaCell&& via);
-    // pin hasher 注册（pin id 由调用方按 D1 平铺分配；键 =
-    // "cell_name/pin_name"）
-    void register_pin(const CMString& cell_name, const CMString& pin_name,
-                      CMPinId pin_id);
+    // pin hasher 注册（2026-09-16 裁定 3：键 = 裸 pin 名；同名保留首份
+    // 返回既有 id、未命中分配新 id 并登记——幂等，建库链路唯一分配口）
+    CMPinId register_pin(const CMString& pin_name);
 
     // 查询辅助（未命中 nullptr）
     const DSCell* find_cell(const CMString& name) const;
     const DSViaCell* find_via_cell(const CMString& name) const;
 
-    // pin 名查询（R7 ㊱：DSPin 自身不存 name，经 pin hasher 组合键
-    // "cell_name/pin_name" 反查取 pin 名段；未登记 id 返回空串）
+    // pin 名查询（R7 ㊱：DSPin 自身不存 name，经 pin hasher 直查——
+    // 2026-09-16 裁定 3 后键即裸 pin 名；未登记 id 返回空串）
     CMString pin_name_of(CMPinId pin_id) const;
 
     // S3 merge（裁定 ⑯）：与 lib 库容器按 cell name 对齐——匹配 cell 填
@@ -1095,9 +1107,9 @@ public:
     // pin id 落位）挂容器专用字段。返回匹配 cell 数。
     int merge_lib(const LIBLibrary& lib);
 
-    // cell 维度便利聚合（R4）：cell 全部 pin（按 pins_ 序）的几何拼接
-    // （pin 几何容器按全局 pin id 组织，逐 pin 取出拼合；cell 无几何
-    // 数据或无 pin 时返回空集）。
+    // cell 维度便利聚合（2026-09-16 裁定 3 后 = DSPinGeometry 主存储的
+    // 直取转发）：cell 全部 pin（按 pins_ 序）的几何拼合；cell 无几何
+    // 数据或无 pin 时返回空集。
     CMVector<DSShapeRef> cell_pin_geometries(CMCellId cell_id) const;
 
     // 统一入口（⑰）：把容器专用字段按指针注入 cell 的两个不序列化字段

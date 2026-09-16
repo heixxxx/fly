@@ -4,6 +4,11 @@
 
 namespace fly {
 
+// 2026-09-16 裁定 1/2（本文件路径语义）：实例/网层级路径**不含设计名
+// 前缀**——hier_path_of 跳过 root 段（root 自身路径 = 空串、顶层平铺
+// 实例/网 = 单段名）；root 实例名恒空串（get_full_name(0) 返回 ""、
+// get_global_id("") = 0，对称语义，仅 instance 维度）。
+
 // —— set_block_hasher 便利口（cell name 经树解析）——
 
 template <typename IdT>
@@ -27,13 +32,17 @@ void DSNameMapperT<IdT>::set_block_hasher(
 
 namespace {
 
-// 节点的实例名路径（自根逐层 '/' 连接；root 实例名 = block 名自指 ⑧）。
-// 分派索引键（R8c）与 get_full_name 的 prefix 拼装共用
+// 节点的实例名路径（2026-09-16 裁定 1：**不含设计名前缀**——路径从顶
+// 层内容起，root 段跳过：顶层平铺实例即单段名、root 自身 = 空串；外部
+// 工具名字（TWF/网表）从不含设计名，按原「自根含 root」语义全量未命
+// 中）。分派索引键（R8c）与 get_full_name 的 prefix 拼装共用
 CMString hier_path_of(const DSHierTree& tree, uint32_t node_id) {
     CMVector<CMString> parts;
     const DSHierNode* n = &tree.node(node_id);
     while (true) {
-        parts.push_back(n->get_instance_name());
+        if (n->get_id() != n->get_parent_id()) {
+            parts.push_back(n->get_instance_name());  // root 段不入路径
+        }
         if (n->get_id() == n->get_parent_id()) {
             break;  // root 自指哨兵
         }
@@ -57,14 +66,14 @@ void DSNameMapperT<IdT>::rebuild_dispatch_index() {
     if (tree_ == nullptr) {
         return;
     }
-    // 键 = 节点实例名路径（自根 '/' 连接，含 root——root 键即其实例名
-    // 自身，承接两段路径（root + 叶名）的前缀查询）；值 = 节点 id。
-    // nodes_ 下标序 = DFS 前序。同名兄弟（非法树形态的防御场景——⑮
-    // 实例名在 block 内唯一）保留首个：下标升序遍历 + 已存在跳过，与
-    // find_child_by_instance_name 的 children 首个命中指向一致
-    //（children_ids_ 序 = 子节点 id 升序）。
+    // 键 = 节点实例名路径（2026-09-16 裁定 1：不含设计名前缀，root 段
+    // 跳过——root 无路径键，空前缀查询由 get_global_id 直取 node 0）；
+    // 值 = 节点 id。nodes_ 下标序 = DFS 前序。同名兄弟（非法树形态的防
+    // 御场景——⑮ 实例名在 block 内唯一）保留首个：下标升序遍历 + 已存
+    // 在跳过，与 find_child_by_instance_name 的 children 首个命中指向
+    // 一致（children_ids_ 序 = 子节点 id 升序）。
     const uint32_t count = static_cast<uint32_t>(tree_->node_count());
-    for (uint32_t i = 0; i < count; ++i) {
+    for (uint32_t i = 1; i < count; ++i) {  // i 从 1 起：root 不入索引
         const CMString key = hier_path_of(*tree_, i);
         if (dispatch_.find(key, DSHierTree::kNoNode) != DSHierTree::kNoNode) {
             continue;  // 同名兄弟防御：保留首个
@@ -75,31 +84,38 @@ void DSNameMapperT<IdT>::rebuild_dispatch_index() {
 
 template <typename IdT>
 IdT DSNameMapperT<IdT>::get_global_id(const CMString& full_hier_name) const {
-    if (tree_ == nullptr || tree_->node_count() == 0 ||
-        full_hier_name.empty()) {
+    if (tree_ == nullptr || tree_->node_count() == 0) {
         return kInvalidId;
     }
-    // 分段全程无堆（R8c 裁定 53 顺带项）：叶段 = 最后一个 '/' 之后的
-    // 尾段（原语义固定——最后一段必经叶层 hasher，中间段集合不变），
-    // 前缀 = 其前全部段（即目标 block instance 的层次全路径，与分派
-    // 索引键同构）。裁定 53 的「find(全路径) 不命中逐段去尾重查」在
-    // 该叶段固定规则下收编为「剥叶段后前缀一次 find」：前缀命中 ⟺ 原
-    // 逐层 find_child_by_instance_name 逐层命中（索引含全部节点路径键）；
-    // 前缀未命中场景（中间段断裂 / 空段 / 多余尾段）继续去尾重查的任何
-    // 命中都带着 ≥ 2 段的尾，交叶层 hasher 必是原实现不可达的误命中，
-    // 语义保持要求一律未命中——故一次 find 定案，无回退循环。路径长度
-    // O(总长) 替代原每层线性扫 O(扇出×段长)。
-    const size_t last_slash = full_hier_name.find_last_of('/');
-    if (last_slash == CMString::npos ||
-        last_slash + 1 == full_hier_name.size()) {
-        return kInvalidId;  // 无分隔单段（root 自身无叶名可查）/ 叶段为空
+    // 空串 = root 自身（2026-09-16 裁定 2 对称语义：root 实例名恒空串，
+    // global id 0）。net 维度无「root 网」，恒未命中
+    if (full_hier_name.empty()) {
+        return kind_ == DSNameMapperKind::INSTANCE
+                   ? tree_->node(0).get_self_global_id().value()
+                   : kInvalidId;
     }
-    const uint32_t node_id =
-        dispatch_.find(CMString(full_hier_name.data(), last_slash),
-                       DSHierTree::kNoNode);
-    if (node_id >= tree_->node_count()) {
-        return kInvalidId;  // 前缀非 block instance 路径（含 root 首段
-                            // 不匹配——索引键皆以 root 实例名开头）
+    // 分段全程无堆（R8c 裁定 53 顺带项）：叶段 = 最后一个 '/' 之后的
+    // 尾段（最后一段必经叶层 hasher），前缀 = 其前全部段（即目标 block
+    // instance 的层次路径，与分派索引键同构）。2026-09-16 裁定 1：路径
+    // 不含设计名前缀——root 段不入索引（rebuild 跳过 node 0），空前缀
+    // （单段名 = 顶层平铺实例/网）直取 root。前缀命中 ⟺ 逐层命中（索
+    // 引含全部非 root 节点路径键）；前缀未命中场景（中间段断裂 / 空段 /
+    // 多余尾段）的任何回退命中都带着 ≥ 2 段的尾，交叶层 hasher 必是误
+    // 命中——一次 find 定案，无回退循环。路径长度 O(总长)。
+    const size_t last_slash = full_hier_name.find_last_of('/');
+    if (last_slash != CMString::npos &&
+        last_slash + 1 == full_hier_name.size()) {
+        return kInvalidId;  // 叶段为空
+    }
+    uint32_t node_id = DSHierTree::kNoNode;
+    if (last_slash == CMString::npos) {
+        node_id = 0;  // 单段名 = 顶层内容（root 块内的实例/网）
+    } else {
+        node_id = dispatch_.find(CMString(full_hier_name.data(), last_slash),
+                                 DSHierTree::kNoNode);
+        if (node_id >= tree_->node_count()) {
+            return kInvalidId;  // 前缀非 block instance 路径
+        }
     }
     const DSHierNode& cur = tree_->node(node_id);
 
@@ -162,7 +178,8 @@ CMString DSNameMapperT<IdT>::get_full_name(IdT global_id) const {
         if (name.empty()) {
             return {};  // 空洞（未登记下标）
         }
-        return prefix + "/" + name;
+        // 裁定 1：root 块（prefix 空）的顶层实例 = 单段名
+        return prefix.empty() ? name : prefix + "/" + name;
     }
     const uint32_t node_id =
         tree_->block_of_net(CMNetId{global_id});
@@ -179,7 +196,9 @@ CMString DSNameMapperT<IdT>::get_full_name(IdT global_id) const {
     if (name.empty()) {
         return {};  // 空洞（local 0 空洞位 / 未登记下标）
     }
-    return hier_path_of(*tree_, node_id) + "/" + name;
+    // 裁定 1：root 块（prefix 空）的顶层网 = 单段名
+    const CMString prefix = hier_path_of(*tree_, node_id);
+    return prefix.empty() ? name : prefix + "/" + name;
 }
 
 // 显式实例化（业务唯一实例化组；IdT = uint64，㊹ global id 空间）

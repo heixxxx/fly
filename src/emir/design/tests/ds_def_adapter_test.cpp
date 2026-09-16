@@ -127,10 +127,10 @@ TEST(DsDefHeaderTest, ParseBlockPinsAndPrefixedVias) {
               DSPinType::CLOCK);
     EXPECT_EQ(pa.get_placement_status(),
               DSPinPlacementStatus::FIXED);
-    ASSERT_EQ(p.port_geoms.geometry_of(CMPinId{0})->size(), 1u);  // 局部 pin 下标 0
-    EXPECT_EQ((*p.port_geoms.geometry_of(CMPinId{0}))[0].get_layer_id(), 0u);  // M1
-    EXPECT_EQ((*p.port_geoms.geometry_of(CMPinId{0}))[0].get_rect().get_x_low(), -10);
-    EXPECT_EQ((*p.port_geoms.geometry_of(CMPinId{0}))[0].get_rect().get_y_high(), 40);
+    ASSERT_EQ(p.port_geoms.geometry_of(CMCellId{0}, CMPinId{0})->size(), 1u);  // 局部 pin 下标 0
+    EXPECT_EQ((*p.port_geoms.geometry_of(CMCellId{0}, CMPinId{0}))[0].get_layer_id(), 0u);  // M1
+    EXPECT_EQ((*p.port_geoms.geometry_of(CMCellId{0}, CMPinId{0}))[0].get_rect().get_x_low(), -10);
+    EXPECT_EQ((*p.port_geoms.geometry_of(CMCellId{0}, CMPinId{0}))[0].get_rect().get_y_high(), 40);
 
     EXPECT_EQ(p.port_names[1], "PIN_OUT");
     const DSPin& po = blk.pin_at(1);
@@ -139,10 +139,10 @@ TEST(DsDefHeaderTest, ParseBlockPinsAndPrefixedVias) {
               DSPinDirection::OUTPUT);
     EXPECT_EQ(po.get_placement_status(),
               DSPinPlacementStatus::PLACED);
-    ASSERT_EQ(p.port_geoms.geometry_of(CMPinId{1})->size(), 1u);
-    EXPECT_EQ((*p.port_geoms.geometry_of(CMPinId{1}))[0].get_layer_id(), 2u);  // M2
-    EXPECT_EQ((*p.port_geoms.geometry_of(CMPinId{1}))[0].get_rect().get_x_low(), 800);
-    EXPECT_EQ((*p.port_geoms.geometry_of(CMPinId{1}))[0].get_rect().get_y_high(), 1100);
+    ASSERT_EQ(p.port_geoms.geometry_of(CMCellId{0}, CMPinId{1})->size(), 1u);
+    EXPECT_EQ((*p.port_geoms.geometry_of(CMCellId{0}, CMPinId{1}))[0].get_layer_id(), 2u);  // M2
+    EXPECT_EQ((*p.port_geoms.geometry_of(CMCellId{0}, CMPinId{1}))[0].get_rect().get_x_low(), 800);
+    EXPECT_EQ((*p.port_geoms.geometry_of(CMCellId{0}, CMPinId{1}))[0].get_rect().get_y_high(), 1100);
 
     // S4b 通道：via 登记名带 ⑫ 前缀
     ASSERT_EQ(p.def_vias.size(), 2u);
@@ -261,14 +261,16 @@ TEST(DsDefRoundTripTest, ProductsIntoDesignRoundTrip) {
     // R7 ㊱：pin 名经容器 pin hasher 组合键反查
     EXPECT_EQ(back.pin_name_of(blk->pin_at(0).get_pin_id()), "PIN_A");
 
-    // port pin id 平铺分配 + namemap + port 几何重挂（经独立对象往返）
-    const uint32_t pin_in_id = back.pin_names_.get_id("block_a/PIN_A");
-    const uint32_t pin_out_id = back.pin_names_.get_id("block_a/PIN_OUT");
+    // port pin id 进全局 pin 名字空间（裁定 3：键 = 裸 port 名）+ 几何
+    // 重挂（(block cell id, 全局 pin id) 键，经独立对象往返）
+    const uint32_t block_cell_id = back.cell_names_.get_id("block_a");
+    const uint32_t pin_in_id = back.pin_names_.get_id("PIN_A");
+    const uint32_t pin_out_id = back.pin_names_.get_id("PIN_OUT");
     EXPECT_EQ(pin_in_id, 0u);
     EXPECT_EQ(pin_out_id, 1u);
     EXPECT_EQ(blk->pin_at(0).get_pin_id(), pin_in_id);
-    ASSERT_NE(global_geoms.geometry_of(CMPinId{pin_out_id}), nullptr);
-    EXPECT_EQ((*global_geoms.geometry_of(CMPinId{pin_out_id}))[0].get_rect()
+    ASSERT_NE(global_geoms.geometry_of(CMCellId{block_cell_id}, CMPinId{pin_out_id}), nullptr);
+    EXPECT_EQ((*global_geoms.geometry_of(CMCellId{block_cell_id}, CMPinId{pin_out_id}))[0].get_rect()
                   .get_x_low(),
               800);
 
@@ -276,8 +278,8 @@ TEST(DsDefRoundTripTest, ProductsIntoDesignRoundTrip) {
     FLY_ENCODE(global_geoms, geom_blob);
     DSPinGeometry geoms_back;
     FLY_DECODE(geom_blob, DSPinGeometry, geoms_back);
-    ASSERT_NE(geoms_back.geometry_of(CMPinId{pin_out_id}), nullptr);
-    EXPECT_EQ(geoms_back.geometry_of(CMPinId{pin_out_id})->size(), 1u);
+    ASSERT_NE(geoms_back.geometry_of(CMCellId{block_cell_id}, CMPinId{pin_out_id}), nullptr);
+    EXPECT_EQ(geoms_back.geometry_of(CMCellId{block_cell_id}, CMPinId{pin_out_id})->size(), 1u);
 
     // via cell 权威表往返（⑫ 前缀名保留）
     ASSERT_EQ(back.via_cells_.size(), 2u);

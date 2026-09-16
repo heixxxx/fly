@@ -49,7 +49,7 @@ TEST(DsMergeCellLefTest, MergePartsRemapsIdsAndGeometry) {
     filler.set_fake_cell();
     part_a.add_cell(std::move(filler));
     part_a.fake_cell_ids_.push_back(CMCellId{1});
-    part_a.register_pin("INV_X1", "A", CMPinId{0});
+    part_a.register_pin("A");  // 裁定 3：键 = 裸 pin 名（局部 A=0）
     DSViaCell via;
     via.name_ = "VIA12";
     part_a.add_via_cell(std::move(via));
@@ -57,7 +57,8 @@ TEST(DsMergeCellLefTest, MergePartsRemapsIdsAndGeometry) {
     DSShapeRef ga;
     ga.layer_id_ = CMLayerId{0};
     ga.set_rect(GEORect(0, 0, 10, 10));
-    geoms_a.add_geometry(CMPinId{0}, std::move(ga));  // INV_X1/A（局部 pin id 0）
+    geoms_a.add_geometry(CMCellId{0}, CMPinId{0},
+                         std::move(ga));  // INV_X1/A（局部 cell 0/pin 0）
 
     // part B：INV 重名（保留 part A 首份）+ BUF 新 cell + VIA12 重名
     DSDesign part_b;
@@ -70,20 +71,20 @@ TEST(DsMergeCellLefTest, MergePartsRemapsIdsAndGeometry) {
     buf.add_pin(std::move(z));
     part_b.add_cell(std::move(buf));
     part_b.cells_[1].pins_[0].set_pin_id(CMPinId{1});  // BUF_X1/Z 局部 pin id
-    part_b.register_pin("INV_X1", "A", CMPinId{0});
-    part_b.register_pin("BUF_X1", "Z", CMPinId{1});
+    part_b.register_pin("A");  // 同名 pin 共享局部 id 0（裁定 3 同构）
+    part_b.register_pin("Z");
     DSViaCell via2;
     via2.name_ = "VIA12";
     part_b.add_via_cell(std::move(via2));
     DSPinGeometry geoms_b;
-    DSShapeRef gb;  // BUF_X1/Z 的几何（局部 pin id 1，应重挂到全局 id 2）
+    DSShapeRef gb;  // BUF_X1/Z 的几何（局部 pin id 1，全局重挂后 Z=1）
     gb.layer_id_ = CMLayerId{2};
     gb.set_rect(GEORect(5, 5, 15, 15));
-    geoms_b.add_geometry(CMPinId{1}, std::move(gb));
+    geoms_b.add_geometry(CMCellId{1}, CMPinId{1}, std::move(gb));
     DSShapeRef gdup;  // 重名 INV_X1 pin 的几何（应随 cell 丢弃）
     gdup.layer_id_ = CMLayerId{0};
     gdup.set_rect(GEORect(99, 99, 100, 100));
-    geoms_b.add_geometry(CMPinId{0}, std::move(gdup));
+    geoms_b.add_geometry(CMCellId{0}, CMPinId{0}, std::move(gdup));
 
     DSDesign dst;
     DSPinGeometry dst_geoms;
@@ -97,16 +98,14 @@ TEST(DsMergeCellLefTest, MergePartsRemapsIdsAndGeometry) {
     EXPECT_EQ(dst.cells_[0].get_name(), "INV_X1");
     EXPECT_EQ(dst.cells_[2].get_name(), "BUF_X1");
 
-    // pin namemap 重挂：单调分配（D1，容忍空洞）。基址 = A 合并后的
-    // pin 数（1）；B 的局部 id 空间中 INV_X1/A=0 已被消费（cell 虽被
-    // 抛弃、id 已分配）→ BUF_X1/Z = 1 + 1 = 2，全局 id 1 为被抛弃 pin
-    // 的无害空洞
-    EXPECT_EQ(dst.pin_names_.get_id("INV_X1/A"), 0u);
-    EXPECT_EQ(dst.pin_names_.get_id("BUF_X1/Z"), 2u);
+    // pin 名字空间重挂（裁定 3）：键 = 裸 pin 名，全局 id 空间 = 唯一
+    // pin 名集（A=0、Z=1）——B 的重名 A 复用既有 id，无空洞
+    EXPECT_EQ(dst.pin_names_.get_id("A"), 0u);
+    EXPECT_EQ(dst.pin_names_.get_id("Z"), 1u);
 
-    // R4：重挂后全局 pin id 回填 cell.pins_（跨 cell 全局平铺一致）
+    // 重挂后全局 pin id 回填 cell.pins_（同名 pin 跨 cell 共享 id）
     EXPECT_EQ(dst.cells_[0].pins_[0].get_pin_id(), 0u);  // INV_X1/A
-    EXPECT_EQ(dst.cells_[2].pins_[0].get_pin_id(), 2u);  // BUF_X1/Z
+    EXPECT_EQ(dst.cells_[2].pins_[0].get_pin_id(), 1u);  // BUF_X1/Z
 
     // fake cell ids 重挂
     ASSERT_EQ(dst.fake_cell_ids_.size(), 1u);
@@ -117,13 +116,15 @@ TEST(DsMergeCellLefTest, MergePartsRemapsIdsAndGeometry) {
     ASSERT_EQ(dst.via_cells_.size(), 1u);
     EXPECT_EQ(dst.via_cells_[0].get_name(), "VIA12");
 
-    // pin 几何按新分配的全局 pin id 重挂（R4：键 = 全局 pin id）；抛弃
-    // pin 的几何丢弃
-    ASSERT_NE(dst_geoms.geometry_of(CMPinId{0}), nullptr);  // INV_X1/A（全局 pin id 0）
-    EXPECT_EQ(dst_geoms.geometry_of(CMPinId{0})->size(), 1u);
-    ASSERT_NE(dst_geoms.geometry_of(CMPinId{2}), nullptr);  // BUF_X1/Z（全局 pin id 2）
-    EXPECT_EQ(dst_geoms.geometry_of(CMPinId{2})->at(0).get_rect().get_x_low(), 5);
-    EXPECT_EQ(dst_geoms.geometry_of(CMPinId{1}), nullptr);  // 被抛弃 pin 无几何
+    // pin 几何按 (dst cell id, 全局 pin id) 重挂（裁定 3：几何是
+    // (cell, pin) 属性）；被抛弃 cell 的几何丢弃
+    ASSERT_NE(dst_geoms.geometry_of(CMCellId{0}, CMPinId{0}), nullptr);
+    EXPECT_EQ(dst_geoms.geometry_of(CMCellId{0}, CMPinId{0})->size(), 1u);
+    ASSERT_NE(dst_geoms.geometry_of(CMCellId{2}, CMPinId{1}), nullptr);
+    EXPECT_EQ(
+        dst_geoms.geometry_of(CMCellId{2}, CMPinId{1})->at(0).get_rect()
+            .get_x_low(), 5);
+    EXPECT_EQ(dst_geoms.geometry_of(CMCellId{0}, CMPinId{1}), nullptr);
 }
 
 TEST(DsMergeDefHeaderTest, BlocksEnterCellNameMapAndViaTable) {
@@ -135,7 +136,7 @@ TEST(DsMergeDefHeaderTest, BlocksEnterCellNameMapAndViaTable) {
         return p;
     }());
     dst.add_cell(std::move(macro));
-    dst.register_pin("INV_X1", "A", CMPinId{0});
+    dst.register_pin("A");
 
     CMVector<DSCell> block_cells;
     block_cells.push_back(make_block_cell("block_a"));
@@ -146,7 +147,8 @@ TEST(DsMergeDefHeaderTest, BlocksEnterCellNameMapAndViaTable) {
     DSShapeRef pg;
     pg.layer_id_ = CMLayerId{0};
     pg.set_rect(GEORect(10, 20, 30, 40));
-    port_geoms.add_geometry(CMPinId{0}, std::move(pg));
+    port_geoms.add_geometry(CMCellId{0}, CMPinId{0},
+                            std::move(pg));
 
     CMVector<DSViaCell> def_vias;
     DSViaCell v;
@@ -170,15 +172,17 @@ TEST(DsMergeDefHeaderTest, BlocksEnterCellNameMapAndViaTable) {
     EXPECT_EQ(dst.cells_[1].get_origin_y(), 0);
     EXPECT_EQ(dst.cells_[1].get_def_path(), "/work/x.def");
 
-    // port pin id 平铺分配进 pin namemap + pin_id_ 回填（基址 = macro
-    // pin 占用的 1）
-    EXPECT_EQ(dst.pin_names_.get_id("block_a/P0"), 1u);
-    EXPECT_EQ(dst.pin_names_.get_name(1), "block_a/P0");
+    // port pin id 进全局 pin 名字空间（裁定 3：键 = 裸 port 名；基址 =
+    // macro pin A 占用的 0 → P0 = 1）+ pin_id_ 回填
+    EXPECT_EQ(dst.pin_names_.get_id("P0"), 1u);
+    EXPECT_EQ(dst.pin_names_.get_name(1), "P0");
     EXPECT_EQ(dst.cells_[1].pins_[0].get_pin_id(), 1u);
 
-    // port 几何按全局 pin id 重挂
-    ASSERT_NE(dst_geoms.geometry_of(CMPinId{1}), nullptr);
-    EXPECT_EQ(dst_geoms.geometry_of(CMPinId{1})->at(0).get_rect().get_x_low(), 10);
+    // port 几何按 (block cell id 1, 全局 pin id) 重挂
+    ASSERT_NE(dst_geoms.geometry_of(CMCellId{1}, CMPinId{1}), nullptr);
+    EXPECT_EQ(
+        dst_geoms.geometry_of(CMCellId{1}, CMPinId{1})->at(0).get_rect()
+            .get_x_low(), 10);
 
     // port pin 形态（㉙：port 位 DSPin）
     EXPECT_TRUE(dst.cells_[1].pins_[0].is_port());
@@ -202,8 +206,8 @@ TEST(DsMergeLibTest, MatchesFillFieldsExtractsTablesAndReportsMismatch) {
     odd.name_ = "LEF_ONLY";
     dst.add_cell(std::move(odd));
     // R4：merge_lib 逐 pin 落位按全局 pin id（namemap 查询），先注册
-    dst.register_pin("INV_X1", "A", CMPinId{0});
-    dst.register_pin("INV_X1", "ZN", CMPinId{1});
+    dst.register_pin("A");
+    dst.register_pin("ZN");
 
     // lib 侧：INV_X1（带表 + pin 集合缺 ZN → 0004）+ LIB_ONLY（0003）
     LIBLibrary lib;
@@ -241,24 +245,26 @@ TEST(DsMergeLibTest, MatchesFillFieldsExtractsTablesAndReportsMismatch) {
     // lef 有 lib 无 → 无 lib 字段
     EXPECT_EQ(dst.cells_[1].get_library_name(), "");
 
-    // ⑰：pin 表提取（R4 逐 pin 落位——lib pin 名查 namemap 得全局 pin id，
-    // pin id 0 = INV_X1/A 持 internal_power + timing 两类表）
+    // ⑰：pin 表提取（裁定 3 后表挂 (cell id, pin id)——cell 0 = INV_X1、
+    // pin A = 0 持 internal_power + timing 两类表）
     ASSERT_TRUE(dst.get_pin_tables() != nullptr);
-    EXPECT_TRUE(dst.get_pin_tables()->pin_has_tables(CMPinId{0}));
+    EXPECT_TRUE(dst.get_pin_tables()->pin_has_tables(CMCellId{0}, CMPinId{0}));
     // ㉗：S3 匹配 cell 置 lib_cell 位
     EXPECT_TRUE(dst.cells_[0].is_lib_cell());
     EXPECT_FALSE(dst.cells_[1].is_lib_cell());
     const CMVector<CMLookupTable>* ip_t =
-        dst.get_pin_tables()->internal_power_tables_of(CMPinId{0});
+        dst.get_pin_tables()->internal_power_tables_of(CMCellId{0},
+                                                       CMPinId{0});
     ASSERT_NE(ip_t, nullptr);
     ASSERT_EQ(ip_t->size(), 1u);
     EXPECT_EQ((*ip_t)[0].name_, "rise_power");
     const CMVector<CMLookupTable>* tm_t =
-        dst.get_pin_tables()->timing_tables_of(CMPinId{0});
+        dst.get_pin_tables()->timing_tables_of(CMCellId{0}, CMPinId{0});
     ASSERT_NE(tm_t, nullptr);
     EXPECT_EQ((*tm_t)[0].name_, "cell_rise");
     // 无表 pin（ZN 无 lib 表 → 键 1 无条目）与 lef-only cell（id 1）无表
-    EXPECT_FALSE(dst.get_pin_tables()->pin_has_tables(CMPinId{1}));
+    EXPECT_FALSE(
+        dst.get_pin_tables()->pin_has_tables(CMCellId{0}, CMPinId{1}));
 }
 
 }  // namespace

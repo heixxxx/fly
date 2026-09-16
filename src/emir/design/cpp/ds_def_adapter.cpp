@@ -262,9 +262,9 @@ int def_pin_cbk(defrCallbackType_e, defiPin* p, defiUserData ud) {
     const uint32_t local_id = ctx->current_cell.add_pin(std::move(pin));
     ctx->port_names.push_back(name);
     if (!pin_geoms.empty()) {
-        // 局部键 = pins_ 下标（汇总 ds_merge_def_header 按同下标重挂全局
-        // pin id）
-        ctx->port_geoms->add_geometries(CMPinId{local_id},
+        // 局部键 = (占位 cell 0, pins_ 下标)——单 DEF 至多 1 个 block
+        // cell（汇总 ds_merge_def_header 按同下标重挂全局 id + 真实 cell）
+        ctx->port_geoms->add_geometries(CMCellId{0}, CMPinId{local_id},
                                         std::move(pin_geoms));
     }
     ++ctx->stats->port_count;

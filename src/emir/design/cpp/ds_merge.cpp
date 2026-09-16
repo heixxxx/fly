@@ -48,14 +48,12 @@ int ds_merge_cell_lef(DSDesign& dst, const DSDesign& src_part,
         cell_id_map[CMCellId{src_id}] = dst_id;
     }
 
-    // pin hasher 重挂：src 局部 pin id → 全局平铺新 id（基址 = dst 现有
-    // pin 数；仅收录 cell 的 pin 注册，被抛弃 cell 的 pin 随之不入）。
-    // R4：全局新 id 同步回填 dst cell.pins_ 的 DSPin::pin_id_（重挂在先、
-    // 回填在后），pin 几何按全局 pin id 重挂（src 键 = 局部 pin id，被
-    // 抛弃 cell 的 pin 几何随之丢弃）。R7 ㊱：pin 名经 src pin hasher 的
-    // 组合键（"cell/pin"）反查（DSPin 自身不存 name）
-    const CMPinId pin_base{
-        static_cast<CMPinId::int_type>(dst.pin_names_.name_table_.size())};
+    // pin hasher 重挂（2026-09-16 裁定 3）：src 局部 pin id 经裸 pin 名
+    // 反查 → dst 全局名字空间幂等登记（同名 pin 跨 part / 跨 cell 共享
+    // 同一全局 id——id 空间收敛为库级唯一 pin 名数）；全局 id 同步回填
+    // dst cell.pins_ 的 DSPin::pin_id_，pin 几何按 (dst cell id, 全局
+    // pin id) 重挂（src 键 = (src cell 下标, 局部 pin id)，被抛弃 cell
+    // 的 pin 几何随之丢弃）
     for (const auto& [src_id, dst_id] : cell_id_map) {
         const DSCell& c = src_part.cells_[src_id.value()];
         for (uint32_t pi = 0; pi < c.pins_.size(); ++pi) {
@@ -65,17 +63,20 @@ int ds_merge_cell_lef(DSDesign& dst, const DSDesign& src_part,
                 local_pin_id >= src_part.pin_names_.name_table_.size()) {
                 continue;  // 局部 hasher 与 pin 集不一致（不应发生，防御）
             }
-            const CMString& key =
+            const CMString key =
                 src_part.pin_names_.get_name(local_pin_id.value());
             if (key.empty()) {
                 continue;  // 局部 hasher 空洞（assign 稀疏未登记下标）
             }
-            const CMPinId new_id = pin_base + local_pin_id;
-            dst.pin_names_.assign(key, new_id.value());
-            dst.cells_[dst_id.value()].pins_[pi].set_pin_id(new_id);
-            const auto git = src_geom.pin_geometry_.find(local_pin_id);
-            if (git != src_geom.pin_geometry_.end()) {
-                dst_geom.add_geometries(new_id,
+            const CMPinId global_id = dst.register_pin(key);
+            dst.cells_[dst_id.value()].pins_[pi].set_pin_id(global_id);
+            const auto cit = src_geom.cell_pin_geometry_.find(src_id);
+            if (cit == src_geom.cell_pin_geometry_.end()) {
+                continue;
+            }
+            const auto git = cit->second.find(local_pin_id);
+            if (git != cit->second.end()) {
+                dst_geom.add_geometries(dst_id, global_id,
                                         CMVector<DSShapeRef>(git->second));
             }
         }
@@ -131,24 +132,24 @@ int ds_merge_def_header(DSDesign& dst, const CMVector<DSCell>& block_cells,
         }
         const CMCellId dst_id = dst.add_cell(DSCell(blk));
 
-        // port pin id 全局平铺分配（D1），进 pin hasher（键 =
-        // "design_name/port_name"，与 macro pin 同构）+ pin_id_ 回填 +
-        // port 几何按全局 pin id 重挂（R4/R5：局部键 = pins_ 下标；
-        // R7 ㊱：pin 名经 port_names 解析边界传入——DSPin 不存 name）
-        const CMPinId pin_base{
-            static_cast<CMPinId::int_type>(
-                dst.pin_names_.name_table_.size())};
+        // port pin id 分配（2026-09-16 裁定 3：port 名进全局 pin 名字
+        // 空间，键 = 裸 port 名——与其他 cell 的同名 pin 共享 id）+
+        // pin_id_ 回填 + port 几何按 (block cell id, 全局 pin id) 重挂
+        // （局部键 = (占位 cell 0, pins_ 下标)；pin 名经 port_names 解析
+        // 边界传入——DSPin 不存 name）
         for (uint32_t pi = 0; pi < blk.pin_count(); ++pi) {
             if (pi >= port_names.size()) {
                 continue;  // 名单缺失（调用方契约错误，防御不越界）
             }
-            const CMPinId new_id = pin_base + pi;
-            dst.pin_names_.assign(blk.get_name() + "/" + port_names[pi],
-                                  new_id.value());
-            dst.cells_[dst_id.value()].pins_[pi].set_pin_id(new_id);
-            const auto git = port_geoms.pin_geometry_.find(CMPinId{pi});
-            if (git != port_geoms.pin_geometry_.end()) {
-                dst_geom.add_geometries(new_id,
+            const CMPinId global_id = dst.register_pin(port_names[pi]);
+            dst.cells_[dst_id.value()].pins_[pi].set_pin_id(global_id);
+            const auto cit = port_geoms.cell_pin_geometry_.find(CMCellId{0});
+            if (cit == port_geoms.cell_pin_geometry_.end()) {
+                continue;
+            }
+            const auto git = cit->second.find(CMPinId{pi});
+            if (git != cit->second.end()) {
+                dst_geom.add_geometries(dst_id, global_id,
                                         CMVector<DSShapeRef>(git->second));
             }
         }
@@ -274,13 +275,12 @@ int DSDesign::merge_lib(const LIBLibrary& lib) {
                 join_names(missing_in_lef));
         }
 
-        // ⑰：逐 pin 提取 lib 功耗/时序表（R4 按全局 pin id 落位：lib
-        // pin 名查 pin hasher（键 = cell_name/pin_name）得全局 id；查
-        // 不到的 pin 即 pin 集合不一致，已在上方 DSGN::0004 缺失名单
-        // 路径中提醒，其表无处挂载不落位）
+        // ⑰：逐 pin 提取 lib 功耗/时序表（2026-09-16 裁定 3：lib pin 名
+        // 直查 pin 名字空间得全局 id，表挂 (cell id, pin id)；查不到的
+        // pin 即 pin 集合不一致，已在上方 DSGN::0004 缺失名单路径中提醒，
+        // 其表无处挂载不落位）
         for (const auto& lp : lc->pins_) {
-            CMString key = c.get_name() + "/" + lp.name_;
-            const CMPinId pin_id{pin_names_.get_id(key)};
+            const CMPinId pin_id{pin_names_.get_id(lp.name_)};
             if (!pin_id.is_valid()) {
                 continue;
             }
@@ -293,10 +293,12 @@ int DSDesign::merge_lib(const LIBLibrary& lib) {
                 for (const auto& t : arc.tables_) tm.push_back(t);
             }
             if (!ip.empty()) {
-                tables->add_internal_power_tables(pin_id, std::move(ip));
+                tables->add_internal_power_tables(CMCellId{id}, pin_id,
+                                                  std::move(ip));
             }
             if (!tm.empty()) {
-                tables->add_timing_tables(pin_id, std::move(tm));
+                tables->add_timing_tables(CMCellId{id}, pin_id,
+                                          std::move(tm));
             }
         }
     }
@@ -471,8 +473,9 @@ DSHierTree ds_build_hier_tree(const CMVector<const DSBlockBuildData*>& blocks,
             }
             on_path[def_idx] = 0;
         };
-    visit(roots[0], blocks[roots[0]]->get_block_name(), 0, CMInstanceId{0},
-          GEOTransform());
+    // 2026-09-16 裁定 2：顶层实例名恒空串（root 实例名不再「block 名自
+    // 指」；路径组装跳过 root 段——外部工具名字（TWF/网表）从不含设计名）
+    visit(roots[0], CMString{}, 0, CMInstanceId{0}, GEOTransform());
 
     tree.design_name_ = blocks[roots[0]]->get_block_name();
     return tree;

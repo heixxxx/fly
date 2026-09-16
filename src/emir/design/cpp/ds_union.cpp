@@ -63,19 +63,34 @@ DSNetUnionSlice ds_collect_net_union_slice(
     DSNetUnionSlice slice;
     slice.block_name_ = parent_nets.get_block_name();
 
-    // 子定义端口索引：port pin 全局 id → 子网 local id 集。扫描子网产物
-    // 连接表的 port 引用条目（is_port 位，⑧ local 0 占位）。port pin 全局
-    // id 唯一（S5b 解析边界换算：组合键 "block_cell_name/port_name"），
-    // 跨子定义平铺安全——同 id 不会出现在两个 block cell。
-    CMUnorderedMap<CMPinId, CMVector<CMNetId>> port_pin_nets;
+    // 子定义端口索引（2026-09-16 裁定 3 键升维）：(子 block cell id,
+    // port pin 全局 id) → 子网 local id 集。扫描子网产物连接表的 port
+    // 引用条目（is_port 位，⑧ local 0 占位）。裁定 3 后 pin id = 全局
+    // pin 名字空间 id（同名 port 跨 block 共享 id）——单 pin id 键会把
+    // 不同子定义的同名 port 网误并，对接键升维为 (block cell id, pin id)
+    // 定义级 port 身份；子 block cell id 经树扫描按 block 名反查（同名
+    // block 保留首份，与 S6/S7 既有语义一致）。
+    CMUnorderedMap<CMString, CMCellId> cell_id_of_block;
+    for (const DSHierNode& node : tree.nodes_) {
+        cell_id_of_block.emplace(node.get_block_cell_name(),
+                                 node.get_block_cell_id());
+    }
+    // 两层索引：pin id → (子 block cell id → 子网 local id 集)
+    CMUnorderedMap<CMPinId, CMUnorderedMap<CMCellId, CMVector<CMNetId>>>
+        port_pin_nets;
     for (const DSNetBuildData* child : child_defs) {
         if (child == nullptr) {
             continue;  // 防御（编排侧空条目）
         }
+        const auto cid_it = cell_id_of_block.find(child->get_block_name());
+        if (cid_it == cell_id_of_block.end()) {
+            continue;  // 防御：子定义不在树上（对齐错误已在树构建期 fatal）
+        }
         for (const auto& [local_id, conns] : child->connections_) {
             for (const DSNetConnection& c : conns) {
                 if (c.is_port()) {
-                    port_pin_nets[c.pin_id_].push_back(local_id);
+                    port_pin_nets[c.pin_id_][cid_it->second].push_back(
+                        local_id);
                 }
             }
         }
@@ -139,11 +154,17 @@ DSNetUnionSlice ds_collect_net_union_slice(
                 if (tree.parent(child_node) != pos) {
                     continue;  // 防御：非本位置的块实例（数据不变式兜底）
                 }
+                // 对接键 = (子块 cell id, port pin id)——定义级 port 身份
                 const auto nets_it = port_pin_nets.find(c.pin_id_);
                 if (nets_it == port_pin_nets.end()) {
                     continue;  // 该 port 未连接任何子网（父网不经此下探）
                 }
-                for (const CMNetId child_local : nets_it->second) {
+                const auto sub_it = nets_it->second.find(
+                    tree.node(child_node).get_block_cell_id());
+                if (sub_it == nets_it->second.end()) {
+                    continue;  // 同名 port 属其它子定义（裁定 3 隔离）
+                }
+                for (const CMNetId child_local : sub_it->second) {
                     const CMNetId child_global =
                         tree.global_net_id(child_node, child_local);
                     if (!child_global.is_valid()) {

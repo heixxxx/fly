@@ -108,8 +108,8 @@ FLY_EXPORT_CLASS(fly::DSStack, "EXDSStack")
 
 FLY_EXPORT_CLASS(fly::DSPin, "EXDSPin")
     FLY_EXPORT_INIT()
-    // R7 ㊱：DSPin 不存 name（name 分层存储在 DSDesign 的 pin hasher，
-    // 组合键 "cell_name/pin_name"；经 DSDesign::pin_name_of 反查）
+    // R7 ㊱：DSPin 不存 name（name 分层存储在 DSDesign 的 pin hasher；
+    // 2026-09-16 裁定 3 后键 = 裸 pin 名，经 DSDesign::pin_name_of 反查）
     FLY_EXPORT_READONLY_ATTR("type", &fly::DSPin::type_)
     FLY_EXPORT_READONLY_ATTR("direction", &fly::DSPin::direction_)
     // R4：全局平铺 pin id + 放置状态（P3：仅 port 场景有效）
@@ -743,8 +743,11 @@ FLY_EXPORT_CLASS(fly::DSViaCell, "EXDSViaCell")
 FLY_EXPORT_CLASS(fly::DSPinTables, "EXDSPinTables")
     FLY_EXPORT_INIT()
     // R4：按全局 pin id 检索（原 cell id 键改名 pin 维度）
-    FLY_EXPORT_DEF("pin_has_tables", [](const fly::DSPinTables& t, uint32_t pin_id) {
-        return t.pin_has_tables(fly::CMPinId{pin_id});
+    FLY_EXPORT_DEF("pin_has_tables",
+                   [](const fly::DSPinTables& t, uint32_t cell_id,
+                      uint32_t pin_id) {
+        return t.pin_has_tables(fly::CMCellId{cell_id},
+                                fly::CMPinId{pin_id});
     })
     FLY_EXPORT_READONLY_PROPERTY("pin_count", [](const fly::DSPinTables& t) {
         return static_cast<int>(t.internal_power_tables_.size() +
@@ -755,18 +758,24 @@ FLY_EXPORT_CLASS(fly::DSPinTables, "EXDSPinTables")
 FLY_EXPORT_CLASS(fly::DSPinGeometry, "EXDSPinGeometry")
     FLY_EXPORT_INIT()
     FLY_EXPORT_DEF("pin_has_geometry",
-                   [](const fly::DSPinGeometry& g, uint32_t pin_id) {
-        return g.pin_has_geometry(fly::CMPinId{pin_id});
+                   [](const fly::DSPinGeometry& g, uint32_t cell_id,
+                      uint32_t pin_id) {
+        return g.pin_has_geometry(fly::CMCellId{cell_id},
+                                  fly::CMPinId{pin_id});
     })
     FLY_EXPORT_DEF("geometry_count_of",
-                   [](const fly::DSPinGeometry& g, uint32_t pin_id) {
-        const auto* vec = g.geometry_of(fly::CMPinId{pin_id});
+                   [](const fly::DSPinGeometry& g, uint32_t cell_id,
+                      uint32_t pin_id) {
+        const auto* vec = g.geometry_of(fly::CMCellId{cell_id},
+                                        fly::CMPinId{pin_id});
         return vec ? static_cast<int>(vec->size()) : 0;
     })
     FLY_EXPORT_DEF("geometry_of",
-                   [](const fly::DSPinGeometry& g, uint32_t pin_id) {
+                   [](const fly::DSPinGeometry& g, uint32_t cell_id,
+                      uint32_t pin_id) {
         nb::list out;
-        const auto* vec = g.geometry_of(fly::CMPinId{pin_id});
+        const auto* vec = g.geometry_of(fly::CMCellId{cell_id},
+                                        fly::CMPinId{pin_id});
         if (vec != nullptr) {
             for (const auto& geo : *vec) {
                 out.append(geometry_ref_to_tuple(geo));
@@ -912,24 +921,27 @@ FLY_EXPORT_CLASS(fly::DSDesign, "EXDSDesign")
         if (name.empty()) return std::optional<CMString>();  // 空洞
         return std::optional<CMString>(name);
     })
+    // 2026-09-16 裁定 3：pin id 查询 = 裸 pin 名（全局 pin 名字空间，
+    // D1 组合键废除）。**双参形态保留**（cell_name 兼容既有 Python 面
+    // 调用），cell 名仅作冗余上下文不参与键——同名 pin 跨 cell 共享 id
     FLY_EXPORT_DEF("pin_id_by_name",
                    [](const fly::DSDesign& d, const CMString& cell_name,
                      const CMString& pin_name) {
-        // pin 组合键（D1："cell_name/pin_name"）经 pin hasher 直查
-        const uint32_t id = d.pin_names_.get_id(cell_name + "/" + pin_name);
+        (void)cell_name;
+        const uint32_t id = d.pin_names_.get_id(pin_name);
         if (id == fly::DSPinNameHasher::kInvalidId) {
             return std::optional<uint32_t>();
         }
         return std::optional<uint32_t>(id);
     })
-    // R7 ㊱：pin 名反查（DSPin 不存 name；经 pin hasher 组合键取 pin 名段）
+    // R7 ㊱：pin 名反查（DSPin 不存 name；经 pin hasher 直查）
     FLY_EXPORT_DEF("pin_name_of", [](const fly::DSDesign& d, uint32_t pin_id) {
         const CMString name = d.pin_name_of(fly::CMPinId{pin_id});
         if (name.empty()) return std::optional<CMString>();
         return std::optional<CMString>(name);
     })
-    // pin 组合键全名反查（debug API convert_to_name(pin=…) 用；未登记/
-    // 空洞 None——与 pin_id_by_name 的组合键入参对称）
+    // pin 键全名反查（debug API convert_to_name(pin=…) 用；裁定 3 后键 =
+    // 裸 pin 名，与 pin_name_of 同值——保留 API 名兼容既有调用）
     FLY_EXPORT_DEF("pin_key_by_id", [](const fly::DSDesign& d,
                                        uint32_t pin_id) {
         if (!fly::DSPinNameHasher::is_valid_id(pin_id) ||

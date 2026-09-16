@@ -95,56 +95,75 @@ CMLayerId DSStack::find_or_add_layer(DSLayer&& layer) {
     return add_layer(std::move(layer));
 }
 
-// —— DSPinTables（R4：按全局 pin id 组织）——
+// —— DSPinTables（2026-09-16 裁定 3：按 (cell id, pin id) 组织——同名
+// pin 跨 cell 共享 id 后表是 (cell, pin) 属性）——
 
 void DSPinTables::add_internal_power_tables(
-    CMPinId pin_id, CMVector<CMLookupTable>&& tables) {
-    internal_power_tables_[pin_id] = std::move(tables);
+    CMCellId cell_id, CMPinId pin_id, CMVector<CMLookupTable>&& tables) {
+    internal_power_tables_[cell_id][pin_id] = std::move(tables);
 }
 
-void DSPinTables::add_timing_tables(CMPinId pin_id,
+void DSPinTables::add_timing_tables(CMCellId cell_id, CMPinId pin_id,
                                     CMVector<CMLookupTable>&& tables) {
-    timing_tables_[pin_id] = std::move(tables);
+    timing_tables_[cell_id][pin_id] = std::move(tables);
 }
 
-bool DSPinTables::pin_has_tables(CMPinId pin_id) const {
-    return internal_power_tables_.contains(pin_id) ||
-           timing_tables_.contains(pin_id);
+bool DSPinTables::pin_has_tables(CMCellId cell_id, CMPinId pin_id) const {
+    const auto cit = internal_power_tables_.find(cell_id);
+    if (cit != internal_power_tables_.end() && cit->second.contains(pin_id)) {
+        return true;
+    }
+    const auto cit2 = timing_tables_.find(cell_id);
+    return cit2 != timing_tables_.end() && cit2->second.contains(pin_id);
 }
 
 const CMVector<CMLookupTable>* DSPinTables::internal_power_tables_of(
-    CMPinId pin_id) const {
-    auto it = internal_power_tables_.find(pin_id);
-    return it == internal_power_tables_.end() ? nullptr : &it->second;
+    CMCellId cell_id, CMPinId pin_id) const {
+    const auto cit = internal_power_tables_.find(cell_id);
+    if (cit == internal_power_tables_.end()) {
+        return nullptr;
+    }
+    auto it = cit->second.find(pin_id);
+    return it == cit->second.end() ? nullptr : &it->second;
 }
 
 const CMVector<CMLookupTable>* DSPinTables::timing_tables_of(
-    CMPinId pin_id) const {
-    auto it = timing_tables_.find(pin_id);
-    return it == timing_tables_.end() ? nullptr : &it->second;
+    CMCellId cell_id, CMPinId pin_id) const {
+    const auto cit = timing_tables_.find(cell_id);
+    if (cit == timing_tables_.end()) {
+        return nullptr;
+    }
+    auto it = cit->second.find(pin_id);
+    return it == cit->second.end() ? nullptr : &it->second;
 }
 
-// —— DSPinGeometry（R4：按全局 pin id 组织）——
+// —— DSPinGeometry（2026-09-16 裁定 3：按 (cell id, pin id) 组织）——
 
-void DSPinGeometry::add_geometry(CMPinId pin_id, DSShapeRef&& ref) {
-    pin_geometry_[pin_id].push_back(std::move(ref));
+void DSPinGeometry::add_geometry(CMCellId cell_id, CMPinId pin_id,
+                                 DSShapeRef&& ref) {
+    cell_pin_geometry_[cell_id][pin_id].push_back(std::move(ref));
 }
 
-void DSPinGeometry::add_geometries(CMPinId pin_id,
+void DSPinGeometry::add_geometries(CMCellId cell_id, CMPinId pin_id,
                                    CMVector<DSShapeRef>&& geos) {
-    auto& vec = pin_geometry_[pin_id];
+    auto& vec = cell_pin_geometry_[cell_id][pin_id];
     vec.insert(vec.end(), std::make_move_iterator(geos.begin()),
                std::make_move_iterator(geos.end()));
 }
 
-bool DSPinGeometry::pin_has_geometry(CMPinId pin_id) const {
-    return pin_geometry_.contains(pin_id);
+bool DSPinGeometry::pin_has_geometry(CMCellId cell_id, CMPinId pin_id) const {
+    const auto cit = cell_pin_geometry_.find(cell_id);
+    return cit != cell_pin_geometry_.end() && cit->second.contains(pin_id);
 }
 
 const CMVector<DSShapeRef>* DSPinGeometry::geometry_of(
-    CMPinId pin_id) const {
-    auto it = pin_geometry_.find(pin_id);
-    return it == pin_geometry_.end() ? nullptr : &it->second;
+    CMCellId cell_id, CMPinId pin_id) const {
+    const auto cit = cell_pin_geometry_.find(cell_id);
+    if (cit == cell_pin_geometry_.end()) {
+        return nullptr;
+    }
+    auto it = cit->second.find(pin_id);
+    return it == cit->second.end() ? nullptr : &it->second;
 }
 
 // —— DSDesign ——
@@ -161,11 +180,16 @@ CMViaCellId DSDesign::add_via_cell(DSViaCell&& via) {
     return id;
 }
 
-void DSDesign::register_pin(const CMString& cell_name,
-                            const CMString& pin_name, CMPinId pin_id) {
-    // pin id 全局平铺单调分配（D1）；hasher assign 指定 id 双写
-    // （容忍 id 空洞，重名键覆盖——重挂语义）
-    pin_names_.assign(cell_name + "/" + pin_name, pin_id.value());
+CMPinId DSDesign::register_pin(const CMString& pin_name) {
+    // 2026-09-16 裁定 3：键 = 裸 pin 名，同名保留首份返回既有 id（幂等
+    // 分配）；未命中分配新 id（= 已登记名数）并双写
+    const CMPinId existing{pin_names_.get_id(pin_name)};
+    if (existing.is_valid()) {
+        return existing;
+    }
+    const CMPinId id{static_cast<CMPinId::int_type>(pin_names_.size())};
+    pin_names_.assign(pin_name, id.value());
+    return id;
 }
 
 // 按 id 直接落位（S5a 汇总专用，fake cell id 保持任务内分配值 ⑳）：
@@ -198,14 +222,12 @@ const DSViaCell* DSDesign::find_via_cell(const CMString& name) const {
 }
 
 CMString DSDesign::pin_name_of(CMPinId pin_id) const {
-    // 组合键 "cell_name/pin_name" 反查取 pin 名段（㊱：pin 自身不存
-    // name）；未登记/空洞返回空串
+    // pin hasher 直查（2026-09-16 裁定 3：键即裸 pin 名）；未登记/空洞
+    // 返回空串
     if (!pin_id.is_valid() || pin_id >= pin_names_.name_table_.size()) {
         return {};
     }
-    const CMString& key = pin_names_.get_name(pin_id.value());
-    const auto pos = key.rfind('/');
-    return pos == CMString::npos ? key : key.substr(pos + 1);
+    return pin_names_.get_name(pin_id.value());
 }
 
 DSCell& DSDesign::get_cell(CMCellId cell_id) {
@@ -231,7 +253,8 @@ CMVector<DSShapeRef> DSDesign::cell_pin_geometries(CMCellId cell_id) const {
         return out;
     }
     for (const auto& p : cells_[cell_id.value()].pins_) {
-        const auto* vec = pin_geometry_->geometry_of(p.get_pin_id());
+        const auto* vec =
+            pin_geometry_->geometry_of(cell_id, p.get_pin_id());
         if (vec != nullptr) {
             out.insert(out.end(), vec->begin(), vec->end());
         }
@@ -572,14 +595,17 @@ uint32_t DSHierTree::find_child_by_instance_name(uint32_t node_id,
 
 CMString DSHierTree::format_tree() const {
     CMString out;
-    // 递归以 name 打印（⑮）：缩进 2 空格/层 + 三类区间
+    // 递归以 name 打印（⑮）：缩进 2 空格/层 + 三类区间。root 实例名恒
+    // 空串（2026-09-16 裁定 2）——打印用 "(top)" 占位，不改存储
     const std::function<void(uint32_t, int)> emit =
         [&](uint32_t id, int depth) {
             const DSHierNode& n = nodes_[id];
             for (int i = 0; i < depth; ++i) {
                 out += "  ";
             }
-            out += n.get_block_cell_name() + " as " + n.get_instance_name() +
+            const CMString shown_name =
+                id == 0 ? CMString("(top)") : n.get_instance_name();
+            out += n.get_block_cell_name() + " as " + shown_name +
                    " id=" + std::to_string(n.get_id()) + " inst=[" +
                    std::to_string(n.instance_start_.value()) + "," +
                    std::to_string(
