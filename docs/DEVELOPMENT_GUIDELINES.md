@@ -239,6 +239,11 @@ read_object 的形态屏蔽契约：**无论 write_object 写出的是 shared_pt
 一律返回 `CMSharedPtr<T>`**（现网签名即此），使用侧永不感知写出侧形态。前提：T 走 FLY_EXPORT_CLASS
 常规绑定（caster static_assert 要求）。
 
+**返回值形态同源禁令**（2026-09-17 A-1）：StrongIdT / enum class 类型成员禁止
+`FLY_EXPORT_READONLY_ATTR`（def_ro）直绑——nanobind 对其无 caster，编译期不报错、Python 首次访问
+该属性运行期 cast 失败抛 SystemError；必须经 `FLY_EXPORT_READONLY_PROPERTY` + lambda
+`.value()` 桥返回 int。完整条文与豁免边界见 §16「类型纪律」。
+
 ---
 
 ### 2.9 分布式文件名字符集（2026-09-14 裁定）
@@ -1071,6 +1076,32 @@ def solve_like_task(db_up, db, key):
   send/poll 关闭路径）、DataClientPool ↔ NetworkChunkSource 借出路径。
   原点状机制（fd 代际校验、per-conn send mutex 保活）已被其统一替代或
   并存。
+- **容器内部视图返回豁免**（2026-09-16 裁定 ②b，design db）：指向**本
+  对象序列化容器内部**的只读视图返回合规——`find_cell`/`find_via_cell`/
+  `*_of` 族访问器（未命中返回 nullptr/None）。豁免判据（须全部成立）：
+  ① 宿主生命周期 = db 对象生命周期（长期根对象，随库存亡）；② 无 LRU
+  驱逐；③ 无运行期 `reset()`——§16「必须场景」判据不成立（不存在能让
+  已返回视图悬垂的 reset/析构路径）；④ 容器下标即全库约定（CMCellId =
+  `cells_` 下标）——值语义容器 + const 视图返回合规。**排除项**：weak
+  观察化五类宿主**不适用本豁免**——`DSNetBuildData` 五表 /
+  `DSPartitionGeometry` / `DSPartitionNets` / `DSBlockBuildData::
+  instances_` / `DSNetUnion::members_of_`，其成员 `CMSharedPtr` 持有 +
+  访问器返回 `CMWeakPtr` 是既定形态（2026-09-16 裁定 ②），不得以本豁免
+  反向解读退回裸指针/共享视图。
+- **类型纪律**（2026-09-16 用户裁定 + 2026-09-17 A-1 教训）：① 实体 id
+  一律强类型——`StrongIdT<Tag, IntT>` 框架模板
+  （`common/types/cpp/strong_id.h`），业务 id 单一权威定义点
+  `emir/common/cpp/emir_ids.h`（CM 前缀族）；树节点下标与区间计数
+  （导航/计数语义，非编号空间）豁免。② 领域枚举一律 `enum class :
+  uint8_t` 定型存储，序列化走整型路径逐位不变；`CM_FLAGS` 位组豁免。
+  ③ 豁免边界两条：hasher/mapper 底座 IdT 保持裸值域（查询机器参数，
+  业务消费点经 `CMXxxId{}` / `.value()` 显式互转、成对出现）；Python
+  边界 id 保持 int（导出面 property + `.value()` 桥）。④ **nanobind
+  直绑禁令**：StrongIdT / enum class 类型成员禁止
+  `FLY_EXPORT_READONLY_ATTR`（def_ro）直绑——nanobind 无 caster，编译期
+  不报错、Python 首次访问该属性时运行期 cast 失败抛 SystemError（
+  2026-09-17 A-1 案例：`EXDSPartitionNets.part_id`）；必须经
+  `FLY_EXPORT_READONLY_PROPERTY` + lambda `.value()` 桥（索引见 §2.8）。
 
 ## 17. 业务 API 依赖声明与 wait_obj 包装规范
 

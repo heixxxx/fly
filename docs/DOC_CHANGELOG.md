@@ -2,6 +2,44 @@
 
 ---
 
+## 2026-09-17: 导出面强类型直绑修复（评审 A-1）+ 开发准则类型纪律入册 + dev-rules CM 登记
+
+**评审修复（A-1）**：design db 重构批次（b68fd56..776dddd）code review 必修项——
+`EXDSPartitionNets.part_id` / `EXDSPartitionCheckResult.partition_id` 两处
+`FLY_EXPORT_READONLY_ATTR`（def_ro）直绑 CMPartitionId 成员（nanobind 无 caster，
+编译期不报错、Python 首次访问运行期 cast 失败），改为
+`FLY_EXPORT_READONLY_PROPERTY` + `.value()` 桥；qa/emir 配访问断言（part_id /
+partition_id 返回 int）。断言落地时暴露同族潜伏缺陷：ds_flatten 分片 merge 的
+part_id 回填仍用裸值时代「`!= 0` = 未回填」判定，强类型化后默认哨兵为 kInvalid，
+合法 pid 0（首分区）被误吞——NETS/NETS_PG 对象落盘 part_id = 哨兵；改 `is_valid()`
+判定 + ds_flatten_test 回归用例（MergeFillsFirstPartitionIdNotSentinel）。
+
+**开发准则入册**（docs/DEVELOPMENT_GUIDELINES.md，使 776dddd 提交说明中「§16 增补」
+声称落地为事实）：
+
+- §16 新增「**容器内部视图返回豁免**」：豁免对象限定本对象序列化容器内部只读视图
+  （find_cell/find_via_cell/*_of 族）；判据 = 宿主生命周期 = db 对象生命周期、
+  无 LRU 驱逐、无运行期 reset（裁定 ②b）、CMCellId = 下标全库约定；排除项 = weak
+  观察化五类宿主不适用。
+- §16 新增「**类型纪律**」：实体 id 强类型（StrongIdT + emir_ids.h 单一权威点，
+  导航下标/区间计数豁免）；领域枚举 `enum class : uint8_t` 定型存储（CM_FLAGS 位组
+  豁免）；豁免边界（hasher/mapper 底座裸值域成对互转、Python 边界 int 桥）；
+  **nanobind 直绑禁令**（def_ro 禁 StrongIdT/enum class——A-1 教训），§2.8 同步索引。
+
+**dev-rules §5 CM 登记**（使 emir_ids.h 头注与 776dddd 提交说明中「§5 登记」声称
+落地为事实）：前缀登记表已分配清单补 `CM` — emir 公共强类型 id 族
+（src/emir/common/cpp/emir_ids.h；与 container 模块 CM 容器别名前缀双归属，
+2026-09-16 裁定）。
+
+**同步清理**：pin 名字空间口径过期注释 6 处（DSPinNameHasher 权威定义点 /
+DSNetPipeline 节点职责头 / lef adapter / merge / flatten + 导出面 pin id 注释 /
+DSHierTree root 实例名）统一为「全局 pin 名字空间（2026-09-16 裁定 3，键 = 裸
+pin 名，同名 pin 跨 cell 共享 id）」；root 实例名改「恒空串（裁定 2）」口径。
+
+**验证**：全仓单测 111/111 通过；qa/emir 4 用例全过。
+
+---
+
 ## 2026-09-16: design db 命名语义重构（三条裁定）+ id 强类型体系 + weak 观察化
 
 **三条命名裁定**（2026-09-16 用户裁定，推翻既有 D1 等裁定，属基础语义修正）：

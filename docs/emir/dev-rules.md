@@ -59,7 +59,8 @@ src/emir/<子模块>/
 
 - C++ 类名 = 模块简写**大写**前缀 + 类名（例：lib 子模块的 `LIBCell`）；
 - 独立函数 = 模块简写**小写**前缀 + 下划线动词短语（例：`lib_parse_lib_file`）；
-- 模块简写两字母优先、无法准确表达放宽三字母，全库冲突检测通过后方可使用（须避开 export 目录与导出符号 `EX+模块缩写` 体系、`FLY_` 宏、`fly_*` BUILD 目标）；已分配：LIB / TC / DS / PEX / SP / MX / TM / VCD / SW / PWR / CUR / ANS / EM；
+- 模块简写两字母优先、无法准确表达放宽三字母，全库冲突检测通过后方可使用（须避开 export 目录与导出符号 `EX+模块缩写` 体系、`FLY_` 宏、`fly_*` BUILD 目标）；已分配：LIB / TC / DS / PEX / SP / MX / TM / VCD / SW / PWR / CUR / ANS / EM / CM；
+- `CM` — emir 公共强类型 id 族（src/emir/common/cpp/emir_ids.h；与 container 模块 CM 容器别名前缀双归属，2026-09-16 裁定——id 族一律 Id 后缀值类型、容器族一律容器类型名，以后缀可辨）；
 - Python 绑定产物：`_fly_emir_<子模块>.so`；
 - **消息前缀独立于模块简写**，各子模块注册自己的前缀（例：lib 的消息前缀为 `LIBR`）。
 
