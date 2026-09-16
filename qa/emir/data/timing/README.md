@@ -61,6 +61,51 @@ Liberty/LEF 工艺库 + 小型确定性设计 + 真实静态时序引擎计算�
 - 混合维度两版条目并存于同一 CAUSED_BY 分组，条目名（网名 vs 实例/引脚
   名）天然不冲突——解析器按 NET/PIN 关键字分派维度标记（pin_kind 位）。
 
+## pg_grid 放大设计族（tm_design 放大版：64×64 阵列 + 时钟缓冲树）
+
+| 文件 | 角色 |
+|------|------|
+| `gen_pg_grid.py` | 网表/SDC 生成器（确定性：纯算术生成，无随机；缺省 N=64 → 12365 实例） |
+| `pg_grid.v` / `pg_grid.sdc` | 生成的逻辑输入件（时钟缓冲树：根/中层 CLKBUF_X3、行缓冲 CLKBUF_X2） |
+| `pg_grid_flow.tcl` | OpenROAD 流程：布图（利用率 30%）→ IO 引脚 → 电源网格（官方 M1-M4-M7 策略）→ 布局 → CTS → 布线 → `write_def` + `write_verilog` |
+| `pg_grid_twf.tcl` | 独立 OpenSTA 驱动：读布线后网表产出 `pg_grid.twf`（TWF 权威单一路径） |
+| `pg_grid.def` | 流程产物：真实自动布局布线结果（6.5MB；双跑逐字节一致） |
+| `pg_grid_routed.v` | 流程产物：布线后网表（含 CTS 插入的 H-Tree 缓冲）——TWF 的输入 |
+| `pg_grid.twf` | 网络维度 TWF（12943 条，12942 条 RTW/FTW 有值；双跑逐字节一致）；副本在 `src/emir/timing/tests/data/`（解析器单测 `GeneratedPgGridFile`） |
+
+### 三步再生成链（确定性，cwd = 本目录）
+
+```bash
+python3 gen_pg_grid.py                                            # 1. 网表+SDC
+/root/project/openroad_env/bin/openroad -no_init -exit pg_grid_flow.tcl   # 2. DEF+布线后网表（约 7 分钟）
+/root/project/opensta/build/sta -no_init -exit pg_grid_twf.tcl    # 3. TWF
+```
+
+第 2/3 步工具位于 `/root/project/` 下（2026-09-15 安装；不随仓库分发）。
+
+### 工具分工与内嵌引擎属性缺失说明
+
+- **OpenROAD**（LiteX-Hub 预编译包，构建 f12e2f47）：只用于布图/PDN/布局/
+  CTS/布线与 `write_def`/`write_verilog`。其**内嵌 OpenSTA 为旧版，引脚级
+  属性面缺失**（2026-09-15 实测查 arrival 报「pin objects do not have a
+  arrival_min_rise property」）——不得由它产出 TWF；
+- **独立 OpenSTA 3.1.0**（`/root/project/opensta/build/sta`，master
+  5c215d3271）：引脚属性完整（arrival/slew/slack/clocks），TWF 权威路径；
+  从布线后网表出发（不读 DEF）——数值语义为单元弧时序 + 零线负载 +
+  传播时钟（网表含 CTS 时钟树），确定可复现。
+
+### 确定性与已知坑（再生成前必读）
+
+- `pg_grid.def` 流程双跑逐字节一致；`pg_grid.twf` 驱动双跑逐字节一致
+  （2026-09-15 实证）；
+- 网表时钟树单元**必须取 Nangate45 实际存在的 CLKBUF_X1/X2/X3**——
+  X4/X16 是其它平台的单元，2026-09-15 实测引用后 OpenROAD link 建
+  black box、LEF master 缺失丢弃实例，时钟根网零负载致 TritonCTS 报
+  「No clock nets」空转不插树，时钟链全断（TWF 全 `*`）；
+- TWF 仅 `d` 一条窗口缺省（顶层输入端口属性面局限，与 tm_design 族同
+  形态）；C 标记仅时钟源网 `clk` 一条，时钟树 650 条归 `CAUSED_BY "clk"`
+  组（与 tm_design 的 `nclk` 同构）。
+
 ## 许可
 
 - Nangate45 平台三件（Liberty + 两个 LEF）：Apache License 2.0，随附

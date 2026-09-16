@@ -7,6 +7,7 @@ cc_test(
     srcs = ["tm_parser_test.cpp"],
     data = [
         "data/bad_syntax.twf",
+        "data/pg_grid.twf",
         "data/sample.twf",
         "data/tm_design.twf",
         "data/tm_design_mixed.twf",

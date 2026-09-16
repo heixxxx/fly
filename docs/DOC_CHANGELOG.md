@@ -3,6 +3,38 @@
 ---
 ---
 
+## 2026-09-15: pg_grid 放大设计落地 + 入口嗅探读窗 1KB→1MB 修复
+
+**嗅探读窗修复**：lib db 与 design db 的入口防呆嗅探（`sniff_liberty_header` /
+`_sniff_lefdef_header`）原读文件前 1KB——真实工艺文件以大段许可证注释开头
+（Nangate45 typical.lib 首注释块约 2KB、LEF 更长），1KB 读窗剥完注释即空导致
+类型误判。两处读窗改为 1MB，各补长注释头回归用例（`test_lib_flow_error.py` /
+`test_ds_flow_error.py`）。
+
+**pg_grid 落地**（`qa/emir/data/timing/`，tm_design 放大版，解析器单测
+`GeneratedPgGridFile`）：64×64 阵列 + 时钟缓冲树（12365 实例）。三步确定性
+再生成链——`gen_pg_grid.py`（纯算术网表/SDC）→ OpenROAD 流程
+`pg_grid_flow.tcl`（布图/PDN/布局/CTS/布线，DEF 6.5MB 双跑逐字节一致，布线
+零违例）→ **独立 OpenSTA 3.1.0** 读布线后网表产网络维度 TWF
+`pg_grid_twf.tcl`（12943 条，12942 条 RTW/FTW 有值，双跑逐字节一致；富余量
+弃收 24858、C 标记 1/D 12942）。
+
+关键裁定与坑（README 详记）：
+
+- OpenROAD 预编译包内嵌 OpenSTA 为旧版（引脚级 arrival/slew 属性缺失，
+  2026-09-15 实测），只承担物理实现——TWF 一律由独立 OpenSTA 从布线后网表
+  产出（`pg_grid_twf.tcl` 文件头记录根因与分工）；
+- 网表时钟树单元必须取 Nangate45 实际存在的 CLKBUF_X1/X2/X3：首版生成器
+  误用其它平台的 CLKBUF_X16/X4，OpenROAD link 建 black box 丢弃实例致时钟
+  根网零负载、TritonCTS「No clock nets」空转、时钟链全断（TWF 全 `*`）——
+  该现象表面像内嵌引擎属性缺失，真实根因为单元缺失，修正后 CTS 正常插树
+  （64 个行网各 64 sinks，H-Tree）；
+- fly 全链烟测通过：lib db 解析 6.7MB 真实 Liberty、design db 建库冻结、
+  pg_nets 收录 power/ground 网、S8 分区产出 2 个。
+
+---
+---
+
 ## 2026-09-15: timing db 测试数据三维度版本（网络/引脚/混合）+ 解析器混合形态裁定
 
 用户裁定（2026-09-15）：网络维度与引脚维度两个版本都需要有、都需要测试；

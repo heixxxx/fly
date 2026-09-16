@@ -346,6 +346,85 @@ TEST_F(TmParserTest, GeneratedMixedDimensionFile) {
     EXPECT_EQ(r.cd_flag_d_count_, 24u);
 }
 
+// 途径二放大设计（pg_grid：64×64 阵列 + 时钟缓冲树，12943 条网络维度条目；
+// 生成链 gen_pg_grid.py → OpenROAD 流程（布图/PDN/布局/CTS/布线，DEF 双跑
+// 逐字节一致）→ 独立 OpenSTA 3.1.0 读布线后网表产出，双跑逐字节一致——
+// 见 qa/emir/data/timing/pg_grid_twf.tcl 文件头）：真实静态时序数值在
+// 大规模设计上的覆盖——时钟树传播、双路径窗口、缺省形态、弃收计数
+TEST_F(TmParserTest, GeneratedPgGridFile) {
+    const TMTimingFile r =
+        tm_parse_twf_file(data_path("pg_grid.twf").string());
+    EXPECT_EQ(r.design_, "pg_grid");
+    EXPECT_DOUBLE_EQ(r.time_scale_sec_, 1e-9);
+    ASSERT_EQ(r.clocks_.size(), 1u);
+    EXPECT_EQ(r.clocks_[0].name_, "clk");
+    EXPECT_NEAR(r.clocks_[0].period_, 1.0, 1e-9);
+    EXPECT_NEAR(r.clocks_[0].posedge_, 0.0, 1e-9);
+    EXPECT_NEAR(r.clocks_[0].negedge_, 0.5, 1e-9);
+    ASSERT_EQ(r.entries_.size(), 12943u);
+    size_t pin_kind_count = 0;
+    for (const TMNameTiming& e : r.entries_) {
+        if (e.is_pin_kind()) ++pin_kind_count;
+    }
+    EXPECT_EQ(pin_kind_count, 0u);   // 网络维度单产出
+
+    // 有值窗口条目数（任务验收硬标准下限 >10000）+ 精确回归锚：全文件仅
+    // 顶层输入端口网 d 窗口缺省（生成器已知局限形态），其余 12942 条
+    // RTW/FTW 至少一侧有值
+    size_t winval_count = 0;
+    for (const TMNameTiming& e : r.entries_) {
+        if (e.is_rise_arrival() || e.is_fall_arrival()) ++winval_count;
+    }
+    EXPECT_GT(winval_count, 10000u);
+    EXPECT_EQ(winval_count, 12942u);
+
+    // 时钟源网（C 类，clk 组）：源端口到达 = 沿时刻（上升 0 / 下降半周期）
+    const TMNameTiming* clk = r.find_entry("clk");
+    ASSERT_NE(clk, nullptr);
+    EXPECT_EQ(clk->clock_id_, 0u);
+    EXPECT_FALSE(clk->is_pin_kind());
+    expect_range(clk->rise_arrival_, 0.0, 0.0);
+    expect_range(clk->fall_arrival_, 0.5, 0.5);
+
+    // 时钟树网（clk 组）：缓冲级联传播延迟单调递增（根 0.033 → 行网 0.097）
+    const TMNameTiming* root = r.find_entry("nclk_root");
+    ASSERT_NE(root, nullptr);
+    EXPECT_EQ(root->clock_id_, 0u);
+    EXPECT_NEAR(root->rise_arrival_.max_, 0.033001, 1e-6);
+    const TMNameTiming* rowclk = r.find_entry("nclk_r_0");
+    ASSERT_NE(rowclk, nullptr);
+    EXPECT_EQ(rowclk->clock_id_, 0u);
+    EXPECT_NEAR(rowclk->rise_arrival_.max_, 0.096505, 1e-6);
+    EXPECT_LT(root->rise_arrival_.max_, rowclk->rise_arrival_.max_);
+
+    // 顶层输入端口网：窗口缺省（*）、翻转时间存在——生成器已知局限形态
+    const TMNameTiming* d = r.find_entry("d");
+    ASSERT_NE(d, nullptr);
+    EXPECT_FALSE(d->is_rise_arrival());
+    EXPECT_FALSE(d->is_fall_arrival());
+    EXPECT_TRUE(d->is_rise_slew());
+    EXPECT_EQ(d->clock_id_, kTMNoClock);
+
+    // 组合网：双路径真实 min:max 窗口（DFF→INV→NAND 行内链）
+    const TMNameTiming* in1 = r.find_entry("in_0_1");
+    ASSERT_NE(in1, nullptr);
+    EXPECT_EQ(in1->clock_id_, kTMNoClock);
+    EXPECT_LT(in1->rise_arrival_.min_, in1->rise_arrival_.max_);
+    EXPECT_NEAR(in1->rise_arrival_.min_, 0.126102, 1e-6);
+    EXPECT_NEAR(in1->rise_arrival_.max_, 0.279098, 1e-6);
+
+    // 计数：富余量逐条逐沿有值弃收（RSlk 12754 + FSlk 12104）；
+    // 源电阻列恒 *；破损/未知构造/缺时钟零
+    EXPECT_EQ(r.dropped_slack_count_, 24858u);
+    EXPECT_EQ(r.dropped_source_res_count_, 0u);
+    EXPECT_EQ(r.bad_record_count_, 0u);
+    EXPECT_EQ(r.unknown_construct_count_, 0u);
+    EXPECT_EQ(r.missing_clock_count_, 0u);
+    // C/D 结尾标记：C = 时钟源网仅 clk 一条；D = 其余全部
+    EXPECT_EQ(r.cd_flag_c_count_, 1u);
+    EXPECT_EQ(r.cd_flag_d_count_, 12942u);
+}
+
 TEST(TmParserErrorTest, EntryLevelRecoveryKeepsStream) {
     // 单条破损记录跳过后，后续记录照常入库
     const TMTimingFile r = tm_parse_twf_text(

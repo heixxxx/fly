@@ -28,15 +28,28 @@
 #   - 实例数据引脚的 clocks 属性为空 → 数据条目归 NULL 组（Innovus 按
 #     路径时钟归组，此处语义弱化——单时钟设计无影响，README 已记）。
 
-set lib_file  NangateOpenCellLibrary_typical.lib
-set ver_file  tm_design.v
-set top_name  tm_design
-set sdc_file  tm_design.sdc
+# —— 参数化（环境变量；缺省复现 tm_design 三件套，逐字节兼容）——
+#   TWF_TOP       顶层模块名（默认 tm_design）
+#   TWF_PREFIX    文件名前缀（默认 tm_design；读入 ${prefix}.v/.sdc）
+#   TWF_SKIP_READ =1 时跳过读入（设计已由驱动加载——pg_grid_twf.tcl 复用；
+#                 驱动须先行完成 read_liberty/read_verilog/link_design/read_sdc
+#                 + set_propagated_clock）
+#   TWF_ONLY      输出维度（NET / PIN / "NET PIN"；默认两者 → 三件全出）
+proc env_or {key default} {
+    if {[info exists ::env($key)]} { return $::env($key) }
+    return $default
+}
+set twf_prefix   [env_or TWF_PREFIX tm_design]
+set top_name     [env_or TWF_TOP tm_design]
+set twf_skipread [env_or TWF_SKIP_READ 0]
+set twf_only     [env_or TWF_ONLY {NET PIN}]
 
-read_liberty $lib_file
-read_verilog $ver_file
-link_design $top_name
-read_sdc $sdc_file
+if {$twf_skipread ne "1"} {
+    read_liberty NangateOpenCellLibrary_typical.lib
+    read_verilog ${twf_prefix}.v
+    link_design $top_name
+    read_sdc ${twf_prefix}.sdc
+}
 
 # —— 上游缺陷绕行（OpenSTA 3.1.0 master，2026-09-15 实测）——
 # Properties::pinArrival 缺 ensureGraph()（pinSlew 有），直接查 arrival 属性
@@ -118,9 +131,10 @@ foreach clk [all_clocks] {
 # —— 条目收集（统一形态：{kind name obj netname}；kind = NET / PIN）——
 set all_entries {}
 
-# 网络维度：逐网取驱动引脚
+# 网络维度：逐网取驱动引脚（电源网 VDD/VSS 无时序，不收）
 foreach net [get_nets *] {
     set nname [get_full_name $net]
+    if {$nname eq "VDD" || $nname eq "VSS"} { continue }
     set src_pin ""
     if {[info exists clock_src_pin($nname)]} { set src_pin $clock_src_pin($nname) }
     set driver [net_driver $net $src_pin]
@@ -128,9 +142,10 @@ foreach net [get_nets *] {
     lappend all_entries [list NET $nname $driver $nname]
 }
 
-# 引脚维度：逐实例引脚（get_pins */* 不含顶层端口）
+# 引脚维度：逐实例引脚（get_pins */* 不含顶层端口；电源引脚 <inst>/VDD|VSS 不收）
 foreach pin [get_pins */*] {
     set pname [get_full_name $pin]
+    if {[string match "*/VDD" $pname] || [string match "*/VSS" $pname]} { continue }
     set nname [pin_net $pin]
     lappend all_entries [list PIN $pname $pin $nname]
 }
@@ -210,6 +225,12 @@ proc write_twf {fname kinds} {
     puts "twf_gen: $fname written"
 }
 
-write_twf tm_design.twf {NET}
-write_twf tm_design_pins.twf {PIN}
-write_twf tm_design_mixed.twf {NET PIN}
+if {[lsearch -exact $twf_only NET] >= 0} {
+    write_twf ${twf_prefix}.twf {NET}
+}
+if {[lsearch -exact $twf_only PIN] >= 0} {
+    write_twf ${twf_prefix}_pins.twf {PIN}
+}
+if {[lsearch -exact $twf_only NET] >= 0 && [lsearch -exact $twf_only PIN] >= 0} {
+    write_twf ${twf_prefix}_mixed.twf {NET PIN}
+}
