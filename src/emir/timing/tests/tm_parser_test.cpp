@@ -87,7 +87,7 @@ TEST_F(TmParserTest, NetRecordFields) {
 TEST_F(TmParserTest, NullClockSource) {
     const TMNameTiming* sel = out_.find_entry("sel");
     ASSERT_NE(sel, nullptr);
-    EXPECT_EQ(sel->clock_id_, kTMNoClock);
+    EXPECT_FALSE(sel->clock_id_.is_valid());
     EXPECT_TRUE(sel->is_rise_arrival());
 }
 
@@ -106,7 +106,7 @@ TEST_F(TmParserTest, MergeAcrossGroups) {
 TEST_F(TmParserTest, MissingClockAndCounters) {
     const TMNameTiming* ghost = out_.find_entry("ghost_clk_net");
     ASSERT_NE(ghost, nullptr);
-    EXPECT_EQ(ghost->clock_id_, kTMNoClock);
+    EXPECT_FALSE(ghost->clock_id_.is_valid());
     EXPECT_EQ(out_.missing_clock_count_, 1u);
     // esc/net：源电阻/富余量有值弃收各 2；in1 富余量 2；out1 富余量 2
     EXPECT_EQ(out_.dropped_source_res_count_, 2u);
@@ -154,6 +154,8 @@ TEST_F(TmParserTest, SerializationRoundTrip) {
     FLY_DECODE(blob, TMTimingFile, back);
     back.rebuild_indexes();
     EXPECT_EQ(back.design_, "top");
+    // DELIMITERS 收录随序列化往返保持（strip_prefix 段匹配消费口）
+    EXPECT_EQ(back.delimiters_, out_.delimiters_);
     ASSERT_EQ(back.clocks_.size(), out_.clocks_.size());
     ASSERT_EQ(back.entries_.size(), out_.entries_.size());
     EXPECT_EQ(back.dropped_slack_count_, out_.dropped_slack_count_);
@@ -163,6 +165,24 @@ TEST_F(TmParserTest, SerializationRoundTrip) {
     EXPECT_TRUE(merged->is_multi_source());
     EXPECT_EQ(merged->clock_id_, 1u);
     expect_range(merged->fall_arrival_, 5.0, 5.2);
+}
+
+TEST_F(TmParserTest, DelimitersHeader) {
+    // DELIMITERS 头声明收录（plan §7.4 实施注记）：原文存储 + 层级分隔符
+    // = 首字符；未声明时空串、hier_delim() 缺省 '/' 语义（手册缺省）
+    EXPECT_EQ(out_.delimiters_, "/[]");
+    EXPECT_EQ(out_.hier_delim(), '/');
+    const TMTimingFile bare = tm_parse_twf_text(
+        "(TIMING_WINDOWS (CAUSED_BY NULL (NET \"n\" 1:1 1:1 * * 1:1 1:1 * *)))",
+        "t");
+    EXPECT_EQ(bare.delimiters_, "");
+    EXPECT_EQ(bare.hier_delim(), '/');
+    // 非缺省分隔符文件：首字符生效（strip_prefix 段级拆分依据）
+    const TMTimingFile dot = tm_parse_twf_text(
+        "(TIMING_WINDOWS (HEADER (DELIMITERS \".[]\")) (CAUSED_BY NULL "
+        "(NET \"n\" 1:1 1:1 * * 1:1 1:1 * *)))", "t");
+    EXPECT_EQ(dot.delimiters_, ".[]");
+    EXPECT_EQ(dot.hier_delim(), '.');
 }
 
 TEST(TmParserErrorTest, StreamLevelErrors) {
@@ -218,12 +238,12 @@ TEST_F(TmParserTest, GeneratedRealTimingFile) {
     EXPECT_FALSE(d->is_rise_arrival());
     EXPECT_FALSE(d->is_fall_arrival());
     EXPECT_TRUE(d->is_rise_slew());
-    EXPECT_EQ(d->clock_id_, kTMNoClock);
+    EXPECT_FALSE(d->clock_id_.is_valid());
 
     // 组合网（NULL 组）：双路径真实 min:max 窗口
     const TMNameTiming* n2 = r.find_entry("n2");
     ASSERT_NE(n2, nullptr);
-    EXPECT_EQ(n2->clock_id_, kTMNoClock);
+    EXPECT_FALSE(n2->clock_id_.is_valid());
     EXPECT_LT(n2->rise_arrival_.min_, n2->rise_arrival_.max_);
     EXPECT_NEAR(n2->rise_arrival_.min_, 0.064366, 1e-6);
     EXPECT_NEAR(n2->rise_arrival_.max_, 0.092367, 1e-6);
@@ -273,7 +293,7 @@ TEST_F(TmParserTest, GeneratedPinDimensionFile) {
     const TMNameTiming* d1d = r.find_entry("u_d1/D");
     ASSERT_NE(d1d, nullptr);
     expect_range(d1d->rise_arrival_, 0.05, 0.05);
-    EXPECT_EQ(d1d->clock_id_, kTMNoClock);
+    EXPECT_FALSE(d1d->clock_id_.is_valid());
 
     // 寄存器数据端点 = 驱动输出（零线负载）：u_d2/D ≡ 网络维度 n2 窗口
     const TMNameTiming* d2d = r.find_entry("u_d2/D");
@@ -403,12 +423,12 @@ TEST_F(TmParserTest, GeneratedPgGridFile) {
     EXPECT_FALSE(d->is_rise_arrival());
     EXPECT_FALSE(d->is_fall_arrival());
     EXPECT_TRUE(d->is_rise_slew());
-    EXPECT_EQ(d->clock_id_, kTMNoClock);
+    EXPECT_FALSE(d->clock_id_.is_valid());
 
     // 组合网：双路径真实 min:max 窗口（DFF→INV→NAND 行内链）
     const TMNameTiming* in1 = r.find_entry("in_0_1");
     ASSERT_NE(in1, nullptr);
-    EXPECT_EQ(in1->clock_id_, kTMNoClock);
+    EXPECT_FALSE(in1->clock_id_.is_valid());
     EXPECT_LT(in1->rise_arrival_.min_, in1->rise_arrival_.max_);
     EXPECT_NEAR(in1->rise_arrival_.min_, 0.126102, 1e-6);
     EXPECT_NEAR(in1->rise_arrival_.max_, 0.279098, 1e-6);

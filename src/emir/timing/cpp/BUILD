@@ -1,6 +1,6 @@
 # emir timing db 的 C++ 核心：TWF（时序窗口文件）解析器 + 解析边界
-# 领域结构。当前增量 = 解析器立项（2026-09-15）：py/export 与 db flow
-# 随建库流程立项补全（dev-rules 三段式结构标准不变）。
+# 领域结构 + 落库形态/名字换算/分区合并（tm_partition，⑦ timing db 建库
+# flow 立项；py/export 随 flow 批次补全，dev-rules 三段式结构标准不变）。
 
 package(default_visibility = ["//visibility:public"])
 
@@ -21,6 +21,7 @@ cc_library(
     deps = [
         "//src/container/cpp:fly_container_aliases",
         "//src/common/serialization:fly_serialization",
+        "//src/emir/common/cpp:fly_emir_common_cpp",  # CM 族强类型 id
     ],
     visibility = ["//visibility:public"],
 )

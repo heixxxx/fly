@@ -290,6 +290,13 @@ private:
                     (kw.text == "VERSION" ? out_.version_ : out_.design_) =
                         v.text;
                 }
+            } else if (kw.text == "DELIMITERS") {
+                // 层级/总线分隔符声明原文收录（timing db strip_prefix
+                // 段级剥离与名字维度拆段消费，plan §7.4）
+                const Token v = reader_.next();
+                if (v.kind == Kind::kString) {
+                    out_.delimiters_ = v.text;
+                }
             } else if (kw.text == "TIME_SCALE") {
                 const Token v = reader_.next();
                 double s = 0.0;
@@ -371,13 +378,13 @@ private:
         clock.period_ *= k;
         clock.posedge_ *= k;
         clock.negedge_ *= k;
-        out_.clock_index_.emplace(clock.name_,
-                                  static_cast<uint32_t>(out_.clocks_.size()));
+        out_.clock_index_.emplace(
+            clock.name_, CMClockId{static_cast<uint32_t>(out_.clocks_.size())});
         out_.clocks_.push_back(std::move(clock));
     }
 
     void parse_caused_by() {
-        uint32_t clock_id = kTMNoClock;
+        CMClockId clock_id;
         Token t = reader_.next();
         if (t.kind == Kind::kString) {
             const auto it = out_.clock_index_.find(t.text);
@@ -385,8 +392,7 @@ private:
                 clock_id = it->second;
             } else {
                 ++out_.missing_clock_count_;
-            }
-        } else if (!(t.kind == Kind::kAtom && t.text == "NULL")) {
+            }        } else if (!(t.kind == Kind::kAtom && t.text == "NULL")) {
             skip_construct(1);
             ++out_.unknown_construct_count_;
             return;
@@ -440,7 +446,7 @@ private:
     }
 
     // NET/PIN 记录：CONSTANT 前置形态 / 名字 + 八对字段 + 可选 C|D 标记
-    void parse_record(bool pin_kind, uint32_t clock_id) {
+    void parse_record(bool pin_kind, CMClockId clock_id) {
         TMNameTiming e;
         e.clock_id_ = clock_id;
         if (pin_kind) {

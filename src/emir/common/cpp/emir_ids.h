@@ -21,7 +21,7 @@
 // 位宽分组（id 数量级：32 位族十万级以内、64 位族 instance 可达 10⁹ 级，
 // 同 design db 裁定 ㊳ 口径）：
 //   32 位族：CMCellId / CMPinId / CMViaCellId / CMLayerId /
-//            CMPartitionId
+//            CMPartitionId / CMClockId
 //   64 位族：CMInstanceId / CMNetId / CMViaInstanceId（层级树区间
 //            起始同族；区间「长度」是计数不是编号，保持裸 uint64_t）
 //
@@ -54,6 +54,11 @@ using CMLayerId = StrongIdT<CMLayerIdTag, uint32_t>;
 // 分区（分区表下标）
 struct CMPartitionIdTag {};
 using CMPartitionId = StrongIdT<CMPartitionIdTag, uint32_t>;
+
+// 时钟（timing db 时钟表下标；⑦ timing db——解析边界原 kTMNoClock 裸
+// 哨兵 UINT32_MAX 与本类型默认哨兵同值，语义无缝收编）
+struct CMClockIdTag {};
+using CMClockId = StrongIdT<CMClockIdTag, uint32_t>;
 
 // instance（全局；per-block local id 同型）
 struct CMInstanceIdTag {};

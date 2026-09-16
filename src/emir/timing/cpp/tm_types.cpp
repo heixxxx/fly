@@ -11,7 +11,7 @@ void TMTimingFile::rebuild_indexes() {
     clock_index_.reserve(clocks_.size());
     entry_index_.reserve(entries_.size());
     for (uint32_t i = 0; i < clocks_.size(); ++i) {
-        clock_index_.emplace(clocks_[i].name_, i);
+        clock_index_.emplace(clocks_[i].name_, CMClockId{i});
     }
     for (size_t i = 0; i < entries_.size(); ++i) {
         entry_index_.emplace(entries_[i].name_, i);
@@ -62,9 +62,9 @@ void TMTimingFile::upsert_timing(TMNameTiming&& e) {
     if (e.is_fall_slew()) {
         dst.set_fall_slew();
     }
-    // 时钟源：无 → 有取有；有 ≠ 有置多源
-    if (e.clock_id_ != kTMNoClock) {
-        if (dst.clock_id_ == kTMNoClock) {
+    // 时钟源：无 → 有取有；有 ≠ 有置多源（哨兵 = CMClockId 默认 kInvalid）
+    if (e.clock_id_.is_valid()) {
+        if (!dst.clock_id_.is_valid()) {
             dst.clock_id_ = e.clock_id_;
         } else if (dst.clock_id_ != e.clock_id_) {
             dst.set_multi_source();
@@ -79,7 +79,7 @@ const TMNameTiming* TMTimingFile::find_entry(const CMString& name) const {
 
 const TMClock* TMTimingFile::find_clock(const CMString& name) const {
     auto it = clock_index_.find(name);
-    return it == clock_index_.end() ? nullptr : &clocks_[it->second];
+    return it == clock_index_.end() ? nullptr : &clocks_[it->second.value()];
 }
 
 }  // namespace fly
