@@ -35,6 +35,11 @@ def test_sniff_liberty_header():
     good = _write("good.lib", "// lead comment\n/* block\n comment */\n"
                              "library (good_typ) { }\n")
     lib_utils.sniff_liberty_header(good)
+    # 超长注释头（真实工艺库许可证块 > 1KB，Nangate45 实测形态）通过
+    long_comment = "/*\n" + "* license line padding x\n" * 120 + "*/\n"
+    assert len(long_comment) > 2048
+    real = _write("real.lib", long_comment + "library (nangate) { }\n")
+    lib_utils.sniff_liberty_header(real)
     # .lef 误传（VERSION 开头）→ ValueError
     lef = _write("fake.lef", "VERSION 5.8 ;\nUNITS\n DATABASE MICRONS 2000 ;\n"
                              "END UNITS\nLAYER M1\n TYPE ROUTING\nEND M1\n")

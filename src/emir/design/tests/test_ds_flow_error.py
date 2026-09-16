@@ -48,6 +48,11 @@ def test_sniff_lef_header():
     ds_utils.sniff_lef_header(lib_utils_ok)
     ds_utils.sniff_lef_header(_write("comment.lef",
                                      "# just a comment line\n" + GOOD_LEF))
+    # 超长注释头（真实工艺 LEF 许可证块 > 1KB，Nangate45 实测形态）通过
+    long_comment = "#" + "x" * 70 + "\n"
+    real = _write("real.lef", long_comment * 40 + GOOD_LEF)
+    assert os.path.getsize(real) > 2048
+    ds_utils.sniff_lef_header(real)
     # liberty 误传（library 开头，无 VERSION）→ ValueError
     lib = _write("fake.lef", "library (typ) { cell (C) { } }\n")
     try:

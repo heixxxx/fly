@@ -11,15 +11,17 @@ from .lib_export import EXLIBLibrary, lib_parse_lib_file
 
 
 def sniff_liberty_header(path: str) -> None:
-    """入口防呆嗅探（秒级）：读文件前 1KB 剥注释/空白，校验 liberty 形态
+    """入口防呆嗅探（秒级）：读文件前 1MB 剥注释/空白，校验 liberty 形态
     （``library`` 关键字 + ``(``）。
 
     仅做类型判定、不做完整语法检查（2026-09-13 裁定）——.lef 等非 liberty
     文件误传 build_lib_db 在此秒级拦截 ValueError（含路径与实际读到的头
     部字符，dev-rules §7 第一类变体），不建库、不起解析任务。
+    读窗 1MB：真实工艺库常以大段许可证注释开头（Nangate45 typical.lib
+    首注释块约 2KB，实测 1KB 读窗剥完注释即空导致误判，2026-09-15）。
     """
     with open(path, "r", errors="replace") as f:
-        head = f.read(1024)
+        head = f.read(1 << 20)
     # 剥 liberty 注释：// 到行尾、/* ... */（未闭合块剥到结尾）
     stripped = re.sub(r"//[^\n]*", " ", head)
     stripped = re.sub(r"/\*.*?(\*/|$)", " ", stripped, flags=re.S)
