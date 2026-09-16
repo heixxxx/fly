@@ -338,8 +338,11 @@ ConvertOutcome convert_net_entry(EntryConvertEnv& env, const CMString& name,
                    : ConvertOutcome::kSkip;  // driver 定位失败已在内部计数
     }
 
-    // 块绑定：块端口条目（§7.1 归属键 = 块实例自身全局 id）或块内真实网
+    // 块绑定：块端口条目（§7.1 归属键 = 块实例自身全局 id）或块内真实网。
+    // attach_attempted = 网名已命中但 driver 定位失败（kSkip——dangling
+    // 已在内部计数）；与「名字未命中」（kNameMiss）区分，防双计数
     bool hit = false;
+    bool attach_attempted = false;
     for (uint32_t node_id : *env.block_nodes) {
         const DSHierTree& tree = env.ctx->design().get_hier_tree();
         const DSHierNode* leaf = &tree.node(node_id);
@@ -398,11 +401,15 @@ ConvertOutcome convert_net_entry(EntryConvertEnv& env, const CMString& name,
             ++env.stats->pg_net_skip_count_;  // §7.5
             return ConvertOutcome::kSkip;  // 跳过形态（不计命中）
         }
+        attach_attempted = true;
         if (attach_net_drivers(env, net_id, e)) {
             hit = true;
         }
     }
-    return hit ? ConvertOutcome::kHit : ConvertOutcome::kNameMiss;
+    if (hit) {
+        return ConvertOutcome::kHit;
+    }
+    return attach_attempted ? ConvertOutcome::kSkip : ConvertOutcome::kNameMiss;
 }
 
 }  // namespace

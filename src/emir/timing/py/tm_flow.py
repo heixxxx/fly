@@ -184,7 +184,8 @@ def _t2_chunk_task(db, snapshot_keys, plan_key, file_index, chunk_index,
     from log import INFO
     if slice_obj.stats.files:
         fs = slice_obj.stats.files[0]
-        INFO(f"t2 chunk {file_index}/{chunk_index}: entry={fs.entry_count} "
+        INFO(f"t2 chunk {file_index}/{chunk_index}: kind={binding_kind} "
+             f"bi='{block_inst}' entry={fs.entry_count} "
              f"hit={fs.hit_count} skip_inst={fs.skipped_instance_count} "
              f"net_miss={fs.net_name_miss_count} skip_pin={fs.skipped_pin_count} "
              f"dangling={fs.dangling_net_count} unplaced={fs.unplaced_instance_count} "
