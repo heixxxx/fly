@@ -114,8 +114,8 @@ struct DSNetContext {
 
     // —— 节点产出 ——
     // DSNetConnectionParseNode：对齐到的 local net id；0 = 网名未收录
-    //（防御兜底，后续节点跳过该网；R7 ㊳ 64 位）
-    uint64_t local_net_id = 0;
+    //（防御兜底，后续节点跳过该网；R7 ㊳ 64 位强类型）
+    CMNetId local_net_id = CMNetId{0};
 
     // 错误标记：任一节点置位后 run 即停（环境缺失等调用方契约错误）
     bool error = false;
@@ -172,9 +172,9 @@ DSNetPipeline ds_make_nets_pipeline();
 
 // via 名解析（⑪/⑫）：⑫ design:: 前缀名优先（本 DEF VIAS 段登记条目，
 // 防 tech/cell lef 同名 via 遮蔽），未命中回退 plain 名；双未命中返回
-// DSDesign::kInvalidId（调用方兜底跳过 + 计数）
-uint32_t ds_resolve_via_cell(const DSDesign& design,
-                             const CMString& design_name,
-                             const CMString& via_name);
+// 哨兵（调用方兜底跳过 + 计数）
+CMViaCellId ds_resolve_via_cell(const DSDesign& design,
+                                const CMString& design_name,
+                                const CMString& via_name);
 
 }  // namespace fly

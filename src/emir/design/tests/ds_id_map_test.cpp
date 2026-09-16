@@ -28,22 +28,22 @@ TEST(DSIdMapTest, CollectSlicePrimaryInstancesAndGeometryNets) {
     DSPartInstances instances;
     DSInstance primary_inst;
     primary_inst.set_primary();
-    instances.items_[7] = std::move(primary_inst);
+    instances.items_[CMInstanceId{7}] = std::move(primary_inst);
     DSInstance extend_inst;  // extend 副本（非 primary）——不入片段
-    instances.items_[8] = std::move(extend_inst);
+    instances.items_[CMInstanceId{8}] = std::move(extend_inst);
 
     DSPartitionGeometry geometry;
-    geometry.add_entry(3, DSGeomEntry{});   // net 副本（含 OBS 桶键）
-    geometry.add_entry(3, DSGeomEntry{});   // 同键多条目只入一次片段
+    geometry.add_entry(CMNetId{3}, DSGeomEntry{});   // net 副本（含 OBS 桶键）
+    geometry.add_entry(CMNetId{3}, DSGeomEntry{});   // 同键多条目只入一次片段
     DSGeomEntry obs;                        // 键 0 纯 OBS 桶——键 0 仍入
     obs.set_obs();
-    geometry.add_entry(0, std::move(obs));
+    geometry.add_entry(CMNetId{0}, std::move(obs));
     DSPartitionGeometry geometry_pg;        // pg 侧对象（2026-09-14 拆分）
-    geometry_pg.add_entry(9, DSGeomEntry{});  // pg 网副本键入并集
+    geometry_pg.add_entry(CMNetId{9}, DSGeomEntry{});  // pg 网副本键入并集
 
     const DSIdPartitionSlice inst_slice =
         ds_collect_partition_id_slice(instances, geometry, geometry_pg, true,
-                                      2);
+                                      CMPartitionId{2});
     ASSERT_EQ(inst_slice.size(), 1u);
     EXPECT_EQ(inst_slice.ids_[0], 7u);
     EXPECT_EQ(inst_slice.pids_[0], 2u);
@@ -51,7 +51,7 @@ TEST(DSIdMapTest, CollectSlicePrimaryInstancesAndGeometryNets) {
     // net 维度 = GEOMETRY + GEOMETRY_PG 两对象键集并集（拆分裁定）
     const DSIdPartitionSlice net_slice =
         ds_collect_partition_id_slice(instances, geometry, geometry_pg,
-                                      false, 2);
+                                      false, CMPartitionId{2});
     ASSERT_EQ(net_slice.size(), 3u);
     EXPECT_EQ(net_slice.ids_[0], 0u);
     EXPECT_EQ(net_slice.ids_[1], 3u);
@@ -66,7 +66,8 @@ TEST(DSIdMapTest, CollectSliceEmptyProducts) {
     DSPartitionGeometry geometry;
     const DSIdPartitionSlice s =
         ds_collect_partition_id_slice(instances, geometry,
-                                      DSPartitionGeometry(), true, 0);
+                                      DSPartitionGeometry(), true,
+                                      CMPartitionId{0});
     EXPECT_EQ(s.size(), 0u);
 }
 
@@ -77,10 +78,10 @@ TEST(DSIdMapTest, MergeSegmentsSkipsHoleSegments) {
     // id 9。段 0 = [0, 2^20)、段 1 = [2^20, 2^21)——两段、段 0 内空洞
     // （id 6/7/8 无条目）保持 kIdMapNoPartition
     DSIdPartitionSlice a;
-    a.add(5, 1);
-    a.add(kIdMapSegmentSize + 3, 1);
+    a.add(5, CMPartitionId{1});
+    a.add(kIdMapSegmentSize + 3, CMPartitionId{1});
     DSIdPartitionSlice b;
-    b.add(9, 0);
+    b.add(9, CMPartitionId{0});
 
     const CMVector<const DSIdPartitionSlice*> slices{&a, &b};
     const DSIdPartitionMapResult result = ds_merge_id_partition_slices(slices);
@@ -110,9 +111,9 @@ TEST(DSIdMapTest, MergeDuplicateIdTakesFirst) {
     // 同 id 多片段（S9 primary 恰一不变式下正常数据不触发；确定性防御 =
     // 排序后首个生效——条目按 (id, pid) 升序，即 pid 最小者胜）
     DSIdPartitionSlice a;
-    a.add(4, 1);
+    a.add(4, CMPartitionId{1});
     DSIdPartitionSlice b;
-    b.add(4, 0);
+    b.add(4, CMPartitionId{0});
     const CMVector<const DSIdPartitionSlice*> slices{&a, &b};
     const DSIdPartitionMapResult result = ds_merge_id_partition_slices(slices);
     ASSERT_EQ(result.segments.size(), 1u);
@@ -134,9 +135,9 @@ TEST(DSIdMapTest, SegmentQueryBoundaries) {
     DSIdPartitionSegment seg;
     seg.id_start_ = kIdMapSegmentSize * 3;
     seg.pids_.assign(static_cast<size_t>(kIdMapSegmentSize),
-                     kIdMapNoPartition);
-    seg.pids_[0] = 4;                                        // 段首
-    seg.pids_[seg.pids_.size() - 1] = 5;                     // 段末
+                     CMPartitionId{kIdMapNoPartition});
+    seg.pids_[0] = CMPartitionId{4};                                        // 段首
+    seg.pids_[seg.pids_.size() - 1] = CMPartitionId{5};                     // 段末
     EXPECT_EQ(seg.partition_of(kIdMapSegmentSize * 3), 4u);
     EXPECT_EQ(seg.partition_of(kIdMapSegmentSize * 4 - 1), 5u);
     EXPECT_EQ(seg.partition_of(kIdMapSegmentSize * 3 - 1),
@@ -154,8 +155,8 @@ TEST(DSIdMapTest, SegmentQueryBoundaries) {
 
 TEST(DSIdMapTest, SerializeRoundTrip) {
     DSIdPartitionSlice slice;
-    slice.add(12, 3);
-    slice.add(kIdMapSegmentSize + 1, 0);
+    slice.add(12, CMPartitionId{3});
+    slice.add(kIdMapSegmentSize + 1, CMPartitionId{0});
 
     CMString slice_blob;
     FLY_ENCODE(slice, slice_blob);

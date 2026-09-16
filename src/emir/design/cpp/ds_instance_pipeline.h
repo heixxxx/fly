@@ -69,8 +69,8 @@ struct DSInstanceContext {
     // 放置朝向（defin 回调整型直转；UNPLACED 的 defi 无效值 −1 由适配
     // 层钳制为 N）
     GEOOrientation orient = GEOOrientation::N;
-    // 放置状态（DSPlacementStatus）
-    uint8_t placement_status = static_cast<uint8_t>(DSPlacementStatus::UNPLACED);
+    // 放置状态（DSPlacementStatus 枚举定型存储，2026-09-16 裁定）
+    DSPlacementStatus placement_status = DSPlacementStatus::UNPLACED;
 
     // —— 环境（非拥有观察；调用方保证覆盖 pipeline.run 生命周期）——
     // 全局容器（cell namemap 查询；fake cell 不直接写入——入独立容器，
@@ -84,15 +84,16 @@ struct DSInstanceContext {
     CMVector<DSCell>* fake_cells = nullptr;
 
     // —— 节点产出 ——
-    // DSCellResolveNode：解析到的 cell id（fake 为任务内分配 id）
-    uint32_t cell_id = DSDesign::kInvalidId;
+    // DSCellResolveNode：解析到的 cell id（fake 为任务内分配 id；默认
+    // 哨兵 = 未命中）
+    CMCellId cell_id;
     // DSCellResolveNode：放置换算所需的 cell 几何（bbox/origin 值拷贝
     // —— fake cell 不在 design 表，且 CMVector push 可能重分配）
     GEORect cell_bbox{0, 0, 0, 0};
     int32_t cell_origin_x = 0;
     int32_t cell_origin_y = 0;
-    // DSInstanceBuildNode：分配到的 local instance id（R7 ㊳ 64 位）
-    uint64_t instance_id = 0;
+    // DSInstanceBuildNode：分配到的 local instance id（R7 ㊳ 64 位强类型）
+    CMInstanceId instance_id = CMInstanceId{0};
 
     // 错误标记：任一节点置位后 run 即停（环境缺失等调用方契约错误）
     bool error = false;
@@ -156,7 +157,7 @@ public:
 DSInstancePipeline ds_make_components_pipeline();
 
 // fake cell id 基址（算法见头注释）：max_cell_id + 1 + hash(block 名) 扰动
-uint32_t ds_fake_cell_id_base(const CMString& block_name,
-                              uint32_t max_cell_id);
+CMCellId ds_fake_cell_id_base(const CMString& block_name,
+                              CMCellId::int_type max_cell_id);
 
 }  // namespace fly

@@ -36,8 +36,8 @@ DSStack make_stack() {
 
     DSLayer m1;
     m1.name_ = "M1";
-    m1.type_ = static_cast<uint8_t>(DSLayerType::ROUTING);
-    m1.direction_ = static_cast<uint8_t>(DSDirection::HORIZONTAL);
+    m1.type_ = DSLayerType::ROUTING;
+    m1.direction_ = DSDirection::HORIZONTAL;
     m1.default_width_ = 140;
     m1.pitch_ = 380;
     m1.spacing_ = {140, 160};
@@ -46,13 +46,13 @@ DSStack make_stack() {
 
     DSLayer v1;
     v1.name_ = "V1";
-    v1.type_ = static_cast<uint8_t>(DSLayerType::CUT);
+    v1.type_ = DSLayerType::CUT;
     stack.add_layer(std::move(v1));
 
     DSLayer m2;
     m2.name_ = "M2";
-    m2.type_ = static_cast<uint8_t>(DSLayerType::ROUTING);
-    m2.direction_ = static_cast<uint8_t>(DSDirection::VERTICAL);
+    m2.type_ = DSLayerType::ROUTING;
+    m2.direction_ = DSDirection::VERTICAL;
     m2.default_width_ = 160;
     m2.pitch_ = 420;
     stack.add_layer(std::move(m2));
@@ -74,14 +74,14 @@ DSDesign make_design() {
     inv.set_lef_cell();
     inv.set_macro_cell();
     DSPin a;  // pin 名不存 DSPin（R7 ㊱）——经 register_pin 进全局 hasher
-    a.type_ = static_cast<uint8_t>(DSPinType::SIGNAL);
-    a.direction_ = static_cast<uint8_t>(DSPinDirection::INPUT);
+    a.type_ = DSPinType::SIGNAL;
+    a.direction_ = DSPinDirection::INPUT;
     inv.add_pin(std::move(a));
     DSPin zn;
-    zn.direction_ = static_cast<uint8_t>(DSPinDirection::OUTPUT);
+    zn.direction_ = DSPinDirection::OUTPUT;
     inv.add_pin(std::move(zn));
     DSShapeRef obs1;
-    obs1.layer_id_ = 0;
+    obs1.layer_id_ = CMLayerId{0};
     obs1.set_rect(GEORect(0, 0, 1400, 1400));
     inv.add_obs(obs1);
     design.add_cell(std::move(inv));
@@ -90,12 +90,12 @@ DSDesign make_design() {
     filler.name_ = "FILLER01";
     filler.set_fake_cell();  // ⑲ fake cell（S5a 机制生成，此处结构就位）
     design.add_cell(std::move(filler));
-    design.fake_cell_ids_.push_back(1);  // ⑳ fake 单独集合（P4 保留索引）
+    design.fake_cell_ids_.push_back(CMCellId{1});  // ⑳ fake 单独集合（P4 保留索引）
 
     DSViaCell via;
     via.name_ = "VIA1";
-    via.bottom_layer_id_ = 0;
-    via.top_layer_id_ = 2;
+    via.bottom_layer_id_ = CMLayerId{0};
+    via.top_layer_id_ = CMLayerId{2};
     via.add_cut_rect(GEORect(0, 0, 200, 200));
     via.add_bottom_enclosure(GEORect(-40, -40, 240, 240));
     design.add_via_cell(std::move(via));
@@ -111,19 +111,19 @@ DSDesign make_design() {
     blk.def_path_ = "/work/top.def";
     DSPin p0;
     p0.set_port();
-    p0.placement_status_ = static_cast<uint8_t>(DSPinPlacementStatus::FIXED);
+    p0.placement_status_ = DSPinPlacementStatus::FIXED;
     blk.add_pin(std::move(p0));
     design.add_cell(std::move(blk));
 
     // namemap：cell/via 经 add_* 已注册；pin 组合键手动注册（D1 平
     // 铺 id）+ R4 回填 cell.pins_ 对应 DSPin 的 pin_id_
-    design.register_pin("INV_X1", "A", 0);
-    design.register_pin("INV_X1", "ZN", 1);
-    design.register_pin("top_block", "PIN_A", 2);
-    design.cells_[0].pins_[0].set_pin_id(0);
-    design.cells_[0].pins_[1].set_pin_id(1);
-    design.cells_[2].pins_[0].set_pin_id(2);
-    design.lib_link_[0] = "INV_X1_lib";
+    design.register_pin("INV_X1", "A", CMPinId{0});
+    design.register_pin("INV_X1", "ZN", CMPinId{1});
+    design.register_pin("top_block", "PIN_A", CMPinId{2});
+    design.cells_[0].pins_[0].set_pin_id(CMPinId{0});
+    design.cells_[0].pins_[1].set_pin_id(CMPinId{1});
+    design.cells_[2].pins_[0].set_pin_id(CMPinId{2});
+    design.lib_link_[CMCellId{0}] = "INV_X1_lib";
 
     return design;
 }
@@ -142,21 +142,21 @@ TEST(DSStackTest, SerializeRoundTripAndFindLayer) {
     ASSERT_EQ(back.layer_count(), 3u);
 
     // 层序即索引序（自底向上）
-    EXPECT_EQ(back.layer_at(0).get_name(), "M1");
-    EXPECT_EQ(back.layer_at(0).get_type(),
-              static_cast<uint8_t>(DSLayerType::ROUTING));
-    EXPECT_EQ(back.layer_at(0).get_direction(),
-              static_cast<uint8_t>(DSDirection::HORIZONTAL));
-    EXPECT_EQ(back.layer_at(0).get_default_width(), 140);
-    ASSERT_EQ(back.layer_at(0).get_spacing().size(), 2u);
-    EXPECT_EQ(back.layer_at(0).get_spacing()[1], 160);
-    EXPECT_EQ(back.layer_at(0).get_min_area(), 100000);
-    EXPECT_EQ(back.layer_at(1).get_name(), "V1");
-    EXPECT_EQ(back.layer_at(1).get_type(),
-              static_cast<uint8_t>(DSLayerType::CUT));
-    EXPECT_EQ(back.layer_at(2).get_name(), "M2");
-    EXPECT_EQ(back.layer_at(2).get_direction(),
-              static_cast<uint8_t>(DSDirection::VERTICAL));
+    EXPECT_EQ(back.layer_at(CMLayerId{0}).get_name(), "M1");
+    EXPECT_EQ(back.layer_at(CMLayerId{0}).get_type(),
+              DSLayerType::ROUTING);
+    EXPECT_EQ(back.layer_at(CMLayerId{0}).get_direction(),
+              DSDirection::HORIZONTAL);
+    EXPECT_EQ(back.layer_at(CMLayerId{0}).get_default_width(), 140);
+    ASSERT_EQ(back.layer_at(CMLayerId{0}).get_spacing().size(), 2u);
+    EXPECT_EQ(back.layer_at(CMLayerId{0}).get_spacing()[1], 160);
+    EXPECT_EQ(back.layer_at(CMLayerId{0}).get_min_area(), 100000);
+    EXPECT_EQ(back.layer_at(CMLayerId{1}).get_name(), "V1");
+    EXPECT_EQ(back.layer_at(CMLayerId{1}).get_type(),
+              DSLayerType::CUT);
+    EXPECT_EQ(back.layer_at(CMLayerId{2}).get_name(), "M2");
+    EXPECT_EQ(back.layer_at(CMLayerId{2}).get_direction(),
+              DSDirection::VERTICAL);
 
     // find_layer 往返后可用（R7 ㊸：层名索引 = 序列化 DSLayerNameHasher，
     // 不再惰性重建）
@@ -170,7 +170,7 @@ TEST(DSStackTest, SerializeRoundTripAndFindLayer) {
     dup.default_width_ = 999;
     EXPECT_EQ(back.find_or_add_layer(std::move(dup)), 0u);
     EXPECT_EQ(back.layer_count(), 3u);
-    EXPECT_EQ(back.layer_at(0).get_default_width(), 140);
+    EXPECT_EQ(back.layer_at(CMLayerId{0}).get_default_width(), 140);
 }
 
 TEST(DSStackTest, LayerIdAssignedAndKeptThroughRoundTrip) {
@@ -178,11 +178,11 @@ TEST(DSStackTest, LayerIdAssignedAndKeptThroughRoundTrip) {
     // 但不再作为约定，按 id 读取走 layer_by_id
     DSStack stack = make_stack();
     ASSERT_EQ(stack.layer_count(), 3u);
-    EXPECT_EQ(stack.layer_at(0).get_id(), 0u);
-    EXPECT_EQ(stack.layer_by_id(1).get_id(), 1u);
-    EXPECT_EQ(stack.layer_by_id(2).get_id(), 2u);
+    EXPECT_EQ(stack.layer_at(CMLayerId{0}).get_id(), 0u);
+    EXPECT_EQ(stack.layer_by_id(CMLayerId{1}).get_id(), 1u);
+    EXPECT_EQ(stack.layer_by_id(CMLayerId{2}).get_id(), 2u);
     // layer_by_id 与 layer_at 同语义（旧名保留）
-    EXPECT_EQ(&stack.layer_by_id(2), &stack.layer_at(2));
+    EXPECT_EQ(&stack.layer_by_id(CMLayerId{2}), &stack.layer_at(CMLayerId{2}));
 
     CMString blob;
     FLY_ENCODE(stack, blob);
@@ -190,12 +190,12 @@ TEST(DSStackTest, LayerIdAssignedAndKeptThroughRoundTrip) {
     FLY_DECODE(blob, DSStack, back);
 
     // round-trip 后 id 保持（显式持久化，不依赖下标隐式约定）
-    EXPECT_EQ(back.layer_by_id(0).get_name(), "M1");
-    EXPECT_EQ(back.layer_by_id(1).get_name(), "V1");
-    EXPECT_EQ(back.layer_by_id(2).get_name(), "M2");
-    EXPECT_EQ(back.layer_by_id(0).get_id(), 0u);
-    EXPECT_EQ(back.layer_by_id(1).get_id(), 1u);
-    EXPECT_EQ(back.layer_by_id(2).get_id(), 2u);
+    EXPECT_EQ(back.layer_by_id(CMLayerId{0}).get_name(), "M1");
+    EXPECT_EQ(back.layer_by_id(CMLayerId{1}).get_name(), "V1");
+    EXPECT_EQ(back.layer_by_id(CMLayerId{2}).get_name(), "M2");
+    EXPECT_EQ(back.layer_by_id(CMLayerId{0}).get_id(), 0u);
+    EXPECT_EQ(back.layer_by_id(CMLayerId{1}).get_id(), 1u);
+    EXPECT_EQ(back.layer_by_id(CMLayerId{2}).get_id(), 2u);
 
     // R7 ㊸：序列化层名 hasher 与 id 持久化互不影响
     EXPECT_EQ(back.find_layer("V1"), 1u);
@@ -213,8 +213,8 @@ TEST(DSStackTest, LayerIdWithDuplicateNames) {
     EXPECT_EQ(stack.add_layer(std::move(first)), 0u);
     EXPECT_EQ(stack.add_layer(std::move(second)), 1u);
     ASSERT_EQ(stack.layer_count(), 2u);
-    EXPECT_EQ(stack.layer_by_id(0).get_id(), 0u);
-    EXPECT_EQ(stack.layer_by_id(1).get_id(), 1u);
+    EXPECT_EQ(stack.layer_by_id(CMLayerId{0}).get_id(), 0u);
+    EXPECT_EQ(stack.layer_by_id(CMLayerId{1}).get_id(), 1u);
     EXPECT_EQ(stack.find_layer("M1"), 0u);  // 重名保留首个
 }
 
@@ -263,16 +263,16 @@ TEST(DSDesignTest, SerializeRoundTripAllFields) {
     // R7 ㊱：DSPin 无 name——pin 名经 pin hasher 组合键反查
     EXPECT_EQ(back.pin_name_of(inv.pin_at(0).get_pin_id()), "A");
     EXPECT_EQ(inv.pin_at(0).get_type(),
-              static_cast<uint8_t>(DSPinType::SIGNAL));
+              DSPinType::SIGNAL);
     EXPECT_EQ(back.pin_name_of(inv.pin_at(1).get_pin_id()), "ZN");
     EXPECT_EQ(inv.pin_at(1).get_direction(),
-              static_cast<uint8_t>(DSPinDirection::OUTPUT));
+              DSPinDirection::OUTPUT);
     // R4：全局 pin id 与放置状态随序列化保留（placement_status 非 port
     // 场景默认 NONE）
     EXPECT_EQ(inv.pin_at(0).get_pin_id(), 0u);
     EXPECT_EQ(inv.pin_at(1).get_pin_id(), 1u);
     EXPECT_EQ(inv.pin_at(0).get_placement_status(),
-              static_cast<uint8_t>(DSPinPlacementStatus::NONE));
+              DSPinPlacementStatus::NONE);
     ASSERT_EQ(inv.obs_count(), 1u);
     EXPECT_EQ(inv.obs_at(0).get_layer_id(), 0u);
     EXPECT_EQ(inv.obs_at(0).get_rect().get_x_high(), 1400);
@@ -308,23 +308,23 @@ TEST(DSDesignTest, SerializeRoundTripAllFields) {
     EXPECT_EQ(back.pin_name_of(port.get_pin_id()), "PIN_A");
     EXPECT_TRUE(port.is_port());
     EXPECT_EQ(port.get_placement_status(),
-              static_cast<uint8_t>(DSPinPlacementStatus::FIXED));
+              DSPinPlacementStatus::FIXED);
     EXPECT_EQ(port.get_pin_id(), 2u);
 
     // lib_link
     ASSERT_EQ(back.lib_link_.size(), 1u);
-    EXPECT_EQ(back.lib_link_.at(0), "INV_X1_lib");
+    EXPECT_EQ(back.lib_link_.at(CMCellId{0}), "INV_X1_lib");
 }
 
 TEST(DSDesignTest, InjectedRuntimeFieldsNotSerialized) {
     // ⑱：注入 pin_tables_/pin_geometry_ 后 write→load，新对象两字段为空
     DSDesign design = make_design();
     design.set_pin_tables(std::make_shared<DSPinTables>());
-    design.get_pin_tables()->add_timing_tables(0, {make_table("cell_rise", 1.0, 2.0)});
+    design.get_pin_tables()->add_timing_tables(CMPinId{0}, {make_table("cell_rise", 1.0, 2.0)});
     design.set_pin_geometry(std::make_shared<DSPinGeometry>());
     DSShapeRef g;
-    g.layer_id_ = 3;
-    design.get_pin_geometry()->add_geometry(0, std::move(g));
+    g.layer_id_ = CMLayerId{3};
+    design.get_pin_geometry()->add_geometry(CMPinId{0}, std::move(g));
 
     CMString blob;
     FLY_ENCODE(design, blob);
@@ -349,28 +349,28 @@ TEST(DSDesignTest, GetCellInjectionSharesPointers) {
     design.set_pin_tables(std::make_shared<DSPinTables>());
     design.set_pin_geometry(std::make_shared<DSPinGeometry>());
 
-    const DSCell& inv = design.get_cell(0);
+    const DSCell& inv = design.get_cell(CMCellId{0});
     ASSERT_TRUE(inv.get_pin_tables() != nullptr);
     EXPECT_TRUE(inv.get_pin_tables() == design.get_pin_tables());
     EXPECT_TRUE(inv.get_pin_geometry() == design.get_pin_geometry());
 
     // 经 cell 引用写入 → 容器侧可见（零拷贝）；R4 表按全局 pin id 落位
     inv.get_pin_tables()->add_internal_power_tables(
-        0, {make_table("rise_power", 3.0, 4.0)});
-    EXPECT_TRUE(design.get_pin_tables()->pin_has_tables(0));
-    ASSERT_NE(design.get_pin_tables()->internal_power_tables_of(0), nullptr);
-    EXPECT_EQ(design.get_pin_tables()->internal_power_tables_of(0)->size(), 1u);
+        CMPinId{0}, {make_table("rise_power", 3.0, 4.0)});
+    EXPECT_TRUE(design.get_pin_tables()->pin_has_tables(CMPinId{0}));
+    ASSERT_NE(design.get_pin_tables()->internal_power_tables_of(CMPinId{0}), nullptr);
+    EXPECT_EQ(design.get_pin_tables()->internal_power_tables_of(CMPinId{0})->size(), 1u);
 
     // 容器字段为空时注入置空（语义：该 design 无表/几何数据）
     DSDesign empty = make_design();
-    EXPECT_TRUE(empty.get_cell(0).get_pin_tables() == nullptr);
+    EXPECT_TRUE(empty.get_cell(CMCellId{0}).get_pin_tables() == nullptr);
 }
 
 TEST(DSDesignTest, FakeCellStructureInPlace) {
     // ⑲/⑳：is_fake_cell() flags 位与 fake_cell_ids_ 结构就位并随序列化保留
     DSDesign design = make_design();
     ASSERT_EQ(design.fake_cell_ids_.size(), 1u);
-    EXPECT_TRUE(design.cells_[design.fake_cell_ids_[0]].is_fake_cell());
+    EXPECT_TRUE(design.cells_[design.fake_cell_ids_[0].value()].is_fake_cell());
     EXPECT_FALSE(design.cells_[0].is_fake_cell());
 
     CMString blob;
@@ -421,8 +421,8 @@ TEST(DSDesignTest, NameMapBidirectionalConsistency) {
     EXPECT_EQ(back.pin_names_.get_name(0), "INV_X1/A");
     EXPECT_EQ(back.pin_names_.get_name(1), "INV_X1/ZN");
     EXPECT_EQ(back.pin_names_.get_name(2), "top_block/PIN_A");
-    EXPECT_EQ(back.pin_name_of(2), "PIN_A");  // 名段反查（㊱ 查名功能）
-    EXPECT_EQ(back.pin_name_of(DSPinNameHasher::kInvalidId), "");
+    EXPECT_EQ(back.pin_name_of(CMPinId{2}), "PIN_A");  // 名段反查（㊱ 查名功能）
+    EXPECT_EQ(back.pin_name_of(CMPinId{DSPinNameHasher::kInvalidId}), "");
 }
 
 TEST(DSPinTablesTest, SerializeRoundTripAndQuery) {
@@ -430,35 +430,36 @@ TEST(DSPinTablesTest, SerializeRoundTripAndQuery) {
     // timing_tables_[pin_id] 条目仅含该 pin 自己的表
     DSPinTables tables;
     tables.add_internal_power_tables(
-        0, {make_table("rise_power", 1.0, 2.0), make_table("fall_power", 3.0, 4.0)});
-    tables.add_timing_tables(0, {make_table("cell_rise", 5.0, 6.0)});
-    tables.add_timing_tables(7, {make_table("cell_rise", 7.0, 8.0)});
+        CMPinId{0},
+        {make_table("rise_power", 1.0, 2.0), make_table("fall_power", 3.0, 4.0)});
+    tables.add_timing_tables(CMPinId{0}, {make_table("cell_rise", 5.0, 6.0)});
+    tables.add_timing_tables(CMPinId{7}, {make_table("cell_rise", 7.0, 8.0)});
 
-    EXPECT_TRUE(tables.pin_has_tables(0));
-    EXPECT_TRUE(tables.pin_has_tables(7));
-    EXPECT_FALSE(tables.pin_has_tables(3));
+    EXPECT_TRUE(tables.pin_has_tables(CMPinId{0}));
+    EXPECT_TRUE(tables.pin_has_tables(CMPinId{7}));
+    EXPECT_FALSE(tables.pin_has_tables(CMPinId{3}));
 
     CMString blob;
     FLY_ENCODE(tables, blob);
     DSPinTables back;
     FLY_DECODE(blob, DSPinTables, back);
 
-    EXPECT_TRUE(back.pin_has_tables(0));
-    EXPECT_TRUE(back.pin_has_tables(7));
-    EXPECT_FALSE(back.pin_has_tables(3));
+    EXPECT_TRUE(back.pin_has_tables(CMPinId{0}));
+    EXPECT_TRUE(back.pin_has_tables(CMPinId{7}));
+    EXPECT_FALSE(back.pin_has_tables(CMPinId{3}));
 
-    const CMVector<CMLookupTable>* ip = back.internal_power_tables_of(0);
+    const CMVector<CMLookupTable>* ip = back.internal_power_tables_of(CMPinId{0});
     ASSERT_NE(ip, nullptr);
     ASSERT_EQ(ip->size(), 2u);
     EXPECT_EQ((*ip)[0].name_, "rise_power");
     EXPECT_DOUBLE_EQ((*ip)[0].values_[1], 2.0);
     EXPECT_EQ((*ip)[1].name_, "fall_power");
 
-    const CMVector<CMLookupTable>* tt7 = back.timing_tables_of(7);
+    const CMVector<CMLookupTable>* tt7 = back.timing_tables_of(CMPinId{7});
     ASSERT_NE(tt7, nullptr);
     ASSERT_EQ(tt7->size(), 1u);
     EXPECT_DOUBLE_EQ((*tt7)[0].values_[0], 7.0);
-    EXPECT_EQ(back.timing_tables_of(3), nullptr);
+    EXPECT_EQ(back.timing_tables_of(CMPinId{3}), nullptr);
 }
 
 TEST(DSPinGeometryTest, SerializeRoundTripAndQuery) {
@@ -466,30 +467,30 @@ TEST(DSPinGeometryTest, SerializeRoundTripAndQuery) {
     // DSShapeRef 集
     DSPinGeometry geos;
     DSShapeRef g1;
-    g1.layer_id_ = 0;
+    g1.layer_id_ = CMLayerId{0};
     g1.set_rect(GEORect(0, 0, 100, 200));
     DSShapeRef g2;
-    g2.layer_id_ = 2;
+    g2.layer_id_ = CMLayerId{2};
     g2.set_rect(GEORect(50, 60, 70, 80));
-    geos.add_geometries(5, {g1, g2});
+    geos.add_geometries(CMPinId{5}, {g1, g2});
 
-    EXPECT_TRUE(geos.pin_has_geometry(5));
-    EXPECT_FALSE(geos.pin_has_geometry(6));
+    EXPECT_TRUE(geos.pin_has_geometry(CMPinId{5}));
+    EXPECT_FALSE(geos.pin_has_geometry(CMPinId{6}));
 
     CMString blob;
     FLY_ENCODE(geos, blob);
     DSPinGeometry back;
     FLY_DECODE(blob, DSPinGeometry, back);
 
-    EXPECT_TRUE(back.pin_has_geometry(5));
-    const CMVector<DSShapeRef>* vec = back.geometry_of(5);
+    EXPECT_TRUE(back.pin_has_geometry(CMPinId{5}));
+    const CMVector<DSShapeRef>* vec = back.geometry_of(CMPinId{5});
     ASSERT_NE(vec, nullptr);
     ASSERT_EQ(vec->size(), 2u);
     EXPECT_EQ((*vec)[0].get_layer_id(), 0u);
     EXPECT_EQ((*vec)[0].get_rect().get_y_high(), 200);
     EXPECT_EQ((*vec)[1].get_layer_id(), 2u);
     EXPECT_EQ((*vec)[1].get_rect().get_x_low(), 50);
-    EXPECT_EQ(back.geometry_of(6), nullptr);
+    EXPECT_EQ(back.geometry_of(CMPinId{6}), nullptr);
 }
 
 TEST(DSPinTest, NoNameMemberAndPinIdStatusRoundTrip) {
@@ -497,14 +498,16 @@ TEST(DSPinTest, NoNameMemberAndPinIdStatusRoundTrip) {
     // 场景有效）随序列化保留；非 port pin 默认 NONE。
     // R7 ㊱：DSPin 无 name 成员（类型层断言见文件尾 NameLayering 断言）
     DSPin plain;
-    EXPECT_EQ(plain.get_pin_id(), 0u);
+    // 强类型 id 默认 = 哨兵（未分配状态可辨——原默认 0 与首个 pin id
+    // 混叠，2026-09-16 裁定的附带修正）
+    EXPECT_FALSE(plain.get_pin_id().is_valid());
     EXPECT_EQ(plain.get_placement_status(),
-              static_cast<uint8_t>(DSPinPlacementStatus::NONE));
+              DSPinPlacementStatus::NONE);
 
     DSPin port_pin;
-    port_pin.set_pin_id(9u);
+    port_pin.set_pin_id(CMPinId{9});
     port_pin.set_placement_status(
-        static_cast<uint8_t>(DSPinPlacementStatus::FIXED));
+        DSPinPlacementStatus::FIXED);
 
     CMString blob;
     FLY_ENCODE(port_pin, blob);
@@ -513,7 +516,7 @@ TEST(DSPinTest, NoNameMemberAndPinIdStatusRoundTrip) {
 
     EXPECT_EQ(back.get_pin_id(), 9u);
     EXPECT_EQ(back.get_placement_status(),
-              static_cast<uint8_t>(DSPinPlacementStatus::FIXED));
+              DSPinPlacementStatus::FIXED);
 }
 
 TEST(DSDesignTest, CellPinGeometriesAggregatesByPinId) {
@@ -522,23 +525,23 @@ TEST(DSDesignTest, CellPinGeometriesAggregatesByPinId) {
     DSDesign design = make_design();
     design.set_pin_geometry(std::make_shared<DSPinGeometry>());
     DSShapeRef ga;  // pin id 0（INV_X1/A）
-    ga.layer_id_ = 0;
+    ga.layer_id_ = CMLayerId{0};
     ga.set_rect(GEORect(0, 0, 100, 100));
     DSShapeRef gb;  // pin id 1（INV_X1/ZN）
-    gb.layer_id_ = 2;
+    gb.layer_id_ = CMLayerId{2};
     gb.set_rect(GEORect(200, 200, 300, 300));
-    design.get_pin_geometry()->add_geometry(0, std::move(ga));
-    design.get_pin_geometry()->add_geometry(1, std::move(gb));
+    design.get_pin_geometry()->add_geometry(CMPinId{0}, std::move(ga));
+    design.get_pin_geometry()->add_geometry(CMPinId{1}, std::move(gb));
 
-    const CMVector<DSShapeRef> agg = design.cell_pin_geometries(0);
+    const CMVector<DSShapeRef> agg = design.cell_pin_geometries(CMCellId{0});
     ASSERT_EQ(agg.size(), 2u);
     EXPECT_EQ(agg[0].get_layer_id(), 0u);  // A 先（pins_ 序）
     EXPECT_EQ(agg[1].get_layer_id(), 2u);  // ZN 后
 
     // 无几何数据（容器空）与无 pin 的 cell 均返回空集
     DSDesign bare = make_design();
-    EXPECT_TRUE(bare.cell_pin_geometries(0).empty());
-    EXPECT_TRUE(bare.cell_pin_geometries(1).empty());  // fake cell 无 pin
+    EXPECT_TRUE(bare.cell_pin_geometries(CMCellId{0}).empty());
+    EXPECT_TRUE(bare.cell_pin_geometries(CMCellId{1}).empty());  // fake cell 无 pin
 }
 
 TEST(DSCellTest, FlagsIndependentAndCoexist) {
@@ -609,7 +612,7 @@ TEST(DSCellTest, BboxPolygonDualStorageAndDerivedSize) {
 //    用例承接迁移）——
 TEST(DSShapeRefTest, AccessorsAndRoundTrip) {
     DSShapeRef ref;
-    ref.set_layer_id(7u);
+    ref.set_layer_id(CMLayerId{7});
     ref.set_rect(GEORect(0, 0, 100, 200));
 
     EXPECT_EQ(ref.get_layer_id(), 7u);
@@ -650,11 +653,11 @@ TEST(DSNameLayeringTest, InstanceNameLookupViaHasher) {
     // ㊱ 功能断言：DSInstance 无 name，实例名经 DSInstanceNameHasher
     // 查回（DSBlockBuildData::find_instance_by_name / add_instance 登记）
     DSBlockBuildData block;
-    block.init_placeholder("blk_a", DSCellNameHasher::kInvalidId);
+    block.init_placeholder("blk_a", CMCellId{});
 
     DSInstance inst;
-    inst.set_cell_id(3u);
-    const uint64_t id = block.add_instance(std::move(inst), "u1");
+    inst.set_cell_id(CMCellId{3});
+    const CMInstanceId id = block.add_instance(std::move(inst), "u1");
 
     const DSInstance* found = block.find_instance_by_name("u1");
     ASSERT_NE(found, nullptr);
@@ -675,19 +678,19 @@ TEST(DSNameLayeringTest, InstanceNameLookupViaHasher) {
 
     // ㊵②：读伴生对象 attach 后查名恢复（CMSharedPtr 共享注入）
     DSBlockNames names_from;
-    names_from.instance_names_->assign("u1", id);
+    names_from.instance_names_->assign("u1", id.value());
     back.set_instance_names(names_from.instance_names_);
-    EXPECT_EQ(back.instance_names_->get_name(id), "u1");
+    EXPECT_EQ(back.instance_names_->get_name(id.value()), "u1");
 }
 
 TEST(DSNameLayeringTest, PinNameLookupViaDesignHasher) {
     // ㊱ 功能断言：DSPin 无 name，pin 名经 DSDesign pin hasher 反查
     DSDesign design = make_design();
-    EXPECT_EQ(design.pin_name_of(0), "A");
-    EXPECT_EQ(design.pin_name_of(2), "PIN_A");
+    EXPECT_EQ(design.pin_name_of(CMPinId{0}), "A");
+    EXPECT_EQ(design.pin_name_of(CMPinId{2}), "PIN_A");
     // 未登记/越界/哨兵 → 空串（不透出哨兵值）
-    EXPECT_EQ(design.pin_name_of(99), "");
-    EXPECT_EQ(design.pin_name_of(DSPinNameHasher::kInvalidId), "");
+    EXPECT_EQ(design.pin_name_of(CMPinId{99}), "");
+    EXPECT_EQ(design.pin_name_of(CMPinId{DSPinNameHasher::kInvalidId}), "");
 }
 
 TEST(DSNameLayeringTest, FinalizeNamesForSaveSealsBothHashers) {
@@ -695,9 +698,9 @@ TEST(DSNameLayeringTest, FinalizeNamesForSaveSealsBothHashers) {
     // 的封口入口。64 位组 instance/net 两 hasher 同步封口；32 位组
     // （DSDesign cell/pin hasher）不在封口面（本类只持 64 位组）。
     DSBlockBuildData block;
-    block.init_placeholder("blk_a", DSCellNameHasher::kInvalidId);
+    block.init_placeholder("blk_a", CMCellId{});
     DSInstance inst;
-    inst.set_cell_id(3u);
+    inst.set_cell_id(CMCellId{3});
     block.add_instance(std::move(inst), "u1");
     block.register_net("n1");
     ASSERT_NE(block.instance_names_, nullptr);

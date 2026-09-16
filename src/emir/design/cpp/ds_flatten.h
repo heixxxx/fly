@@ -107,9 +107,9 @@ namespace fly {
 class DSNetConnEntry {
 public:
     // 端点实例 global id（⑧ local 0 映射目标；port 位条目 = 块实例自身）
-    uint64_t inst_id_ = 0;
+    CMInstanceId inst_id_ = CMInstanceId{0};
     // 端点 pin 全局平铺 id（S5b 解析边界换算完成，直存）
-    uint32_t pin_id_ = 0;
+    CMPinId pin_id_;
     // port / driver / receiver / power / ground / clock 位（S5b 直存；
     // hybrid = driver+receiver 同置）
     CM_FLAGS(uint8_t, port, driver, receiver, power, ground, clock)
@@ -124,11 +124,11 @@ public:
 class DSPartConnection {
 public:
     // 端点实例 global id（⑧ local 0 映射目标；port 位条目 = 块实例自身）
-    uint64_t inst_id_ = 0;
+    CMInstanceId inst_id_ = CMInstanceId{0};
     // 端点网 global id（local + offset，不换算 root）
-    uint64_t net_global_id_ = 0;
+    CMNetId net_global_id_;
     // 端点 pin 全局平铺 id（S5b 解析边界换算完成，直存）
-    uint32_t pin_id_ = 0;
+    CMPinId pin_id_;
     // port / driver / receiver / power / ground / clock 位（S5b 直存；
     // hybrid = driver+receiver 同置）
     CM_FLAGS(uint8_t, port, driver, receiver, power, ground, clock)
@@ -140,23 +140,23 @@ public:
 // obstruction 统一形态；「geometry 以 net 组织」总形态的最小单元）。
 class DSGeomEntry {
 public:
-    // 非 via 条目的 via_cell_id_ 哨兵（与 DSViaCell::cut_layer_id_ 未判
-    // 定哨兵同值口径）
-    static constexpr uint32_t kNoViaCell = UINT32_MAX;
+    // 非 via 条目的 via_cell_id_ 哨兵 = 强类型默认（整型最大值，与
+    // DSViaCell::cut_layer_id_ 未判定哨兵同值口径）
+    static constexpr CMViaCellId kNoViaCell{};
 
     // 层 id（via 条目：cut → cut_layer_id_、enclosure → bottom/top 层）
-    uint32_t layer_id_ = 0;
+    CMLayerId layer_id_;
     // 全局坐标矩形（DBU；wire 段矩形化 = 相邻点对 + 宽度半开区间外扩，
     // 同 S5b 密度节点口径；不做分区裁剪）
     GEORect rect_;
-    // via 专属：via cell 权威表 id（kNoViaCell = 非 via 条目；下游连层
+    // via 专属：via cell 权威表 id（哨兵 = 非 via 条目；下游连层
     // /电阻分流判定用）
-    uint32_t via_cell_id_ = kNoViaCell;
+    CMViaCellId via_cell_id_;
     // obs 位 = DEF obstruction（net 0 桶）；primary 位 = via 放置点归属
     //（仅 via 条目置位——core 内放置点的分区条目为真，补记①）
     CM_FLAGS(uint8_t, obs, primary)
 
-    bool is_via() const { return via_cell_id_ != kNoViaCell; }
+    bool is_via() const { return via_cell_id_.is_valid(); }
 
     FLY_SERIALIZE(layer_id_, rect_, via_cell_id_, flags_)
 };
@@ -172,26 +172,26 @@ class DSPartitionGeometry {
 public:
     // 信号侧键 0 = OBS 桶（obs 位判别——2026-09-14 起恒纯 OBS，与真网
     // 无同键共存；pg 侧无此键）
-    CMUnorderedMap<uint64_t, CMVector<DSGeomEntry>> nets_;
+    CMUnorderedMap<CMNetId, CMVector<DSGeomEntry>> nets_;
     // 跨分区网（is_crossing，补记④）：成员图形散布多于一个分区的
     // global net id 集（本分区有副本的网才登记；S10 统计口径）。
     // （2026-09-13 修正：原「CMUnorderedMap<uint64_t, uint8_t> 值恒 1 充
     // 当 set」系序列化宏无 set 支持时期的妥协——宏已接 set 全族，回归
     // CMUnorderedSet 直存）
-    CMUnorderedSet<uint64_t> crossing_nets_;
+    CMUnorderedSet<CMNetId> crossing_nets_;
 
     // 构建期接口（条目追加；跨分区判定由展开任务完成）
-    void add_entry(uint64_t net_global_id, DSGeomEntry&& entry) {
+    void add_entry(CMNetId net_global_id, DSGeomEntry&& entry) {
         nets_[net_global_id].push_back(std::move(entry));
     }
-    void mark_crossing(uint64_t net_global_id) {
+    void mark_crossing(CMNetId net_global_id) {
         crossing_nets_.insert(net_global_id);
     }
-    bool is_crossing(uint64_t net_global_id) const {
+    bool is_crossing(CMNetId net_global_id) const {
         return crossing_nets_.contains(net_global_id);
     }
     // 未命中 nullptr（引用读取零拷贝）
-    const CMVector<DSGeomEntry>* entries_of(uint64_t net_global_id) const {
+    const CMVector<DSGeomEntry>* entries_of(CMNetId net_global_id) const {
         auto it = nets_.find(net_global_id);
         return it == nets_.end() ? nullptr : &it->second;
     }
@@ -199,7 +199,7 @@ public:
     // —— OBS 桶过滤便捷接口（键 0 专属 OBS 后混叠风险已消，保留为防御
     //    校验与 OBS 单独消费口——勿以 net_entries(0) 取「网几何」）——
     // 某网的真实几何条目（过滤 OBS；键 0 恒空——0 为 OBS 专属位）
-    CMVector<DSGeomEntry> net_entries(uint64_t net_global_id) const {
+    CMVector<DSGeomEntry> net_entries(CMNetId net_global_id) const {
         CMVector<DSGeomEntry> out;
         const auto* all = entries_of(net_global_id);
         if (all != nullptr) {
@@ -212,7 +212,7 @@ public:
     // 全部 OBS 条目（DEF obstruction，设计级无所属网）
     CMVector<DSGeomEntry> obs_entries() const {
         CMVector<DSGeomEntry> out;
-        const auto* all = entries_of(0);
+        const auto* all = entries_of(CMNetId{0});
         if (all != nullptr) {
             for (const DSGeomEntry& e : *all) {
                 if (e.is_obs()) out.push_back(e);
@@ -229,7 +229,7 @@ class DSPartInstances {
 public:
     // global id（local + inst_start，local 0 = 块实例自身——由父块展开
     // 产出）→ 副本（全局 transform + primary 位 + 电源引脚预展开坐标）
-    CMUnorderedMap<uint64_t, DSInstance> items_;
+    CMUnorderedMap<CMInstanceId, DSInstance> items_;
 
     size_t size() const { return items_.size(); }
 
@@ -244,7 +244,7 @@ public:
 // 或用带默认值的查询，勿以 items_.at(0) 取实例。
 class DSPartInstConnections {
 public:
-    CMUnorderedMap<uint64_t, CMVector<DSPartConnection>> items_;
+    CMUnorderedMap<CMInstanceId, CMVector<DSPartConnection>> items_;
 
     size_t size() const { return items_.size(); }
 
@@ -252,17 +252,17 @@ public:
 };
 
 // 单网聚合（2026-09-13 重组裁定）：id + use + 连接条目集。几何不进本
-// 结构——仍在分区 GEOMETRY 对象按 net 组织。use = DSNetUse 整型（S5b
-// net_uses_ 全量补收裁定随网写入；缺省 SIGNAL——S5b 只记非 SIGNAL 条
-// 目，缺省读取口径一致）。
+// 结构——仍在分区 GEOMETRY 对象按 net 组织。use = DSNetUse 枚举定型存储
+// （2026-09-16 裁定：领域枚举禁止裸整型；S5b net_uses_ 全量补收裁定随
+// 网写入；缺省 SIGNAL——S5b 只记非 SIGNAL 条目，缺省读取口径一致）。
 class DSNet {
 public:
-    uint64_t net_id_ = 0;
-    uint8_t use_ = static_cast<uint8_t>(DSNetUse::SIGNAL);
+    CMNetId net_id_;
+    DSNetUse use_ = DSNetUse::SIGNAL;
     CMVector<DSNetConnEntry> connections_;
 
-    // use 读取（DSNetUse 枚举视图）
-    DSNetUse use() const { return static_cast<DSNetUse>(use_); }
+    // use 读取
+    DSNetUse use() const { return use_; }
 
     FLY_SERIALIZE(net_id_, use_, connections_)
 };
@@ -279,15 +279,15 @@ class DSPartitionNets {
 public:
     // 本分区 id（ds_flatten_block 分片产出时回填；merge 幂等——同分区
     // 分片同 id。NETS / NETS_PG 两侧同值）
-    uint32_t part_id_ = 0;
+    CMPartitionId part_id_;
     // 本侧网表（键 = net global id；信号侧全量补全 / pg 侧不补全）
-    CMUnorderedMap<uint64_t, DSNet> nets_;
+    CMUnorderedMap<CMNetId, DSNet> nets_;
 
     size_t size() const { return nets_.size(); }
     // 单表查（未命中 nullptr；引用读取零拷贝——加载侧按 is_pg 路由到
     // 对应侧对象，本类不再承担两表分派）
-    const DSNet* net_of(uint64_t net_id) const;
-    DSNet* net_of(uint64_t net_id);
+    const DSNet* net_of(CMNetId net_id) const;
+    DSNet* net_of(CMNetId net_id);
 
     FLY_SERIALIZE(part_id_, nets_)
 };
@@ -298,8 +298,8 @@ public:
 // 举）。
 class DSPgNetSlice {
 public:
-    CMVector<uint64_t> power_ids_;
-    CMVector<uint64_t> ground_ids_;
+    CMVector<CMNetId> power_ids_;
+    CMVector<CMNetId> ground_ids_;
 
     FLY_SERIALIZE(power_ids_, ground_ids_)
 };
@@ -312,16 +312,16 @@ public:
 class DSPgNetSet {
 public:
     // 运行时判定结构（O(1)）
-    CMUnorderedSet<uint64_t> power_;
-    CMUnorderedSet<uint64_t> ground_;
+    CMUnorderedSet<CMNetId> power_;
+    CMUnorderedSet<CMNetId> ground_;
 
     // 全局汇总（独立轻任务）：全部分区片段键集按 use 分流合并（set 去
     // 重——同 pg 网跨分区副本只此一条）
     void finalize_from_flatten(const CMVector<const DSPgNetSlice*>& slices);
 
-    bool is_power(uint64_t net_id) const { return power_.contains(net_id); }
-    bool is_ground(uint64_t net_id) const { return ground_.contains(net_id); }
-    bool is_pg(uint64_t net_id) const {
+    bool is_power(CMNetId net_id) const { return power_.contains(net_id); }
+    bool is_ground(CMNetId net_id) const { return ground_.contains(net_id); }
+    bool is_pg(CMNetId net_id) const {
         return power_.contains(net_id) || ground_.contains(net_id);
     }
     // 规模观测（S10 统计/日志）
@@ -360,7 +360,7 @@ public:
 // id → +inst_start、pin id 直存——名字换算已在 S5b 解析边界完成，本层
 // 零字符串匹配）；tree 与产物无对齐校验（树构建期已 fatal 对齐错误）；
 // def 未被实例化（树上无位置）→ 空结果放行（dev-rules §7）。
-CMVector<std::pair<uint32_t, DSPartitionProduct>> ds_flatten_block(
+CMVector<std::pair<CMPartitionId, DSPartitionProduct>> ds_flatten_block(
     const DSHierTree& tree, const DSBlockBuildData& block,
     const DSNetBuildData& nets, const DSDesign& design,
     const CMVector<DSSubPartition>& partitions);

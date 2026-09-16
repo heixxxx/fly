@@ -65,8 +65,7 @@ DSInstanceContext make_ctx(DSDesign& design, DSBlockBuildData& block_data,
     ctx.block_data = &block_data;
     ctx.fake_cells = &fake_cells;
     ctx.block_name = block_name;
-    block_data.init_placeholder(block_name,
-                                DSDesign::kInvalidId);  // ⑧ local 0 占位
+    block_data.init_placeholder(block_name, CMCellId{});  // ⑧ local 0 占位
     return ctx;
 }
 
@@ -153,7 +152,7 @@ TEST(DSCellResolveNodeTest, CreatesFakeCellForUndefinedMaster) {
     EXPECT_EQ(fake.get_bbox().get_y_high(), 1);
     EXPECT_TRUE(fake.is_fake_cell());
     EXPECT_EQ(fake.pin_count(), 0u);
-    const uint32_t fake_id = block_data.fake_name_to_id_.at("blk::GHOST");
+    const CMCellId fake_id = block_data.fake_name_to_id_.at("blk::GHOST");
     EXPECT_EQ(ctx.cell_id, fake_id);
     EXPECT_GE(fake_id, 2u);  // > max_cell_id
     EXPECT_LE(fake_id, 2u + 65536u + 1u);  // hash 空间 + 递增上界
@@ -172,7 +171,7 @@ TEST(DSCellResolveNodeTest, ReusesFakeWithinSameDef) {
 
     ctx.master_name = "GHOST";
     node.handle(ctx);
-    const uint32_t first_id = ctx.cell_id;
+    const CMCellId first_id = ctx.cell_id;
 
     // 同一 master 第二次出现：复用已生成 fake，不再新增
     DSInstanceContext ctx2 = make_ctx(design, block_data, fake_cells, "blk");
@@ -222,25 +221,25 @@ TEST(DSInstanceBuildNodeTest, AssignsLocalIdsFromOneAndBuildsTransform) {
     ctx.master_name = "INV_X1";
     ctx.placement = GEOPoint(200, 400);
     ctx.orient = GEOOrientation::N;
-    ctx.placement_status = static_cast<uint8_t>(DSPlacementStatus::PLACED);
+    ctx.placement_status = DSPlacementStatus::PLACED;
     resolve.handle(ctx);
     build.handle(ctx);
 
     EXPECT_EQ(ctx.instance_id, 1u);  // ⑧ local id 从 1 起（local 0 = 占位）
-    const DSInstance& inst = block_data.instances_.at(1);
+    const DSInstance& inst = block_data.instances_.at(CMInstanceId{1});
     // R7 ㊱：DSInstance 无 name——实例名经双向 instance hasher 查回
     EXPECT_EQ(block_data.instance_names_->get_name(1), "i1");
     EXPECT_EQ(inst.get_cell_id(), 0u);
     EXPECT_EQ(inst.get_transform().get_offset().get_x(), 200);
     EXPECT_EQ(inst.get_transform().get_offset().get_y(), 400);
     EXPECT_EQ(inst.get_placement_status(),
-              static_cast<uint8_t>(DSPlacementStatus::PLACED));
+              DSPlacementStatus::PLACED);
     EXPECT_EQ(block_data.instance_names_->get_id("i1"), 1u);
     // local 0 = block 自身占位（⑧；占位不进 instance hasher——非真实
     // 实例，R7 ㊱）
     EXPECT_EQ(block_data.instance_names_->get_id("blk"),
               DSInstanceNameHasher::kInvalidId);
-    EXPECT_TRUE(block_data.instances_.contains(0));
+    EXPECT_TRUE(block_data.instances_.contains(CMInstanceId{0}));
 
     // 第二实例：local id 递增；FS 换算（fake cell 1×1：R_FS box ll=(0,−1)）
     DSInstanceContext ctx2 = make_ctx(design, block_data, fake_cells, "blk");
@@ -251,7 +250,7 @@ TEST(DSInstanceBuildNodeTest, AssignsLocalIdsFromOneAndBuildsTransform) {
     resolve.handle(ctx2);
     build.handle(ctx2);
     EXPECT_EQ(ctx2.instance_id, 2u);
-    const DSInstance& inst2 = block_data.instances_.at(2);
+    const DSInstance& inst2 = block_data.instances_.at(CMInstanceId{2});
     EXPECT_EQ(inst2.get_cell_id(), ctx2.cell_id);
     EXPECT_EQ(inst2.get_transform().get_offset().get_x(), 600);
     EXPECT_EQ(inst2.get_transform().get_offset().get_y(), 801);
@@ -301,7 +300,7 @@ TEST(DSDensityNodeTest, SkipsBlockInstanceFootprint) {
     blk_cell.set_bbox(GEORect(0, 0, 5000, 5000));
     design.add_cell(std::move(blk_cell));
     DSBlockBuildData block_data;
-    block_data.init_placeholder("blk", DSDesign::kInvalidId);
+    block_data.init_placeholder("blk", CMCellId{});
     block_data.density_.configure(0, 0, 1000, 1000, 4, 4);
     DSInstancePipeline pipeline;
     pipeline.add(std::make_unique<DSCellResolveNode>());
@@ -318,7 +317,7 @@ TEST(DSDensityNodeTest, SkipsBlockInstanceFootprint) {
     ctx.master_name = "sub_blk";
     ctx.placement = GEOPoint(0, 0);
     ctx.orient = GEOOrientation::N;
-    ctx.placement_status = static_cast<uint8_t>(DSPlacementStatus::PLACED);
+    ctx.placement_status = DSPlacementStatus::PLACED;
     pipeline.run(ctx);
 
     EXPECT_FALSE(ctx.error);
@@ -339,7 +338,7 @@ TEST(DSDensityNodeTest, SkipsBlockInstanceFootprint) {
 TEST(DSDensityNodeTest, CountsPlacedFootprintSkipsUnplaced) {
     DSDesign design = make_design();
     DSBlockBuildData block_data;
-    block_data.init_placeholder("blk", DSDesign::kInvalidId);
+    block_data.init_placeholder("blk", CMCellId{});
     block_data.density_.configure(0, 0, 1000, 1000, 4, 4);
     DSInstancePipeline pipeline;
     pipeline.add(std::make_unique<DSCellResolveNode>());
@@ -357,7 +356,7 @@ TEST(DSDensityNodeTest, CountsPlacedFootprintSkipsUnplaced) {
     ctx.master_name = "INV_X1";
     ctx.placement = GEOPoint(2000, 2000);
     ctx.orient = GEOOrientation::N;
-    ctx.placement_status = static_cast<uint8_t>(DSPlacementStatus::PLACED);
+    ctx.placement_status = DSPlacementStatus::PLACED;
     pipeline.run(ctx);
 
     EXPECT_EQ(block_data.density_.total_count(), 4);
@@ -365,7 +364,7 @@ TEST(DSDensityNodeTest, CountsPlacedFootprintSkipsUnplaced) {
     DSInstanceContext ctx2 = ctx;
     ctx2.instance_name = "i2";
     ctx2.placement = GEOPoint(0, 0);
-    ctx2.placement_status = static_cast<uint8_t>(DSPlacementStatus::UNPLACED);
+    ctx2.placement_status = DSPlacementStatus::UNPLACED;
     pipeline.run(ctx2);
     EXPECT_EQ(block_data.density_.total_count(), 4);
     EXPECT_EQ(block_data.stats_.unplaced_count, 1u);
@@ -377,7 +376,7 @@ TEST(DSStatsNodeTest, CountsPerCellFakeAndUnplaced) {
     DSDesign design = make_design();
     DSBlockBuildData block_data;
     CMVector<DSCell> fake_cells;
-    block_data.init_placeholder("blk", DSDesign::kInvalidId);
+    block_data.init_placeholder("blk", CMCellId{});
     DSInstancePipeline pipeline;
     pipeline.add(std::make_unique<DSCellResolveNode>());
     pipeline.add(std::make_unique<DSInstanceBuildNode>());
@@ -392,7 +391,7 @@ TEST(DSStatsNodeTest, CountsPerCellFakeAndUnplaced) {
         ctx.block_name = "blk";
         ctx.instance_name = name;
         ctx.master_name = master;
-        ctx.placement_status = static_cast<uint8_t>(status);
+        ctx.placement_status = status;
         pipeline.run(ctx);
     };
 
@@ -403,7 +402,7 @@ TEST(DSStatsNodeTest, CountsPerCellFakeAndUnplaced) {
     EXPECT_EQ(block_data.stats_.instance_count, 3u);
     EXPECT_EQ(block_data.stats_.unplaced_count, 1u);
     EXPECT_EQ(block_data.stats_.fake_cell_count, 1u);
-    EXPECT_EQ(block_data.stats_.per_cell_counts_.at(0), 2u);   // INV_X1
+    EXPECT_EQ(block_data.stats_.per_cell_counts_.at(CMCellId{0}), 2u);   // INV_X1
     EXPECT_EQ(block_data.stats_.per_cell_counts_.size(), 2u);  // + fake id
 }
 
@@ -412,7 +411,7 @@ TEST(DSStatsNodeTest, CountsPerCellFakeAndUnplaced) {
 TEST(DSBlockBuildDataTest, SerializeRoundTrip) {
     DSDesign design = make_design();
     DSBlockBuildData block_data;
-    block_data.init_placeholder("blk", DSDesign::kInvalidId);
+    block_data.init_placeholder("blk", CMCellId{});
     block_data.density_.configure(0, 0, 1000, 1000, 4, 4);
     DSInstancePipeline pipeline;
     pipeline.add(std::make_unique<DSCellResolveNode>());
@@ -428,7 +427,7 @@ TEST(DSBlockBuildDataTest, SerializeRoundTrip) {
     ctx.master_name = "INV_X1";
     ctx.placement = GEOPoint(2000, 2000);
     ctx.orient = GEOOrientation::W;
-    ctx.placement_status = static_cast<uint8_t>(DSPlacementStatus::PLACED);
+    ctx.placement_status = DSPlacementStatus::PLACED;
     pipeline.run(ctx);
     block_data.register_net("n1");
     block_data.register_net("n2");
@@ -444,7 +443,7 @@ TEST(DSBlockBuildDataTest, SerializeRoundTrip) {
     // R7 ㊱/㊵②：占位不进 instance hasher；hasher 不在 DSBlock_<i> 序列
     // 化面（名字经 DSBlockNames 伴生对象）
     EXPECT_EQ(back.instance_names_, nullptr);  // 读回未 attach = 空
-    const DSInstance& inst = back.instances_.at(1);
+    const DSInstance& inst = back.instances_.at(CMInstanceId{1});
     // W 变换：box (0,0,1400,1400) → R_W ll=(−1400,0) → pos=(3400,2000)
     EXPECT_EQ(inst.get_transform().get_offset().get_x(), 3400);
     EXPECT_EQ(inst.get_transform().get_offset().get_y(), 2000);
@@ -471,17 +470,17 @@ TEST(DSMergeBlockBuildTest, MergesFakeCellsKeepingAssignedIds) {
     DSInstanceBuildNode build;
     resolve.handle(c1);
     build.handle(c1);
-    const uint32_t assigned = c1.cell_id;
+    const CMCellId assigned = c1.cell_id;
 
     EXPECT_EQ(ds_merge_block_build(design, b1, fake1), 1);
     // id 保持任务内分配值（namemap 命中 + cells_ 稀疏落位 + fake 索引）
     EXPECT_EQ(design.cell_names_.get_id("blk::GHOST"), assigned);
-    EXPECT_EQ(design.cells_[assigned].get_name(), "blk::GHOST");
-    EXPECT_TRUE(design.cells_[assigned].is_fake_cell());
+    EXPECT_EQ(design.cells_[assigned.value()].get_name(), "blk::GHOST");
+    EXPECT_TRUE(design.cells_[assigned.value()].is_fake_cell());
     ASSERT_EQ(design.fake_cell_ids_.size(), 1u);
     EXPECT_EQ(design.fake_cell_ids_[0], assigned);
     // instance 引用保持（id 未冲突，无需重映射）
-    EXPECT_EQ(b1.instances_.at(1).get_cell_id(), assigned);
+    EXPECT_EQ(b1.instances_.at(CMInstanceId{1}).get_cell_id(), assigned);
 }
 
 TEST(DSMergeBlockBuildTest, ResolvesFakeIdConflictByShifting) {
@@ -504,16 +503,16 @@ TEST(DSMergeBlockBuildTest, ResolvesFakeIdConflictByShifting) {
     build.handle(c2);
     // 同 block 名 + 同 seq（各自首个 fake）→ 任务内分配值相同（冲突场景）
     ASSERT_EQ(c1.cell_id, c2.cell_id);
-    const uint32_t conflict_id = c1.cell_id;
+    const CMCellId conflict_id = c1.cell_id;
 
     EXPECT_EQ(ds_merge_block_build(design, b1, fake1), 1);
     EXPECT_EQ(ds_merge_block_build(design, b2, fake2), 1);
     // b1 占住 conflict_id；b2 顺延到下一个空位
-    const uint32_t shifted = b2.fake_name_to_id_.at("blk::GHOST_B");
+    const CMCellId shifted = b2.fake_name_to_id_.at("blk::GHOST_B");
     EXPECT_EQ(shifted, conflict_id + 1);
     EXPECT_EQ(design.cell_names_.get_id("blk::GHOST_A"), conflict_id);
     EXPECT_EQ(design.cell_names_.get_id("blk::GHOST_B"), shifted);
-    EXPECT_EQ(b2.instances_.at(1).get_cell_id(), shifted);  // 引用重映射
+    EXPECT_EQ(b2.instances_.at(CMInstanceId{1}).get_cell_id(), shifted);  // 引用重映射
     EXPECT_EQ(design.fake_cell_ids_.size(), 2u);
     // 同名 fake 重复并入被跳过（防御）
     EXPECT_EQ(ds_merge_block_build(design, b2, fake2), 0);
@@ -528,18 +527,18 @@ TEST(DSDesignAddCellAtTest, SparsePlacementKeepsIdSemantics) {
     DSCell fake;
     fake.set_name("x::y");
     fake.set_fake_cell();
-    design.add_cell_at(5, std::move(fake));
+    design.add_cell_at(CMCellId{5}, std::move(fake));
     // id = 下标语义保持；空洞为占位（空名）
     EXPECT_EQ(design.cells_.size(), 6u);
     EXPECT_EQ(design.cell_names_.get_id("x::y"), 5u);
     EXPECT_EQ(design.cell_names_.get_name(5), "x::y");
-    EXPECT_EQ(design.get_cell(5).get_name(), "x::y");
+    EXPECT_EQ(design.get_cell(CMCellId{5}).get_name(), "x::y");
     EXPECT_TRUE(design.cells_[2].get_name().empty());
     EXPECT_EQ(design.cell_names_.get_name(2), "");
     // 低位落位（无 resize）
     DSCell b;
     b.set_name("b");
-    design.add_cell_at(1, std::move(b));
+    design.add_cell_at(CMCellId{1}, std::move(b));
     EXPECT_EQ(design.cell_names_.get_id("b"), 1u);
 }
 
@@ -565,22 +564,22 @@ TEST(DsDefComponentsTest, ParsesComponentsAndNetNamesOnePass) {
 
     // block 名来自 DESIGN 语句；local 0 占位（⑧；占位不进 hasher）
     EXPECT_EQ(block_data.get_block_name(), "block_a");
-    EXPECT_TRUE(block_data.instances_.contains(0));
+    EXPECT_TRUE(block_data.instances_.contains(CMInstanceId{0}));
 
     // inst1 INV_X1 + PLACED (100,200) N：t=(100,200)（×1）→ pos=(100,200)
     // R7 ㊱：实例名经双向 instance hasher 查回
-    const DSInstance& i1 = block_data.instances_.at(1);
+    const DSInstance& i1 = block_data.instances_.at(CMInstanceId{1});
     EXPECT_EQ(block_data.instance_names_->get_name(1), "inst1");
     EXPECT_EQ(block_data.instance_names_->get_id("inst1"), 1u);
     EXPECT_EQ(i1.get_cell_id(), 0u);
     EXPECT_EQ(i1.get_transform().get_offset().get_x(), 100);
     EXPECT_EQ(i1.get_transform().get_offset().get_y(), 200);
     EXPECT_EQ(i1.get_placement_status(),
-              static_cast<uint8_t>(DSPlacementStatus::PLACED));
+              DSPlacementStatus::PLACED);
 
     // inst2 DFF_X1 + PLACED (300,400) FS：未定义 → fake；t=(300,400)，
     // fake 1×1 box 经 R_FS ll=(0,−1) → pos=(300,401)
-    const DSInstance& i2 = block_data.instances_.at(2);
+    const DSInstance& i2 = block_data.instances_.at(CMInstanceId{2});
     EXPECT_EQ(block_data.instance_names_->get_name(2), "inst2");
     ASSERT_EQ(fake_cells.size(), 1u);
     EXPECT_EQ(fake_cells[0].get_name(), "block_a::DFF_X1");
@@ -626,31 +625,31 @@ TEST(DsDefComponentsTest, HandlesUnplacedAndDuplicateNets) {
 
     // u1：PLACED N；t=(100,100) → pos=(100,100)（WEIGHT 不再解析入库，
     // 2026-09-13 裁定：无消费者删除）
-    const DSInstance& u1 = block_data.instances_.at(1);
+    const DSInstance& u1 = block_data.instances_.at(CMInstanceId{1});
     EXPECT_EQ(u1.get_placement_status(),
-              static_cast<uint8_t>(DSPlacementStatus::PLACED));
+              DSPlacementStatus::PLACED);
     EXPECT_EQ(u1.get_transform().get_offset().get_x(), 100);
     EXPECT_EQ(u1.get_transform().get_offset().get_y(), 100);
 
     // u2：FIXED FS；t=(200,100)、INV box 1400×1400 → R_FS ll=(0,−1400)
     // → pos=(200,1500)
-    const DSInstance& u2 = block_data.instances_.at(2);
+    const DSInstance& u2 = block_data.instances_.at(CMInstanceId{2});
     EXPECT_EQ(u2.get_placement_status(),
-              static_cast<uint8_t>(DSPlacementStatus::FIXED));
+              DSPlacementStatus::FIXED);
     EXPECT_EQ(u2.get_transform().get_offset().get_x(), 200);
     EXPECT_EQ(u2.get_transform().get_offset().get_y(), 1500);
 
     // u3：UNPLACED（defi 置坐标 (−1,−1) orient −1）→ 钳制 N、照收入表
-    const DSInstance& u3 = block_data.instances_.at(3);
+    const DSInstance& u3 = block_data.instances_.at(CMInstanceId{3});
     EXPECT_EQ(u3.get_placement_status(),
-              static_cast<uint8_t>(DSPlacementStatus::UNPLACED));
+              DSPlacementStatus::UNPLACED);
     EXPECT_EQ(u3.get_transform().get_orient(), GEOOrientation::N);
 
     // u4：COVER S（GHOST fake 1×1）：t=(300,300) → R_S box ll=(−1,−1)
     // → pos=(301,301)
-    const DSInstance& u4 = block_data.instances_.at(4);
+    const DSInstance& u4 = block_data.instances_.at(CMInstanceId{4});
     EXPECT_EQ(u4.get_placement_status(),
-              static_cast<uint8_t>(DSPlacementStatus::COVER));
+              DSPlacementStatus::COVER);
     EXPECT_EQ(u4.get_transform().get_offset().get_x(), 301);
     EXPECT_EQ(u4.get_transform().get_offset().get_y(), 301);
 

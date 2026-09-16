@@ -39,7 +39,7 @@ void expect_rect(const char* what, const GEORect& r, int32_t xl, int32_t yl,
 
 DSBlockBuildData make_block_data(const char* name) {
     DSBlockBuildData b;
-    b.init_placeholder(name, DSDesign::kInvalidId);
+    b.init_placeholder(name, CMCellId{});
     return b;
 }
 
@@ -69,15 +69,15 @@ struct TwoNodeEnv {
         root.id_ = 0;
         root.parent_id_ = 0;
         root.block_cell_name_ = "top";
-        root.instance_start_ = 0;
+        root.instance_start_ = CMInstanceId{0};
         root.instance_count_ = 2;
         tree.nodes_.push_back(root);
         DSHierNode sub;
         sub.id_ = 1;
         sub.parent_id_ = 0;
         sub.block_cell_name_ = "sub";
-        sub.self_global_id_ = 1;  // ⑧：父块 inst 区间内的 local 1
-        sub.instance_start_ = 2;
+        sub.self_global_id_ = CMInstanceId{1};  // ⑧：父块 inst 区间内的 local 1
+        sub.instance_start_ = CMInstanceId{2};
         sub.instance_count_ = 1;
         tree.nodes_.push_back(sub);
 
@@ -107,16 +107,16 @@ DSStack make_stack() {
     DSStack stack;
     DSLayer m1;
     m1.name_ = "M1";
-    m1.type_ = static_cast<uint8_t>(DSLayerType::ROUTING);
+    m1.type_ = DSLayerType::ROUTING;
     m1.default_width_ = 70;
     stack.add_layer(std::move(m1));
     DSLayer via1;
     via1.name_ = "VIA1";
-    via1.type_ = static_cast<uint8_t>(DSLayerType::CUT);
+    via1.type_ = DSLayerType::CUT;
     stack.add_layer(std::move(via1));
     DSLayer m2;
     m2.name_ = "M2";
-    m2.type_ = static_cast<uint8_t>(DSLayerType::ROUTING);
+    m2.type_ = DSLayerType::ROUTING;
     m2.default_width_ = 80;
     stack.add_layer(std::move(m2));
     return stack;
@@ -128,7 +128,7 @@ DSDensityGrid make_decision_grid() {
     DSDensityGrid g;
     g.configure(0, 0, 100, 100, 4, 2);
     g.counts_ = {12, 0, 6, 0, 8, 0, 4, 0};
-    g.metal_layer_counts_[0].assign(8, 1);
+    g.metal_layer_counts_[CMLayerId{0}].assign(8, 1);
     return g;
 }
 
@@ -141,10 +141,10 @@ TEST(DSMergeGlobalDensityTest, AlignedTranslationCopiesCells) {
     env.blocks[1].density_ = make_grid(0, 0, 1, 1, 2);
     // 三通道独立：金属层 5、通孔层 6 各自分列叠加
     env.nets[0].density_ = make_grid(0, 0, 2, 1, 0);
-    env.nets[0].density_.metal_layer_counts_[5] = {3, 0};
+    env.nets[0].density_.metal_layer_counts_[CMLayerId{5}] = {3, 0};
     env.nets[1].density_ = make_grid(0, 0, 1, 1, 0);
-    env.nets[1].density_.metal_layer_counts_[5] = {7};
-    env.nets[1].density_.via_layer_counts_[6] = {9};
+    env.nets[1].density_.metal_layer_counts_[CMLayerId{5}] = {7};
+    env.nets[1].density_.via_layer_counts_[CMLayerId{6}] = {9};
 
     const DSDensityGrid global =
         ds_merge_global_density(env.tree, block_ptrs(env.blocks),
@@ -159,12 +159,12 @@ TEST(DSMergeGlobalDensityTest, AlignedTranslationCopiesCells) {
     EXPECT_EQ(global.cell_count(0, 0), 1);
     EXPECT_EQ(global.cell_count(1, 0), 2);
     // 金属通道独立
-    ASSERT_NE(global.metal_layer_counts_.find(5),
+    ASSERT_NE(global.metal_layer_counts_.find(CMLayerId{5}),
               global.metal_layer_counts_.end());
-    EXPECT_EQ(global.layer_total(5, false), 10);
+    EXPECT_EQ(global.layer_total(CMLayerId{5}, false), 10);
     // 通孔通道独立（root 无 via，sub 平移后 (1,0)=9）
-    ASSERT_NE(global.via_layer_counts_.find(6), global.via_layer_counts_.end());
-    EXPECT_EQ(global.layer_total(6, true), 9);
+    ASSERT_NE(global.via_layer_counts_.find(CMLayerId{6}), global.via_layer_counts_.end());
+    EXPECT_EQ(global.layer_total(CMLayerId{6}, true), 9);
 }
 
 // ── 2. 合并：非对齐分摊（D10 A 面积比例，手算）─────────────────────
@@ -226,7 +226,7 @@ TEST(DSMergeGlobalDensityTest, SameDefInstantiatedTwice) {
     root.id_ = 0;
     root.parent_id_ = 0;
     root.block_cell_name_ = "top";
-    root.instance_start_ = 0;
+    root.instance_start_ = CMInstanceId{0};
     root.instance_count_ = 3;
     tree.nodes_.push_back(root);
     for (uint32_t k = 0; k < 2; ++k) {
@@ -234,8 +234,8 @@ TEST(DSMergeGlobalDensityTest, SameDefInstantiatedTwice) {
         sub.id_ = k + 1;
         sub.parent_id_ = 0;
         sub.block_cell_name_ = "sub";
-        sub.self_global_id_ = k + 1;
-        sub.instance_start_ = 3;
+        sub.self_global_id_ = CMInstanceId{k + 1};
+        sub.instance_start_ = CMInstanceId{3};
         sub.instance_count_ = 1;
         tree.nodes_.push_back(sub);
     }
@@ -430,7 +430,7 @@ TEST(DSDecidePartitionsTest, ViaChannelEntersCompositeLoad) {
     DSDensityGrid global = make_decision_grid();
     global.counts_.assign(8, 0);         // 实例清零
     global.metal_layer_counts_.clear();  // 金属清零 → w_eff = 0
-    global.via_layer_counts_[1] = {5, 5, 0, 0, 5, 5, 0, 0};  // VIA1 层 1
+    global.via_layer_counts_[CMLayerId{1}] = {5, 5, 0, 0, 5, 5, 0, 0};  // VIA1 层 1
     const DSStack stack = make_stack();
     const DSDensityWeights weights;  // 6/2/2（仅 via 项非零贡献）
 
@@ -559,7 +559,7 @@ TEST(DSDecidePartitionsTest, IllegalTargetDensityFallsBackToDefault) {
 
 TEST(DSSubPartitionTest, SerializeRoundTrip) {
     DSSubPartition p;
-    p.partition_id_ = 7;
+    p.partition_id_ = CMPartitionId{7};
     p.core_rect_ = GEORect(10, -20, 300, 400);
     p.extend_rect_ = GEORect(kIntMin, -160, kIntMax, 540);
 
@@ -580,11 +580,11 @@ TEST(DSDesignPartitionsTest, PartitionsSurviveDesignRoundTrip) {
     design.add_cell(std::move(cell));
 
     DSSubPartition p0;
-    p0.partition_id_ = 0;
+    p0.partition_id_ = CMPartitionId{0};
     p0.core_rect_ = GEORect(0, 0, 100, 200);
     p0.extend_rect_ = GEORect(kIntMin, kIntMin, 240, kIntMax);
     DSSubPartition p1;
-    p1.partition_id_ = 1;
+    p1.partition_id_ = CMPartitionId{1};
     p1.core_rect_ = GEORect(100, 0, 400, 200);
     p1.extend_rect_ = GEORect(-40, kIntMin, kIntMax, kIntMax);
     CMVector<DSSubPartition> parts;

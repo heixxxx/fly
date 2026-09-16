@@ -43,14 +43,14 @@ DSBlockBuildData make_block(const char* name,
                             const std::vector<uint32_t>& instance_cell_ids,
                             size_t net_count) {
     DSBlockBuildData b;
-    b.init_placeholder(name, DSDesign::kInvalidId);
+    b.init_placeholder(name, CMCellId{});
     for (const uint32_t cell_id : instance_cell_ids) {
         DSInstance inst;
-        inst.set_cell_id(cell_id);
+        inst.set_cell_id(CMCellId{cell_id});
         // R7 ㊱：DSInstance 不存 name——实例名经 add_instance 登记
         // instance hasher（per-DEF local 名空间）
         b.add_instance(std::move(inst),
-                       "i" + std::to_string(b.next_instance_id_));
+                       "i" + std::to_string(b.next_instance_id_.value()));
     }
     for (size_t i = 0; i < net_count; ++i) {
         b.register_net("n" + std::to_string(i));
@@ -232,33 +232,33 @@ TEST(DSHierTreeTest, BlockOfReverseLookup) {
 
     // instance 反查：根段 [0,4) → top；leaf 实例 1/2/3 全属 top（block
     // instance 自身的 global id（2 = mid）属父块——它就是父块内的实例）
-    EXPECT_EQ(tree.block_of_instance(0), 0u);
-    EXPECT_EQ(tree.block_of_instance(1), 0u);
-    EXPECT_EQ(tree.block_of_instance(2), 0u);
-    EXPECT_EQ(tree.block_of_instance(3), 0u);
-    EXPECT_EQ(tree.block_of_instance(4), 1u);  // mid 占位槽
-    EXPECT_EQ(tree.block_of_instance(5), 1u);
-    EXPECT_EQ(tree.block_of_instance(6), 1u);
-    EXPECT_EQ(tree.block_of_instance(7), 2u);
-    EXPECT_EQ(tree.block_of_instance(9), 3u);
-    EXPECT_EQ(tree.block_of_instance(11), DSDesign::kInvalidId);  // 越界
+    EXPECT_EQ(tree.block_of_instance(CMInstanceId{0}), 0u);
+    EXPECT_EQ(tree.block_of_instance(CMInstanceId{1}), 0u);
+    EXPECT_EQ(tree.block_of_instance(CMInstanceId{2}), 0u);
+    EXPECT_EQ(tree.block_of_instance(CMInstanceId{3}), 0u);
+    EXPECT_EQ(tree.block_of_instance(CMInstanceId{4}), 1u);  // mid 占位槽
+    EXPECT_EQ(tree.block_of_instance(CMInstanceId{5}), 1u);
+    EXPECT_EQ(tree.block_of_instance(CMInstanceId{6}), 1u);
+    EXPECT_EQ(tree.block_of_instance(CMInstanceId{7}), 2u);
+    EXPECT_EQ(tree.block_of_instance(CMInstanceId{9}), 3u);
+    EXPECT_EQ(tree.block_of_instance(CMInstanceId{11}), DSDesign::kInvalidId);  // 越界
 
     // net 反查（区间含空洞位）：[0,3) → top（0 = OBS 专属空洞位仍属
     // top 区间）、[3,5) → mid、[5,7) → bottom#1、[7,9) → #2
-    EXPECT_EQ(tree.block_of_net(0), 0u);
-    EXPECT_EQ(tree.block_of_net(1), 0u);
-    EXPECT_EQ(tree.block_of_net(2), 0u);
-    EXPECT_EQ(tree.block_of_net(3), 1u);
-    EXPECT_EQ(tree.block_of_net(4), 1u);
-    EXPECT_EQ(tree.block_of_net(5), 2u);
-    EXPECT_EQ(tree.block_of_net(7), 3u);
-    EXPECT_EQ(tree.block_of_net(9), DSDesign::kInvalidId);
+    EXPECT_EQ(tree.block_of_net(CMNetId{0}), 0u);
+    EXPECT_EQ(tree.block_of_net(CMNetId{1}), 0u);
+    EXPECT_EQ(tree.block_of_net(CMNetId{2}), 0u);
+    EXPECT_EQ(tree.block_of_net(CMNetId{3}), 1u);
+    EXPECT_EQ(tree.block_of_net(CMNetId{4}), 1u);
+    EXPECT_EQ(tree.block_of_net(CMNetId{5}), 2u);
+    EXPECT_EQ(tree.block_of_net(CMNetId{7}), 3u);
+    EXPECT_EQ(tree.block_of_net(CMNetId{9}), DSDesign::kInvalidId);
 
     // via 反查：[0,2) → top、[2,3) → mid；bottom 零长区间不含任何 id
-    EXPECT_EQ(tree.block_of_via_instance(0), 0u);
-    EXPECT_EQ(tree.block_of_via_instance(1), 0u);
-    EXPECT_EQ(tree.block_of_via_instance(2), 1u);
-    EXPECT_EQ(tree.block_of_via_instance(3), DSDesign::kInvalidId);
+    EXPECT_EQ(tree.block_of_via_instance(CMViaInstanceId{0}), 0u);
+    EXPECT_EQ(tree.block_of_via_instance(CMViaInstanceId{1}), 0u);
+    EXPECT_EQ(tree.block_of_via_instance(CMViaInstanceId{2}), 1u);
+    EXPECT_EQ(tree.block_of_via_instance(CMViaInstanceId{3}), DSDesign::kInvalidId);
 }
 
 // ── 4. ⑧ local 0 映射 + global id 换算（⑨，S9 flatten 输入口）───────
@@ -270,35 +270,35 @@ TEST(DSHierTreeTest, GlobalIdConversionAndLocalZeroMapping) {
                                                env.design);
 
     // instance：local 0 = block 自身占位 → 该 block instance 的 global id
-    EXPECT_EQ(tree.global_instance_id(0, 0), 0u);  // root → 0（⑧）
-    EXPECT_EQ(tree.global_instance_id(1, 0), 2u);  // mid 自身
-    EXPECT_EQ(tree.global_instance_id(2, 0), 5u);  // bottom#1 自身
-    EXPECT_EQ(tree.global_instance_id(3, 0), 6u);  // bottom#2 自身
+    EXPECT_EQ(tree.global_instance_id(0, CMInstanceId{0}), 0u);  // root → 0（⑧）
+    EXPECT_EQ(tree.global_instance_id(1, CMInstanceId{0}), 2u);  // mid 自身
+    EXPECT_EQ(tree.global_instance_id(2, CMInstanceId{0}), 5u);  // bottom#1 自身
+    EXPECT_EQ(tree.global_instance_id(3, CMInstanceId{0}), 6u);  // bottom#2 自身
     // local ≥ 1 → start + local
-    EXPECT_EQ(tree.global_instance_id(0, 1), 1u);
-    EXPECT_EQ(tree.global_instance_id(0, 3), 3u);
-    EXPECT_EQ(tree.global_instance_id(1, 1), 5u);  // bottom#1 从 mid 视角
-    EXPECT_EQ(tree.global_instance_id(2, 1), 8u);  // bottom#1 的 leaf
-    EXPECT_EQ(tree.global_instance_id(0, 4), DSDesign::kInvalidId);  // 越界
+    EXPECT_EQ(tree.global_instance_id(0, CMInstanceId{1}), 1u);
+    EXPECT_EQ(tree.global_instance_id(0, CMInstanceId{3}), 3u);
+    EXPECT_EQ(tree.global_instance_id(1, CMInstanceId{1}), 5u);  // bottom#1 从 mid 视角
+    EXPECT_EQ(tree.global_instance_id(2, CMInstanceId{1}), 8u);  // bottom#1 的 leaf
+    EXPECT_FALSE(tree.global_instance_id(0, CMInstanceId{4}).is_valid());  // 越界 → 哨兵
 
     // net：区间长度含 local 0 空洞位，global = start + local（无 −1，
     // 2026-09-14 裁定；local 0 空洞位不映射）
-    EXPECT_EQ(tree.global_net_id(0, 1), 1u);
-    EXPECT_EQ(tree.global_net_id(0, 2), 2u);
-    EXPECT_EQ(tree.global_net_id(1, 1), 4u);
-    EXPECT_EQ(tree.global_net_id(2, 1), 6u);
-    EXPECT_EQ(tree.global_net_id(3, 1), 8u);
-    EXPECT_EQ(tree.global_net_id(0, 0), DSDesign::kInvalidId);  // 空洞位
-    EXPECT_EQ(tree.global_net_id(1, 2), DSDesign::kInvalidId);  // 越界
+    EXPECT_EQ(tree.global_net_id(0, CMNetId{1}), 1u);
+    EXPECT_EQ(tree.global_net_id(0, CMNetId{2}), 2u);
+    EXPECT_EQ(tree.global_net_id(1, CMNetId{1}), 4u);
+    EXPECT_EQ(tree.global_net_id(2, CMNetId{1}), 6u);
+    EXPECT_EQ(tree.global_net_id(3, CMNetId{1}), 8u);
+    EXPECT_FALSE(tree.global_net_id(0, CMNetId{0}).is_valid());  // 空洞位 → 哨兵
+    EXPECT_FALSE(tree.global_net_id(1, CMNetId{2}).is_valid());  // 越界 → 哨兵
 
     // via instance：同 net 语义（local 从 1 起 → start + local − 1）；
     // 零计数块（bottom）换算均无效
-    EXPECT_EQ(tree.global_via_instance_id(0, 1), 0u);
-    EXPECT_EQ(tree.global_via_instance_id(0, 2), 1u);
-    EXPECT_EQ(tree.global_via_instance_id(1, 1), 2u);
-    EXPECT_EQ(tree.global_via_instance_id(0, 0), DSDesign::kInvalidId);
-    EXPECT_EQ(tree.global_via_instance_id(2, 1), DSDesign::kInvalidId);
-    EXPECT_EQ(tree.global_via_instance_id(1, 2), DSDesign::kInvalidId);
+    EXPECT_EQ(tree.global_via_instance_id(0, CMViaInstanceId{1}), 0u);
+    EXPECT_EQ(tree.global_via_instance_id(0, CMViaInstanceId{2}), 1u);
+    EXPECT_EQ(tree.global_via_instance_id(1, CMViaInstanceId{1}), 2u);
+    EXPECT_FALSE(tree.global_via_instance_id(0, CMViaInstanceId{0}).is_valid());
+    EXPECT_FALSE(tree.global_via_instance_id(2, CMViaInstanceId{1}).is_valid());
+    EXPECT_FALSE(tree.global_via_instance_id(1, CMViaInstanceId{2}).is_valid());
 }
 
 // ── 5. format_tree：以 name 打印缩进层级文本 ────────────────────────
@@ -343,10 +343,10 @@ TEST(DSHierTreeTest, SerializeRoundTrip) {
     EXPECT_EQ(back.via_range(1).first, 2u);
     EXPECT_EQ(back.via_range(1).second, 1u);
     // 反查与换算在往返后仍正确
-    EXPECT_EQ(back.block_of_instance(8), 2u);
-    EXPECT_EQ(back.block_of_via_instance(2), 1u);
-    EXPECT_EQ(back.global_instance_id(3, 0), 6u);
-    EXPECT_EQ(back.global_via_instance_id(1, 1), 2u);
+    EXPECT_EQ(back.block_of_instance(CMInstanceId{8}), 2u);
+    EXPECT_EQ(back.block_of_via_instance(CMViaInstanceId{2}), 1u);
+    EXPECT_EQ(back.global_instance_id(3, CMInstanceId{0}), 6u);
+    EXPECT_EQ(back.global_via_instance_id(1, CMViaInstanceId{1}), 2u);
 
     // 挂 DSDesign 容器随容器序列化（⑬）
     env.design.set_hier_tree(std::move(tree));
@@ -355,8 +355,8 @@ TEST(DSHierTreeTest, SerializeRoundTrip) {
     DSDesign design_back;
     FLY_DECODE(design_blob, DSDesign, design_back);
     ASSERT_EQ(design_back.get_hier_tree().node_count(), 4u);
-    EXPECT_EQ(design_back.get_hier_tree().block_of_instance(5), 1u);
-    EXPECT_EQ(design_back.get_hier_tree().block_of_via_instance(1), 0u);
+    EXPECT_EQ(design_back.get_hier_tree().block_of_instance(CMInstanceId{5}), 1u);
+    EXPECT_EQ(design_back.get_hier_tree().block_of_via_instance(CMViaInstanceId{1}), 0u);
 }
 
 // ── 7. 主 DEF 判定：多根 / 零根 / 环 / 入参不对齐 → fatal（D22/DSGN::0011）──
@@ -423,7 +423,7 @@ TEST(DSHierTreeTest, EmptyDefsYieldEmptyTree) {
     const DSHierTree tree =
         ds_build_hier_tree(empty_blocks, empty_nets, env.design);
     EXPECT_EQ(tree.node_count(), 0u);
-    EXPECT_EQ(tree.block_of_instance(0), DSDesign::kInvalidId);
+    EXPECT_EQ(tree.block_of_instance(CMInstanceId{0}), DSDesign::kInvalidId);
     EXPECT_TRUE(tree.format_tree().empty());
 }
 

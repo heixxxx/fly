@@ -170,17 +170,18 @@ static_assert(!has_get_name<fly::DSPin>::value,
 }  // namespace
 TEST(DSInstanceTest, DefaultsAndSerializeRoundTrip) {
     DSInstance inst;
-    EXPECT_EQ(inst.get_cell_id(), 0u);
+    // 强类型 id 默认 = 哨兵（未引用状态可辨，同 DSPin 默认口径）
+    EXPECT_FALSE(inst.get_cell_id().is_valid());
     EXPECT_EQ(inst.get_transform().get_orient(), GEOOrientation::N);
     EXPECT_EQ(inst.get_placement_status(),
-              static_cast<uint8_t>(DSPlacementStatus::UNPLACED));
+              DSPlacementStatus::UNPLACED);
     EXPECT_FALSE(inst.is_primary());  // 解析产物恒复位（分区副本置位）
 
-    inst.set_cell_id(7);
+    inst.set_cell_id(CMCellId{7});
     inst.set_transform(
         GEOTransform(GEOPoint(100400, 200100),
                               GEOOrientation::W));
-    inst.set_placement_status(static_cast<uint8_t>(DSPlacementStatus::FIXED));
+    inst.set_placement_status(DSPlacementStatus::FIXED);
 
     CMString blob;
     FLY_ENCODE(inst, blob);
@@ -192,7 +193,7 @@ TEST(DSInstanceTest, DefaultsAndSerializeRoundTrip) {
     EXPECT_EQ(back.get_transform().get_offset().get_y(), 200100);
     EXPECT_EQ(back.get_transform().get_orient(), GEOOrientation::W);
     EXPECT_EQ(back.get_placement_status(),
-              static_cast<uint8_t>(DSPlacementStatus::FIXED));
+              DSPlacementStatus::FIXED);
 }
 
 }  // namespace

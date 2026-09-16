@@ -38,27 +38,27 @@ GEORect def_rect_to_dbu(int64_t xl, int64_t yl, int64_t xh, int64_t yh,
 
 // USE/DIRECTION 文本 → 枚举（DEF PINS port；与 S2 map_pin_use 同语义，
 // USE CLOCK 补收见 DSPinType 扩展——2026-09-13 裁定）
-uint8_t map_port_use(const char* use) {
+DSPinType map_port_use(const char* use) {
     if (std::strcmp(use, "POWER") == 0) {
-        return static_cast<uint8_t>(DSPinType::POWER);
+        return DSPinType::POWER;
     }
     if (std::strcmp(use, "GROUND") == 0) {
-        return static_cast<uint8_t>(DSPinType::GROUND);
+        return DSPinType::GROUND;
     }
     if (std::strcmp(use, "CLOCK") == 0) {
-        return static_cast<uint8_t>(DSPinType::CLOCK);
+        return DSPinType::CLOCK;
     }
-    return static_cast<uint8_t>(DSPinType::SIGNAL);
+    return DSPinType::SIGNAL;
 }
 
-uint8_t map_port_direction(const char* dir) {
+DSPinDirection map_port_direction(const char* dir) {
     if (std::strcmp(dir, "OUTPUT") == 0 || std::strcmp(dir, "TRISTATE") == 0) {
-        return static_cast<uint8_t>(DSPinDirection::OUTPUT);
+        return DSPinDirection::OUTPUT;
     }
     if (std::strcmp(dir, "INOUT") == 0 || std::strcmp(dir, "FEEDTHRU") == 0) {
-        return static_cast<uint8_t>(DSPinDirection::INOUT);
+        return DSPinDirection::INOUT;
     }
-    return static_cast<uint8_t>(DSPinDirection::INPUT);
+    return DSPinDirection::INPUT;
 }
 
 // —— 回调上下文（经 defrRead userData 传递，无全局状态）——
@@ -209,10 +209,9 @@ int def_pin_cbk(defrCallbackType_e, defiPin* p, defiUserData ud) {
     // PLACED，UNPLACED 兜底记 PLACED（局部坐标）。
     bool placement_seen = false;
     const auto apply_placement = [&](bool fixed, bool cover) {
-        pin.set_placement_status(
-            fixed ? static_cast<uint8_t>(DSPinPlacementStatus::FIXED)
-                  : cover ? static_cast<uint8_t>(DSPinPlacementStatus::COVER)
-                          : static_cast<uint8_t>(DSPinPlacementStatus::PLACED));
+        pin.set_placement_status(fixed ? DSPinPlacementStatus::FIXED
+                                       : cover ? DSPinPlacementStatus::COVER
+                                               : DSPinPlacementStatus::PLACED);
         placement_seen = true;
     };
     CMVector<DSShapeRef> pin_geoms;
@@ -220,8 +219,8 @@ int def_pin_cbk(defrCallbackType_e, defiPin* p, defiUserData ud) {
                                   int yh) {
         // 层引用未定义 → 该 rect 条目级丢弃 + 计数（DSGN::0010 提醒在
         // ds_resolve_layer_id 内；dev-rules §7 不 raise）
-        const uint32_t layer_id = ds_resolve_layer_id(layer, *ctx->stack);
-        if (layer_id == DSStack::kNoLayer) {
+        const CMLayerId layer_id = ds_resolve_layer_id(layer, *ctx->stack);
+        if (!layer_id.is_valid()) {
             ++ctx->stats->skipped_layer_ref_count;
             return;
         }
@@ -257,14 +256,16 @@ int def_pin_cbk(defrCallbackType_e, defiPin* p, defiUserData ud) {
         }
     }
     if (!placement_seen) {
-        pin.set_placement_status(
-            static_cast<uint8_t>(DSPinPlacementStatus::PLACED));
+        pin.set_placement_status(DSPinPlacementStatus::PLACED);
     }
 
     const uint32_t local_id = ctx->current_cell.add_pin(std::move(pin));
     ctx->port_names.push_back(name);
     if (!pin_geoms.empty()) {
-        ctx->port_geoms->add_geometries(local_id, std::move(pin_geoms));
+        // 局部键 = pins_ 下标（汇总 ds_merge_def_header 按同下标重挂全局
+        // pin id）
+        ctx->port_geoms->add_geometries(CMPinId{local_id},
+                                        std::move(pin_geoms));
     }
     ++ctx->stats->port_count;
     return 0;
@@ -294,11 +295,10 @@ int def_via_cbk(defrCallbackType_e, defiVia* v, defiUserData ud) {
 
         // 先逐层解析（层引用未定义 → 整个 via 不构建不入 vias：层归属
         // 残缺无法展开；DSGN::0010 提醒 + 条目级计数，dev-rules §7）
-        const uint32_t bot_id = ds_resolve_layer_id(bot, *ctx->stack);
-        const uint32_t top_id = ds_resolve_layer_id(top, *ctx->stack);
-        const uint32_t cut_id = ds_resolve_layer_id(cut, *ctx->stack);
-        if (bot_id == DSStack::kNoLayer || top_id == DSStack::kNoLayer ||
-            cut_id == DSStack::kNoLayer) {
+        const CMLayerId bot_id = ds_resolve_layer_id(bot, *ctx->stack);
+        const CMLayerId top_id = ds_resolve_layer_id(top, *ctx->stack);
+        const CMLayerId cut_id = ds_resolve_layer_id(cut, *ctx->stack);
+        if (!bot_id.is_valid() || !top_id.is_valid() || !cut_id.is_valid()) {
             ++ctx->stats->skipped_layer_ref_count;
             return 0;
         }
@@ -327,31 +327,30 @@ int def_via_cbk(defrCallbackType_e, defiVia* v, defiUserData ud) {
     } else {
         // 预定义（矩形型）：第一遍逐层解析层 id，任一层未定义即放弃整个
         // via（条目级丢弃 + 计数；两遍循环都不执行 rect 归属）
-        CMVector<uint32_t> layer_ids;
+        CMVector<CMLayerId> layer_ids;
         for (int k = 0; k < v->numLayers(); ++k) {
             char* layer_name = nullptr;
             int xl = 0, yl = 0, xh = 0, yh = 0;
             v->layer(k, &layer_name, &xl, &yl, &xh, &yh);
-            const uint32_t id = ds_resolve_layer_id(layer_name, *ctx->stack);
-            if (id == DSStack::kNoLayer) {
+            const CMLayerId id = ds_resolve_layer_id(layer_name, *ctx->stack);
+            if (!id.is_valid()) {
                 ++ctx->stats->skipped_layer_ref_count;
                 return 0;
             }
             layer_ids.push_back(id);
         }
-        uint32_t bottom = UINT32_MAX;
-        uint32_t top = UINT32_MAX;
-        uint32_t cut = UINT32_MAX;
+        CMLayerId bottom;
+        CMLayerId top;
+        CMLayerId cut;
         for (int k = 0; k < v->numLayers(); ++k) {
-            const uint32_t id = layer_ids[k];
+            const CMLayerId id = layer_ids[k];
             const bool is_cut =
-                ctx->stack->layer_by_id(id).get_type() ==
-                static_cast<uint8_t>(DSLayerType::CUT);
+                ctx->stack->layer_by_id(id).get_type() == DSLayerType::CUT;
             if (is_cut) {
                 cut = id;
             } else {
-                if (bottom == UINT32_MAX || id < bottom) bottom = id;
-                if (top == UINT32_MAX || id > top) top = id;
+                if (!bottom.is_valid() || id < bottom) bottom = id;
+                if (!top.is_valid() || id > top) top = id;
             }
         }
         cell.set_bottom_layer_id(bottom);
@@ -365,7 +364,7 @@ int def_via_cbk(defrCallbackType_e, defiVia* v, defiUserData ud) {
                 xl, yl, xh, yh, stack_dbu, ctx->def_units);
             const bool is_cut =
                 ctx->stack->layer_by_id(layer_ids[k]).get_type() ==
-                static_cast<uint8_t>(DSLayerType::CUT);
+                DSLayerType::CUT;
             if (is_cut) {
                 cell.add_cut_rect(rect);
             } else if (layer_ids[k] == bottom) {
@@ -394,9 +393,9 @@ int def_blockage_cbk(defrCallbackType_e, defiBlockage* b, defiUserData ud) {
         ctx->stats->skipped_polygon_obstruction_count +=
             b->numPolygons();
     }
-    const uint32_t layer_id =
+    const CMLayerId layer_id =
         ds_resolve_layer_id(b->layerName(), *ctx->stack);
-    if (layer_id == DSStack::kNoLayer) {
+    if (!layer_id.is_valid()) {
         ctx->stats->skipped_layer_ref_count += b->numRectangles();
         return 0;
     }
@@ -452,18 +451,18 @@ struct DefComponentsContext {
 // defi placementStatus（DEFI_COMPONENT_*，1..5）→ DSPlacementStatus。
 // SOFTFIXED（6.0 扩展）按 FIXED 近似（最小方案，语义最接近的合法放置
 // 状态）；UNPLACED / 0（无 placement 子句）→ UNPLACED（D14 兜底计数）。
-uint8_t map_component_status(int status) {
+DSPlacementStatus map_component_status(int status) {
     switch (status) {
         case DEFI_COMPONENT_PLACED:
-            return static_cast<uint8_t>(DSPlacementStatus::PLACED);
+            return DSPlacementStatus::PLACED;
         case DEFI_COMPONENT_FIXED:
-            return static_cast<uint8_t>(DSPlacementStatus::FIXED);
+            return DSPlacementStatus::FIXED;
         case DEFI_COMPONENT_COVER:
-            return static_cast<uint8_t>(DSPlacementStatus::COVER);
+            return DSPlacementStatus::COVER;
         case DEFI_COMPONENT_SOFTFIXED:
-            return static_cast<uint8_t>(DSPlacementStatus::FIXED);
+            return DSPlacementStatus::FIXED;
         default:
-            return static_cast<uint8_t>(DSPlacementStatus::UNPLACED);
+            return DSPlacementStatus::UNPLACED;
     }
 }
 
@@ -471,14 +470,10 @@ int def_components_design_cbk(defrCallbackType_e, const char* name, defiUserData
     auto* ctx = static_cast<DefComponentsContext*>(ud);
     ctx->design_name = name;
     // ⑧ local 0 = block 自身占位（block cell id 经 cell hasher 查询，
-    // 未命中 kInvalidId 仅占号；R7 ㊱ hash 化查询）
-    const uint32_t block_cell_id =
-        ctx->design->cell_names_.get_id(ctx->design_name);
-    ctx->block_data->init_placeholder(
-        ctx->design_name,
-        DSCellNameHasher::is_valid_id(block_cell_id)
-            ? block_cell_id
-            : DSDesign::kInvalidId);
+    // 未命中哨兵仅占号；R7 ㊱ hash 化查询）
+    const CMCellId block_cell_id{
+        ctx->design->cell_names_.get_id(ctx->design_name)};
+    ctx->block_data->init_placeholder(ctx->design_name, block_cell_id);
     return 0;
 }
 

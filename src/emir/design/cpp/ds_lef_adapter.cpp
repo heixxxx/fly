@@ -54,29 +54,29 @@ bool add_via_unique(CMVector<DSViaCell>& vias, DSViaCell&& cell,
 // DSGN::0010 提醒在 ds_resolve_layer_id 内，计数由调用方执行）。
 bool convert_via(const lefiVia& v, const DSStack& stack, DSViaCell& out) {
     struct LayerInfo {
-        uint32_t id;
+        CMLayerId id;
         bool is_cut;
     };
     CMVector<LayerInfo> infos;
     for (int k = 0; k < v.numLayers(); ++k) {
-        const uint32_t id = ds_resolve_layer_id(v.layerName(k), stack);
-        if (id == DSStack::kNoLayer) {
+        const CMLayerId id = ds_resolve_layer_id(v.layerName(k), stack);
+        if (!id.is_valid()) {
             return false;
         }
         infos.push_back({id, stack.layer_by_id(id).get_type() ==
-                                 static_cast<uint8_t>(DSLayerType::CUT)});
+                                 DSLayerType::CUT});
     }
 
-    uint32_t bottom = UINT32_MAX;
-    uint32_t top = UINT32_MAX;
-    uint32_t cut = UINT32_MAX;
+    CMLayerId bottom;
+    CMLayerId top;
+    CMLayerId cut;
     for (const auto& info : infos) {
         if (info.is_cut) {
             cut = info.id;  // ⑥ 通孔密度通道分层键
             continue;
         }
-        if (bottom == UINT32_MAX || info.id < bottom) bottom = info.id;
-        if (top == UINT32_MAX || info.id > top) top = info.id;
+        if (!bottom.is_valid() || info.id < bottom) bottom = info.id;
+        if (!top.is_valid() || info.id > top) top = info.id;
     }
 
     out = DSViaCell{};
@@ -85,7 +85,7 @@ bool convert_via(const lefiVia& v, const DSStack& stack, DSViaCell& out) {
     out.set_top_layer_id(top);
     out.set_cut_layer_id(cut);
     for (int k = 0; k < v.numLayers(); ++k) {
-        const uint32_t id = infos[k].id;
+        const CMLayerId id = infos[k].id;
         for (int r = 0; r < v.numRects(k); ++r) {
             const GEORect rect(to_dbu(v.xl(k, r)), to_dbu(v.yl(k, r)),
                                to_dbu(v.xh(k, r)), to_dbu(v.yh(k, r)));
@@ -124,11 +124,10 @@ bool expand_viarule(const lefiViaRule& vr, const DSStack& stack,
         return false;
     }
 
-    const uint32_t bot_id = ds_resolve_layer_id(bot->name(), stack);
-    const uint32_t top_id = ds_resolve_layer_id(top->name(), stack);
-    const uint32_t cut_id = ds_resolve_layer_id(cut->name(), stack);
-    if (bot_id == DSStack::kNoLayer || top_id == DSStack::kNoLayer ||
-        cut_id == DSStack::kNoLayer) {
+    const CMLayerId bot_id = ds_resolve_layer_id(bot->name(), stack);
+    const CMLayerId top_id = ds_resolve_layer_id(top->name(), stack);
+    const CMLayerId cut_id = ds_resolve_layer_id(cut->name(), stack);
+    if (!bot_id.is_valid() || !top_id.is_valid() || !cut_id.is_valid()) {
         if (layer_ref_failed != nullptr) {
             *layer_ref_failed = true;
         }
@@ -163,31 +162,31 @@ bool expand_viarule(const lefiViaRule& vr, const DSStack& stack,
     return true;
 }
 
-// LEF PIN 的 USE/DIRECTION 文本 → 枚举（uint8_t 存储）。宽松映射：
+// LEF PIN 的 USE/DIRECTION 文本 → 枚举（枚举定型存储）。宽松映射：
 // USE 缺省 SIGNAL；DIRECTION 的 TRISTATE 记 OUTPUT、FEEDTHRU 记 INOUT。
 // USE CLOCK 补收（2026-09-13 裁定：DSPinType 扩展 CLOCK 第四值，连接
 // flags 的 clock 位数据源）
-uint8_t map_pin_use(const char* use) {
+DSPinType map_pin_use(const char* use) {
     if (std::strcmp(use, "POWER") == 0) {
-        return static_cast<uint8_t>(DSPinType::POWER);
+        return DSPinType::POWER;
     }
     if (std::strcmp(use, "GROUND") == 0) {
-        return static_cast<uint8_t>(DSPinType::GROUND);
+        return DSPinType::GROUND;
     }
     if (std::strcmp(use, "CLOCK") == 0) {
-        return static_cast<uint8_t>(DSPinType::CLOCK);
+        return DSPinType::CLOCK;
     }
-    return static_cast<uint8_t>(DSPinType::SIGNAL);
+    return DSPinType::SIGNAL;
 }
 
-uint8_t map_pin_direction(const char* dir) {
+DSPinDirection map_pin_direction(const char* dir) {
     if (std::strcmp(dir, "OUTPUT") == 0 || std::strcmp(dir, "TRISTATE") == 0) {
-        return static_cast<uint8_t>(DSPinDirection::OUTPUT);
+        return DSPinDirection::OUTPUT;
     }
     if (std::strcmp(dir, "INOUT") == 0 || std::strcmp(dir, "FEEDTHRU") == 0) {
-        return static_cast<uint8_t>(DSPinDirection::INOUT);
+        return DSPinDirection::INOUT;
     }
-    return static_cast<uint8_t>(DSPinDirection::INPUT);
+    return DSPinDirection::INPUT;
 }
 
 // —— S1 tech lef 回调上下文（经 lefrRead userData 传递，无全局状态）——
@@ -212,17 +211,14 @@ int tech_layer_cbk(lefrCallbackType_e, lefiLayer* l, lefiUserData ud) {
 
     DSLayer layer;
     layer.set_name(l->name());
-    layer.set_type(static_cast<uint8_t>(is_cut ? DSLayerType::CUT
-                                               : DSLayerType::ROUTING));
+    layer.set_type(is_cut ? DSLayerType::CUT : DSLayerType::ROUTING);
     if (l->hasDirection()) {
         const char* dir = l->direction();
-        const uint8_t d = std::strcmp(dir, "HORIZONTAL") == 0
-                              ? static_cast<uint8_t>(DSDirection::HORIZONTAL)
-                              : std::strcmp(dir, "VERTICAL") == 0
-                                    ? static_cast<uint8_t>(
-                                          DSDirection::VERTICAL)
-                                    : static_cast<uint8_t>(
-                                          DSDirection::NONE);
+        const DSDirection d = std::strcmp(dir, "HORIZONTAL") == 0
+                                  ? DSDirection::HORIZONTAL
+                                  : std::strcmp(dir, "VERTICAL") == 0
+                                        ? DSDirection::VERTICAL
+                                        : DSDirection::NONE;
         layer.set_direction(d);
     }
     if (l->hasWidth()) {
@@ -294,7 +290,7 @@ struct CellContext {
     DSLefParseStats* stats;
     // R4：局部 pin id 平铺分配器（part 内跨 cell 单调——T6 汇总重挂按
     // 「pin_base + 局部 id」平移，要求局部 id 跨 cell 唯一）
-    uint32_t next_pin_id = 0;
+    CMPinId next_pin_id = CMPinId{0};
 
     // 当前 macro 构建状态（MacroBegin 置位，MacroCbk 收录/弃置）
     bool macro_valid = false;
@@ -316,9 +312,9 @@ void collect_lef_geoms(const lefiGeometries* g, CellContext* ctx,
                 break;
             case lefiGeomRectE: {
                 const lefiGeomRect* r = g->getRect(i);
-                const uint32_t layer_id =
+                const CMLayerId layer_id =
                     ds_resolve_layer_id(cur_layer, *ctx->stack);
-                if (layer_id == DSStack::kNoLayer) {
+                if (!layer_id.is_valid()) {
                     ++ctx->stats->skipped_layer_ref_count;
                     break;
                 }
@@ -372,7 +368,7 @@ int cell_pin_cbk(lefrCallbackType_e, lefiPin* p, lefiUserData ud) {
     // （ds_merge_cell_lef 经 hasher 反查组合键重挂的数据源）
     const CMString pin_name = p->name();
     ctx->current_cell.add_pin(std::move(pin));
-    const uint32_t local_pin_id = ctx->next_pin_id++;
+    const CMPinId local_pin_id = ctx->next_pin_id++;
     ctx->design->register_pin(ctx->current_cell.get_name(), pin_name,
                               local_pin_id);
     // R4：pin id 分配即回填 DSPin::pin_id_（局部平铺 id；R7 ㊱ 汇总

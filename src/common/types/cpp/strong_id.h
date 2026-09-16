@@ -43,6 +43,9 @@ namespace fly {
 template <typename Tag, typename IntT>
 class StrongIdT {
 public:
+    // 内部整型类型（裸值域——强类型边界转换/容器裸键场景的显式出口）
+    using int_type = IntT;
+
     // 无效哨兵（id 类型最大值）；默认构造即哨兵
     static constexpr IntT kInvalid = std::numeric_limits<IntT>::max();
 
@@ -248,6 +251,13 @@ struct hash<fly::StrongIdT<Tag, IntT>> {
 };
 
 }  // namespace std
+
+// fmt 库适配（format_as 钩子，ADL——fmt 9+ 自动把强类型按裸值格式化，
+// 日志/MSG 的 {} 直接打印 id；零 fmt 头依赖）
+template <typename Tag, typename IntT>
+inline IntT format_as(const fly::StrongIdT<Tag, IntT>& id) {
+    return id.value();
+}
 
 // 诊断输出（日志/调试打印）
 template <typename Tag, typename IntT>

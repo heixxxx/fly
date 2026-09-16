@@ -29,7 +29,7 @@ uint32_t hier_depth(const DSHierTree& tree, uint32_t node_id,
 
 // 网所属 block instance 的树深度（global id → 区间反查 → 深度；越界防
 // 御回退最大值——规范化中自然落选）
-uint32_t net_depth(const DSHierTree& tree, uint64_t net_global_id,
+uint32_t net_depth(const DSHierTree& tree, CMNetId net_global_id,
                    CMUnorderedMap<uint32_t, uint32_t>* memo) {
     const uint32_t node = tree.block_of_net(net_global_id);
     if (node == DSHierTree::kNoNode) {
@@ -42,12 +42,12 @@ uint32_t net_depth(const DSHierTree& tree, uint64_t net_global_id,
 
 // —— DSNetUnion ——
 
-uint64_t DSNetUnion::find(uint64_t net_global_id) const {
+CMNetId DSNetUnion::find(CMNetId net_global_id) const {
     const auto it = root_of_.find(net_global_id);
     return it == root_of_.end() ? net_global_id : it->second;
 }
 
-const CMVector<uint64_t>* DSNetUnion::members(uint64_t root) const {
+const CMVector<CMNetId>* DSNetUnion::members(CMNetId root) const {
     const auto it = members_of_.find(root);
     return it == members_of_.end() ? nullptr : &it->second;
 }
@@ -67,7 +67,7 @@ DSNetUnionSlice ds_collect_net_union_slice(
     // 连接表的 port 引用条目（is_port 位，⑧ local 0 占位）。port pin 全局
     // id 唯一（S5b 解析边界换算：组合键 "block_cell_name/port_name"），
     // 跨子定义平铺安全——同 id 不会出现在两个 block cell。
-    CMUnorderedMap<uint32_t, CMVector<uint64_t>> port_pin_nets;
+    CMUnorderedMap<CMPinId, CMVector<CMNetId>> port_pin_nets;
     for (const DSNetBuildData* child : child_defs) {
         if (child == nullptr) {
             continue;  // 防御（编排侧空条目）
@@ -107,7 +107,7 @@ DSNetUnionSlice ds_collect_net_union_slice(
     // 块实例 local id → 树节点 id 索引（id 对接键，2026-09-13 裁定：S7
     // 内部链路零字符串匹配）：非 root 节点 self_global_id_ = 父块
     // instance_start + 父块内 local id（⑧）。全局建一次（量 = 树节点数）。
-    CMUnorderedMap<uint64_t, uint32_t> node_by_self_id;
+    CMUnorderedMap<CMInstanceId, uint32_t> node_by_self_id;
     for (const DSHierNode& node : tree.nodes_) {
         node_by_self_id.emplace(node.get_self_global_id(), node.get_id());
     }
@@ -116,13 +116,12 @@ DSNetUnionSlice ds_collect_net_union_slice(
     // 全局 id) × 子侧 (local 0, 同一 port pin id) 直接相等对接（同一
     // port 的全局 pin id 唯一）；同名 port 的子网集全并（同一子网连多
     // port 连到不同父网 → 两父网 union，电气等价）
-    CMVector<std::pair<uint64_t, uint64_t>> edges;
+    CMVector<std::pair<CMNetId, CMNetId>> edges;
     for (const uint32_t pos : positions) {
-        const uint64_t inst_start =
-            tree.instance_range(pos).first;
+        const CMInstanceId inst_start = tree.instance_range(pos).first;
         for (const auto& [local_net, conns] : parent_nets.connections_) {
-            const uint64_t parent_global = tree.global_net_id(pos, local_net);
-            if (parent_global == DSHierTree::kNoNode) {
+            const CMNetId parent_global = tree.global_net_id(pos, local_net);
+            if (!parent_global.is_valid()) {
                 continue;  // 防御：越界 local id（S5a/S5b 计数不一致兜底）
             }
             for (const DSNetConnection& c : conns) {
@@ -144,10 +143,10 @@ DSNetUnionSlice ds_collect_net_union_slice(
                 if (nets_it == port_pin_nets.end()) {
                     continue;  // 该 port 未连接任何子网（父网不经此下探）
                 }
-                for (const uint64_t child_local : nets_it->second) {
-                    const uint64_t child_global =
+                for (const CMNetId child_local : nets_it->second) {
+                    const CMNetId child_global =
                         tree.global_net_id(child_node, child_local);
-                    if (child_global == DSHierTree::kNoNode) {
+                    if (!child_global.is_valid()) {
                         continue;  // 防御：越界子网 local id
                     }
                     edges.emplace_back(std::minmax(parent_global,
@@ -172,16 +171,16 @@ DSNetUnion ds_build_net_union(const DSHierTree& tree,
     DSNetUnion out;
 
     // 1) 小规模并查集（port 级规模，路径压缩）
-    CMUnorderedMap<uint64_t, uint64_t> parent;
-    const auto uf_find = [&parent](uint64_t x) {
-        uint64_t root = x;
+    CMUnorderedMap<CMNetId, CMNetId> parent;
+    const auto uf_find = [&parent](CMNetId x) {
+        CMNetId root = x;
         for (auto it = parent.find(root);
              it != parent.end() && it->second != root;
              it = parent.find(root)) {
             root = it->second;
         }
         while (x != root) {  // 路径压缩
-            const uint64_t next = parent[x];
+            const CMNetId next = parent[x];
             parent[x] = root;
             x = next;
         }
@@ -194,8 +193,8 @@ DSNetUnion ds_build_net_union(const DSHierTree& tree,
         for (const DSNetUnionEdge& e : slice->edges_) {
             parent.emplace(e.net_a_, e.net_a_);
             parent.emplace(e.net_b_, e.net_b_);
-            const uint64_t ra = uf_find(e.net_a_);
-            const uint64_t rb = uf_find(e.net_b_);
+            const CMNetId ra = uf_find(e.net_a_);
+            const CMNetId rb = uf_find(e.net_b_);
             if (ra != rb) {
                 parent[ra] = rb;
             }
@@ -223,10 +222,10 @@ DSNetUnion ds_build_net_union(const DSHierTree& tree,
         if (pos_it == positions_of.end()) {
             continue;  // def 未被实例化：无位置即无 global id 可悬空
         }
-        for (const uint64_t local : slice->port_net_ids_) {
+        for (const CMNetId local : slice->port_net_ids_) {
             for (const uint32_t pos : pos_it->second) {
-                const uint64_t g = tree.global_net_id(pos, local);
-                if (g == DSHierTree::kNoNode) {
+                const CMNetId g = tree.global_net_id(pos, local);
+                if (!g.is_valid()) {
                     continue;  // 防御：越界 local id
                 }
                 parent.emplace(g, g);  // 已在边集 = 已并类（emplace 幂等）
@@ -235,7 +234,7 @@ DSNetUnion ds_build_net_union(const DSHierTree& tree,
     }
 
     // 3) 分组：root → 成员
-    CMUnorderedMap<uint64_t, CMVector<uint64_t>> groups;
+    CMUnorderedMap<CMNetId, CMVector<CMNetId>> groups;
     for (const auto& [id, p] : parent) {
         (void)p;
         groups[uf_find(id)].push_back(id);
@@ -248,16 +247,16 @@ DSNetUnion ds_build_net_union(const DSHierTree& tree,
     for (auto& [root, members] : groups) {
         (void)root;
         std::sort(members.begin(), members.end());
-        uint64_t canonical = members.front();
+        CMNetId canonical = members.front();
         uint32_t best_depth = net_depth(tree, canonical, &depth_memo);
-        for (const uint64_t m : members) {
+        for (const CMNetId m : members) {
             const uint32_t d = net_depth(tree, m, &depth_memo);
             if (d < best_depth) {
                 best_depth = d;
                 canonical = m;
             }
         }
-        for (const uint64_t m : members) {
+        for (const CMNetId m : members) {
             out.root_of_[m] = canonical;  // 含 canonical 自映射（两层不变式）
         }
         out.members_of_[canonical] = std::move(members);

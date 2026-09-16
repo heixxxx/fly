@@ -24,25 +24,25 @@ void DSNetPipeline::run(DSNetContext& ctx) const {
 
 // —— via 名解析（⑪ 权威表 + ⑫ 前缀优先）——
 
-uint32_t ds_resolve_via_cell(const DSDesign& design,
-                             const CMString& design_name,
-                             const CMString& via_name) {
+CMViaCellId ds_resolve_via_cell(const DSDesign& design,
+                                const CMString& design_name,
+                                const CMString& via_name) {
     // ⑫ 前缀名优先：DEF 网内引用应优先命中本 DEF VIAS 段登记的 via
     //（design_name::via_name）——tech/cell lef 的同名 via（形状可能不同，
     // ⑫ 正为防此合并污染而独立登记）不得遮蔽本 DEF 定义
     if (!design_name.empty()) {
-        const uint32_t prefixed =
-            design.via_cell_names_.get_id(design_name + "::" + via_name);
-        if (DSViaCellNameHasher::is_valid_id(prefixed)) {
+        const CMViaCellId prefixed{
+            design.via_cell_names_.get_id(design_name + "::" + via_name)};
+        if (prefixed.is_valid()) {
             return prefixed;
         }
     }
     // 回退：plain 名（tech/cell lef 来源 via）
-    const uint32_t plain = design.via_cell_names_.get_id(via_name);
-    if (DSViaCellNameHasher::is_valid_id(plain)) {
+    const CMViaCellId plain{design.via_cell_names_.get_id(via_name)};
+    if (plain.is_valid()) {
         return plain;
     }
-    return DSDesign::kInvalidId;
+    return CMViaCellId{};
 }
 
 // —— 节点 1：连接项解析 ——
@@ -57,10 +57,11 @@ void DSNetConnectionParseNode::handle(DSNetContext& ctx) {
     // ⑨ local net id 沿用 S5a 网名扫描分配的 local id；未收录（正常数据
     // 流不会发生——S5a NetNameCbk 对全部网名登记，防御兜底）计数跳过。
     // R7 ㊱/㊵②：经 net hasher 查询（block_data 需已注入 DSBlockNames）
-    const uint64_t local_id =
-        ctx.block_data->net_names_ ? ctx.block_data->net_names_->get_id(ctx.net_name)
-                                   : 0;
-    if (!DSNetNameHasher::is_valid_id(local_id)) {
+    const CMNetId local_id{
+        ctx.block_data->net_names_
+            ? ctx.block_data->net_names_->get_id(ctx.net_name)
+            : 0};
+    if (!local_id.is_valid()) {
         ++ctx.net_data->stats_.skipped_net_count;
         return;  // local_net_id 保持 0，后续节点跳过
     }
@@ -92,12 +93,12 @@ void DSNetConnectionParseNode::handle(DSNetContext& ctx) {
     // <20 无负担；block cell（port 条目）pin 数当前 10³-10⁴ 级可接受
     //（review 注记：port 数上万时可改用 pin_base 连续性直接定位）
     const auto fill_pin_flags = [](DSNetConnection& conn, const DSCell& cell,
-                                   uint32_t pin_id) {
+                                   CMPinId pin_id) {
         for (const DSPin& p : cell.pins_) {
             if (p.pin_id_ != pin_id) {
                 continue;
             }
-            const auto dir = static_cast<DSPinDirection>(p.direction_);
+            const DSPinDirection dir = p.direction_;
             if (dir == DSPinDirection::OUTPUT ||
                 dir == DSPinDirection::INOUT) {
                 conn.set_driver();
@@ -106,7 +107,7 @@ void DSNetConnectionParseNode::handle(DSNetContext& ctx) {
                 dir == DSPinDirection::INOUT) {
                 conn.set_receiver();  // INOUT = driver+receiver 同置 = hybrid
             }
-            const auto type = static_cast<DSPinType>(p.type_);
+            const DSPinType type = p.type_;
             if (type == DSPinType::POWER) {
                 conn.set_power();
             } else if (type == DSPinType::GROUND) {
@@ -120,9 +121,10 @@ void DSNetConnectionParseNode::handle(DSNetContext& ctx) {
     for (DSNetRawConnection& raw : ctx.connections) {
         DSNetConnection conn;
         if (raw.instance_name == "PIN") {
-            const uint32_t port_pin =
-                ctx.design->pin_names_.get_id(block_name + "/" + raw.pin_name);
-            if (!DSPinNameHasher::is_valid_id(port_pin)) {
+            const CMPinId port_pin{
+                ctx.design->pin_names_.get_id(block_name + "/" +
+                                              raw.pin_name)};
+            if (!port_pin.is_valid()) {
                 ++ctx.net_data->stats_.skipped_invalid_connection_count;
                 MSG("DSGN::0025", 0,
                     "net '{}' references unregistered port '{}' — "
@@ -132,20 +134,21 @@ void DSNetConnectionParseNode::handle(DSNetContext& ctx) {
             conn.pin_id_ = port_pin;
             conn.set_port();
             // port pin 的方向/type 位：block cell 的 port pin 同在 cell 表
-            const uint32_t block_cell_id =
-                ctx.design->cell_names_.get_id(block_name);
-            if (DSCellNameHasher::is_valid_id(block_cell_id) &&
+            const CMCellId block_cell_id{
+                ctx.design->cell_names_.get_id(block_name)};
+            if (block_cell_id.is_valid() &&
                 block_cell_id < ctx.design->cells_.size()) {
-                fill_pin_flags(conn, ctx.design->cells_[block_cell_id],
+                fill_pin_flags(conn,
+                               ctx.design->cells_[block_cell_id.value()],
                                port_pin);
             }
         } else {
-            const uint64_t inst_local =
+            const CMInstanceId inst_local{
                 ctx.block_data->instance_names_
                     ? ctx.block_data->instance_names_->get_id(
                           raw.instance_name)
-                    : DSInstanceNameHasher::kInvalidId;
-            if (!DSInstanceNameHasher::is_valid_id(inst_local)) {
+                    : CMInstanceId::kInvalid};
+            if (!inst_local.is_valid()) {
                 ++ctx.net_data->stats_.skipped_invalid_connection_count;
                 MSG("DSGN::0025", 0,
                     "net '{}' references unknown instance '{}' — "
@@ -165,10 +168,11 @@ void DSNetConnectionParseNode::handle(DSNetContext& ctx) {
                 continue;
             }
             const DSCell& cell =
-                ctx.design->cells_[iit->second.get_cell_id()];
-            const uint32_t pin_id =
-                ctx.design->pin_names_.get_id(cell.name_ + "/" + raw.pin_name);
-            if (!DSPinNameHasher::is_valid_id(pin_id)) {
+                ctx.design->cells_[iit->second.get_cell_id().value()];
+            const CMPinId pin_id{
+                ctx.design->pin_names_.get_id(cell.name_ + "/" +
+                                              raw.pin_name)};
+            if (!pin_id.is_valid()) {
                 ++ctx.net_data->stats_.skipped_invalid_connection_count;
                 MSG("DSGN::0025", 0,
                     "net '{}' references undefined pin '{}' of cell '{}' — "
@@ -191,18 +195,18 @@ void DSNetGeometryExpandNode::handle(DSNetContext& ctx) {
         ctx.error = true;
         return;
     }
-    if (ctx.local_net_id == 0) {
+    if (ctx.local_net_id == CMNetId{0}) {
         return;  // 网名未收录（节点 1 兜底计数），跳过
     }
-    const uint32_t net_id = ctx.local_net_id;
+    const CMNetId net_id = ctx.local_net_id;
 
     // wire 段：layer id 解析（层引用未定义 → 该 wire 段条目级丢弃 +
     // DSGN::0010 提醒 + 计数，dev-rules §7 不 raise）+ 宽度（special
     // 显式保留 / 普通 net 回填 stack 层缺省宽）
     for (DSNetRawWire& raw : ctx.wires) {
-        const uint32_t layer_id =
+        const CMLayerId layer_id =
             ds_resolve_layer_id(raw.layer_name, *ctx.stack);
-        if (layer_id == DSStack::kNoLayer) {
+        if (!layer_id.is_valid()) {
             ++ctx.net_data->stats_.skipped_layer_ref_count;
             continue;
         }
@@ -218,9 +222,9 @@ void DSNetGeometryExpandNode::handle(DSNetContext& ctx) {
     // rect 项：layer id 解析（未定义层 → 条目级丢弃 + 计数，同 wire 段
     // 口径）+ 原样收录
     for (DSNetRawRect& raw : ctx.rects) {
-        const uint32_t layer_id =
+        const CMLayerId layer_id =
             ds_resolve_layer_id(raw.layer_name, *ctx.stack);
-        if (layer_id == DSStack::kNoLayer) {
+        if (!layer_id.is_valid()) {
             ++ctx.net_data->stats_.skipped_layer_ref_count;
             continue;
         }
@@ -234,9 +238,9 @@ void DSNetGeometryExpandNode::handle(DSNetContext& ctx) {
     //（⑩ via instance 专用 id 空间从 1 起、无 name；未定义 via 跳过 +
     // 计数，DSGN::0008 数据源，不 raise 不拦截）
     for (DSNetRawVia& raw : ctx.vias) {
-        const uint32_t via_cell_id =
+        const CMViaCellId via_cell_id =
             ds_resolve_via_cell(*ctx.design, ctx.design_name, raw.via_name);
-        if (via_cell_id == DSDesign::kInvalidId) {
+        if (!via_cell_id.is_valid()) {
             ++ctx.net_data->stats_.skipped_via_count;
             MSG("DSGN::0008", 0, "undefined via reference '{}' in net '{}'",
                 raw.via_name, ctx.net_name);
@@ -263,7 +267,7 @@ void DSNetDensityNode::handle(DSNetContext& ctx) {
         ctx.error = true;
         return;
     }
-    if (ctx.local_net_id == 0) {
+    if (ctx.local_net_id == CMNetId{0}) {
         return;  // 网名未收录，跳过
     }
     DSDensityGrid& density = ctx.net_data->density_;
@@ -306,18 +310,18 @@ void DSNetDensityNode::handle(DSNetContext& ctx) {
     // cell 的 cut 层 id；未判定兜底回退 bottom 层）
     const auto* via_ids = ctx.net_data->via_ids_of(ctx.local_net_id);
     if (via_ids != nullptr) {
-        for (const uint32_t via_id : *via_ids) {
+        for (const CMViaInstanceId via_id : *via_ids) {
             const DSViaInstance* inst =
                 ctx.net_data->via_instance_at(via_id);
             if (inst == nullptr ||
                 inst->via_cell_id_ >= ctx.design->via_cells_.size()) {
                 continue;  // 防御（权威表快照外 id）
             }
-            const DSViaCell& via = ctx.design->via_cells_[inst->via_cell_id_];
-            const uint32_t cut_layer =
-                via.get_cut_layer_id() != UINT32_MAX
-                    ? via.get_cut_layer_id()
-                    : via.get_bottom_layer_id();
+            const DSViaCell& via =
+                ctx.design->via_cells_[inst->via_cell_id_.value()];
+            const CMLayerId cut_layer =
+                via.get_cut_layer_id().is_valid() ? via.get_cut_layer_id()
+                                                  : via.get_bottom_layer_id();
             for (uint32_t k = 0; k < via.cut_rect_count(); ++k) {
                 const GEORect& r = via.cut_rect_at(k);
                 density.accumulate_layer_shape(

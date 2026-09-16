@@ -32,7 +32,7 @@ int ds_merge_cell_lef(DSDesign& dst, const DSDesign& src_part,
                       const DSPinGeometry& src_geom) {
     int conflicts = 0;
     // src 局部 cell id → dst 全局 id（被抛弃 cell 不入映射）
-    CMUnorderedMap<uint32_t, uint32_t> cell_id_map;
+    CMUnorderedMap<CMCellId, CMCellId> cell_id_map;
 
     for (uint32_t src_id = 0; src_id < src_part.cells_.size(); ++src_id) {
         const DSCell& c = src_part.cells_[src_id];
@@ -44,8 +44,8 @@ int ds_merge_cell_lef(DSDesign& dst, const DSDesign& src_part,
                 c.get_name());
             continue;
         }
-        const uint32_t dst_id = dst.add_cell(DSCell(c));
-        cell_id_map[src_id] = dst_id;
+        const CMCellId dst_id = dst.add_cell(DSCell(c));
+        cell_id_map[CMCellId{src_id}] = dst_id;
     }
 
     // pin hasher 重挂：src 局部 pin id → 全局平铺新 id（基址 = dst 现有
@@ -54,25 +54,25 @@ int ds_merge_cell_lef(DSDesign& dst, const DSDesign& src_part,
     // 回填在后），pin 几何按全局 pin id 重挂（src 键 = 局部 pin id，被
     // 抛弃 cell 的 pin 几何随之丢弃）。R7 ㊱：pin 名经 src pin hasher 的
     // 组合键（"cell/pin"）反查（DSPin 自身不存 name）
-    const uint32_t pin_base =
-        static_cast<uint32_t>(dst.pin_names_.name_table_.size());
+    const CMPinId pin_base{
+        static_cast<CMPinId::int_type>(dst.pin_names_.name_table_.size())};
     for (const auto& [src_id, dst_id] : cell_id_map) {
-        const DSCell& c = src_part.cells_[src_id];
+        const DSCell& c = src_part.cells_[src_id.value()];
         for (uint32_t pi = 0; pi < c.pins_.size(); ++pi) {
             const DSPin& p = c.pins_[pi];
-            const uint32_t local_pin_id = p.get_pin_id();
-            if (!DSPinNameHasher::is_valid_id(local_pin_id) ||
-                local_pin_id >=
-                    src_part.pin_names_.name_table_.size()) {
+            const CMPinId local_pin_id = p.get_pin_id();
+            if (!local_pin_id.is_valid() ||
+                local_pin_id >= src_part.pin_names_.name_table_.size()) {
                 continue;  // 局部 hasher 与 pin 集不一致（不应发生，防御）
             }
-            const CMString& key = src_part.pin_names_.get_name(local_pin_id);
+            const CMString& key =
+                src_part.pin_names_.get_name(local_pin_id.value());
             if (key.empty()) {
                 continue;  // 局部 hasher 空洞（assign 稀疏未登记下标）
             }
-            const uint32_t new_id = pin_base + local_pin_id;
-            dst.pin_names_.assign(key, new_id);
-            dst.cells_[dst_id].pins_[pi].set_pin_id(new_id);
+            const CMPinId new_id = pin_base + local_pin_id;
+            dst.pin_names_.assign(key, new_id.value());
+            dst.cells_[dst_id.value()].pins_[pi].set_pin_id(new_id);
             const auto git = src_geom.pin_geometry_.find(local_pin_id);
             if (git != src_geom.pin_geometry_.end()) {
                 dst_geom.add_geometries(new_id,
@@ -82,7 +82,7 @@ int ds_merge_cell_lef(DSDesign& dst, const DSDesign& src_part,
     }
 
     // fake cell ids 与 lib_link 按 cell id 映射重挂
-    for (uint32_t src_fid : src_part.fake_cell_ids_) {
+    for (const CMCellId src_fid : src_part.fake_cell_ids_) {
         auto it = cell_id_map.find(src_fid);
         if (it != cell_id_map.end()) {
             dst.fake_cell_ids_.push_back(it->second);
@@ -129,23 +129,24 @@ int ds_merge_def_header(DSDesign& dst, const CMVector<DSCell>& block_cells,
                 blk.get_name());
             continue;
         }
-        const uint32_t dst_id = dst.add_cell(DSCell(blk));
+        const CMCellId dst_id = dst.add_cell(DSCell(blk));
 
         // port pin id 全局平铺分配（D1），进 pin hasher（键 =
         // "design_name/port_name"，与 macro pin 同构）+ pin_id_ 回填 +
         // port 几何按全局 pin id 重挂（R4/R5：局部键 = pins_ 下标；
         // R7 ㊱：pin 名经 port_names 解析边界传入——DSPin 不存 name）
-        const uint32_t pin_base =
-            static_cast<uint32_t>(dst.pin_names_.name_table_.size());
+        const CMPinId pin_base{
+            static_cast<CMPinId::int_type>(
+                dst.pin_names_.name_table_.size())};
         for (uint32_t pi = 0; pi < blk.pin_count(); ++pi) {
             if (pi >= port_names.size()) {
                 continue;  // 名单缺失（调用方契约错误，防御不越界）
             }
-            const uint32_t new_id = pin_base + pi;
+            const CMPinId new_id = pin_base + pi;
             dst.pin_names_.assign(blk.get_name() + "/" + port_names[pi],
-                                  new_id);
-            dst.cells_[dst_id].pins_[pi].set_pin_id(new_id);
-            const auto git = port_geoms.pin_geometry_.find(pi);
+                                  new_id.value());
+            dst.cells_[dst_id.value()].pins_[pi].set_pin_id(new_id);
+            const auto git = port_geoms.pin_geometry_.find(CMPinId{pi});
             if (git != port_geoms.pin_geometry_.end()) {
                 dst_geom.add_geometries(new_id,
                                         CMVector<DSShapeRef>(git->second));
@@ -186,8 +187,9 @@ int ds_merge_block_build(DSDesign& dst, DSBlockBuildData& block_data,
         if (id_it == block_data.fake_name_to_id_.end()) {
             continue;  // 登记缺失（不应发生，防御）
         }
-        uint32_t id = id_it->second;
-        while (id < dst.cells_.size() && !dst.cells_[id].get_name().empty()) {
+        CMCellId id{id_it->second};
+        while (id.value() < dst.cells_.size() &&
+               !dst.cells_[id.value()].get_name().empty()) {
             ++id;  // 冲突顺延（⑳：冲突率不严格，兜底保证唯一落位）
         }
         DSCell fake = fake_src;
@@ -203,7 +205,7 @@ int ds_merge_block_build(DSDesign& dst, DSBlockBuildData& block_data,
                     inst.set_cell_id(id);
                 }
             }
-            CMUnorderedMap<uint32_t, uint64_t> remapped;
+            CMUnorderedMap<CMCellId, uint64_t> remapped;
             for (const auto& [cid, count] :
                  block_data.stats_.per_cell_counts_) {
                 remapped[cid == id_it->second ? id : cid] = count;
@@ -236,7 +238,7 @@ int DSDesign::merge_lib(const LIBLibrary& lib) {
         // + ㉗ lib_cell 来源标记
         c.set_library_name(lc->library_name_);
         c.set_lib_cell();
-        lib_link_[id] = lc->name_;
+        lib_link_[CMCellId{id}] = lc->name_;
 
         // pin 集合比对（⑯：逐 cell 缺失 pin 名单，提醒不拦截）。
         // R7 ㊱：DSPin 不存 name——lef pin 名经 pin hasher（键 =
@@ -278,8 +280,8 @@ int DSDesign::merge_lib(const LIBLibrary& lib) {
         // 路径中提醒，其表无处挂载不落位）
         for (const auto& lp : lc->pins_) {
             CMString key = c.get_name() + "/" + lp.name_;
-            const uint32_t pin_id = pin_names_.get_id(key);
-            if (!DSPinNameHasher::is_valid_id(pin_id)) {
+            const CMPinId pin_id{pin_names_.get_id(key)};
+            if (!pin_id.is_valid()) {
                 continue;
             }
             CMVector<CMLookupTable> ip;
@@ -352,13 +354,14 @@ DSHierTree ds_build_hier_tree(const CMVector<const DSBlockBuildData*>& blocks,
     //    份，定义 DAG 在实例展开时成树）
     const auto block_refs_of = [&](uint32_t def_idx) {
         // 返回 (local id, 子 def 序号) 升序列
-        CMVector<std::pair<uint64_t, uint32_t>> refs;
+        CMVector<std::pair<CMInstanceId, uint32_t>> refs;
         const DSBlockBuildData& block = *blocks[def_idx];
         for (const auto& [local_id, inst] : block.instances_) {
             if (local_id == 0 || inst.get_cell_id() >= design.cells_.size()) {
                 continue;  // 占位 / fake（稀疏落位外的任务内 id）
             }
-            const DSCell& cell = design.cells_[inst.get_cell_id()];
+            const DSCell& cell =
+                design.cells_[inst.get_cell_id().value()];
             if (!cell.is_block_cell()) {
                 continue;
             }
@@ -395,16 +398,16 @@ DSHierTree ds_build_hier_tree(const CMVector<const DSBlockBuildData*>& blocks,
     // 4) 自根 DFS：深度优先序连续分配三类起始编号（区间长度 = 该 block
     //    定义的计数，⑨）；定义层面的每次引用各建一个节点（实例层面为
     //    树）；当前路径重访同一 def = 环 → fatal（DSGN::0011，码 80 退出）。
-    //    递归深度 = 层级深度。R7 ㊳：三类区间与 self_global_id 64 位。
-    uint64_t inst_start = 0;
-    uint64_t net_start = 0;
-    uint64_t via_start = 0;
+    //    递归深度 = 层级深度。R7 ㊳：三类区间与 self_global_id 64 位强类型。
+    CMInstanceId inst_start = CMInstanceId{0};
+    CMNetId net_start = CMNetId{0};
+    CMViaInstanceId via_start = CMViaInstanceId{0};
     CMVector<uint8_t> on_path(blocks.size(), 0);
 
-    const std::function<void(uint32_t, const CMString&, uint32_t, uint64_t,
+    const std::function<void(uint32_t, const CMString&, uint32_t, CMInstanceId,
                              const GEOTransform&)>
         visit = [&](uint32_t def_idx, const CMString& instance_name,
-                    uint32_t parent_id, uint64_t self_global_id,
+                    uint32_t parent_id, CMInstanceId self_global_id,
                     const GEOTransform& composite) {
             if (on_path[def_idx] != 0) {
                 MSG_FATAL_EXIT("DSGN::0011", 0, 80,
@@ -420,9 +423,9 @@ DSHierTree ds_build_hier_tree(const CMVector<const DSBlockBuildData*>& blocks,
             node.block_cell_name_ = block.get_block_name();
             node.instance_name_ = instance_name;
             // R7 ㊻：block cell 全局 id（DSNameMapperT 注入表主口键；
-            // cell hasher 未命中 = kInvalidId——纯合成测试等场景）
+            // cell hasher 未命中 = 哨兵——纯合成测试等场景）
             node.block_cell_id_ =
-                design.cell_names_.get_id(block.get_block_name());
+                CMCellId{design.cell_names_.get_id(block.get_block_name())};
             node.self_global_id_ = self_global_id;
             // 自根复合放置变换（S9 展开的坐标基准；root 恒等，随 DFS
             // 递推：子复合 = 父复合 ∘ 父块实例表中本实例的放置 transform）
@@ -430,7 +433,7 @@ DSHierTree ds_build_hier_tree(const CMVector<const DSBlockBuildData*>& blocks,
             node.instance_start_ = inst_start;
             node.instance_count_ =
                 static_cast<uint64_t>(block.instance_total());
-            inst_start += node.instance_count_;
+            inst_start += CMInstanceId{node.instance_count_};
             // net 区间：长度 = 真网数 + 1（含 local 0 空洞位，2026-09-14
             // 裁定——global = start + local 直接相加无 −1；root 块 start 0
             // 的空洞位 = global 0 = OBS 专属位，真网 id 不再与 OBS 桶键
@@ -438,12 +441,12 @@ DSHierTree ds_build_hier_tree(const CMVector<const DSBlockBuildData*>& blocks,
             node.net_start_ = net_start;
             node.net_count_ =
                 static_cast<uint64_t>(block.net_count()) + 1;
-            net_start += node.net_count_;
+            net_start += CMNetId{node.net_count_};
             // via instance 区间：计数 = S5b 产物统计（与 S5a 计数同构
             // 入参），local id 从 1 起（⑨，换算同 net 语义）
             node.via_start_ = via_start;
             node.via_count_ = nets[def_idx]->stats_.via_instance_count;
-            via_start += node.via_count_;
+            via_start += CMViaInstanceId{node.via_count_};
             const uint32_t node_id = node.id_;
             tree.nodes_.push_back(std::move(node));
             if (node_id != parent_id) {
@@ -462,13 +465,13 @@ DSHierTree ds_build_hier_tree(const CMVector<const DSBlockBuildData*>& blocks,
                         ? composite.compose(iit->second.get_transform())
                         : composite;
                 visit(child_def,
-                      block.instance_names_->get_name(local_id),
+                      block.instance_names_->get_name(local_id.value()),
                       node_id, node.instance_start_ + local_id,
                       child_composite);
             }
             on_path[def_idx] = 0;
         };
-    visit(roots[0], blocks[roots[0]]->get_block_name(), 0, 0,
+    visit(roots[0], blocks[roots[0]]->get_block_name(), 0, CMInstanceId{0},
           GEOTransform());
 
     tree.design_name_ = blocks[roots[0]]->get_block_name();

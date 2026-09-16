@@ -35,6 +35,7 @@
 #include <common/types/cpp/property_macro.h>
 #include <container/cpp/container_aliases.h>
 #include <container/cpp/lookup_table.h>
+#include <emir/common/cpp/emir_ids.h>
 #include <emir/design/cpp/ds_name_hasher.h>
 #include <emir/design/cpp/ds_partition.h>
 #include <geometry/cpp/geometry_types.h>
@@ -95,12 +96,13 @@ public:
     CMString name_;
     // 层 id（add_layer 分配回填、随序列化持久化；当前与 layers_ 下标
     // 巧合一致，但下标不再作为约定——下游引用一律以 id 为准，读取走
-    // DSStack::layer_by_id）
-    uint32_t id_ = 0;
-    // 布线层 / 切割层（DSLayerType）
-    uint8_t type_ = static_cast<uint8_t>(DSLayerType::ROUTING);
+    // DSStack::layer_by_id。强类型 id：CMLayerId，2026-09-16 裁定）
+    CMLayerId id_;
+    // 布线层 / 切割层（DSLayerType 枚举定型存储，2026-09-16 裁定——
+    // 固定底层类型，序列化逐位不变）
+    DSLayerType type_ = DSLayerType::ROUTING;
     // 水平 / 垂直 / 无（DSDirection，布线层用）
-    uint8_t direction_ = static_cast<uint8_t>(DSDirection::NONE);
+    DSDirection direction_ = DSDirection::NONE;
     // 默认线宽（DBU）
     int32_t default_width_ = 0;
     // 布线 pitch（DBU）
@@ -155,19 +157,19 @@ public:
     // 构建期接口。add_layer 追加并分配回填层 id（重名由调用方负责——
     // lef 间重复层的 DSGN 语义在适配层处理；name 索引重名保留首个）；
     // find_or_add_layer 重名保留首份返回既有 id。
-    uint32_t add_layer(DSLayer&& layer);
-    uint32_t find_layer(const CMString& name) const;      // 未命中 kNoLayer
-    uint32_t find_or_add_layer(DSLayer&& layer);
+    CMLayerId add_layer(DSLayer&& layer);
+    CMLayerId find_layer(const CMString& name) const;    // 未命中 kNoLayer
+    CMLayerId find_or_add_layer(DSLayer&& layer);
 
     size_t layer_count() const { return layers_.size(); }
     // 按 id 取层（层 id 读取的权威接口）；越界为调用方契约错误
     // （debug 断言）
-    const DSLayer& layer_by_id(uint32_t layer_id) const {
+    const DSLayer& layer_by_id(CMLayerId layer_id) const {
         assert(layer_id < layers_.size());
-        return layers_[layer_id];
+        return layers_[layer_id.value()];
     }
     // 旧名保留（Python 导出面沿用），语义同 layer_by_id
-    const DSLayer& layer_at(uint32_t layer_id) const {
+    const DSLayer& layer_at(CMLayerId layer_id) const {
         return layer_by_id(layer_id);
     }
 
@@ -183,7 +185,7 @@ public:
 // DSGN::0010 提醒（配额限流由 MessageRegistry try_emit 天然保证）并
 // 返回 DSStack::kNoLayer——条目级丢弃决策与计数由调用方按条目类型执行
 //（S1/S2/S4/S5b 全部层引用点经此解析，模块内不再有层引用 raise 路径）。
-uint32_t ds_resolve_layer_id(const CMString& name, const DSStack& stack);
+CMLayerId ds_resolve_layer_id(const CMString& name, const DSStack& stack);
 
 // —— 几何引用（design 业务结构）——
 
@@ -196,8 +198,8 @@ uint32_t ds_resolve_layer_id(const CMString& name, const DSStack& stack);
 // 边形等任意图形时，在此引入图形变体（tag + variant 或等价机制）并同步
 // 升级序列化字段表。
 struct DSShapeRef {
-    // 所属层 id（stack 层表下标）
-    uint32_t layer_id_ = 0;
+    // 所属层 id（stack 层表下标；CMLayerId）
+    CMLayerId layer_id_;
     // 几何矩形（DBU，int32 坐标）
     GEORect rect_;
 
@@ -217,18 +219,19 @@ struct DSShapeRef {
 // （或 pin hasher 组合键反查）。
 class DSPin {
 public:
-    // 信号 / 电源 / 地（DSPinType；lef USE）
-    uint8_t type_ = static_cast<uint8_t>(DSPinType::SIGNAL);
+    // 信号 / 电源 / 地 / 时钟（DSPinType 枚举定型存储，2026-09-16 裁定；
+    // lef USE）
+    DSPinType type_ = DSPinType::SIGNAL;
     // 输入 / 输出 / 双向（DSPinDirection）
-    uint8_t direction_ = static_cast<uint8_t>(DSPinDirection::INPUT);
+    DSPinDirection direction_ = DSPinDirection::INPUT;
     // 全局平铺 pin id（D1，与 DSDesign pin hasher 同源）：建库链路
     // （S2 cell lef / S4 DEF port）在 register_pin 分配全局 id 时同步
-    // 回填；merge 重排后回填发生在重挂后（ds_merge_cell_lef）
-    uint32_t pin_id_ = 0;
-    // 放置状态（DSPinPlacementStatus；P3：仅 port 场景有效，S4 的 DEF
-    // PINS 放置状态解析填入）
-    uint8_t placement_status_ =
-        static_cast<uint8_t>(DSPinPlacementStatus::NONE);
+    // 回填；merge 重排后回填发生在重挂后（ds_merge_cell_lef）。
+    // 强类型 id：CMPinId（默认哨兵——登记路径显式赋值）
+    CMPinId pin_id_;
+    // 放置状态（DSPinPlacementStatus 枚举定型存储；P3：仅 port 场景有
+    // 效，S4 的 DEF PINS 放置状态解析填入）
+    DSPinPlacementStatus placement_status_ = DSPinPlacementStatus::NONE;
     // 来源/种类标记（㉙）：port 位 = DEF PINS 的 block 级引脚；后续 pin
     // flags 扩展位顺延
     CM_FLAGS(uint8_t, port)
@@ -352,14 +355,14 @@ class DSInstance {
 public:
     DSInstance() = default;
 
-    // 引用的 cell id（全局 cell 编号空间；fake cell 引用见 ⑲/⑳）
-    uint32_t cell_id_ = 0;
+    // 引用的 cell id（全局 cell 编号空间；fake cell 引用见 ⑲/⑳）。
+    // 强类型 id：CMCellId
+    CMCellId cell_id_;
     // 放置变换（pos + orient 二元组，R6）
     GEOTransform transform_;
-    // 放置状态（DSPlacementStatus；UNPLACED 实例 D14 兜底计数、不入
-    // 密度通道）
-    uint8_t placement_status_ =
-        static_cast<uint8_t>(DSPlacementStatus::UNPLACED);
+    // 放置状态（DSPlacementStatus 枚举定型存储；UNPLACED 实例 D14 兜底
+    // 计数、不入密度通道）
+    DSPlacementStatus placement_status_ = DSPlacementStatus::UNPLACED;
     // 分区归属标记（S9 裁定补记①）：放置点在 core_rect 内的副本
     // primary 置位（每对象恰一个 primary）；extend 副本复位
     CM_FLAGS(int8_t, primary)
@@ -419,15 +422,15 @@ public:
     // 图形）两类，键 = layer id → 计数矩阵（行主序同 counts_，格网参数
     // 共用上方字段）。逐层密度系数 S8 引入（首版权重全 1、接口已留），
     // 权重为建库一次性配置、db freeze 后不可变——数据组织按分类分层。
-    CMUnorderedMap<uint32_t, CMVector<int64_t>> metal_layer_counts_;
-    CMUnorderedMap<uint32_t, CMVector<int64_t>> via_layer_counts_;
+    CMUnorderedMap<CMLayerId, CMVector<int64_t>> metal_layer_counts_;
+    CMUnorderedMap<CMLayerId, CMVector<int64_t>> via_layer_counts_;
 
     // 网侧图形计数：shape 与格交叠的全部格子各 +1（半开区间口径与
     // accumulate_footprint 一致）；未配置格网时 no-op
-    void accumulate_layer_shape(uint32_t layer_id, bool via_channel,
+    void accumulate_layer_shape(CMLayerId layer_id, bool via_channel,
                                 const GEORect& shape);
     // 单层通道计数总和（越界层返回 0）
-    int64_t layer_total(uint32_t layer_id, bool via_channel) const;
+    int64_t layer_total(CMLayerId layer_id, bool via_channel) const;
     // 通道全层计数总和
     int64_t channel_total(bool via_channel) const;
     // 语义化别名（金属 / 通孔通道）
@@ -449,7 +452,7 @@ public:
     // 本 DEF 生成的 fake cell 数（⑲/⑳ 种类数）
     uint64_t fake_cell_count = 0;
     // per-cell 引用计数（cell id → 实例数；fake cell 用任务内分配 id）
-    CMUnorderedMap<uint32_t, uint64_t> per_cell_counts_;
+    CMUnorderedMap<CMCellId, uint64_t> per_cell_counts_;
 
     FLY_SERIALIZE(instance_count, unplaced_count, fake_cell_count,
                   per_cell_counts_)
@@ -473,7 +476,7 @@ public:
     // block 名（DEF DESIGN 语句；fake cell 命名前缀来源）
     CMString block_name_;
     // local instance 表（⑧：id 从 1 起；id 0 = block 自身占位）
-    CMUnorderedMap<uint64_t, DSInstance> instances_;
+    CMUnorderedMap<CMInstanceId, DSInstance> instances_;
     // —— local 名空间（R7 hasher 底座；运行时字段不序列化 ㊵②）——
     // instance 名 ↔ local id（双向；local id 从 1 起，local 0 不入表）。
     // CMSharedPtr 共享持有：解析期惰性创建、attach_names 与伴生对象
@@ -493,16 +496,17 @@ public:
     // 原样（R7 ㊲ 注释裁定）。（2026-09-13 裁定：fake_cells_ 副本删除
     // ——fake cell 数据经独立临时对象传 S5a 汇总并入全局表，产物本体
     // 不再冗余存一份。）
-    CMUnorderedMap<CMString, uint32_t> fake_name_to_id_;
+    CMUnorderedMap<CMString, CMCellId> fake_name_to_id_;
     // DEF obstruction（BLOCKAGES 段，2026-09-13 D17 修订：收录进分区
     // geometry——S9 展开时换全局坐标入 net id 0 + OBS 位条目）。block
     // 局部坐标、全局 DBU 基准；由 S4 头扫描收录（与 block cell/port 同
     // 遍回调），flow 侧经临时对象转入本产物。cell 级 pin/macro OBS 几何
     // 绝不入此表（复现原则，S9 裁定补记③）。
     CMVector<DSShapeRef> obstructions_;
-    // per-DEF 计数器（InstanceBuildNode / 网名扫描分配用；㊳ 64 位）
-    uint64_t next_instance_id_ = 1;
-    uint64_t next_net_id_ = 1;
+    // per-DEF 计数器（InstanceBuildNode / 网名扫描分配用；㊳ 64 位强类
+    // 型，初值 1 = local id 从 1 起）
+    CMInstanceId next_instance_id_ = CMInstanceId{1};
+    CMNetId next_net_id_ = CMNetId{1};
 
     CM_PROPERTY(block_name)
 
@@ -542,19 +546,19 @@ public:
     }
 
     // local 0 = block 自身占位（⑧；解析开始时调用一次，幂等）：占位
-    // instance 携带 block cell id（hasher 未命中传 kInvalidId，仅占号
+    // instance 携带 block cell id（hasher 未命中传哨兵，仅占号
     // 无引用语义；占位不进 instance hasher——非真实实例）
-    void init_placeholder(const CMString& block_name, uint32_t block_cell_id);
+    void init_placeholder(const CMString& block_name, CMCellId block_cell_id);
 
     // local instance 收录（返回分配的 local id ㊳）。重名实例非法（DEF
     // 语义保证唯一）；实例名登记进 instance hasher（双向）。
-    uint64_t add_instance(DSInstance&& inst, const CMString& name);
+    CMInstanceId add_instance(DSInstance&& inst, const CMString& name);
     // local net id 分配（重名保留首份，返回既有 id；skipped 计数由
     // 调用方经返回值判别）
-    uint64_t register_net(const CMString& name);
+    CMNetId register_net(const CMString& name);
 
     size_t instance_total() const { return instances_.size(); }
-    const DSInstance* find_instance(uint64_t id) const;
+    const DSInstance* find_instance(CMInstanceId id) const;
     // 经 instance hasher 查名（hasher 未注入/未命中返回 nullptr；
     // ㊵② 需先注入 DSBlockNames）
     const DSInstance* find_instance_by_name(const CMString& name) const;
@@ -563,7 +567,7 @@ public:
     size_t net_count() const { return net_names_ ? net_names_->size() : 0; }
     // local net id → 网名（未注入 hasher / 越界返回 nullopt；空洞返回
     // 空串——R8b arena 化后 get_name 按值，语义同 R7 空名占位可区分）
-    std::optional<CMString> net_name_at(uint64_t local_id) const;
+    std::optional<CMString> net_name_at(CMNetId local_id) const;
 
     // 字段表排除两 hasher（㊵②：随 DSBlockNames 伴生对象独立落盘）
     FLY_SERIALIZE(block_name_, instances_, density_, stats_,
@@ -599,10 +603,11 @@ public:
 // 大小不变零膨胀。
 class DSNetConnection {
 public:
-    // 端点实例 local id（⑧：0 = block 自身——port 引用条目的占位）
-    uint64_t instance_local_id_ = 0;
+    // 端点实例 local id（⑧：0 = block 自身——port 引用条目的占位；
+    // 默认 0 与占位语义对齐）
+    CMInstanceId instance_local_id_ = CMInstanceId{0};
     // 端点 pin 全局平铺 id（port 引用 = block cell 的 port pin 全局 id）
-    uint32_t pin_id_ = 0;
+    CMPinId pin_id_;
     // port / driver / receiver / power / ground / clock 位；driver+
     // receiver 同置 = hybrid（见类注释）
     CM_FLAGS(uint8_t, port, driver, receiver, power, ground, clock)
@@ -615,7 +620,7 @@ public:
 // stack 层缺省宽后的最终值）。
 class DSNetWire {
 public:
-    uint32_t layer_id_ = 0;
+    CMLayerId layer_id_;
     int32_t width_ = 0;
     CMVector<GEOPoint> points_;
 
@@ -634,7 +639,7 @@ public:
 // RECT 项：layer + 矩形（net 级 RECT 语句，全局 DBU）
 class DSNetRect {
 public:
-    uint32_t layer_id_ = 0;
+    CMLayerId layer_id_;
     GEORect rect_;
 
     CM_PROPERTY(layer_id)
@@ -647,7 +652,7 @@ public:
 // namemap，仅需 via cell id + 位置；连层关系经 via cell 定义获得）
 class DSViaInstance {
 public:
-    uint32_t via_cell_id_ = 0;
+    CMViaCellId via_cell_id_;
     GEOPoint pos_;
 
     CM_PROPERTY(via_cell_id)
@@ -692,14 +697,14 @@ public:
     // block 名（DESIGN 语句；与 DSBlockBuildData 对齐冗余）
     CMString block_name_;
     // 连接表：local net id → 连接项列表
-    CMUnorderedMap<uint64_t, CMVector<DSNetConnection>> connections_;
+    CMUnorderedMap<CMNetId, CMVector<DSNetConnection>> connections_;
     // 几何表：local net id → wire 段 / rect 项列表
-    CMUnorderedMap<uint64_t, CMVector<DSNetWire>> wires_;
-    CMUnorderedMap<uint64_t, CMVector<DSNetRect>> rects_;
+    CMUnorderedMap<CMNetId, CMVector<DSNetWire>> wires_;
+    CMUnorderedMap<CMNetId, CMVector<DSNetRect>> rects_;
     // via instance 表（⑩ local id 从 1 起）+ 网归属（net id → 该网的
     // via instance id 列表）
-    CMUnorderedMap<uint64_t, DSViaInstance> via_instances_;
-    CMUnorderedMap<uint64_t, CMVector<uint64_t>> net_via_ids_;
+    CMUnorderedMap<CMViaInstanceId, DSViaInstance> via_instances_;
+    CMUnorderedMap<CMNetId, CMVector<CMViaInstanceId>> net_via_ids_;
     // pg 网判定（S9 分侧口径，2026-09-13 裁定补记② + 2026-09-14 拆分
     // 裁定：pg 判定 = special net 或 USE POWER/GROUND；pg 网的分区
     // NETS_PG 对象不做全量补全——靠 union + instance 维度拼装）。
@@ -708,57 +713,57 @@ public:
     // 当 set」系序列化宏无 set 支持时期的妥协——宏已接 set 全族，回归
     // CMUnorderedSet 直存；S5b local id 生产表，与全局 DSPgNetSet
     // （global id 汇总集）语义不同层、不合并。）
-    CMUnorderedSet<uint64_t> pg_nets_;
+    CMUnorderedSet<CMNetId> pg_nets_;
     // 网 USE 属性（2026-09-13 全量补收裁定：S5b 解析收录、随 S9 入分区
-    // 产物 per-net use map）。键 = local net id、值 = DSNetUse 整型；
+    // 产物 per-net use map）。键 = local net id、值 = DSNetUse 枚举定型
+    // 存储（2026-09-16 裁定：领域枚举禁止裸整型承载；DSNetUse 固定
+    // uint8_t 底层，序列化逐位不变）；
     // **只记录非 SIGNAL 条目**（DEF 缺省 + 显式 USE SIGNAL 同语义，缺省
     // 读取口径 = SIGNAL——省 90%+ 条目，典型设计绝大多数网为信号网）。
     // 记录点 = 连接解析节点（local id 对齐成功后，与 pg_nets_ 并排）。
-    CMUnorderedMap<uint64_t, uint8_t> net_uses_;
+    CMUnorderedMap<CMNetId, DSNetUse> net_uses_;
     // 网侧密度（金属/通孔逐层分列通道，⑥；格网参数与实例面积通道一致，
     // 由 DIEAREA 配置）
     DSDensityGrid density_;
     // 统计
     DSNetStats stats_;
-    // via instance id 计数器（⑩ 独立空间从 1 起；㊳ 64 位）
-    uint64_t next_via_instance_id_ = 1;
+    // via instance id 计数器（⑩ 独立空间从 1 起；㊳ 64 位强类型）
+    CMViaInstanceId next_via_instance_id_ = CMViaInstanceId{1};
 
     CM_PROPERTY(block_name)
 
     // 构建期接口（责任链节点落批追加）
-    void add_connection(uint64_t net_id, DSNetConnection&& conn);
-    void add_wire(uint64_t net_id, DSNetWire&& wire);
-    void add_rect(uint64_t net_id, DSNetRect&& rect);
+    void add_connection(CMNetId net_id, DSNetConnection&& conn);
+    void add_wire(CMNetId net_id, DSNetWire&& wire);
+    void add_rect(CMNetId net_id, DSNetRect&& rect);
     // 收录 via instance 并登记网归属，返回分配的 via instance id
-    uint64_t add_via_instance(uint64_t net_id, DSViaInstance&& via);
+    CMViaInstanceId add_via_instance(CMNetId net_id, DSViaInstance&& via);
 
     // 查询辅助（未命中 nullptr）
-    const CMVector<DSNetConnection>* connections_of(uint64_t net_id) const;
-    const CMVector<DSNetWire>* wires_of(uint64_t net_id) const;
-    const CMVector<DSNetRect>* rects_of(uint64_t net_id) const;
-    const CMVector<uint64_t>* via_ids_of(uint64_t net_id) const;
-    const DSViaInstance* via_instance_at(uint64_t via_id) const;
+    const CMVector<DSNetConnection>* connections_of(CMNetId net_id) const;
+    const CMVector<DSNetWire>* wires_of(CMNetId net_id) const;
+    const CMVector<DSNetRect>* rects_of(CMNetId net_id) const;
+    const CMVector<CMViaInstanceId>* via_ids_of(CMNetId net_id) const;
+    const DSViaInstance* via_instance_at(CMViaInstanceId via_id) const;
 
     // pg 网判定（S9 消费；local id 语义）
-    bool is_pg_net(uint64_t local_net_id) const {
+    bool is_pg_net(CMNetId local_net_id) const {
         return pg_nets_.contains(local_net_id);
     }
-    void mark_pg_net(uint64_t local_net_id) {
+    void mark_pg_net(CMNetId local_net_id) {
         pg_nets_.insert(local_net_id);
     }
 
     // 网 USE 属性收录/读取（S5b 收录、S9 flatten 与 debug 消费；读取
     // 缺省 = SIGNAL——只记录非 SIGNAL 条目，见字段注释）
-    void record_net_use(uint64_t local_net_id, DSNetUse use) {
+    void record_net_use(CMNetId local_net_id, DSNetUse use) {
         if (use != DSNetUse::SIGNAL) {
-            net_uses_.emplace(local_net_id, static_cast<uint8_t>(use));
+            net_uses_.emplace(local_net_id, use);
         }
     }
-    DSNetUse net_use_of(uint64_t local_net_id) const {
+    DSNetUse net_use_of(CMNetId local_net_id) const {
         const auto it = net_uses_.find(local_net_id);
-        return it == net_uses_.end()
-                   ? DSNetUse::SIGNAL
-                   : static_cast<DSNetUse>(it->second);
+        return it == net_uses_.end() ? DSNetUse::SIGNAL : it->second;
     }
 
     FLY_SERIALIZE(block_name_, connections_, wires_, rects_, via_instances_,
@@ -774,11 +779,11 @@ class DSViaCell {
 public:
     // tech/cell lef 原名；DEF 来源带前缀
     CMString name_;
-    uint32_t bottom_layer_id_ = 0;
-    uint32_t top_layer_id_ = 0;
-    // 切割层 id（⑥ 通孔密度通道的分层键；UINT32_MAX = 未判定——旧数据
+    CMLayerId bottom_layer_id_;
+    CMLayerId top_layer_id_;
+    // 切割层 id（⑥ 通孔密度通道的分层键；默认哨兵 = 未判定——旧数据
     // 或异常形态兜底，消费方回退 bottom_layer_id_）
-    uint32_t cut_layer_id_ = UINT32_MAX;
+    CMLayerId cut_layer_id_;
     // 切割层矩形集（DBU）
     CMVector<GEORect> cut_rects_;
     // 上下层包围矩形
@@ -840,21 +845,21 @@ public:
 class DSPinTables {
 public:
     // 全局 pin id → 功耗表集（rise_power/fall_power 等）
-    CMUnorderedMap<uint32_t, CMVector<CMLookupTable>> internal_power_tables_;
+    CMUnorderedMap<CMPinId, CMVector<CMLookupTable>> internal_power_tables_;
     // 全局 pin id → 时序表集（cell_rise/cell_fall 等）
-    CMUnorderedMap<uint32_t, CMVector<CMLookupTable>> timing_tables_;
+    CMUnorderedMap<CMPinId, CMVector<CMLookupTable>> timing_tables_;
 
     // 构建期接口（整体接管表集，避免逐表拷贝）
-    void add_internal_power_tables(uint32_t pin_id,
+    void add_internal_power_tables(CMPinId pin_id,
                                    CMVector<CMLookupTable>&& tables);
-    void add_timing_tables(uint32_t pin_id, CMVector<CMLookupTable>&& tables);
+    void add_timing_tables(CMPinId pin_id, CMVector<CMLookupTable>&& tables);
 
     // 该 pin 任一类表存在即 true
-    bool pin_has_tables(uint32_t pin_id) const;
+    bool pin_has_tables(CMPinId pin_id) const;
     // 未命中返回 nullptr（引用读取零拷贝）
     const CMVector<CMLookupTable>* internal_power_tables_of(
-        uint32_t pin_id) const;
-    const CMVector<CMLookupTable>* timing_tables_of(uint32_t pin_id) const;
+        CMPinId pin_id) const;
+    const CMVector<CMLookupTable>* timing_tables_of(CMPinId pin_id) const;
 
     FLY_SERIALIZE(internal_power_tables_, timing_tables_)
 };
@@ -865,13 +870,13 @@ public:
 // 提供（遍历 cell 的 pin id 逐个取聚合）。
 class DSPinGeometry {
 public:
-    CMUnorderedMap<uint32_t, CMVector<DSShapeRef>> pin_geometry_;
+    CMUnorderedMap<CMPinId, CMVector<DSShapeRef>> pin_geometry_;
 
-    void add_geometry(uint32_t pin_id, DSShapeRef&& ref);
-    void add_geometries(uint32_t pin_id, CMVector<DSShapeRef>&& geos);
+    void add_geometry(CMPinId pin_id, DSShapeRef&& ref);
+    void add_geometries(CMPinId pin_id, CMVector<DSShapeRef>&& geos);
 
-    bool pin_has_geometry(uint32_t pin_id) const;
-    const CMVector<DSShapeRef>* geometry_of(uint32_t pin_id) const;
+    bool pin_has_geometry(CMPinId pin_id) const;
+    const CMVector<DSShapeRef>* geometry_of(CMPinId pin_id) const;
 
     FLY_SERIALIZE(pin_geometry_)
 };
@@ -907,26 +912,28 @@ public:
     CMString block_cell_name_;
     CMString instance_name_;
     // block cell 全局 id（R7 ㊻：DSNameMapperT 注入表主口键；未命中 =
-    // DSCellNameHasher::kInvalidId）
-    uint32_t block_cell_id_ = DSCellNameHasher::kInvalidId;
+    // 哨兵）。树节点 id/parent_id_（nodes_ 下标导航空间）保持裸 uint32
+    // ——导航下标非全局编号空间，不属强类型 id 族
+    CMCellId block_cell_id_;
     // 该 block instance 自身的全局 instance id（⑧ local 0 映射目标；
     // root = 0，非 root = 父块 instance_start_ + 在父块内的 local id；
-    // ㊳ 64 位）
-    uint64_t self_global_id_ = 0;
+    // ㊳ 64 位强类型）
+    CMInstanceId self_global_id_;
     // 自根复合放置变换（S9 展开/分区判定的坐标基准；S6 树构建时随 DFS
     // 递推回填——root 恒等，非 root = 父复合 ∘ 父块实例表中本实例的放置
     // transform。存于节点使 S9 展开任务只读单一 def 产物即可拿到任意
     // 位置的复合变换，无需父块产物）
     GEOTransform composite_transform_;
-    // 三类编号区间（[start, start + count)；㊳ 64 位）。net 区间长度含
+    // 三类编号区间（[start, start + count)；㊳ 64 位强类型——start 用
+    // 对应实体 id 类型、count 是计数保持裸整型）。net 区间长度含
     // local 0 空洞位（2026-09-14 裁定：count = 真网数 + 1、global =
     // start + local 无 −1——root 块空洞位 = global 0 = OBS 专属位，与
     // instance 的 local 0 占位形态同构；instance/via 区间不变）
-    uint64_t instance_start_ = 0;
+    CMInstanceId instance_start_;
     uint64_t instance_count_ = 0;
-    uint64_t net_start_ = 0;
+    CMNetId net_start_;
     uint64_t net_count_ = 0;
-    uint64_t via_start_ = 0;
+    CMViaInstanceId via_start_;
     uint64_t via_count_ = 0;
 
     CM_PROPERTY(id)
@@ -978,15 +985,15 @@ public:
     }
 
     // —— 四接口 ——
-    // ① 区间反查：global id（㊳ 64 位）→ 所属 block instance 节点 id
-    //（未命中 kNoNode）
-    uint32_t block_of_instance(uint64_t global_id) const;
-    uint32_t block_of_net(uint64_t global_id) const;
-    uint32_t block_of_via_instance(uint64_t global_id) const;
+    // ① 区间反查：global id（㊳ 64 位强类型）→ 所属 block instance 节点
+    // id（未命中 kNoNode）
+    uint32_t block_of_instance(CMInstanceId global_id) const;
+    uint32_t block_of_net(CMNetId global_id) const;
+    uint32_t block_of_via_instance(CMViaInstanceId global_id) const;
     // ② 范围查：返回 (start, count)；越界节点返回 (0, 0)
-    std::pair<uint64_t, uint64_t> instance_range(uint32_t node_id) const;
-    std::pair<uint64_t, uint64_t> net_range(uint32_t node_id) const;
-    std::pair<uint64_t, uint64_t> via_range(uint32_t node_id) const;
+    std::pair<CMInstanceId, uint64_t> instance_range(uint32_t node_id) const;
+    std::pair<CMNetId, uint64_t> net_range(uint32_t node_id) const;
+    std::pair<CMViaInstanceId, uint64_t> via_range(uint32_t node_id) const;
     // ③ 父与直系 children（root 的 parent = 自身 0）
     uint32_t parent(uint32_t node_id) const {
         assert(node_id < nodes_.size());
@@ -1006,10 +1013,13 @@ public:
                                          const CMString& name) const;
 
     // —— global id 换算 API（⑨ local id + 起始编号，S9 flatten 输入口；
-    // 越界/未用 local 返回 kNoNode；global id ㊳ 64 位）——
-    uint64_t global_instance_id(uint32_t node_id, uint64_t local_id) const;
-    uint64_t global_net_id(uint32_t node_id, uint64_t local_id) const;
-    uint64_t global_via_instance_id(uint32_t node_id, uint64_t local_id) const;
+    // 越界/未用 local 返回哨兵；global id ㊳ 64 位强类型；local id 参数
+    // = 同实体强类型——全局/local 同值域不同语义由调用点注释区分）——
+    CMInstanceId global_instance_id(uint32_t node_id,
+                                    CMInstanceId local_id) const;
+    CMNetId global_net_id(uint32_t node_id, CMNetId local_id) const;
+    CMViaInstanceId global_via_instance_id(uint32_t node_id,
+                                           CMViaInstanceId local_id) const;
 
     FLY_SERIALIZE(nodes_, design_name_)
 };
@@ -1028,11 +1038,11 @@ public:
     CMVector<DSCell> cells_;
     // fake cell 单独字段（⑳：指向 cells_ 内 is_fake_cell() 条目的 id 集；
     // P4：flags 为权威语义，本集合为遍历加速索引）
-    CMVector<uint32_t> fake_cell_ids_;
+    CMVector<CMCellId> fake_cell_ids_;
     // via cell 权威表（⑫：tech lef + cell lef + 各 DEF 全集）
     CMVector<DSViaCell> via_cells_;
     // cell id → lib cell 名（lib 关联；lib 独有 cell 不入 id 空间）
-    CMUnorderedMap<uint32_t, CMString> lib_link_;
+    CMUnorderedMap<CMCellId, CMString> lib_link_;
 
     // name ↔ id 双向 hasher（R7 ㊲/㊸：原三套散装 map+vector 收编进
     // hasher 底座，双向语义不变；pin 键 = "cell_name/pin_name"（D1 组合
@@ -1058,16 +1068,16 @@ public:
     // 构建期接口：追加并注册 hasher，返回 id（重名由调用方保证唯一——
     // 重复 macro 的保留首份 DSGN 语义在适配层处理；hasher emplace 重名
     // 保留首份兜底）
-    uint32_t add_cell(DSCell&& cell);
+    CMCellId add_cell(DSCell&& cell);
     // S5a 汇总专用：按预分配 id 直接落位（fake cell id 保持任务内分配
     // 值，⑳）——稀疏 resize 占位（id = 下标语义不变，空洞为空名占位），
     // hasher 同步注册。仅汇总任务串行调用。
-    void add_cell_at(uint32_t cell_id, DSCell&& cell);
-    uint32_t add_via_cell(DSViaCell&& via);
+    void add_cell_at(CMCellId cell_id, DSCell&& cell);
+    CMViaCellId add_via_cell(DSViaCell&& via);
     // pin hasher 注册（pin id 由调用方按 D1 平铺分配；键 =
     // "cell_name/pin_name"）
     void register_pin(const CMString& cell_name, const CMString& pin_name,
-                      uint32_t pin_id);
+                      CMPinId pin_id);
 
     // 查询辅助（未命中 nullptr）
     const DSCell* find_cell(const CMString& name) const;
@@ -1075,7 +1085,7 @@ public:
 
     // pin 名查询（R7 ㊱：DSPin 自身不存 name，经 pin hasher 组合键
     // "cell_name/pin_name" 反查取 pin 名段；未登记 id 返回空串）
-    CMString pin_name_of(uint32_t pin_id) const;
+    CMString pin_name_of(CMPinId pin_id) const;
 
     // S3 merge（裁定 ⑯）：与 lib 库容器按 cell name 对齐——匹配 cell 填
     // lib 字段（library_name_）+ lib_link_ 注册 + pin 集合比对（缺失
@@ -1088,12 +1098,12 @@ public:
     // cell 维度便利聚合（R4）：cell 全部 pin（按 pins_ 序）的几何拼接
     // （pin 几何容器按全局 pin id 组织，逐 pin 取出拼合；cell 无几何
     // 数据或无 pin 时返回空集）。
-    CMVector<DSShapeRef> cell_pin_geometries(uint32_t cell_id) const;
+    CMVector<DSShapeRef> cell_pin_geometries(CMCellId cell_id) const;
 
     // 统一入口（⑰）：把容器专用字段按指针注入 cell 的两个不序列化字段
     // （共享非拷贝）后返回引用。越界为调用方契约错误（debug 断言）。
-    DSCell& get_cell(uint32_t cell_id);
-    const DSCell& get_cell(uint32_t cell_id) const;
+    DSCell& get_cell(CMCellId cell_id);
+    const DSCell& get_cell(CMCellId cell_id) const;
 
     // 层级树（S6；⑬ 全局轻量数据收纳进容器——含编号区间表，随容器序列
     // 化持久化）。S6 在正式 DSDesign 写定前完成树构建（容器唯一写定原

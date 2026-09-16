@@ -78,7 +78,7 @@ struct DSIdDomain {
 // 计数 + 全局校验素材 id 集（id 域判定集中在全局任务——fatal 单点退出）。
 class DSPartitionCheckResult {
 public:
-    uint32_t partition_id_ = 0;
+    CMPartitionId partition_id_;
     uint32_t xp_ = 0;
     uint32_t yp_ = 0;
     // primary 实例数（恰一不变式的全局直方图素材）
@@ -97,12 +97,12 @@ public:
     // —— 全局校验素材（升序去重；review 2026-09-13 量级声明：id 级
     //    8B/条 ×4 向量，百万级实例副本设计为数十 MB 级临时对象，
     //    freeze 后随 temp 清理释放——当前阶段可接受，后续可区间化）——
-    CMVector<uint64_t> primary_instance_ids_;
-    CMVector<uint64_t> instance_ids_;
+    CMVector<CMInstanceId> primary_instance_ids_;
+    CMVector<CMInstanceId> instance_ids_;
     // 本分区产物覆盖的网 id（两几何对象非 OBS 键 + 两 crossing + 两侧
     // 连接表键 + iconn 端点引用）
-    CMVector<uint64_t> net_ids_;
-    CMVector<uint64_t> crossing_net_ids_;
+    CMVector<CMNetId> net_ids_;
+    CMVector<CMNetId> crossing_net_ids_;
 
     FLY_SERIALIZE(partition_id_, xp_, yp_, primary_instance_count_,
                   instance_count_, net_count_, crossing_net_count_,

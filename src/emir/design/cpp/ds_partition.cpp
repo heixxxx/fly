@@ -216,8 +216,9 @@ DSDensityGrid ds_merge_global_density(
             // child 复合变换 = 父 ∘（父块实例表中本实例的放置 transform）
             // ——local id = self_global_id − 父块 instance_start_（⑧）
             const DSHierNode& parent = tree.node(node.get_parent_id());
-            const uint64_t local_id =
-                node.get_self_global_id() - parent.instance_start_;
+            // 同类减法 → 裸差值（local id 语义），查实例表回强类型
+            const CMInstanceId local_id{
+                node.get_self_global_id() - parent.instance_start_};
             const auto pit = def_by_name.find(parent.get_block_cell_name());
             const DSInstance* inst = nullptr;
             if (pit != def_by_name.end()) {
@@ -507,7 +508,7 @@ CMVector<DSSubPartition> ds_decide_partitions(
     int64_t w_eff = 0;
     for (size_t i = stack.layers_.size(); i-- > 0;) {
         const DSLayer& layer = stack.layers_[i];
-        if (layer.type_ == static_cast<uint8_t>(DSLayerType::ROUTING) &&
+        if (layer.type_ == DSLayerType::ROUTING &&
             global.layer_total(layer.id_, false) > 0) {
             w_eff = layer.default_width_;
             break;
@@ -535,7 +536,7 @@ CMVector<DSSubPartition> ds_decide_partitions(
                 continue;  // 空段
             }
             DSSubPartition p;
-            p.partition_id_ = static_cast<uint32_t>(out.size());
+            p.partition_id_ = CMPartitionId{static_cast<uint32_t>(out.size())};
             p.xp_ = xp;
             p.yp_ = yp;
             // 格边界换算（int64 中间量；格网覆盖域内不溢出 int32）

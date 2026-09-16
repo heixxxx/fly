@@ -69,10 +69,10 @@ struct VerifyEnv {
         DSCell inv;
         inv.set_name("INV");
         DSPin vdd;
-        vdd.pin_id_ = 7;
+        vdd.pin_id_ = CMPinId{7};
         inv.add_pin(std::move(vdd));
         design.add_cell(std::move(inv));
-        design.register_pin("INV", "VDD", 7);
+        design.register_pin("INV", "VDD", CMPinId{7});
         // sub block cell（id 1）+ via cell（id 0）
         DSCell sub_cell;
         sub_cell.set_name("sub");
@@ -84,12 +84,12 @@ struct VerifyEnv {
         // 分区表 '2x1' + 密度格网（覆盖域一致；计数手工放置——统计汇总
         // 断言用 inst=10 / metal=5 / via=7）
         DSSubPartition p0;
-        p0.partition_id_ = 0;
+        p0.partition_id_ = CMPartitionId{0};
         p0.xp_ = 0;
         p0.yp_ = 0;
         p0.core_rect_ = GEORect(0, 0, 1000, 2000);
         DSSubPartition p1;
-        p1.partition_id_ = 1;
+        p1.partition_id_ = CMPartitionId{1};
         p1.xp_ = 1;
         p1.yp_ = 0;
         p1.core_rect_ = GEORect(1000, 0, 2000, 2000);
@@ -98,8 +98,8 @@ struct VerifyEnv {
         design.partitions_ = parts;
         density.configure(0, 0, 1000, 1000, 2, 2);
         density.counts_ = {1, 2, 3, 4};
-        density.metal_layer_counts_[0] = {5};
-        density.via_layer_counts_[1] = {7};
+        density.metal_layer_counts_[CMLayerId{0}] = {5};
+        density.via_layer_counts_[CMLayerId{1}] = {7};
 
         // 树（root → child，区间手工合成）
         DSHierNode root;
@@ -107,12 +107,12 @@ struct VerifyEnv {
         root.parent_id_ = 0;
         root.block_cell_name_ = "top";
         root.instance_name_ = "top";
-        root.self_global_id_ = 0;
-        root.instance_start_ = 0;
+        root.self_global_id_ = CMInstanceId{0};
+        root.instance_start_ = CMInstanceId{0};
         root.instance_count_ = 4;
-        root.net_start_ = 0;
+        root.net_start_ = CMNetId{0};
         root.net_count_ = 4;  // 3 真网 + local 0 空洞位（区间长度形态）
-        root.via_start_ = 0;
+        root.via_start_ = CMViaInstanceId{0};
         root.via_count_ = 2;
         tree.nodes_.push_back(root);
         DSHierNode child;
@@ -120,21 +120,21 @@ struct VerifyEnv {
         child.parent_id_ = 0;
         child.block_cell_name_ = "sub";
         child.instance_name_ = "csub";
-        child.self_global_id_ = 3;
-        child.instance_start_ = 4;
+        child.self_global_id_ = CMInstanceId{3};
+        child.instance_start_ = CMInstanceId{4};
         child.instance_count_ = 2;
-        child.net_start_ = 4;
+        child.net_start_ = CMNetId{4};
         child.net_count_ = 3;  // 2 真网 + 空洞位
-        child.via_start_ = 2;
+        child.via_start_ = CMViaInstanceId{2};
         child.via_count_ = 1;
         tree.nodes_.push_back(child);
         tree.nodes_[0].get_ref_children_ids().push_back(1);
 
         // per-DEF 产物（计数与树对齐；via 统计随 add_via_instance 回填）
-        top.init_placeholder("top", DSDesign::kInvalidId);
+        top.init_placeholder("top", CMCellId{});
         for (const char* n : {"la", "lb", "csub"}) {
             DSInstance inst;
-            inst.set_cell_id(0);
+            inst.set_cell_id(CMCellId{0});
             top.add_instance(std::move(inst), n);
         }
         top.stats_.instance_count = 3;
@@ -142,25 +142,25 @@ struct VerifyEnv {
         top.register_net("t1");
         top.register_net("t2");
         DSViaInstance tv1;
-        tv1.via_cell_id_ = 0;
+        tv1.via_cell_id_ = CMViaCellId{0};
         tv1.pos_ = GEOPoint(10, 10);
-        top_nets.add_via_instance(1, std::move(tv1));
+        top_nets.add_via_instance(CMNetId{1}, std::move(tv1));
         DSViaInstance tv2;
-        tv2.via_cell_id_ = 0;
+        tv2.via_cell_id_ = CMViaCellId{0};
         tv2.pos_ = GEOPoint(20, 20);
-        top_nets.add_via_instance(2, std::move(tv2));
+        top_nets.add_via_instance(CMNetId{2}, std::move(tv2));
 
-        sub.init_placeholder("sub", DSDesign::kInvalidId);
+        sub.init_placeholder("sub", CMCellId{});
         DSInstance u1;
-        u1.set_cell_id(0);
+        u1.set_cell_id(CMCellId{0});
         sub.add_instance(std::move(u1), "u1");
         sub.stats_.instance_count = 1;
         sub.register_net("s0");
         sub.register_net("s1");
         DSViaInstance sv;
-        sv.via_cell_id_ = 0;
+        sv.via_cell_id_ = CMViaCellId{0};
         sv.pos_ = GEOPoint(30, 30);
-        sub_nets.add_via_instance(1, std::move(sv));
+        sub_nets.add_via_instance(CMNetId{1}, std::move(sv));
 
         // 名字伴生对象（hasher 与产物共享，flow attach 同构）
         top_names.block_name_ = "top";
@@ -171,9 +171,9 @@ struct VerifyEnv {
         sub_names.net_names_ = sub.net_names_;
 
         // 并查集（两层规范化形态：root 自映射 + 成员反向索引）
-        net_union.root_of_[10] = 10;
-        net_union.root_of_[11] = 10;
-        net_union.members_of_[10] = CMVector<uint64_t>{10, 11};
+        net_union.root_of_[CMNetId{10}] = CMNetId{10};
+        net_union.root_of_[CMNetId{11}] = CMNetId{10};
+        net_union.members_of_[CMNetId{10}] = CMVector<CMNetId>{CMNetId{10}, CMNetId{11}};
     }
 };
 
@@ -191,78 +191,78 @@ struct PartitionPair {
 PartitionPair make_products() {
     PartitionPair pp;
     DSPartConnection c1;
-    c1.inst_id_ = 1;
-    c1.net_global_id_ = 1;
-    pp.p0.inst_connections_.items_[1].push_back(c1);
+    c1.inst_id_ = CMInstanceId{1};
+    c1.net_global_id_ = CMNetId{1};
+    pp.p0.inst_connections_.items_[CMInstanceId{1}].push_back(c1);
     DSPartConnection c2;
-    c2.inst_id_ = 1;
-    c2.net_global_id_ = 2;
-    pp.p0.inst_connections_.items_[1].push_back(c2);
+    c2.inst_id_ = CMInstanceId{1};
+    c2.net_global_id_ = CMNetId{2};
+    pp.p0.inst_connections_.items_[CMInstanceId{1}].push_back(c2);
     // NETS 信号侧对象（键 1；条目 = DSNetConnEntry——2026-09-13 重组裁定）
     DSPartitionNets& n0 = pp.p0.nets_;
-    n0.nets_[1].net_id_ = 1;
+    n0.nets_[CMNetId{1}].net_id_ = CMNetId{1};
     DSNetConnEntry e1;
-    e1.inst_id_ = 1;
-    n0.nets_[1].connections_.push_back(e1);
+    e1.inst_id_ = CMInstanceId{1};
+    n0.nets_[CMNetId{1}].connections_.push_back(e1);
     DSNetConnEntry e2;
-    e2.inst_id_ = 2;
-    n0.nets_[1].connections_.push_back(e2);
+    e2.inst_id_ = CMInstanceId{2};
+    n0.nets_[CMNetId{1}].connections_.push_back(e2);
     DSGeomEntry g0;
-    g0.layer_id_ = 0;
+    g0.layer_id_ = CMLayerId{0};
     g0.rect_ = GEORect(0, 100, 500, 140);
-    pp.p0.geometry_.add_entry(1, std::move(g0));
+    pp.p0.geometry_.add_entry(CMNetId{1}, std::move(g0));
     DSGeomEntry g1;
-    g1.layer_id_ = 0;
+    g1.layer_id_ = CMLayerId{0};
     g1.rect_ = GEORect(0, 200, 300, 240);
-    pp.p0.geometry_.add_entry(2, std::move(g1));
+    pp.p0.geometry_.add_entry(CMNetId{2}, std::move(g1));
     DSGeomEntry g2;
-    g2.layer_id_ = 1;
+    g2.layer_id_ = CMLayerId{1};
     g2.rect_ = GEORect(400, 300, 500, 400);
-    g2.via_cell_id_ = 0;
+    g2.via_cell_id_ = CMViaCellId{0};
     g2.set_primary();
-    pp.p0.geometry_.add_entry(3, std::move(g2));
-    pp.p0.geometry_.mark_crossing(1);
+    pp.p0.geometry_.add_entry(CMNetId{3}, std::move(g2));
+    pp.p0.geometry_.mark_crossing(CMNetId{1});
     DSInstance i1;
-    i1.set_cell_id(0);
+    i1.set_cell_id(CMCellId{0});
     i1.set_primary();
-    pp.p0.instances_.items_[1] = std::move(i1);
+    pp.p0.instances_.items_[CMInstanceId{1}] = std::move(i1);
     DSInstance i2;
-    i2.set_cell_id(0);
+    i2.set_cell_id(CMCellId{0});
     i2.set_primary();
-    pp.p0.instances_.items_[2] = std::move(i2);
+    pp.p0.instances_.items_[CMInstanceId{2}] = std::move(i2);
     DSInstance i3;
-    i3.set_cell_id(1);
-    pp.p0.instances_.items_[3] = std::move(i3);
+    i3.set_cell_id(CMCellId{1});
+    pp.p0.instances_.items_[CMInstanceId{3}] = std::move(i3);
 
     DSPartConnection c3;
-    c3.inst_id_ = 5;
-    c3.net_global_id_ = 5;
-    pp.p1.inst_connections_.items_[5].push_back(c3);
+    c3.inst_id_ = CMInstanceId{5};
+    c3.net_global_id_ = CMNetId{5};
+    pp.p1.inst_connections_.items_[CMInstanceId{5}].push_back(c3);
     DSPartConnection c4;
-    c4.inst_id_ = 5;
-    c4.net_global_id_ = 6;
-    pp.p1.inst_connections_.items_[5].push_back(c4);
+    c4.inst_id_ = CMInstanceId{5};
+    c4.net_global_id_ = CMNetId{6};
+    pp.p1.inst_connections_.items_[CMInstanceId{5}].push_back(c4);
     DSPartitionNets& n1 = pp.p1.nets_;
-    n1.nets_[5].net_id_ = 5;
+    n1.nets_[CMNetId{5}].net_id_ = CMNetId{5};
     DSNetConnEntry e3;
-    e3.inst_id_ = 5;
-    n1.nets_[5].connections_.push_back(e3);
+    e3.inst_id_ = CMInstanceId{5};
+    n1.nets_[CMNetId{5}].connections_.push_back(e3);
     DSGeomEntry g3;
-    g3.layer_id_ = 0;
+    g3.layer_id_ = CMLayerId{0};
     g3.rect_ = GEORect(1100, 100, 1500, 140);
-    pp.p1.geometry_.add_entry(5, std::move(g3));
+    pp.p1.geometry_.add_entry(CMNetId{5}, std::move(g3));
     DSGeomEntry g4;
-    g4.layer_id_ = 0;
+    g4.layer_id_ = CMLayerId{0};
     g4.rect_ = GEORect(1100, 200, 1400, 240);
-    pp.p1.geometry_.add_entry(6, std::move(g4));
+    pp.p1.geometry_.add_entry(CMNetId{6}, std::move(g4));
     DSInstance i3b;
-    i3b.set_cell_id(1);
+    i3b.set_cell_id(CMCellId{1});
     i3b.set_primary();
-    pp.p1.instances_.items_[3] = std::move(i3b);
+    pp.p1.instances_.items_[CMInstanceId{3}] = std::move(i3b);
     DSInstance i5;
-    i5.set_cell_id(0);
+    i5.set_cell_id(CMCellId{0});
     i5.set_primary();
-    pp.p1.instances_.items_[5] = std::move(i5);
+    pp.p1.instances_.items_[CMInstanceId{5}] = std::move(i5);
     return pp;
 }
 
@@ -315,9 +315,9 @@ TEST(DSVerifyTest, PartitionCheckCountsAndIdSets) {
     // 网覆盖素材：geometry {1,2,3} ∪ nconn {1} ∪ iconn {1,2} ∪ crossing
     // {1}
     ASSERT_EQ(r0.net_ids_.size(), 3u);
-    EXPECT_EQ((CMVector<uint64_t>{r0.net_ids_[0], r0.net_ids_[1],
-                                  r0.net_ids_[2]}),
-              (CMVector<uint64_t>{1, 2, 3}));
+    EXPECT_EQ((CMVector<CMNetId>{r0.net_ids_[0], r0.net_ids_[1],
+                                 r0.net_ids_[2]}),
+              (CMVector<CMNetId>{CMNetId{1}, CMNetId{2}, CMNetId{3}}));
     ASSERT_EQ(r0.instance_ids_.size(), 3u);
     ASSERT_EQ(r0.primary_instance_ids_.size(), 2u);
     EXPECT_EQ(r0.primary_instance_ids_[0], 1u);
@@ -332,8 +332,8 @@ TEST(DSVerifyTest, PartitionCheckCountsAndIdSets) {
     EXPECT_EQ(r1.crossing_net_count_, 0u);
     EXPECT_EQ(r1.connection_count_, 3u);                // iconn 2 + nconn 1
     ASSERT_EQ(r1.net_ids_.size(), 2u);
-    EXPECT_EQ((CMVector<uint64_t>{r1.net_ids_[0], r1.net_ids_[1]}),
-              (CMVector<uint64_t>{5, 6}));
+    EXPECT_EQ((CMVector<CMNetId>{r1.net_ids_[0], r1.net_ids_[1]}),
+              (CMVector<CMNetId>{CMNetId{5}, CMNetId{6}}));
 }
 
 TEST(DSVerifyTest, ObsOnlyNetZeroBucketNotCountedAsCoverage) {
@@ -341,10 +341,10 @@ TEST(DSVerifyTest, ObsOnlyNetZeroBucketNotCountedAsCoverage) {
     // 2026-09-14 裁定后键 0 恒纯 OBS，此过滤保留为防御）
     DSPartitionGeometry geometry;
     DSGeomEntry obs;
-    obs.layer_id_ = 1;
+    obs.layer_id_ = CMLayerId{1};
     obs.rect_ = GEORect(10, 10, 20, 20);
     obs.set_obs();
-    geometry.add_entry(0, std::move(obs));
+    geometry.add_entry(CMNetId{0}, std::move(obs));
     DSPartInstances instances;
     DSPartInstConnections iconns;
     DSPartitionNets nconns;
@@ -370,7 +370,7 @@ TEST(DSVerifyTest, CoverageSinglePartitionPasses) {
     // 单分区 '1x1'：core = 全覆盖域（QA design 场景形态）
     VerifyEnv env;
     DSSubPartition whole;
-    whole.partition_id_ = 0;
+    whole.partition_id_ = CMPartitionId{0};
     whole.xp_ = 0;
     whole.yp_ = 0;
     whole.core_rect_ = GEORect(0, 0, 2000, 2000);
@@ -443,7 +443,7 @@ TEST(DSVerifyTest, UnionConsistentPasses) {
 
 TEST(DSVerifyTest, UnionSelfMapBrokenFails) {
     VerifyEnv env;
-    env.net_union.root_of_[11] = 4;  // root 4 不在表 → 两层不变式破坏
+    env.net_union.root_of_[CMNetId{11}] = CMNetId{4};  // root 4 不在表 → 两层不变式破坏
     PartitionPair pp = make_products();
     const DSDesignCheckReport report = verify_env_design(env,
                                                          check_products(pp));
@@ -453,7 +453,7 @@ TEST(DSVerifyTest, UnionSelfMapBrokenFails) {
 TEST(DSVerifyTest, UnionMembersMismatchFails) {
     VerifyEnv env;
     // 反向索引漏登记成员 11：members 列表数 ≠ root_of_ 规模（双向破坏）
-    env.net_union.members_of_[10] = CMVector<uint64_t>{10};
+    env.net_union.members_of_[CMNetId{10}] = CMVector<CMNetId>{CMNetId{10}};
     PartitionPair pp = make_products();
     const DSDesignCheckReport report = verify_env_design(env,
                                                          check_products(pp));
@@ -488,11 +488,11 @@ TEST(DSVerifyTest, IdContinuityHolesAndDuplicatesCounted) {
     PartitionPair pp = make_products();
     // 实例：id 5 从两分区消失（空洞）；id 2 在 p1 增一 primary 副本
     //（多 primary 重复）。via：sub 的过孔产物消失（空洞 1）。
-    pp.p1.instances_.items_.erase(5);
+    pp.p1.instances_.items_.erase(CMInstanceId{5});
     DSInstance i2;
-    i2.set_cell_id(0);
+    i2.set_cell_id(CMCellId{0});
     i2.set_primary();
-    pp.p1.instances_.items_[2] = std::move(i2);
+    pp.p1.instances_.items_[CMInstanceId{2}] = std::move(i2);
     env.sub_nets.via_instances_.clear();  // sub 过孔消失（via 空洞 1）
 
     const DSDesignCheckReport report = verify_env_design(env,
@@ -541,12 +541,12 @@ TEST(DSVerifyTest, DualInstantiationConservationPasses) {
     sub2.parent_id_ = 0;
     sub2.block_cell_name_ = "sub";
     sub2.instance_name_ = "csub2";
-    sub2.self_global_id_ = 4;  // 假设 top 增第二个 csub 实例（id 4）
-    sub2.instance_start_ = 6;
+    sub2.self_global_id_ = CMInstanceId{4};  // 假设 top 增第二个 csub 实例（id 4）
+    sub2.instance_start_ = CMInstanceId{6};
     sub2.instance_count_ = 2;
-    sub2.net_start_ = 5;
+    sub2.net_start_ = CMNetId{5};
     sub2.net_count_ = 2;
-    sub2.via_start_ = 3;
+    sub2.via_start_ = CMViaInstanceId{3};
     sub2.via_count_ = 1;
     env.tree.nodes_.push_back(sub2);
     env.tree.nodes_[0].get_ref_children_ids().push_back(2);
@@ -554,11 +554,11 @@ TEST(DSVerifyTest, DualInstantiationConservationPasses) {
     PartitionPair pp = make_products();
     CMVector<DSPartitionCheckResult> checks = check_products(pp);
     checks[0].primary_instance_count_ += 1;  // u1@sub2 的 primary 落 p0
-    checks[0].primary_instance_ids_.push_back(7);
+    checks[0].primary_instance_ids_.push_back(CMInstanceId{7});
     std::sort(checks[0].primary_instance_ids_.begin(),
               checks[0].primary_instance_ids_.end());
     checks[0].instance_count_ += 1;
-    checks[0].instance_ids_.push_back(7);
+    checks[0].instance_ids_.push_back(CMInstanceId{7});
     std::sort(checks[0].instance_ids_.begin(), checks[0].instance_ids_.end());
 
     const DSDesignCheckReport report = verify_env_design(env, checks);
@@ -577,12 +577,12 @@ TEST(DSVerifyTest, EmptySegmentPartitionTableCoveragePasses) {
     density.configure(0, 0, 1000, 1000, 3, 2);
     CMVector<DSSubPartition> parts;
     DSSubPartition p0;
-    p0.partition_id_ = 0;
+    p0.partition_id_ = CMPartitionId{0};
     p0.xp_ = 0;
     p0.yp_ = 0;
     p0.core_rect_ = GEORect(0, 0, 1000, 2000);
     DSSubPartition p2;
-    p2.partition_id_ = 1;
+    p2.partition_id_ = CMPartitionId{1};
     p2.xp_ = 2;  // 原网格坐标保留（xp1 零宽段被跳过）
     p2.yp_ = 0;
     p2.core_rect_ = GEORect(1000, 0, 3000, 2000);

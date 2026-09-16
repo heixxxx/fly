@@ -65,7 +65,7 @@ uint64_t g_sink = 0;
 struct BenchTree {
     DSHierTree tree;
     // 叶层各节点的 instance 区间起点（local 0 占位 + names 个名）
-    std::vector<uint64_t> leaf_start;
+    std::vector<CMInstanceId> leaf_start;
 };
 
 // 递归分配区间：自身 local 0 占位 → 依次子树；count = 自身 + 子树总和；
@@ -74,11 +74,11 @@ struct BenchTree {
 // 1..names_count——叶名 id 落在 [start+1, start+names_count]）
 uint64_t assign_ranges(DSHierTree& tree, uint32_t node_id, uint64_t cursor,
                        uint64_t names_count,
-                       std::vector<uint64_t>& leaf_start) {
+                       std::vector<CMInstanceId>& leaf_start) {
     DSHierNode& n = tree.nodes_[node_id];
-    n.instance_start_ = cursor;
+    n.instance_start_ = CMInstanceId{cursor};
     cursor += 1;  // 自身占位（⑧ local 0）
-    if (n.block_cell_id_ == kLeafCellId) {
+    if (n.block_cell_id_ == CMCellId{kLeafCellId}) {
         cursor += names_count;  // 叶 hasher local 空间（local 1..N）
     }
     size_t child_index = 0;
@@ -88,8 +88,9 @@ uint64_t assign_ranges(DSHierTree& tree, uint32_t node_id, uint64_t cursor,
         cursor = assign_ranges(tree, child, cursor, names_count, leaf_start);
         ++child_index;
     }
-    n.instance_count_ = cursor - n.instance_start_;
-    if (n.block_cell_id_ == kLeafCellId) {
+    // 同类减法 → 裸差值（区间长度是计数）
+    n.instance_count_ = cursor - n.instance_start_.value();
+    if (n.block_cell_id_ == CMCellId{kLeafCellId}) {
         leaf_start.push_back(n.instance_start_);
     }
     return cursor;
@@ -129,7 +130,7 @@ BenchTree make_bench_tree(int depth, int fanout, uint64_t names_count) {
         leaf.parent_id_ = leaf_parent;
         leaf.block_cell_name_ = "leafcell";
         leaf.instance_name_ = "leaf_" + std::to_string(k);
-        leaf.block_cell_id_ = kLeafCellId;
+        leaf.block_cell_id_ = CMCellId{kLeafCellId};
         tree.nodes_[leaf_parent].get_ref_children_ids().push_back(leaf.id_);
     }
     assign_ranges(tree, 0, 0, names_count, bt.leaf_start);
@@ -215,7 +216,7 @@ void run_grid(int depth, int fanout, uint64_t names_count,
         paths[static_cast<size_t>(q)] =
             base + "/leaf_" + std::to_string(k) + "/" + leaf_name;
         expect[static_cast<size_t>(q)] =
-            bt.leaf_start[static_cast<size_t>(k)] + ni + 1;
+            (bt.leaf_start[static_cast<size_t>(k)] + ni + 1).value();
     }
 
     // 正确性校验（先于计时——数据无效的基准不如没有数据）：

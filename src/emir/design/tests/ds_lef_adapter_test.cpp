@@ -64,25 +64,25 @@ TEST(DsTechLefTest, ParseStackViasAndViarules) {
     // 层堆叠顺序即索引序；几何属性换算核定（恒基准 µm×1000，面积
     // µm²×1000²——UNITS 声明 2000 不参与换算）
     ASSERT_EQ(stack.layer_count(), 3u);
-    EXPECT_EQ(stack.layer_at(0).get_name(), "M1");
-    EXPECT_EQ(stack.layer_at(0).get_type(),
-              static_cast<uint8_t>(DSLayerType::ROUTING));
-    EXPECT_EQ(stack.layer_at(0).get_direction(),
-              static_cast<uint8_t>(DSDirection::HORIZONTAL));
-    EXPECT_EQ(stack.layer_at(0).get_default_width(), 70);
-    EXPECT_EQ(stack.layer_at(0).get_pitch(), 190);
-    ASSERT_EQ(stack.layer_at(0).get_spacing().size(), 2u);
-    EXPECT_EQ(stack.layer_at(0).get_spacing()[0], 70);
-    EXPECT_EQ(stack.layer_at(0).get_spacing()[1], 90);
-    EXPECT_EQ(stack.layer_at(1).get_name(), "VIA1");
-    EXPECT_EQ(stack.layer_at(1).get_type(),
-              static_cast<uint8_t>(DSLayerType::CUT));
-    EXPECT_EQ(stack.layer_at(2).get_name(), "M2");
-    EXPECT_EQ(stack.layer_at(2).get_direction(),
-              static_cast<uint8_t>(DSDirection::VERTICAL));
-    EXPECT_EQ(stack.layer_at(2).get_default_width(), 80);
-    EXPECT_EQ(stack.layer_at(2).get_pitch(), 210);
-    EXPECT_EQ(stack.layer_at(2).get_min_area(), 50000);
+    EXPECT_EQ(stack.layer_at(CMLayerId{0}).get_name(), "M1");
+    EXPECT_EQ(stack.layer_at(CMLayerId{0}).get_type(),
+              DSLayerType::ROUTING);
+    EXPECT_EQ(stack.layer_at(CMLayerId{0}).get_direction(),
+              DSDirection::HORIZONTAL);
+    EXPECT_EQ(stack.layer_at(CMLayerId{0}).get_default_width(), 70);
+    EXPECT_EQ(stack.layer_at(CMLayerId{0}).get_pitch(), 190);
+    ASSERT_EQ(stack.layer_at(CMLayerId{0}).get_spacing().size(), 2u);
+    EXPECT_EQ(stack.layer_at(CMLayerId{0}).get_spacing()[0], 70);
+    EXPECT_EQ(stack.layer_at(CMLayerId{0}).get_spacing()[1], 90);
+    EXPECT_EQ(stack.layer_at(CMLayerId{1}).get_name(), "VIA1");
+    EXPECT_EQ(stack.layer_at(CMLayerId{1}).get_type(),
+              DSLayerType::CUT);
+    EXPECT_EQ(stack.layer_at(CMLayerId{2}).get_name(), "M2");
+    EXPECT_EQ(stack.layer_at(CMLayerId{2}).get_direction(),
+              DSDirection::VERTICAL);
+    EXPECT_EQ(stack.layer_at(CMLayerId{2}).get_default_width(), 80);
+    EXPECT_EQ(stack.layer_at(CMLayerId{2}).get_pitch(), 210);
+    EXPECT_EQ(stack.layer_at(CMLayerId{2}).get_min_area(), 50000);
 
     // via：层名经 stack 转 id；cut/enclosure 按层型与 stack 序归属
     ASSERT_EQ(vias.size(), 2u);
@@ -137,9 +137,9 @@ TEST(DsTechLefTest, UnitsDeclarationDoesNotAffectConversion) {
     EXPECT_EQ(stack.get_dbu_per_micron(), 1000);  // 恒基准不受声明影响
     EXPECT_EQ(stack.get_manufacturing_grid(), 3);
     ASSERT_EQ(stack.layer_count(), 3u);
-    EXPECT_EQ(stack.layer_at(0).get_default_width(), 70);
-    EXPECT_EQ(stack.layer_at(0).get_pitch(), 190);
-    EXPECT_EQ(stack.layer_at(2).get_min_area(), 50000);
+    EXPECT_EQ(stack.layer_at(CMLayerId{0}).get_default_width(), 70);
+    EXPECT_EQ(stack.layer_at(CMLayerId{0}).get_pitch(), 190);
+    EXPECT_EQ(stack.layer_at(CMLayerId{2}).get_min_area(), 50000);
 
     ASSERT_EQ(vias.size(), 1u);
     EXPECT_EQ(vias[0].get_name(), "VIA12");
@@ -190,43 +190,43 @@ TEST(DsCellLefTest, ParseMacrosPinsGeometryAndVias) {
     // R7 ㊱：DSPin 无 name——pin 名经 pin hasher 组合键反查（局部 pin id
     // = 平铺分配序，与下标一致）
     ASSERT_EQ(inv.pin_count(), 3u);
-    EXPECT_EQ(design.pin_name_of(0), "A");
+    EXPECT_EQ(design.pin_name_of(CMPinId{0}), "A");
     EXPECT_EQ(inv.pin_at(0).get_type(),
-              static_cast<uint8_t>(DSPinType::SIGNAL));
+              DSPinType::SIGNAL);
     EXPECT_EQ(inv.pin_at(0).get_direction(),
-              static_cast<uint8_t>(DSPinDirection::INPUT));
-    EXPECT_EQ(design.pin_name_of(1), "ZN");
+              DSPinDirection::INPUT);
+    EXPECT_EQ(design.pin_name_of(CMPinId{1}), "ZN");
     EXPECT_EQ(inv.pin_at(1).get_direction(),
-              static_cast<uint8_t>(DSPinDirection::OUTPUT));
+              DSPinDirection::OUTPUT);
     // USE CLOCK → DSPinType::CLOCK（2026-09-13 收录，连接 flags clock 位源头）
     EXPECT_EQ(inv.pin_at(1).get_type(),
-              static_cast<uint8_t>(DSPinType::CLOCK));
-    EXPECT_EQ(design.pin_name_of(2), "VDD");
+              DSPinType::CLOCK);
+    EXPECT_EQ(design.pin_name_of(CMPinId{2}), "VDD");
     EXPECT_EQ(inv.pin_at(2).get_type(),
-              static_cast<uint8_t>(DSPinType::POWER));
+              DSPinType::POWER);
     EXPECT_EQ(inv.pin_at(2).get_direction(),
-              static_cast<uint8_t>(DSPinDirection::INOUT));
+              DSPinDirection::INOUT);
 
     // pin 几何入独立对象（R4：键 = 局部平铺 pin id，每 pin 一条目），
     // 层名 → layer id
-    const CMVector<DSShapeRef>* a_geoms = pin_geoms.geometry_of(0);
+    const CMVector<DSShapeRef>* a_geoms = pin_geoms.geometry_of(CMPinId{0});
     ASSERT_NE(a_geoms, nullptr);
     ASSERT_EQ(a_geoms->size(), 1u);  // A 一个 rect
     EXPECT_EQ((*a_geoms)[0].get_layer_id(), 0u);  // A 在 M1
     EXPECT_EQ((*a_geoms)[0].get_rect().get_x_high(), 100);
-    const CMVector<DSShapeRef>* zn_geoms = pin_geoms.geometry_of(1);
+    const CMVector<DSShapeRef>* zn_geoms = pin_geoms.geometry_of(CMPinId{1});
     ASSERT_NE(zn_geoms, nullptr);
     EXPECT_EQ((*zn_geoms)[0].get_layer_id(), 2u);  // ZN 在 M2
     EXPECT_EQ((*zn_geoms)[0].get_rect().get_x_low(), 300);
-    const CMVector<DSShapeRef>* vdd_geoms = pin_geoms.geometry_of(2);
+    const CMVector<DSShapeRef>* vdd_geoms = pin_geoms.geometry_of(CMPinId{2});
     ASSERT_NE(vdd_geoms, nullptr);
     EXPECT_EQ((*vdd_geoms)[0].get_layer_id(), 0u);  // VDD 在 M1
     EXPECT_EQ((*vdd_geoms)[0].get_rect().get_y_low(), 600);
     // DFF_X1 的 2 pin（D=3/Q=4，几何各自一条）
-    ASSERT_NE(pin_geoms.geometry_of(3), nullptr);
-    EXPECT_EQ(pin_geoms.geometry_of(3)->size(), 1u);
-    ASSERT_NE(pin_geoms.geometry_of(4), nullptr);
-    EXPECT_EQ(pin_geoms.geometry_of(4)->size(), 1u);
+    ASSERT_NE(pin_geoms.geometry_of(CMPinId{3}), nullptr);
+    EXPECT_EQ(pin_geoms.geometry_of(CMPinId{3})->size(), 1u);
+    ASSERT_NE(pin_geoms.geometry_of(CMPinId{4}), nullptr);
+    EXPECT_EQ(pin_geoms.geometry_of(CMPinId{4})->size(), 1u);
 
     // OBS 几何入 cell（D19）
     ASSERT_EQ(inv.obs_count(), 2u);
@@ -384,8 +384,8 @@ TEST(DsLefRoundTripTest, ProductsSerializeRoundTrip) {
     DSStack stack_back;
     FLY_DECODE(blob, DSStack, stack_back);
     ASSERT_EQ(stack_back.layer_count(), 3u);
-    EXPECT_EQ(stack_back.layer_at(0).get_default_width(), 70);
-    EXPECT_EQ(stack_back.layer_at(2).get_min_area(), 50000);
+    EXPECT_EQ(stack_back.layer_at(CMLayerId{0}).get_default_width(), 70);
+    EXPECT_EQ(stack_back.layer_at(CMLayerId{2}).get_min_area(), 50000);
     EXPECT_EQ(stack_back.find_layer("M2"), 2u);  // 惰性索引重建后可用
 
     // DSDesign 往返
@@ -396,7 +396,7 @@ TEST(DsLefRoundTripTest, ProductsSerializeRoundTrip) {
     ASSERT_EQ(design_back.cells_.size(), 2u);
     EXPECT_EQ(design_back.cells_[0].get_name(), "INV_X1");
     EXPECT_EQ(design_back.cells_[0].pin_at(2).get_type(),
-              static_cast<uint8_t>(DSPinType::POWER));
+              DSPinType::POWER);
     EXPECT_EQ(design_back.cells_[0].obs_at(1).get_rect().get_x_high(), 600);
     ASSERT_NE(design_back.find_cell("DFF_X1"), nullptr);
 
@@ -405,11 +405,11 @@ TEST(DsLefRoundTripTest, ProductsSerializeRoundTrip) {
     FLY_ENCODE(pin_geoms, geom_blob);
     DSPinGeometry geoms_back;
     FLY_DECODE(geom_blob, DSPinGeometry, geoms_back);
-    ASSERT_NE(geoms_back.geometry_of(0), nullptr);
-    EXPECT_EQ(geoms_back.geometry_of(0)->size(), 1u);  // INV_X1/A 一条
-    EXPECT_EQ(geoms_back.geometry_of(0)->at(0).get_layer_id(), 0u);
-    ASSERT_NE(geoms_back.geometry_of(4), nullptr);     // DFF_X1/Q
-    EXPECT_EQ(geoms_back.geometry_of(4)->at(0).get_layer_id(), 2u);
+    ASSERT_NE(geoms_back.geometry_of(CMPinId{0}), nullptr);
+    EXPECT_EQ(geoms_back.geometry_of(CMPinId{0})->size(), 1u);  // INV_X1/A 一条
+    EXPECT_EQ(geoms_back.geometry_of(CMPinId{0})->at(0).get_layer_id(), 0u);
+    ASSERT_NE(geoms_back.geometry_of(CMPinId{4}), nullptr);     // DFF_X1/Q
+    EXPECT_EQ(geoms_back.geometry_of(CMPinId{4})->at(0).get_layer_id(), 2u);
 
     // DSViaCell 集合往返
     ViaList via_list{vias};

@@ -34,6 +34,7 @@
 
 #include <common/serialization/cpp/serialization_macros.h>
 #include <container/cpp/container_aliases.h>
+#include <emir/common/cpp/emir_ids.h>
 #include <geometry/cpp/geometry_types.h>
 
 #include <cstdint>
@@ -51,8 +52,9 @@ class DSNetBuildData;
 // 整图形扩展域（非边缘方向 +2×w_eff，最外围方向 int32 极值，允许相邻
 // 重叠——2026-09-12 裁定 2）
 struct DSSubPartition {
-    // 行主序分区号（(xp, yp) → yp*nx + xp，产出序）
-    uint32_t partition_id_ = 0;
+    // 行主序分区号（(xp, yp) → yp*nx + xp，产出序）。强类型 id：
+    // CMPartitionId（2026-09-16 裁定）
+    CMPartitionId partition_id_;
     // 分区网格坐标（S9 分区对象命名 PART_{xp}_{yp}. 用；产出时回填）
     uint32_t xp_ = 0;
     uint32_t yp_ = 0;
@@ -79,11 +81,11 @@ struct DSDensityWeights {
     // 逐层密度系数（键 = layer id；裁定 ⑥：低层电阻高/图形多、系数自高
     // 层向低层递增；首版全 1、接口保留输入，本期不暴露 alpha 键——未登
     // 记层按 1.0 计）
-    std::unordered_map<uint32_t, double> layer_factors_;
+    std::unordered_map<CMLayerId::int_type, double> layer_factors_;
 
     // 层系数读取（未登记 = 1.0）
-    double layer_factor(uint32_t layer_id) const {
-        const auto it = layer_factors_.find(layer_id);
+    double layer_factor(CMLayerId layer_id) const {
+        const auto it = layer_factors_.find(layer_id.value());
         return it == layer_factors_.end() ? 1.0 : it->second;
     }
 };

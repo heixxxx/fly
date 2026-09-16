@@ -31,6 +31,7 @@
 
 #include <common/serialization/cpp/serialization_macros.h>
 #include <container/cpp/container_aliases.h>
+#include <emir/common/cpp/emir_ids.h>
 
 #include <cstdint>
 
@@ -42,8 +43,8 @@ class DSNetBuildData;
 // union 边（电气等价对：两 global net id；规范化 a < b 存放）
 class DSNetUnionEdge {
 public:
-    uint64_t net_a_ = 0;
-    uint64_t net_b_ = 0;
+    CMNetId net_a_;
+    CMNetId net_b_;
 
     FLY_SERIALIZE(net_a_, net_b_)
 };
@@ -59,7 +60,7 @@ public:
 class DSNetUnionSlice {
 public:
     CMVector<DSNetUnionEdge> edges_;
-    CMVector<uint64_t> port_net_ids_;
+    CMVector<CMNetId> port_net_ids_;
     CMString block_name_;
 
     FLY_SERIALIZE(edges_, port_net_ids_, block_name_)
@@ -71,17 +72,17 @@ class DSNetUnion {
 public:
     // 成员网 global id → root（两层树：root 自映射；不在表 = 未参与
     // union 的网，find 返回自身）
-    CMUnorderedMap<uint64_t, uint64_t> root_of_;
+    CMUnorderedMap<CMNetId, CMNetId> root_of_;
     // root → 成员 global id 列表（升序，含 root 自身；§2.6 反向索引——
     // 物理网枚举）
-    CMUnorderedMap<uint64_t, CMVector<uint64_t>> members_of_;
+    CMUnorderedMap<CMNetId, CMVector<CMNetId>> members_of_;
     // 悬空计数：单成员等价类数（悬空 port 网 root = 自身，裁定 ④）
     uint64_t dangling_count_ = 0;
 
     // find 恒一步（两层不变式）；不在表 = 自身
-    uint64_t find(uint64_t net_global_id) const;
+    CMNetId find(CMNetId net_global_id) const;
     // root 的成员枚举（未命中 nullptr——非 root 或不在表）
-    const CMVector<uint64_t>* members(uint64_t root) const;
+    const CMVector<CMNetId>* members(CMNetId root) const;
     // 等价类总数（含单成员悬空类）
     uint64_t class_count() const;
 

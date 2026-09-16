@@ -54,12 +54,12 @@ struct MapperEnv {
         root.parent_id_ = 0;
         root.block_cell_name_ = "top";
         root.instance_name_ = "top";
-        root.self_global_id_ = 0;
-        root.instance_start_ = 0;
+        root.self_global_id_ = CMInstanceId{0};
+        root.instance_start_ = CMInstanceId{0};
         root.instance_count_ = 4;
-        root.net_start_ = 0;
+        root.net_start_ = CMNetId{0};
         root.net_count_ = 3;  // 2 真网 + local 0 空洞位（区间长度形态）
-        root.via_start_ = 0;
+        root.via_start_ = CMViaInstanceId{0};
         root.via_count_ = 0;
 
         DSHierNode mid_node;
@@ -67,12 +67,12 @@ struct MapperEnv {
         mid_node.parent_id_ = 0;
         mid_node.block_cell_name_ = "mid";
         mid_node.instance_name_ = "i2";
-        mid_node.self_global_id_ = 2;
-        mid_node.instance_start_ = 4;
+        mid_node.self_global_id_ = CMInstanceId{2};
+        mid_node.instance_start_ = CMInstanceId{4};
         mid_node.instance_count_ = 3;
-        mid_node.net_start_ = 3;
+        mid_node.net_start_ = CMNetId{3};
         mid_node.net_count_ = 2;  // 1 真网 + 空洞位
-        mid_node.via_start_ = 0;
+        mid_node.via_start_ = CMViaInstanceId{0};
         mid_node.via_count_ = 0;
 
         DSHierNode b1;
@@ -80,10 +80,10 @@ struct MapperEnv {
         b1.parent_id_ = 1;
         b1.block_cell_name_ = "bottom";
         b1.instance_name_ = "i1";
-        b1.self_global_id_ = 5;
-        b1.instance_start_ = 7;
+        b1.self_global_id_ = CMInstanceId{5};
+        b1.instance_start_ = CMInstanceId{7};
         b1.instance_count_ = 2;
-        b1.net_start_ = 5;
+        b1.net_start_ = CMNetId{5};
         b1.net_count_ = 2;  // 1 真网 + 空洞位
 
         DSHierNode b2;
@@ -91,10 +91,10 @@ struct MapperEnv {
         b2.parent_id_ = 1;
         b2.block_cell_name_ = "bottom";
         b2.instance_name_ = "i2";
-        b2.self_global_id_ = 6;
-        b2.instance_start_ = 9;
+        b2.self_global_id_ = CMInstanceId{6};
+        b2.instance_start_ = CMInstanceId{9};
         b2.instance_count_ = 2;
-        b2.net_start_ = 7;
+        b2.net_start_ = CMNetId{7};
         b2.net_count_ = 2;  // 1 真网 + 空洞位
 
         tree.nodes_.push_back(std::move(root));
@@ -123,10 +123,10 @@ struct MapperEnv {
 // 挂 block_cell_id（cell id → hasher 注入表的键；真实产物由
 // ds_build_hier_tree 填充，测试手工对齐：top=0/mid=1/bottom=2）
 void attach_cell_ids(MapperEnv& env) {
-    env.tree.nodes_[0].block_cell_id_ = 0;
-    env.tree.nodes_[1].block_cell_id_ = 1;
-    env.tree.nodes_[2].block_cell_id_ = 2;
-    env.tree.nodes_[3].block_cell_id_ = 2;
+    env.tree.nodes_[0].block_cell_id_ = CMCellId{0};
+    env.tree.nodes_[1].block_cell_id_ = CMCellId{1};
+    env.tree.nodes_[2].block_cell_id_ = CMCellId{2};
+    env.tree.nodes_[3].block_cell_id_ = CMCellId{2};
 }
 
 // 全量注入的 instance mapper
@@ -382,18 +382,18 @@ struct DispatchEnv {
             leaf.parent_id_ = 1;
             leaf.block_cell_name_ = "leafcell";
             leaf.instance_name_ = "leaf_" + std::to_string(k);
-            leaf.block_cell_id_ = kLeafCellId;
-            leaf.self_global_id_ = 1 + static_cast<uint64_t>(k) + 1;
-            leaf.instance_start_ = cursor;
+            leaf.block_cell_id_ = CMCellId{kLeafCellId};
+            leaf.self_global_id_ = CMInstanceId{1u + k + 1u};
+            leaf.instance_start_ = CMInstanceId{cursor};
             leaf.instance_count_ = 1 + kLeafLocalCount;
             cursor += leaf.instance_count_;
             tree.nodes_[1].get_ref_children_ids().push_back(leaf.id_);
         }
-        root.self_global_id_ = 0;
-        mid.self_global_id_ = 1;
-        root.instance_start_ = 0;
+        root.self_global_id_ = CMInstanceId{0};
+        mid.self_global_id_ = CMInstanceId{1};
+        root.instance_start_ = CMInstanceId{0};
         root.instance_count_ = cursor;
-        mid.instance_start_ = 1;
+        mid.instance_start_ = CMInstanceId{1};
         mid.instance_count_ = cursor - 1;
         tree.design_name_ = "top";
         // 叶 hasher 登记（local 1..4；叶区间起点 = 2 + k×(1+4) + 1）
@@ -406,7 +406,7 @@ struct DispatchEnv {
     // 叶 k 的叶名 local l 的期望 global id（区间换算独立于 mapper 计算）
     uint64_t expect_id(int leaf_k, uint64_t local) const {
         const DSHierNode& leaf = tree.nodes_[2 + static_cast<size_t>(leaf_k)];
-        return leaf.instance_start_ + local;
+        return (leaf.instance_start_ + local).value();
     }
 };
 
@@ -455,9 +455,9 @@ TEST(DSNameMapperDispatchTest, SameNameSiblingsResolveToFirstNode) {
     dup.parent_id_ = 1;
     dup.block_cell_name_ = "leafcell";
     dup.instance_name_ = "leaf_0";  // 与 node 2 同名
-    dup.block_cell_id_ = DispatchEnv::kLeafCellId;
-    dup.self_global_id_ = 100;
-    dup.instance_start_ = 1000;
+    dup.block_cell_id_ = CMCellId{DispatchEnv::kLeafCellId};
+    dup.self_global_id_ = CMInstanceId{100};
+    dup.instance_start_ = CMInstanceId{1000};
     dup.instance_count_ = 1 + DispatchEnv::kLeafLocalCount;
     env.tree.nodes_.push_back(std::move(dup));
     env.tree.nodes_[1].get_ref_children_ids().push_back(52);

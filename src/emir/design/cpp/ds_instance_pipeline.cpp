@@ -24,8 +24,8 @@ void DSInstancePipeline::run(DSInstanceContext& ctx) const {
 
 // —— fake cell id 算法（⑳；算法说明见头注释）——
 
-uint32_t ds_fake_cell_id_base(const CMString& block_name,
-                              uint32_t max_cell_id) {
+CMCellId ds_fake_cell_id_base(const CMString& block_name,
+                              CMCellId::int_type max_cell_id) {
     // FNV-1a 32 位（确定性、跨平台一致）
     uint32_t hash = 2166136261u;
     for (const char c : block_name) {
@@ -33,7 +33,7 @@ uint32_t ds_fake_cell_id_base(const CMString& block_name,
         hash *= 16777619u;
     }
     // 扰动空间 65536：跨任务基址分散 + 汇总稀疏落位空洞预算上界
-    return max_cell_id + 1 + (hash % 65536u);
+    return CMCellId{max_cell_id + 1 + (hash % 65536u)};
 }
 
 // —— 节点 1：master cell 解析（namemap / fake cell 生成）——
@@ -45,10 +45,10 @@ void DSCellResolveNode::handle(DSInstanceContext& ctx) {
     }
 
     // 1) 正常 cell（S2 macro + S4 block cell 同空间 cell hasher）
-    const uint32_t resolved = ctx.design->cell_names_.get_id(ctx.master_name);
-    if (DSCellNameHasher::is_valid_id(resolved)) {
+    const CMCellId resolved{ctx.design->cell_names_.get_id(ctx.master_name)};
+    if (resolved.is_valid()) {
         ctx.cell_id = resolved;
-        const DSCell& cell = ctx.design->cells_[ctx.cell_id];
+        const DSCell& cell = ctx.design->cells_[ctx.cell_id.value()];
         ctx.cell_bbox = cell.get_bbox();
         ctx.cell_origin_x = cell.get_origin_x();
         ctx.cell_origin_y = cell.get_origin_y();
@@ -80,10 +80,11 @@ void DSCellResolveNode::handle(DSInstanceContext& ctx) {
     fake.set_bbox(GEORect(0, 0, 1, 1));
     fake.set_fake_cell();
 
-    const uint32_t fake_id =
-        ds_fake_cell_id_base(ctx.block_name,
-                             static_cast<uint32_t>(ctx.design->cells_.size())) +
-        static_cast<uint32_t>(ctx.fake_cells->size());
+    const CMCellId fake_id =
+        ds_fake_cell_id_base(
+            ctx.block_name,
+            static_cast<CMCellId::int_type>(ctx.design->cells_.size())) +
+        static_cast<CMCellId::int_type>(ctx.fake_cells->size());
     ctx.block_data->fake_name_to_id_[fake.get_name()] = fake_id;
     ctx.fake_cells->push_back(std::move(fake));
     ++ctx.block_data->stats_.fake_cell_count;
@@ -99,8 +100,7 @@ void DSCellResolveNode::handle(DSInstanceContext& ctx) {
 // —— 节点 2：local instance 生成 ——
 
 void DSInstanceBuildNode::handle(DSInstanceContext& ctx) {
-    if (ctx.block_data == nullptr ||
-        ctx.cell_id == DSDesign::kInvalidId) {
+    if (ctx.block_data == nullptr || !ctx.cell_id.is_valid()) {
         ctx.error = true;
         return;
     }
@@ -125,8 +125,7 @@ void DSDensityNode::handle(DSInstanceContext& ctx) {
         return;
     }
     // UNPLACED 不计（D14：无坐标无法入分区）
-    if (ctx.placement_status ==
-        static_cast<uint8_t>(DSPlacementStatus::UNPLACED)) {
+    if (ctx.placement_status == DSPlacementStatus::UNPLACED) {
         return;
     }
     // block instance 自身 bbox 不计（2026-09-12 裁定 5，S8 前置修正）：
@@ -134,7 +133,7 @@ void DSDensityNode::handle(DSInstanceContext& ctx) {
     // 再计 block footprint 会双计。判定 = cell 的 block_cell 位（cell 查
     // 表经 design.cells_；fake cell 不在表内 → 恒非 block）
     if (ctx.design != nullptr && ctx.cell_id < ctx.design->cells_.size() &&
-        ctx.design->cells_[ctx.cell_id].is_block_cell()) {
+        ctx.design->cells_[ctx.cell_id.value()].is_block_cell()) {
         return;
     }
     const DSInstance* inst = ctx.block_data->find_instance(ctx.instance_id);
@@ -156,8 +155,7 @@ void DSStatsNode::handle(DSInstanceContext& ctx) {
     }
     DSInstanceStats& stats = ctx.block_data->stats_;
     ++stats.instance_count;
-    if (ctx.placement_status ==
-        static_cast<uint8_t>(DSPlacementStatus::UNPLACED)) {
+    if (ctx.placement_status == DSPlacementStatus::UNPLACED) {
         ++stats.unplaced_count;
     }
     ++stats.per_cell_counts_[ctx.cell_id];

@@ -12,8 +12,9 @@ namespace fly {
 
 namespace {
 
-// 升序去重（素材集序列化确定性）
-void sort_unique(CMVector<uint64_t>& v) {
+// 升序去重（素材集序列化确定性；强类型 id 向量与裸值向量通用）
+template <typename T>
+void sort_unique(CMVector<T>& v) {
     std::sort(v.begin(), v.end());
     v.erase(std::unique(v.begin(), v.end()), v.end());
 }
@@ -28,21 +29,22 @@ CMString ds_check_net_union(const DSNetUnion& u) {
         const auto it = u.root_of_.find(root);
         if (it == u.root_of_.end() || it->second != root) {
             return "root_of_ two-layer invariant broken: root " +
-                   std::to_string(root) + " is not self-mapped";
+                   std::to_string(root.value()) + " is not self-mapped";
         }
     }
     size_t listed = 0;
     for (const auto& [root, members] : u.members_of_) {
         const auto it = u.root_of_.find(root);
         if (it == u.root_of_.end() || it->second != root) {
-            return "members_of_ key " + std::to_string(root) +
+            return "members_of_ key " + std::to_string(root.value()) +
                    " is not a root in root_of_";
         }
-        for (const uint64_t id : members) {
+        for (const CMNetId id : members) {
             const auto mit = u.root_of_.find(id);
             if (mit == u.root_of_.end() || mit->second != root) {
-                return "members_of_ entry " + std::to_string(id) +
-                       " does not map back to root " + std::to_string(root);
+                return "members_of_ entry " + std::to_string(id.value()) +
+                       " does not map back to root " +
+                       std::to_string(root.value());
             }
         }
         listed += members.size();
@@ -201,7 +203,7 @@ DSPartitionCheckResult ds_verify_partition(
     const DSPartInstConnections& inst_connections,
     const DSPartitionNets& nets, const DSPartitionNets& nets_pg) {
     DSPartitionCheckResult r;
-    r.partition_id_ = partition_id;
+    r.partition_id_ = CMPartitionId{partition_id};
     r.xp_ = xp;
     r.yp_ = yp;
 
@@ -224,7 +226,7 @@ DSPartitionCheckResult ds_verify_partition(
             r.geometry_entry_count_ += entries.size();
             ++r.net_count_;
             const bool has_real_geometry =
-                net_id != 0 ||
+                net_id != CMNetId{0} ||
                 std::any_of(entries.begin(), entries.end(),
                             [](const DSGeomEntry& e) { return !e.is_obs(); });
             if (has_real_geometry) {
@@ -232,7 +234,7 @@ DSPartitionCheckResult ds_verify_partition(
             }
         }
         r.crossing_net_count_ += geo->crossing_nets_.size();
-        for (const uint64_t net_id : geo->crossing_nets_) {
+        for (const CMNetId net_id : geo->crossing_nets_) {
             r.net_ids_.push_back(net_id);
             r.crossing_net_ids_.push_back(net_id);
         }
@@ -294,10 +296,10 @@ DSDesignCheckReport ds_verify_design(
     r.via_ids_.expected_ = r.expected_vias_;
 
     // 分区结果汇总：计数累加 + id 并集 + 多 primary 直方图
-    std::unordered_map<uint64_t, uint32_t> primary_hist;
-    std::unordered_set<uint64_t> instance_set;
-    std::unordered_set<uint64_t> net_set;
-    std::unordered_set<uint64_t> crossing_set;
+    std::unordered_map<CMInstanceId, uint32_t> primary_hist;
+    std::unordered_set<CMInstanceId> instance_set;
+    std::unordered_set<CMNetId> net_set;
+    std::unordered_set<CMNetId> crossing_set;
     r.partition_count_ = static_cast<uint32_t>(checks.size());
     for (const DSPartitionCheckResult* c : checks) {
         r.total_primary_ += c->primary_instance_count_;
@@ -308,7 +310,7 @@ DSDesignCheckReport ds_verify_design(
         net_set.insert(c->net_ids_.begin(), c->net_ids_.end());
         crossing_set.insert(c->crossing_net_ids_.begin(),
                             c->crossing_net_ids_.end());
-        for (const uint64_t id : c->primary_instance_ids_) {
+        for (const CMInstanceId id : c->primary_instance_ids_) {
             ++primary_hist[id];
         }
     }
@@ -340,7 +342,7 @@ DSDesignCheckReport ds_verify_design(
     // local − 1) 换算（via instance 不入分区产物——权威存储只在 S5b 产物；
     // 树节点按 block 名反查首份定义）。节点引用的定义不在名字表 = 树与
     // 产物对齐破坏（S6 构造已保证，读回防御）→ 归入 namemap 损坏描述。
-    std::unordered_map<uint64_t, uint32_t> via_hist;
+    std::unordered_map<CMViaInstanceId, uint32_t> via_hist;
     CMString tree_def_missing;
     for (const DSHierNode& n : tree.nodes_) {
         const auto it = def_by_name.find(n.block_cell_name_);
@@ -355,7 +357,7 @@ DSDesignCheckReport ds_verify_design(
         }
         for (const auto& [local, via] : nets[it->second]->via_instances_) {
             (void)via;
-            ++via_hist[n.via_start_ + local - 1];
+            ++via_hist[n.via_start_ + (local.value() - 1)];
         }
     }
     r.via_ids_.actual_ = via_hist.size();

@@ -16,7 +16,7 @@ void DSNameMapperT<IdT>::set_block_hasher(
     for (size_t i = 0; i < tree_->node_count(); ++i) {
         const DSHierNode& n = tree_->node(static_cast<uint32_t>(i));
         if (n.get_block_cell_name() == cell_name) {
-            set_block_hasher(n.get_block_cell_id(), std::move(hasher));
+            set_block_hasher(n.get_block_cell_id().value(), std::move(hasher));
             return;  // 取首个同名 block 定义（与 def_by_cell_name 一致）
         }
     }
@@ -104,7 +104,7 @@ IdT DSNameMapperT<IdT>::get_global_id(const CMString& full_hier_name) const {
     const DSHierNode& cur = tree_->node(node_id);
 
     // 叶段：当前节点的注入 hasher 查 local id（㊻ 未注入 → 哨兵）
-    const auto it = injected_.find(cur.get_block_cell_id());
+    const auto it = injected_.find(cur.get_block_cell_id().value());
     if (it == injected_.end()) {
         return kInvalidId;
     }
@@ -116,21 +116,22 @@ IdT DSNameMapperT<IdT>::get_global_id(const CMString& full_hier_name) const {
     }
     // 区间换算（⑨）：instance = start + local（local 0 → 自身 ⑧，hasher
     // 不登记 local 0、防御分支）；net = start + local（区间长度含 local 0
-    // 空洞位，2026-09-14 裁定——无 −1）
+    // 空洞位，2026-09-14 裁定——无 −1）。树字段为强类型 id，机器值域
+    // （IdT = 裸 uint64）边界显式转换
     if (kind_ == DSNameMapperKind::INSTANCE) {
         if (local == 0) {
-            return cur.get_self_global_id();
+            return cur.get_self_global_id().value();
         }
         if (local >= cur.get_instance_count()) {
             return kInvalidId;  // 越出该 block 区间（防御）
         }
-        return cur.get_instance_start() + local;
+        return (cur.get_instance_start() + local).value();
     }
     if (local == 0 || local >= cur.get_net_count()) {
         return kInvalidId;  // net local 0 = 空洞位（不登记名）/ 越界
     }
     // 区间长度含空洞位（2026-09-14 裁定）：global = start + local 无 −1
-    return cur.get_net_start() + local;
+    return (cur.get_net_start() + local).value();
 }
 
 // —— get_full_name：区间反查 → 叶层 hasher → 递归向上拼 prefix ——
@@ -141,17 +142,19 @@ CMString DSNameMapperT<IdT>::get_full_name(IdT global_id) const {
         return {};
     }
     if (kind_ == DSNameMapperKind::INSTANCE) {
-        const uint32_t node_id = tree_->block_of_instance(global_id);
+        const uint32_t node_id = tree_->block_of_instance(
+            CMInstanceId{global_id});
         if (node_id == DSHierTree::kNoNode) {
             return {};
         }
         const DSHierNode& n = tree_->node(node_id);
         const CMString prefix = hier_path_of(*tree_, node_id);
-        const IdT local = global_id - n.get_instance_start();
+        // 树字段强类型 id——与机器值域 IdT（裸 uint64）边界显式转换
+        const IdT local = global_id - n.get_instance_start().value();
         if (local == 0) {
             return prefix;  // block instance 自身路径（⑧ local 0 占位）
         }
-        const auto it = injected_.find(n.get_block_cell_id());
+        const auto it = injected_.find(n.get_block_cell_id().value());
         if (it == injected_.end()) {
             return {};  // ㊻ 局部注入 = 局部可查
         }
@@ -161,17 +164,18 @@ CMString DSNameMapperT<IdT>::get_full_name(IdT global_id) const {
         }
         return prefix + "/" + name;
     }
-    const uint32_t node_id = tree_->block_of_net(global_id);
+    const uint32_t node_id =
+        tree_->block_of_net(CMNetId{global_id});
     if (node_id == DSHierTree::kNoNode) {
         return {};
     }
     const DSHierNode& n = tree_->node(node_id);
-    const auto it = injected_.find(n.get_block_cell_id());
+    const auto it = injected_.find(n.get_block_cell_id().value());
     if (it == injected_.end()) {
         return {};
     }
     const CMString& name =
-        it->second->get_name(global_id - n.get_net_start());
+        it->second->get_name(global_id - n.get_net_start().value());
     if (name.empty()) {
         return {};  // 空洞（local 0 空洞位 / 未登记下标）
     }

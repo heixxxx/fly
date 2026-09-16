@@ -10,7 +10,7 @@ DSIdPartitionMapResult ds_merge_id_partition_slices(
     DSIdPartitionMapResult out;
 
     // 条目收集（(id, pid) 对；排序期中间形态）
-    CMVector<std::pair<uint64_t, uint32_t>> entries;
+    CMVector<std::pair<uint64_t, CMPartitionId>> entries;
     for (const DSIdPartitionSlice* slice : slices) {
         if (slice == nullptr) {
             continue;  // 防御（空片段放行，dev-rules §7）
@@ -22,18 +22,22 @@ DSIdPartitionMapResult ds_merge_id_partition_slices(
     if (entries.empty()) {
         return out;  // 空映射（无分区数据）——空段表 + 空段集
     }
-    std::sort(entries.begin(), entries.end());
+    std::sort(entries.begin(), entries.end(),
+              [](const auto& a, const auto& b) {
+                  return a.first != b.first ? a.first < b.first
+                                            : a.second < b.second;
+              });
 
     // 线性分段：id >> 段位数同段；段内定长数组回填（空洞 kIdMapNoPartition）
     auto fill_segment = [&](uint64_t seg_start, size_t begin, size_t end) {
         DSIdPartitionSegment seg;
         seg.id_start_ = seg_start;
         seg.pids_.assign(static_cast<size_t>(kIdMapSegmentSize),
-                         kIdMapNoPartition);
+                         CMPartitionId{kIdMapNoPartition});
         for (size_t i = begin; i < end; ++i) {
             const size_t slot =
                 static_cast<size_t>(entries[i].first - seg_start);
-            if (seg.pids_[slot] == kIdMapNoPartition) {
+            if (!seg.pids_[slot].is_valid()) {
                 seg.pids_[slot] = entries[i].second;  // 首个生效（不变式）
             }
         }
@@ -64,22 +68,22 @@ DSIdPartitionMapResult ds_merge_id_partition_slices(
 DSIdPartitionSlice ds_collect_partition_id_slice(
     const DSPartInstances& instances, const DSPartitionGeometry& geometry,
     const DSPartitionGeometry& geometry_pg, bool instance_kind,
-    uint32_t partition_id) {
+    CMPartitionId partition_id) {
     DSIdPartitionSlice out;
     if (instance_kind) {
         for (const auto& [gid, inst] : instances.items_) {
             if (inst.is_primary()) {
-                out.add(gid, partition_id);
+                out.add(gid.value(), partition_id);
             }
         }
     } else {
         for (const auto& [gid, _] : geometry.nets_) {
             (void)_;
-            out.add(gid, partition_id);
+            out.add(gid.value(), partition_id);
         }
         for (const auto& [gid, _] : geometry_pg.nets_) {
             (void)_;
-            out.add(gid, partition_id);
+            out.add(gid.value(), partition_id);
         }
     }
     return out;

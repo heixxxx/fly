@@ -29,6 +29,7 @@
 
 #include <common/serialization/cpp/serialization_macros.h>
 #include <container/cpp/container_aliases.h>
+#include <emir/common/cpp/emir_ids.h>
 #include <emir/design/cpp/ds_flatten.h>
 
 #include <algorithm>
@@ -39,8 +40,9 @@ namespace fly {
 // 段粒度（2^20 id/段；段对象 = 定长 pids 数组 uint32 × 2^20 ≈ 4 MiB）
 inline constexpr uint64_t kIdMapSegmentBits = 20;
 inline constexpr uint64_t kIdMapSegmentSize = uint64_t{1} << kIdMapSegmentBits;
-// 段内空洞哨兵（partition id 合法值域 = 分区表下标，远小于 UINT32_MAX）
-inline constexpr uint32_t kIdMapNoPartition = UINT32_MAX;
+// 段内空洞哨兵（partition id 合法值域 = 分区表下标，远小于哨兵值；与
+// CMPartitionId 默认哨兵同值口径）
+inline constexpr uint32_t kIdMapNoPartition = CMPartitionId::kInvalid;
 
 // 分区片段（S9 每分区合并任务的临时产物；freeze 前由映射汇总任务合并
 // 后清理）——本区 (id, partition id) 对的平行数组
@@ -50,9 +52,9 @@ public:
     // net 副本 global id）+ 对齐的 partition id（= 本区 pid，恒同值——
     // 平行数组形态保持与 merge 输入契约显式可见）
     CMVector<uint64_t> ids_;
-    CMVector<uint32_t> pids_;
+    CMVector<CMPartitionId> pids_;
 
-    void add(uint64_t id, uint32_t pid) {
+    void add(uint64_t id, CMPartitionId pid) {
         ids_.push_back(id);
         pids_.push_back(pid);
     }
@@ -71,15 +73,15 @@ public:
     // id_start_；kIdMapNoPartition = 空洞）。**消费禁令**：数组按整段
     // 序列化（bitsery 变长编码下全空段也占空间——空洞段以「不在段表」
     // 表达，本对象只在段表登记后落盘）
-    CMVector<uint32_t> pids_;
+    CMVector<CMPartitionId> pids_;
 
     CM_PROPERTY(id_start)
 
     size_t size() const { return pids_.size(); }
     // id → partition id（未配置段长/空洞/越界 = kIdMapNoPartition）
-    uint32_t partition_of(uint64_t id) const {
+    CMPartitionId partition_of(uint64_t id) const {
         if (id < id_start_ || id - id_start_ >= pids_.size()) {
-            return kIdMapNoPartition;
+            return CMPartitionId{kIdMapNoPartition};
         }
         return pids_[static_cast<size_t>(id - id_start_)];
     }
@@ -133,6 +135,6 @@ DSIdPartitionMapResult ds_merge_id_partition_slices(
 DSIdPartitionSlice ds_collect_partition_id_slice(
     const DSPartInstances& instances, const DSPartitionGeometry& geometry,
     const DSPartitionGeometry& geometry_pg, bool instance_kind,
-    uint32_t partition_id);
+    CMPartitionId partition_id);
 
 }  // namespace fly

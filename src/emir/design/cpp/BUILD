@@ -46,6 +46,7 @@ cc_library(
         "//src/common/types:fly_common_types",
         "//src/container/cpp:fly_container",
         "//src/container/cpp:fly_container_aliases",
+        "//src/emir/common/cpp:fly_emir_common_cpp",  # CM 族强类型 id
         "//src/geometry:fly_geometry",
         "//src/lefdef:fly_lefdef_def",
         "//src/lefdef:fly_lefdef_lef",
