@@ -1,6 +1,43 @@
 # 文档变更记录
 
 ---
+
+## 2026-09-16: design db 命名语义重构（三条裁定）+ id 强类型体系 + weak 观察化
+
+**三条命名裁定**（2026-09-16 用户裁定，推翻既有 D1 等裁定，属基础语义修正）：
+
+1. **层级路径不含设计名前缀**：实例/网路径从顶层内容起（`u_core0/u_child`；
+   顶层平铺实例即单段名）。依据：外部工具名字（TWF/网表）从不含设计名。
+2. **顶层实例名恒空串**：root 实例名不再「block 名自指」；`get_full_name(0)`
+   = 空串、`get_global_id("")` = 0（对称语义）；树打印 root 行 `(top)` 占位。
+3. **pin 全局名字空间（推翻 D1 组合键）**：pin id 按唯一 pin 名分配（键 = 裸
+   pin 名，同名 pin 跨 cell 共享 id，id 空间收敛为库级唯一 pin 名数）；几何/
+   功耗时序表是 (cell, pin) 属性，改挂 `(cell id, pin id)` 双键；S5b 裸名直查
+   + 所属 cell 存在性校验；**S7 对接键升维 (子 block cell id, port pin id)**
+   （否则不同子定义同名 port 网误并——旧「同 id 不会出现在两个 block cell」
+   前提被推翻）。
+
+**同族类型纪律**（2026-09-16 用户裁定）：
+
+- **id 强类型**：`StrongIdT<Tag, IntT>` 框架模板（common/types，字节级序列化
+  直通、跨类运算编译错、哨兵 = 整型最大值）+ emir 族实例化
+  `emir/common/cpp/emir_ids.h`（CM 前缀，单一权威点）；design 模块触及面
+  全量切换，Python 面 id 保持 int 交换。
+- **领域枚举定型**：enum class 直接存储（固定底层类型，序列化逐位不变），
+  禁止裸整型承载枚举语义。
+- **weak 观察化**：分区/网产物对象大容器成员 CMSharedPtr 持有，观察访问器
+  （connections_of/entries_of/net_of/find_* 族）返回 CMWeakPtr；序列化值内
+  容直通字节级不变（框架 fly_ser::elem 单点扩展 + 字节一致性单测）；双向
+  语义单测（宿主存活期共享视图可用/宿主亡后 lock 失败）。`DSDesign::cells_`
+  等**容器内部视图返回豁免**（§16 增补：长期根对象、无驱逐场景合规）。
+
+**影响面**：src/common/types（strong_id.h）、src/emir/common（新 cpp 基座）、
+design 模块 C++/导出/测试全量、qa/emir 断言（路径去前缀、root 空名、树打印
+占位、表/几何双键）；文档 design-db-plan.md 加裁定注记（原裁定文本保留）、
+design-knowledge.md 词汇表与 id 体系更新。全仓 111 单测 + qa/emir 4 用例
+全部通过。
+
+---
 ---
 
 ## 2026-09-15: pg_grid 放大设计落地 + 入口嗅探读窗 1KB→1MB 修复

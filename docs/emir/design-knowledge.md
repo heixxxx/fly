@@ -47,7 +47,7 @@ EMIR（Electro-Migration 与 IR-Drop 分析）工具链的输入是芯片版图�
 | 概念 | 含义 |
 |------|------|
 | cell（macro） | 单元定义——标准单元/macro/block 的静态描述（尺寸、引脚、图形） |
-| pin | cell 的引脚定义；port = block 级引脚（DEF PINS），复用 pin 结构（裁定 ㉙） |
+| pin | cell 的引脚定义；port = block 级引脚（DEF PINS），复用 pin 结构（裁定 ㉙）。**2026-09-16 裁定 3**：pin id 按唯一 pin 名分配（全局 pin 名字空间，键 = 裸 pin 名，同名 pin 跨 cell 共享 id）；方向/类型是 (cell, pin) 属性随 DSPin，LEF 几何与功耗/时序表改挂 (cell id, pin id) 双键 |
 | instance | cell 在设计中的实例化（放置）：引用 cell id + 位置 + 朝向 + 状态 |
 | block | 子设计（对应一个子 DEF）作为可实例化的「cell」；block 定义可被多处实例化 |
 | block instance | block 的一次实例化——层级树节点；block **定义**是 DAG（共享引用），block **实例**是树 |
@@ -120,7 +120,8 @@ EMIR（Electro-Migration 与 IR-Drop 分析）工具链的输入是芯片版图�
 
 ## 5. id 体系与层级树
 
-- **全局平铺 pin id**：跨 cell 全局单调分配（D1），pin namemap 键 = `cell_name/pin_name`；
+- **pin id（2026-09-16 裁定 3，推翻 D1 组合键）**：按唯一 pin 名分配——全局 pin 名字空间键 = 裸 pin 名（原 D1「跨 cell 全局单调分配 + `cell_name/pin_name` 组合键」表述作废），同名 pin 跨 cell 共享同一 id，id 空间 = 库级唯一 pin 名数（几十量级）；per-cell pin 属性（方向/类型随 DSPin、几何/表挂 (cell id, pin id) 双键）；
+- **层级路径（2026-09-16 裁定 1/2）**：实例/网层级路径**不含设计名前缀**——从顶层内容起（`u_core0/u_child`），顶层平铺实例/网 = 单段名，root 段不入路径；root 顶层实例名恒**空串**（`get_full_name(0)` = 空串、`get_global_id("")` = 0，对称语义；树打印 root 行以 `(top)` 占位显示）。依据：外部工具名字（TWF/网表）从不含设计名；
 - **cell id**：block cell 与 macro cell 同一编号空间（S4 头扫描合成 block cell）；fake cell id = max_cell_id + 唯一值（⑳）；
 - **via cell**：独立编号空间、集中权威表；DEF 来源 via 登记名 = `design_name::via_name`（⑫）；
 - **instance id**：local id 从 1 起，local 0 = 当前 block 自身占位；global id 0 = top block instance（⑧）；
@@ -131,6 +132,14 @@ EMIR（Electro-Migration 与 IR-Drop 分析）工具链的输入是芯片版图�
   范围查（block instance→id 区间）、parent/直系 children、以 name 打印树（⑮）；
 - **DSDesign 容器**（⑬）：全局轻量数据（cell/via cell/lib 关联/层级树/轻量 namemap）统一收纳，
   后续功能以方法增强该类；大体量数据（instance/net 映射、分区产物、密度图）为独立对象。
+- **强类型 id 与领域枚举（2026-09-16 裁定）**：全部实体 id 用强类型 class（框架模板
+  `StrongIdT` 于 `common/types`，业务实例化于 `emir/common/cpp/emir_ids.h` 单一权威点——
+  CM 前缀族 `CMCellId/CMPinId/CMInstanceId/CMNetId/CMViaCellId/CMViaInstanceId/CMLayerId/
+  CMPartitionId`，32/64 位分组、哨兵 = 整型最大值、跨类运算编译错、序列化字节级直通）；
+  领域枚举一律 enum class 定型存储（固定底层类型，序列化逐位不变），禁止裸整型承载 id 或枚举语义；
+- **weak 观察化（2026-09-16 裁定）**：分区/网产物对象的大容器成员改 `CMSharedPtr` 持有，
+  观察访问器（connections_of/entries_of/net_of/find_* 族）返回 `CMWeakPtr`——调用方 lock 后
+  持锁期使用，宿主析构后 lock 失败而非悬空；序列化值内容直通字节级不变。
 
 ## 6. 数据组织原则（裁定摘要）
 

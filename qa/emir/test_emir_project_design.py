@@ -309,7 +309,7 @@ hier = design.get_hier_tree()
 assert hier.node_count == 2 and hier.design_name == "block_parent"
 root = hier.node(0)
 assert root.block_cell_name == "block_parent"
-assert root.instance_name == "block_parent"
+assert root.instance_name == ""  # 2026-09-16 裁定 2：root 实例名恒空串
 assert root.self_global_id == 0 and root.parent_id == 0
 assert root.instance_range == (0, 4), f"root inst={root.instance_range}"
 assert root.net_range == (0, 2), f"root net={root.net_range}"
@@ -343,7 +343,7 @@ assert hier.global_via_instance_id(0, 1) is None, "root has no via"
 assert hier.global_via_instance_id(1, 1) == 0, "child VIA12 global id"
 assert hier.global_via_instance_id(1, 2) is None
 tree_text = hier.format_tree()
-assert "block_parent as block_parent" in tree_text
+assert "block_parent as (top)" in tree_text  # 裁定 2：root 行占位显示
 assert "block_child as top3" in tree_text
 assert "inst=[4,6)" in tree_text
 INFO("[OK] S6: hierarchy tree (DFS numbering, ⑧ local-0 mapping, four "
@@ -383,22 +383,26 @@ INFO("[OK] S7 net union: cross-block merge (n1 -> n_top), dangling port "
 #（block_child，inst [4,6) net [1,3)）；伴生对象 names0/1 按序注入
 design_m, mapper_i = load_name_mapper(design_db, kind=0)  # instance 维度
 assert mapper_i.injected_count == 2, f"inject={mapper_i.injected_count}"
-# 层级实例路径 → global id（叶实例 + block instance 自身）
-assert mapper_i.get_global_id("block_parent/top1") == 1
-assert mapper_i.get_global_id("block_parent/top3") == 3, \
+# 层级实例路径 → global id（2026-09-16 裁定 1：路径不含设计名前缀——
+# 顶层平铺实例 = 单段名）
+assert mapper_i.get_global_id("top1") == 1
+assert mapper_i.get_global_id("top3") == 3, \
     "block instance self global id (⑧)"
-assert mapper_i.get_global_id("block_parent/top3/u1") == 5
-# global id → 层级实例路径（与正向闭环）
-assert mapper_i.get_full_name(3) == "block_parent/top3"
-assert mapper_i.get_full_name(5) == "block_parent/top3/u1"
-assert mapper_i.get_full_name(1) == "block_parent/top1"
+assert mapper_i.get_global_id("top3/u1") == 5
+# global id → 层级实例路径（与正向闭环；顶层叶 = 单段名）
+assert mapper_i.get_full_name(3) == "top3"
+assert mapper_i.get_full_name(5) == "top3/u1"
+assert mapper_i.get_full_name(1) == "top1"
+# 裁定 2 对称语义：root 路径 = 空串；绑定层把空名转 None（与未
+# 命中同形态，既有约定）
+assert mapper_i.get_full_name(0) is None
 # 未注入/路径断裂 → None（不透出哨兵）
-assert mapper_i.get_global_id("block_parent/ghost") is None
+assert mapper_i.get_global_id("ghost") is None
 assert mapper_i.get_full_name(999) is None
 _, mapper_n = load_name_mapper(design_db, kind=1)  # net 维度（区间换算不同）
-assert mapper_n.get_global_id("block_parent/n_top") == 1
-assert mapper_n.get_global_id("block_parent/top3/n1") == 3
-assert mapper_n.get_full_name(4) == "block_parent/top3/n2"
+assert mapper_n.get_global_id("n_top") == 1
+assert mapper_n.get_global_id("top3/n1") == 3
+assert mapper_n.get_full_name(4) == "top3/n2"
 INFO("[OK] R7 name mapper: instance/net both dimensions, bidirectional "
      "close-loop over hierarchy paths (injected lightweight shell)")
 
@@ -438,21 +442,27 @@ from emir.design import load_design_with
 loaded = load_design_with(design_db, pin_tables=True, pin_geometries=True)
 loaded_inv = loaded.get_cell(inv_id)
 assert loaded_inv.get_pin_tables() is not None, "pin tables should be injected"
-# R4：表按全局 pin id 检索——lib 中 internal_power 挂在 ZN 上（pin A 无表）
+# 裁定 3：表按 (cell id, pin id) 检索——lib 中 internal_power 挂在
+# INV_X1/ZN 上（pin A 无表）
 pin_zn_id = loaded.pin_id_by_name("INV_X1", "ZN")
 assert pin_zn_id is not None
-assert loaded_inv.get_pin_tables().pin_has_tables(pin_zn_id), \
-    "pin ZN should have extracted lib tables (keyed by global pin id)"
+loaded_inv_id = loaded.cell_id_by_name("INV_X1")
+assert loaded_inv.get_pin_tables().pin_has_tables(loaded_inv_id, pin_zn_id), \
+    "pin ZN should have extracted lib tables (keyed by cell+pin id)"
 pin_a_id_tbl = loaded.pin_id_by_name("INV_X1", "A")
-assert not loaded_inv.get_pin_tables().pin_has_tables(pin_a_id_tbl), \
+assert not loaded_inv.get_pin_tables().pin_has_tables(loaded_inv_id,
+                                                      pin_a_id_tbl), \
     "pin A carries no lib table"
 assert loaded_inv.get_pin_geometry() is not None
 INFO("[OK] load_design_with: pin tables/geometry injected, keyed by pin id")
 
-# port 几何经全局 pin id 检索（R4/R5：port 几何挂 port 的全局 pin id）
+# port 几何按 (block cell id, 全局 pin id) 检索（裁定 3：(cell, pin)
+# 属性；port 几何挂 block cell 维度）
 pin_in_id = loaded.pin_id_by_name("block_child", "PIN_IN")
+block_child_id = loaded.cell_id_by_name("block_child")
 assert pin_in_id is not None
-port_geoms = loaded.get_pin_geometry().geometry_of(pin_in_id)
+port_geoms = loaded.get_pin_geometry().geometry_of(block_child_id,
+                                                   pin_in_id)
 assert len(port_geoms) == 1, f"PIN_IN geoms={port_geoms}"
 assert port_geoms[0] == (0, (-5, -10, 15, 20)), f"PIN_IN geom={port_geoms[0]}"
 INFO("[OK] port geometry retrievable by global pin id (R4/R5)")
@@ -539,11 +549,11 @@ lcp_design = lcp_db.load_design()
 hier_lcp = lcp_design.get_hier_tree()
 assert hier_lcp.node_count == 2 and hier_lcp.design_name == "block_parent"
 _, mapper_lcp = load_name_mapper(lcp_db, kind=0)
-assert mapper_lcp.get_global_id("block_parent/top3/u1") == 5
-assert mapper_lcp.get_full_name(5) == "block_parent/top3/u1"
+assert mapper_lcp.get_global_id("top3/u1") == 5
+assert mapper_lcp.get_full_name(5) == "top3/u1"
 _, mapper_lcp_n = load_name_mapper(lcp_db, kind=1)
-assert mapper_lcp_n.get_global_id("block_parent/top3/n2") == 4
-assert mapper_lcp_n.get_full_name(4) == "block_parent/top3/n2"
+assert mapper_lcp_n.get_global_id("top3/n2") == 4
+assert mapper_lcp_n.get_full_name(4) == "top3/n2"
 INFO("[OK] R8d LCP name arena: hier tree + global mapper closed-loop over "
      "LCP rank backtrack")
 
@@ -798,48 +808,48 @@ INFO("[OK] id->partition map: segment index + direct-index pids, holes "
      "for UNPLACED instance and geometry-less nets")
 
 # get_instance：层级路径入参（pos (1350,700) 与 S9 段同源手算）
-inst = design_db.get_instance("block_parent/top3/u1")
-assert inst["id"] == 5 and inst["name"] == "block_parent/top3/u1"
+inst = design_db.get_instance("top3/u1")
+assert inst["id"] == 5 and inst["name"] == "top3/u1"
 assert inst["pos"] == (1350, 700) and inst["orient"] == 0
 assert inst["placement_status"] == "PLACED"
 assert inst["primary_partition_id"] == 0
 assert inst["cell_id"] == inv_id and inst["cell_name"] == "INV_X1"
 assert [(c["net_id"], c["net_name"], c["pin_name"])
         for c in inst["connections"]] == [
-    (3, "block_parent/top3/n1", "A"), (4, "block_parent/top3/n2", "ZN")]
+    (3, "top3/n1", "A"), (4, "top3/n2", "ZN")]
 assert [(c["is_receiver"], c["is_driver"])
         for c in inst["connections"]] == [(True, False), (False, True)]
 # id 入参（top1：连接 = root 网 n_top（global 1）的 A 端点）
 top1 = design_db.get_instance(1)
-assert top1["name"] == "block_parent/top1"
+assert top1["name"] == "top1"
 assert [(c["net_id"], c["net_name"], c["pin_name"], c["is_port"])
         for c in top1["connections"]] == \
-    [(1, "block_parent/n_top", "A", False)]
+    [(1, "n_top", "A", False)]
 # root 占位 id 0 / 越界 / 未知名 → None
 assert design_db.get_instance(0) is None, \
     "root placeholder has no partition copy"
 assert design_db.get_instance(999) is None
-assert design_db.get_instance("block_parent/ghost") is None
+assert design_db.get_instance("ghost") is None
 
 # get_net：非 pg 明细（端点实例名 + pin 名 name 化；port 条目 = 块实例
 # 层级名 + port 名）；无几何网查不到；id 0 = OBS 专属位非真网 → None
-n1 = design_db.get_net("block_parent/top3/n1")
+n1 = design_db.get_net("top3/n1")
 assert n1["id"] == 3 and n1["use"] == "SIGNAL" and n1["is_pg"] is False
 assert n1["connection_count"] == 2
 assert n1["receiver_count"] == 2 and n1["driver_count"] == 0 \
     and n1["hybrid_count"] == 0
 assert [(c["instance_id"], c["instance_name"], c["pin_name"], c["is_port"])
         for c in n1["connections"]] == [
-    (5, "block_parent/top3/u1", "A", False),
-    (3, "block_parent/top3", "PIN_IN", True)]
+    (5, "top3/u1", "A", False),
+    (3, "top3", "PIN_IN", True)]
 # n_top 有连接但无几何（block_parent.def 的 n_top 无 wire/rect）→ 无
 # 分区副本、NETS 无 DSNet 记录 → 显式 None（2026-09-13 review 修正：
 # 旧兜底曾静默降级为空概要——丢失连接信息且误导；其真实连接在 S5b
 # 产物与 net_union 中）
-n_top = design_db.get_net("block_parent/n_top")
+n_top = design_db.get_net("n_top")
 assert n_top is None, \
     "geometry-less net (with connections) must return explicit None"
-assert design_db.get_net("block_parent/top3/n2") is None, \
+assert design_db.get_net("top3/n2") is None, \
     "geometry-less net has no partition copy"
 assert design_db.get_net(0) is None, \
     "id 0 is the OBS-exclusive slot, not a real net (2026-09-14 ruling)"
@@ -871,19 +881,20 @@ assert design_db.convert_to_id("cell", "INV_X1") == inv_id
 assert design_db.convert_to_id(kind="cell", name="INV_X1") == inv_id
 assert design_db.convert_to_id(cell="INV_X1") == inv_id
 assert design_db.convert_to_name(cell=inv_id) == "INV_X1"
-assert design_db.convert_to_id(pin="INV_X1/A") == 0
-assert design_db.convert_to_name(pin=0) == "INV_X1/A"
+assert design_db.convert_to_id(pin="INV_X1/A") == 0  # 裁定 3：组合形态兼容（取名段 A）
+assert design_db.convert_to_id(pin="A") == 0
+assert design_db.convert_to_name(pin=0) == "A"  # 裁定 3：键 = 裸 pin 名
 assert design_db.convert_to_id(layer="M2") == 2
 assert design_db.convert_to_name(layer=2) == "M2"
 via12 = design.via_cell_id_by_name("block_child::VIA12")
 assert design_db.convert_to_id(via_cell="block_child::VIA12") == via12
 assert design_db.convert_to_name(via_cell=via12) == "block_child::VIA12"
-assert design_db.convert_to_id(inst="block_parent/top3/u1") == 5
-assert design_db.convert_to_name(inst=5) == "block_parent/top3/u1"
+assert design_db.convert_to_id(inst="top3/u1") == 5
+assert design_db.convert_to_name(inst=5) == "top3/u1"
 assert design_db.convert_to_name(inst=10) is None, \
     "user example kwargs form: absent id returns None"
-assert design_db.convert_to_id(net="block_parent/n_top") == 1
-assert design_db.convert_to_name(net=1) == "block_parent/n_top"
+assert design_db.convert_to_id(net="n_top") == 1
+assert design_db.convert_to_name(net=1) == "n_top"
 assert design_db.convert_to_id(cell="GHOST") is None
 INFO("[OK] debug API on design db: get_instance/get_net/get_cell/"
      "get_layer/convert both directions (id+name paired, name-resolved)")
@@ -921,7 +932,7 @@ INFO("[OK] S5b USE collection: eight-value enum, non-SIGNAL recorded, "
 # get_net 手算：sig1（global 1）连接 3 条 = h1.BIDIR（INOUT → hybrid）+
 # h2.A（INPUT → receiver）+ PIN DBG_IN（port 位 + INPUT → receiver）——
 # driver 0 / receiver 2 / hybrid 1 / port 1（三分类互斥单列口径）
-sig1 = debug_db.get_net("debug_design/sig1")
+sig1 = debug_db.get_net("sig1")
 assert sig1["id"] == 1 and sig1["use"] == "SIGNAL"
 assert sig1["connection_count"] == 3
 assert sig1["hybrid_count"] == 1, "INOUT endpoint = hybrid (third class)"
@@ -929,18 +940,18 @@ assert sig1["driver_count"] == 0 and sig1["receiver_count"] == 2
 assert sig1["port_count"] == 1
 assert [(c["instance_name"], c["pin_name"], c["is_port"])
         for c in sig1["connections"]] == [
-    ("debug_design/h1", "BIDIR", False),
-    ("debug_design/h2", "A", False),
-    ("debug_design", "DBG_IN", True)]
+    ("h1", "BIDIR", False),
+    ("h2", "A", False),
+    (None, "DBG_IN", True)]  # 裁定 2：root 块实例路径 = 空串（绑定层空名转 None）
 # tie1（global 2）/weird（global 3）：USE 八值语义；VDD0（global 4）：pg
 # 网（USE POWER）无 connections 明细、计数概要数位（VDDP INPUT POWER →
 # receiver 1 + power 1）
 tie1 = debug_db.get_net(2)
-assert tie1["name"] == "debug_design/tie1" and tie1["use"] == "TIEOFF"
+assert tie1["name"] == "tie1" and tie1["use"] == "TIEOFF"
 assert tie1["is_pg"] is False and tie1["driver_count"] == 1
-weird = debug_db.get_net("debug_design/weird")
+weird = debug_db.get_net("weird")
 assert weird["use"] == "ANALOG" and weird["receiver_count"] == 1
-vdd0 = debug_db.get_net("debug_design/VDD0")
+vdd0 = debug_db.get_net("VDD0")
 assert vdd0["id"] == 4 and vdd0["use"] == "POWER" and vdd0["is_pg"] is True
 assert "connections" not in vdd0, \
     "pg net must not return connection details (data guard red line)"
@@ -955,13 +966,13 @@ INFO("[OK] get_net hand-computed: hybrid/driver/receiver/port counting "
 # get_instance 手算：h1 连接 = sig1（1）的 BIDIR（hybrid）+ VDD0（4）的
 # VDDP（receiver + power 位）；h2 连接 = sig1 A（receiver）+ tie1 ZN
 #（driver）+ weird A（receiver）
-h1 = debug_db.get_instance("debug_design/h1")
+h1 = debug_db.get_instance("h1")
 assert h1["id"] == 1 and h1["cell_name"] == "INVIO"
 assert h1["pos"] == (100, 100) and h1["orient"] == 0
 assert sorted((c["net_id"], c["net_name"], c["is_driver"], c["is_receiver"],
                 c["is_power"]) for c in h1["connections"]) == [
-    (1, "debug_design/sig1", True, True, False),
-    (4, "debug_design/VDD0", False, True, True)]
+    (1, "sig1", True, True, False),
+    (4, "VDD0", False, True, True)]
 h2 = debug_db.get_instance(2)
 assert h2["cell_name"] == "INV_X1"
 assert sorted((c["net_id"], c["is_receiver"], c["is_driver"])

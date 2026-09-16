@@ -55,8 +55,9 @@ nb::object rect_to_tuple(const fly::GEORectT<T>& r) {
 
 // DSShapeRef 以二元组透出：(layer_id, (x_low, y_low, x_high, y_high))
 nb::object geometry_ref_to_tuple(const fly::DSShapeRef& g) {
+    // 强类型 id 边界 int 交换（2026-09-16 裁定——id 不直传 nanobind）
     return nb::make_tuple(
-        g.get_layer_id(),
+        g.get_layer_id().value(),
         nb::make_tuple(g.get_rect().get_x_low(), g.get_rect().get_y_low(),
                        g.get_rect().get_x_high(), g.get_rect().get_y_high()));
 }
@@ -69,8 +70,12 @@ FLY_EXPORT_CLASS(fly::DSLayer, "EXDSLayer")
     FLY_EXPORT_INIT()
     FLY_EXPORT_READONLY_ATTR("name", &fly::DSLayer::name_)
     FLY_EXPORT_READONLY_PROPERTY("id", [](const fly::DSLayer& l) { return l.get_id().value(); })
-    FLY_EXPORT_READONLY_ATTR("type", &fly::DSLayer::type_)
-    FLY_EXPORT_READONLY_ATTR("direction", &fly::DSLayer::direction_)
+    FLY_EXPORT_READONLY_PROPERTY("type", [](const fly::DSLayer& l) {
+        return static_cast<int>(l.get_type());
+    })
+    FLY_EXPORT_READONLY_PROPERTY("direction", [](const fly::DSLayer& l) {
+        return static_cast<int>(l.get_direction());
+    })
     FLY_EXPORT_READONLY_ATTR("default_width", &fly::DSLayer::default_width_)
     FLY_EXPORT_READONLY_ATTR("pitch", &fly::DSLayer::pitch_)
     FLY_EXPORT_READONLY_ATTR("min_area", &fly::DSLayer::min_area_)
@@ -110,11 +115,18 @@ FLY_EXPORT_CLASS(fly::DSPin, "EXDSPin")
     FLY_EXPORT_INIT()
     // R7 ㊱：DSPin 不存 name（name 分层存储在 DSDesign 的 pin hasher；
     // 2026-09-16 裁定 3 后键 = 裸 pin 名，经 DSDesign::pin_name_of 反查）
-    FLY_EXPORT_READONLY_ATTR("type", &fly::DSPin::type_)
-    FLY_EXPORT_READONLY_ATTR("direction", &fly::DSPin::direction_)
+    FLY_EXPORT_READONLY_PROPERTY("type", [](const fly::DSPin& p) {
+        return static_cast<int>(p.get_type());
+    })
+    FLY_EXPORT_READONLY_PROPERTY("direction", [](const fly::DSPin& p) {
+        return static_cast<int>(p.get_direction());
+    })
     // R4：全局平铺 pin id + 放置状态（P3：仅 port 场景有效）
     FLY_EXPORT_READONLY_PROPERTY("pin_id", [](const fly::DSPin& p) { return p.get_pin_id().value(); })
-    FLY_EXPORT_READONLY_ATTR("placement_status", &fly::DSPin::placement_status_)
+    FLY_EXPORT_READONLY_PROPERTY("placement_status",
+                                 [](const fly::DSPin& p) {
+        return static_cast<int>(p.get_placement_status());
+    })
     // R5：port 复用标记（㉙）
     FLY_EXPORT_READONLY_PROPERTY("is_port", [](const fly::DSPin& p) {
         return p.is_port();
@@ -205,8 +217,10 @@ FLY_EXPORT_CLASS(fly::DSInstance, "EXDSInstance")
     FLY_EXPORT_READONLY_PROPERTY("orient", [](const fly::DSInstance& i) {
         return static_cast<int>(i.get_transform().get_orient());
     })
-    FLY_EXPORT_READONLY_ATTR("placement_status",
-                             &fly::DSInstance::placement_status_)
+    FLY_EXPORT_READONLY_PROPERTY("placement_status",
+                                 [](const fly::DSInstance& i) {
+        return static_cast<int>(i.get_placement_status());
+    })
     // S9：分区归属 primary 位（解析产物恒复位；分区副本置位）
     FLY_EXPORT_READONLY_PROPERTY("is_primary", [](const fly::DSInstance& i) {
         return i.is_primary();
@@ -1570,7 +1584,8 @@ FLY_EXPORT_CLASS(fly::DSIdPartitionSlice, "EXDSIdPartitionSlice")
         return static_cast<int>(s.size());
     })
     FLY_EXPORT_DEF("at", [](const fly::DSIdPartitionSlice& s, size_t i) {
-        return nb::make_tuple(s.ids_.at(i), s.pids_.at(i));
+        // pids_ 为 CMSharedPtr 持有的 CMPartitionId——强类型边界 int
+        return nb::make_tuple(s.ids_.at(i), s.pids_.at(i).value());
     })
     FLY_EXPORT_SERIALIZE_PICKLE(fly::DSIdPartitionSlice);
 

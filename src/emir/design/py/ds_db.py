@@ -509,7 +509,9 @@ class DesignDb(Database):
         convert_to_id(cell="INV_X1") / convert_to_id(inst="top/i1/u1")。
         kind ∈ {cell, pin, layer, via_cell, inst, net}：inst/net 走层级
         路径 name mapper（'/' 分隔全路径），cell/layer/via_cell 走各自
-        hasher，pin 走组合键 "cell_name/pin_name"（D1）。
+        hasher，pin 走全局 pin 名字空间（2026-09-16 裁定 3：键 = 裸 pin
+        名；同名 pin 跨 cell 共享 id。兼容旧 "cell_name/pin_name" 组合形
+        态——取最后一段即 pin 名）。
         """
         if kind is not None:
             if name is None or kwargs:
@@ -528,13 +530,11 @@ class DesignDb(Database):
         if k == "cell":
             return self._cached_design().cell_id_by_name(v)
         if k == "pin":
-            # pin 组合键（D1）拆分直查（name = "cell_name/pin_name"）
-            cell_name, _, pin_name = str(v).rpartition("/")
-            if not cell_name:
-                raise ValueError(
-                    f"convert_to_id: pin name must be 'cell_name/pin_name'"
-                    f" combined key, got {v!r}")
-            return self._cached_design().pin_id_by_name(cell_name, pin_name)
+            # pin 名（裁定 3：键 = 裸 pin 名；兼容旧 "cell/pin" 组合形态
+            # ——取最后一段）
+            pin_name = str(v).rpartition("/")[2]
+            return self._cached_design().pin_id_by_name("",
+                                                        pin_name)
         if k == "layer":
             return self._cached_stack().find_layer(v)  # 未命中 None
         if k == "via_cell":
@@ -570,7 +570,7 @@ class DesignDb(Database):
         if k == "cell":
             return self._cached_design().cell_name_by_id(v)
         if k == "pin":
-            # pin 组合键全名（R7 ㊱：pin 自身不存名，与组合键入参对称）
+            # pin 名（R7 ㊱：pin 自身不存名；裁定 3 后键 = 裸 pin 名）
             key = self._cached_design().pin_key_by_id(v)
             return key or None
         if k == "layer":
