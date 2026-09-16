@@ -25,3 +25,15 @@ cc_test(
     ],
     copts = ["-std=c++20"],
 )
+
+cc_test(
+    name = "strong_id_test",
+    srcs = ["strong_id_test.cpp"],
+    deps = [
+        "@googletest//:gtest_main",
+        "//src/common/serialization:fly_serialization",
+        "//src/common/types:fly_common_types",
+        "//src/container/cpp:fly_container_aliases",
+    ],
+    copts = ["-std=c++20"],
+)
