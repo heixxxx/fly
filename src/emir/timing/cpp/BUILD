@@ -10,10 +10,12 @@ cc_library(
     name = "fly_emir_timing",
     srcs = [
         "tm_parser.cpp",
+        "tm_partition.cpp",
         "tm_types.cpp",
     ],
     hdrs = [
         "tm_parser.h",
+        "tm_partition.h",
         "tm_types.h",
     ],
     strip_include_prefix = "/src",
@@ -22,6 +24,7 @@ cc_library(
         "//src/container/cpp:fly_container_aliases",
         "//src/common/serialization:fly_serialization",
         "//src/emir/common/cpp:fly_emir_common_cpp",  # CM 族强类型 id
+        "//src/emir/design/cpp:fly_emir_design_ds_types",  # 换算消费 design db 快照
     ],
     visibility = ["//visibility:public"],
 )
