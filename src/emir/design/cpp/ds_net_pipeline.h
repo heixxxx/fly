@@ -15,10 +15,11 @@
 //   DSNetConnectionParseNode  连接项解析：网名对齐 S5a local net id（⑨）
 //                             + 连接项 id 换算（2026-09-13 裁定：解析边
 //                             界一次完成名字 → id——instance 名 → local
-//                             id 经 S5a 实例 hasher、pin 名 → 全局平铺
-//                             pin id 经容器 pin hasher 组合键
-//                             "cell_name/pin_name"、"PIN" port 条目 →
-//                             组合键 "block_name/port_name"）+ flags 六
+//                             id 经 S5a 实例 hasher、pin 名 → 全局 pin
+//                             id 经全局 pin 名字空间（2026-09-16 裁定
+//                             3，键 = 裸 pin 名，同名 pin 跨 cell 共享
+//                             id）+ 所属 cell 存在性校验、"PIN" port
+//                             条目 → port 名查全局名字空间）+ flags 六
 //                             位填写（port/driver/receiver/power/ground/
 //                             clock——定位到的 DSPin direction/type 顺手
 //                             取得，hybrid = driver+receiver 同置）+ 未

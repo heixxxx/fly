@@ -364,12 +364,12 @@ int cell_pin_cbk(lefrCallbackType_e, lefiPin* p, lefiUserData ud) {
     if (!ctx->macro_valid) return 0;
 
     DSPin pin;
-    // R7 ㊱：pin 名不进 DSPin（仅全局/局部 pin hasher 的组合键）
+    // R7 ㊱：pin 名不进 DSPin（仅全局 pin 名字空间——2026-09-16 裁定 3，
+    // 键 = 裸 pin 名，同名 pin 跨 cell 共享 id）
     pin.set_type(map_pin_use(p->hasUse() ? p->use() : "SIGNAL"));
     pin.set_direction(map_pin_direction(p->hasDirection() ? p->direction()
                                                           : "INPUT"));
-    // R4：局部 pin id 平铺分配（part 内跨 cell 单调）+ 局部 pin hasher
-    // 注册；全局平铺 id 由 T6 汇总重排后回填 cell.pins_ 的 pin_id_
+    // R4：pin 名登记进全局 pin 名字空间（分配与回填见下注）
     const CMString pin_name = p->name();
     ctx->current_cell.add_pin(std::move(pin));
     // 2026-09-16 裁定 3：局部 pin 名字空间幂等分配（同名 pin 跨 cell 共

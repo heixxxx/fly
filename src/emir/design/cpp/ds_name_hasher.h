@@ -748,7 +748,8 @@ private:
 
 // cell 名 ↔ 全局 cell id（DSDesign；block cell 与 macro 同一编号空间）
 using DSCellNameHasher = DSNameHasherT<uint32_t, DSHasherBackendHash<uint32_t>>;
-// pin 组合键（"cell_name/pin_name"）↔ 全局平铺 pin id（DSDesign；D1）
+// 全局 pin 名字空间（2026-09-16 裁定 3，键 = 裸 pin 名，同名 pin 跨
+// cell 共享 id）↔ 全局 pin id（DSDesign）
 using DSPinNameHasher = DSNameHasherT<uint32_t, DSHasherBackendHash<uint32_t>>;
 // via cell 名 ↔ via cell id（DSDesign；⑫ DEF 来源带 design:: 前缀）
 using DSViaCellNameHasher =

@@ -1272,8 +1272,9 @@ FLY_EXPORT_CLASS(fly::DSPartConnection, "EXDSPartConnection")
                                  [](const fly::DSPartConnection& c) {
         return c.net_global_id_.value();
     })
-    // 端点 pin 全局平铺 id（2026-09-13 裁定：S5b 解析边界换算、直存——
-    // 名字反查经容器 pin hasher）
+    // 端点 pin 全局 id（2026-09-13 裁定：S5b 解析边界换算、直存；
+    // 2026-09-16 裁定 3——全局 pin 名字空间，键 = 裸 pin 名，名字反查
+    // 经容器 pin 名字空间）
     FLY_EXPORT_READONLY_PROPERTY("pin_id", [](const fly::DSPartConnection& c) { return c.pin_id_.value(); })
     FLY_EXPORT_READONLY_PROPERTY("is_port", [](const fly::DSPartConnection& c) {
         return c.is_port();
@@ -1441,7 +1442,10 @@ FLY_EXPORT_CLASS(fly::DSNet, "EXDSNet")
 // ——net_of 单表查、未命中 None；加载侧按 is_pg 路由到对应侧对象）
 FLY_EXPORT_CLASS(fly::DSPartitionNets, "EXDSPartitionNets")
     FLY_EXPORT_INIT()
-    FLY_EXPORT_READONLY_ATTR("part_id", &fly::DSPartitionNets::part_id_)
+    FLY_EXPORT_READONLY_PROPERTY("part_id",
+                                 [](const fly::DSPartitionNets& p) {
+        return p.part_id_.value();
+    })
     FLY_EXPORT_READONLY_PROPERTY("size",
                                  [](const fly::DSPartitionNets& p) {
         return static_cast<int>(p.size());
@@ -1678,8 +1682,10 @@ FLY_EXPORT_CLASS(fly::DSIdDomain, "EXDSIdDomain")
 // 判定集中在全局任务，Python 面仅规模计数）
 FLY_EXPORT_CLASS(fly::DSPartitionCheckResult, "EXDSPartitionCheckResult")
     FLY_EXPORT_INIT()
-    FLY_EXPORT_READONLY_ATTR("partition_id",
-                             &fly::DSPartitionCheckResult::partition_id_)
+    FLY_EXPORT_READONLY_PROPERTY("partition_id",
+                                 [](const fly::DSPartitionCheckResult& p) {
+        return p.partition_id_.value();
+    })
     FLY_EXPORT_READONLY_ATTR("primary_instance_count",
                              &fly::DSPartitionCheckResult::primary_instance_count_)
     FLY_EXPORT_READONLY_ATTR("instance_count",

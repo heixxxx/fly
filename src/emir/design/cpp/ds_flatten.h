@@ -99,9 +99,10 @@ namespace fly {
 // NETS 侧连接条目（2026-09-13 重组裁定：原 DSPartConnection 的 NET 维度
 // 语义更名——端点网 global id 由所在 DSNet 的键承载，条目三字段）。S5b
 // 连接表 id 形态的 global 化——instance local id → +inst_start（⑧ local
-// 0 = 块实例自身）；pin 全局平铺 id 直存（2026-09-13 裁定（D1 全局平铺
-// pin id）：分区副本 pin 不留名——pin id 全局唯一，名字反查经容器 pin
-// hasher）。flags 六位（port/driver/receiver/power/ground/clock）自 S5b
+// 0 = 块实例自身）；pin 全局 id 直存（2026-09-13 裁定：分区副本 pin
+// 不留名；2026-09-16 裁定 3——全局 pin 名字空间，键 = 裸 pin 名、同名
+// pin 跨 cell 共享 id，名字反查经容器 pin 名字空间）。flags 六位
+// （port/driver/receiver/power/ground/clock）自 S5b
 // 条目直存，hybrid = driver+receiver 同置（第三分类命名，统计口径互斥
 // 单列——见 DSNetConnection 注释）。
 class DSNetConnEntry {

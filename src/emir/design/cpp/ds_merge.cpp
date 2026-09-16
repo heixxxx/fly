@@ -242,9 +242,10 @@ int DSDesign::merge_lib(const LIBLibrary& lib) {
         lib_link_[CMCellId{id}] = lc->name_;
 
         // pin 集合比对（⑯：逐 cell 缺失 pin 名单，提醒不拦截）。
-        // R7 ㊱：DSPin 不存 name——lef pin 名经 pin hasher（键 =
-        // "cell_name/pin_name"）按 pin_id_ 反查（pin_name_of 取名段；
-        // DSGN::0004 是用户可见输出，name 仅在边界转换）
+        // R7 ㊱：DSPin 不存 name——lef pin 名经全局 pin 名字空间
+        // （2026-09-16 裁定 3，键 = 裸 pin 名）按 pin_id_ 反查
+        // （pin_name_of 直查裸 pin 名；DSGN::0004 是用户可见输出，
+        // name 仅在边界转换）
         CMVector<CMString> missing_in_lib;
         CMVector<CMString> missing_in_lef;
         for (const auto& lp : lc->pins_) {

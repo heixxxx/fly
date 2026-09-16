@@ -935,7 +935,7 @@ public:
     // 直系 children id 列表（DFS/实例 local id 序）
     CMVector<uint32_t> children_ids_;
     // block cell 名 + 实例化该 block 的实例名（⑮ name 与 id 双存；root
-    // 实例名 = block 名自指）
+    // 实例名恒空串——2026-09-16 裁定 2，树打印以 (top) 占位显示）
     CMString block_cell_name_;
     CMString instance_name_;
     // block cell 全局 id（R7 ㊻：DSNameMapperT 注入表主口键；未命中 =

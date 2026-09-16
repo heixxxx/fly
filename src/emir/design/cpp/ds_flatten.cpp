@@ -187,12 +187,14 @@ void DSPartitionProduct::merge_from(const DSPartitionProduct& src) {
                                  net->connections_.begin(),
                                  net->connections_.end());
     }
-    // part_id_ 分片归属回填（0 = 未回填缺省，与分区 0 的合法 pid 值一致
-    // ——同分区 id 恒一致，条件覆盖对空分片/重放均幂等；两侧同值）
-    if (src.nets_.part_id_ != 0) {
+    // part_id_ 分片归属回填（未回填 = kInvalid 哨兵——CMPartitionId 默
+    // 认值；is_valid 判定对合法 pid 0 / 空分片 / 重放均幂等，同分区 id
+    // 恒一致；两侧同值。2026-09-17 修复：裸值时代「!= 0 = 未回填」判定
+    // 在强类型化后误吞合法 pid 0——首分区落盘哨兵）
+    if (src.nets_.part_id_.is_valid()) {
         nets_.part_id_ = src.nets_.part_id_;
     }
-    if (src.nets_pg_.part_id_ != 0) {
+    if (src.nets_pg_.part_id_.is_valid()) {
         nets_pg_.part_id_ = src.nets_pg_.part_id_;
     }
     for (const auto& [nid, entries] : src.geometry_.nets_) {

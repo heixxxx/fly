@@ -172,6 +172,11 @@ for nets in (nets0, nets1):
 # 拆分断言：NETS_PG 侧对象恒空、与 NETS 互斥
 assert nets_pg0.size == 0 and nets_pg1.size == 0
 assert list(nets_pg0.ids) == [] and list(nets_pg1.ids) == []
+# 强类型 id 导出面桥（2026-09-17 A-1 回归线）：part_id_ 是 CMPartitionId
+# 成员——导出面经 property + .value() 桥返回 int（def_ro 直绑无 caster，
+# Python 首次访问属性即抛 SystemError，此访问断言即覆盖）
+assert nets0.part_id == 0 and nets1.part_id == 1
+assert nets_pg0.part_id == 0 and nets_pg1.part_id == 1
 # /INST_CONNECTIONS：跟随 instance 副本（partition.def 仅 inv1 有连接项
 # ——inv1 端点只在 p0；inv2/inv3 无连接项不产条目）
 assert [(c.net_global_id, c.pin_id) for c in iconn0.connections_of(1)] \
@@ -230,6 +235,16 @@ assert (report.density_instance_total, report.density_metal_total,
         report.density_via_total) == (3, 8, 0)
 INFO("[OK] S10 verify report: clean fatal fields, id domains exact, "
      "primary-conservation pass, stats hand-computed")
+
+# 分区级校验对象 id 桥同上（EXDSPartitionCheckResult.partition_id，
+# 2026-09-17 A-1 回归线）：每分区一校验任务——xp/yp 取 iter 序
+from emir.design import ds_verify_partition
+chk0 = ds_verify_partition(0, 0, 0, geo0, geo_pg0, inst0, iconn0,
+                           nets0, nets_pg0)
+chk1 = ds_verify_partition(1, 1, 0, geo1, geo_pg1, inst1, iconn1,
+                           nets1, nets_pg1)
+assert chk0.partition_id == 0 and chk1.partition_id == 1
+INFO("[OK] S10 partition check: partition_id int bridge (A-1 regression)")
 
 # 正常路径无损坏类 fatal、观测类 warn 未触发、统计 INFO 已透出
 msgs_s10 = ""

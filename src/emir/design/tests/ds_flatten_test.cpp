@@ -603,6 +603,26 @@ TEST(DSFlattenTest, MergeIsIdempotentForSameSlice) {
               2 * p1->inst_connections_.items_.at(CMInstanceId{5}).size());
 }
 
+// part_id_ 回填哨兵判定回归（2026-09-17）：CMPartitionId 默认 = kInvalid
+// 哨兵（strong_id.h），裸值时代「0 = 未回填」判定会误吞合法 pid 0——首
+// 分区分片 merge 后 part_id_ 必须为 0 而非哨兵（qa/emir 落盘读回同线）
+TEST(DSFlattenTest, MergeFillsFirstPartitionIdNotSentinel) {
+    FlattenEnv env;
+    const auto slices =
+        ds_flatten_block(env.tree, env.sub, env.sub_nets, env.design,
+                         env.parts);
+    const DSPartitionProduct* p0 = product_of(slices, 0);
+    ASSERT_NE(p0, nullptr);
+    // flatten 侧 product_for 创建即回填——分片自身两态基线
+    EXPECT_EQ(p0->nets_.part_id_, CMPartitionId{0});
+    EXPECT_EQ(p0->nets_pg_.part_id_, CMPartitionId{0});
+
+    DSPartitionProduct merged;
+    merged.merge_from(*p0);
+    EXPECT_EQ(merged.nets_.part_id_, CMPartitionId{0});
+    EXPECT_EQ(merged.nets_pg_.part_id_, CMPartitionId{0});
+}
+
 TEST(DSFlattenTest, ProductSerializeRoundTrip) {
     FlattenEnv env;
     const auto slices =
