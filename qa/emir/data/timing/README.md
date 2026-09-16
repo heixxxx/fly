@@ -98,6 +98,9 @@ python3 gen_pg_grid.py                                            # 1. 网表+SD
 
 - `pg_grid.def` 流程双跑逐字节一致；`pg_grid.twf` 驱动双跑逐字节一致
   （2026-09-15 实证）；
+- 若因工具链升级再生成导致数值漂移：以新产物为准，同步更新
+  `src/emir/timing/tests/data/` 副本与 `GeneratedPgGridFile` 锚点断言
+  （计数漂移同理）；同工具链内不允许漂移；
 - 网表时钟树单元**必须取 Nangate45 实际存在的 CLKBUF_X1/X2/X3**——
   X4/X16 是其它平台的单元，2026-09-15 实测引用后 OpenROAD link 建
   black box、LEF master 缺失丢弃实例，时钟根网零负载致 TritonCTS 报

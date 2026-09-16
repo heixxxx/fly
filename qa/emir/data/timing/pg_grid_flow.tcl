@@ -6,7 +6,8 @@
 #       （pg_grid.v 由 gen_pg_grid.py 生成）
 # 产物：pg_grid.def（真实自动布局布线结果：metal1 followpins + metal4/metal7
 #       电源网格条带 + 层间过孔、时钟树、信号网多层布线几何）
-#       pg_grid.twf（布线后时序——内嵌 OpenSTA，网络维度，经 twf_gen.tcl）
+#       pg_grid_routed.v（布线后网表——TWF 的输入）
+# TWF：不在本流程产出，见 pg_grid_twf.tcl
 #
 # 电源网格 = OpenROAD-flow-scripts 官方 nangate45 平台配方
 # grid_strategy-M1-M4-M7.tcl 的 CORE 网格部分（2026-09-15 取自 master）。

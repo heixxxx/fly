@@ -26,7 +26,8 @@ verilog.append("  input  clk;")
 verilog.append("  input  d;")
 verilog.append("  output q;")
 
-# 时钟缓冲树（两级：根 → 8 中间 → 每行一个行缓冲）——未缓冲的 4096 扇出
+# 时钟缓冲树（根/中层/行缓冲三级级联，两段扇出：根→8 中间、中间→行）——
+# 未缓冲的 4096 扇出
 # 会使 RePlAce 布局发散（GPL-0305 实测），真实流程综合后亦必有缓冲树。
 # 单元选型：Nangate45 仅有 CLKBUF_X1/X2/X3——X4/X16 是其它平台的单元
 # （2026-09-15 实测：引用后 OpenROAD link 建 black box、LEF master 缺失
@@ -34,6 +35,7 @@ verilog.append("  output q;")
 M = 8
 verilog.append("  CLKBUF_X3 cb_root (.A(clk), .Z(nclk_root));")
 nets.add("nclk_root")
+inst_count += 1
 for m in range(M):
     verilog.append(f"  CLKBUF_X3  cb_m_{m} (.A(nclk_root), .Z(nclk_m_{m}));")
     nets.add(f"nclk_m_{m}")
@@ -64,7 +66,9 @@ for r in range(N):
         verilog.append(
             f"  NAND2_X1 nand_{r}_{c} (.A1(n1_{r}_{c}), .A2({prev}), .ZN({out}));"
         )
-        nets.update({f"in_{r}_{c}", f"q_{r}_{c}", f"n1_{r}_{c}"})
+        if c > 0:
+            nets.add(f"in_{r}_{c}")  # c=0 的 in_{r}_0 无驱动者，幻影名不计网数
+        nets.update({f"q_{r}_{c}", f"n1_{r}_{c}"})
     if r != 0:
         nets.add(f"tail_{r}")
 verilog.append("endmodule")
