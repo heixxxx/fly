@@ -2,6 +2,54 @@
 
 ---
 
+## 2026-09-17: timing db（⑦ 时序数据库）全量实施
+
+**立项落地**（方案 [emir/timing-db-plan.md](emir/timing-db-plan.md) §1-13 全
+裁定，批次 7e1c5ff..本批，直接任务链不用 MapReduce——裁定 2026-09-15）：
+
+- **类型族奠基**：emir_ids.h 新增 `CMClockId`（32 位族，时钟表下标——原
+  `kTMNoClock` 裸哨兵 UINT32_MAX 与 StrongIdT 默认哨兵同值，语义无缝收编）；
+  `TMTimingFile` 新增 `delimiters_` 字段收录 HEADER DELIMITERS 原文 +
+  `hier_delim()` 层级分隔符口（strip_prefix 段级剥离消费口，plan §7.4
+  实施注记落地）。
+- **落库形态与换算**（tm_partition.h/.cpp）：`TMPinTiming`/
+  `TMInstanceTiming`/`TMPartitionTiming`（primary 恰一）/`TMClockTable`/
+  `TMSummary`（逐来源文件统计可追溯 + TIMG 消息族计数源）；T1 切块扫描
+  （块表 start/end 平行——末块终点 = 最后顶层子构造终点，文件尾 ')' 外皮
+  不入块，T2 重包解析，块自包含）；T2 名字换算（`TMDesignContext` 快照
+  共享注入——纯路径全层级名 / block_inst 偏移换算 / block_cell 定义级
+  建库期复制 / strip_prefix 段级精确剥离；pin 全局名字空间单哈希查；网
+  条目锚定全部 driver 位条目 + pg 跳过）；T3 分区合并（冲突判定按来源
+  文件区分——跨文件同名条目保留首份 TIMG::0006，同文件跨块 NET 条目与
+  其驱动 PIN 条目同指 (实例, pin) 的同源形态静默合并）；T4 汇总（时钟表
+  顶层文件定义优先、块绑定文件序首份兜底 TIMG::0007，裁定 5）。
+- **Python 六文件 + export**：`build_timing_db` flow（异步 4 步范式，
+  design db 快照经数据库链前驱消费——master 侧逐对象临时对象落 timing
+  db，worker 只读本 db，同 lib merge 快照先例）；`TMAlphaSettings` 两键
+  （chunk_size_mb ≥16 缺省 256 / format auto|innovus）；TIMG::0001-0010
+  消息族注册（fatal = 0009 全部文件失败）；读库 API 四口（
+  load_timing_clocks/load_timing_summary/iter_timing_partition/
+  load_partition_timing）+ debug `get_timing` 点查（design db
+  id_partition_map.INST 定位经数据库链 find_db → 整区 LRU 容量 8）。
+- **模块注册**：main.cpp `import _fly_emir_timing` + emir 聚合 timing +
+  design export 补 `EXDSIdPartitionIndex.id_starts` 段表枚举口（timing
+  快照按段加载消费）。
+
+**验证**：全仓单测 113/113 通过（新增 tm_partition_test 16 例：切块协议 +
+块协议等价性「分块 ≡ 整文件」+ 各绑定形态 + strip_prefix + 冲突/时钟
+优先级合并 + 序列化 round-trip；test_tm_flow_error 4 组含 fatal 80 子
+进程走真实 C++ 产物路径）；qa/emir 新增 2 用例全过
+（test_emir_timing_flow 9.3s：tm_design 三维度 + 块绑定两形态 + strip_prefix
++ 时钟合并优先级；test_emir_timing_pg_grid 5.2s：12943 条大规模断言
+hit=12878 + 2x1 分区路由 primary 恰一并集覆盖）；三轮稳定性验证全绿；
+全量 QA 190/190。
+
+**实现要点备查**：emir_pkg 聚合 timing 后既有 py_test 需补 timing .so
+deps + imports 路径（runfiles 可见性）；nanobind def_ro 容器属性返回
+拷贝——append 不回写 C++ 侧（EXTMChunkPlan 加 add_file 构建口同理）。
+
+---
+
 ## 2026-09-17: 导出面强类型直绑修复（评审 A-1）+ 开发准则类型纪律入册 + dev-rules CM 登记
 
 **评审修复（A-1）**：design db 重构批次（b68fd56..776dddd）code review 必修项——
