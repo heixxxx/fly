@@ -45,7 +45,7 @@ constexpr CMPinId kPinIn{2};
 constexpr CMPartitionId kPid{0};
 
 struct SynthEnv {
-    std::shared_ptr<const DSDesign> design;
+    std::shared_ptr<DSDesign> design;
     std::shared_ptr<const DSBlockNames> top_names;
     std::shared_ptr<const DSBlockNames> b1_names;
 
@@ -638,7 +638,7 @@ TEST_F(TmPartitionTest, MergeSummaryAggregatesPerFile) {
     const TMStatsDelta db =
         convert_whole(*ctx, file_path("b.twf"), TMFileBinding{}, 1).stats_;
     CMVector<const TMStatsDelta*> deltas = {&da, &db};
-    const TMSummary summary = tm_merge_summary(deltas, 7);
+    const TMSummary summary = tm_merge_summary(deltas, 7, 0);
     ASSERT_EQ(summary.files_.size(), 2u);
     EXPECT_EQ(summary.total_entry_count_, 2u);
     EXPECT_EQ(summary.total_hit_count_, 1u);

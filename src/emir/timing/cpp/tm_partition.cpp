@@ -267,19 +267,21 @@ bool convert_pin_entry(EntryConvertEnv& env, const CMString& name,
     return hit;
 }
 
-// 网条目 driver 定位与分片累积（pg/路由已过；多驱动网挂全部 driver 位
-// 条目——裁定 4 不取首个；无 driver/悬空 → TIMG::0003 计数返回 false）
+// 网条目 driver 定位与分片累积（pg 已过；多驱动网挂全部 driver 位条目
+// ——裁定 4 不取首个；无 driver/悬空 → TIMG::0003 计数返回 false）。
+// 分区定位 = 遍历快照分区 NETS 对象取首个含此网者（信号网 NETS 全量
+// 补全——任一副本都有该网完整连接表；plan §7 不经 NET id map 路由——
+// 该映射是 design db debug 专用辅助索引且无几何网不入段）
 bool attach_net_drivers(EntryConvertEnv& env, CMNetId net_id,
                         const TMNameTiming& e) {
-    const CMPartitionId pid = env.ctx->locate_net_partition(net_id);
-    if (!pid.is_valid()) {
-        ++env.file_stats->dangling_net_count_;  // TIMG::0003
-        return false;
+    CMSharedPtr<const DSNet> net;
+    for (const auto& entry : env.ctx->all_partition_nets()) {
+        auto candidate = entry.second->net_of(net_id).lock();
+        if (candidate != nullptr) {
+            net = candidate;
+            break;
+        }
     }
-    auto nets_obj = env.ctx->partition_nets(pid);
-    const auto net = nets_obj == nullptr
-                         ? CMSharedPtr<const DSNet>{}
-                         : nets_obj->net_of(net_id).lock();
     if (net == nullptr) {
         ++env.file_stats->dangling_net_count_;  // TIMG::0003（悬浮网）
         return false;
@@ -487,22 +489,38 @@ TMFileChunkPlan tm_plan_file_chunks(const CMString& path,
             last = b;
         }
     }
-    // 末块终点 = 最后顶层子构造终点（文件尾 ')' 外皮不入块）
-    plan.chunk_ends_.push_back(bounds.empty() ? first_construct
+    // 末块终点 = 最后顶层子构造终点（文件尾 ')' 外皮不入块）；流级破损
+    // （顶层未闭合）时 bounds 空——末块终点回退 file_size，把剩余文本包
+    // 进块让解析器判破损（failed_chunk 兜底计数，不静默吞掉破损）
+    plan.chunk_ends_.push_back(bounds.empty() ? plan.file_size_
                                               : bounds.back());
     return plan;
 }
 
 // ── T2 换算上下文 ───────────────────────────────────────────────────
 
-void TMDesignContext::set_design(CMSharedPtr<const DSDesign> design) {
+void TMDesignContext::set_design(CMSharedPtr<DSDesign> design) {
     design_ = std::move(design);
+    rebuild_mappers();
+}
+
+void TMDesignContext::rebuild_mappers() {
+    if (!design_) {
+        return;
+    }
     // 两维度 mapper（持 design 内层级树观察指针——ds_make_name_mapper
     // 先例形态；design_ 共享计数保生命周期）。构造即建分派索引。
     inst_mapper_ = DSInstanceNameMapper(&design_->get_hier_tree(),
                                         DSNameMapperKind::INSTANCE);
     net_mapper_ = DSNetNameMapper(&design_->get_hier_tree(),
                                   DSNameMapperKind::NET);
+    // hasher 注入关系重挂（mapper 为运行时构件，重组装后由此恢复）
+    for (const auto& entry : inst_hashers_) {
+        inst_mapper_.set_block_hasher(entry.first, entry.second);
+    }
+    for (const auto& entry : net_hashers_) {
+        net_mapper_.set_block_hasher(entry.first, entry.second);
+    }
 }
 
 void TMDesignContext::add_block_names(
@@ -515,45 +533,45 @@ void TMDesignContext::add_block_names(
     if (!DSCellNameHasher::is_valid_id(cell_id)) {
         return;  // block cell 未入全局表（防御跳过，同 ds_make_name_mapper）
     }
-    const CMSharedPtr<const DSInstanceNameHasher> inst_view =
-        names->instance_names_;
-    const CMSharedPtr<const DSNetNameHasher> net_view = names->net_names_;
-    inst_mapper_.set_block_hasher(cell_id, inst_view);
-    net_mapper_.set_block_hasher(cell_id, net_view);
-    inst_hashers_[cell_id] = std::move(inst_view);
-    net_hashers_[cell_id] = std::move(net_view);
+    // map 存非 const（序列化约束）、mapper 注入 const 化只读视图
+    inst_hashers_[cell_id] = names->instance_names_;
+    net_hashers_[cell_id] = names->net_names_;
+    inst_mapper_.set_block_hasher(
+        cell_id, CMSharedPtr<const DSInstanceNameHasher>(inst_hashers_[cell_id]));
+    net_mapper_.set_block_hasher(
+        cell_id, CMSharedPtr<const DSNetNameHasher>(net_hashers_[cell_id]));
 }
 
 void TMDesignContext::set_inst_id_map(
-    CMSharedPtr<const DSIdPartitionIndex> index) {
+    CMSharedPtr<DSIdPartitionIndex> index) {
     inst_index_ = std::move(index);
 }
 
 void TMDesignContext::add_inst_segment(
-    CMSharedPtr<const DSIdPartitionSegment> segment) {
+    CMSharedPtr<DSIdPartitionSegment> segment) {
     if (segment) {
         inst_segments_[segment->get_id_start()] = std::move(segment);
     }
 }
 
 void TMDesignContext::set_net_id_map(
-    CMSharedPtr<const DSIdPartitionIndex> index) {
+    CMSharedPtr<DSIdPartitionIndex> index) {
     net_index_ = std::move(index);
 }
 
 void TMDesignContext::add_net_segment(
-    CMSharedPtr<const DSIdPartitionSegment> segment) {
+    CMSharedPtr<DSIdPartitionSegment> segment) {
     if (segment) {
         net_segments_[segment->get_id_start()] = std::move(segment);
     }
 }
 
-void TMDesignContext::set_pg_nets(CMSharedPtr<const DSPgNetSet> pg_nets) {
+void TMDesignContext::set_pg_nets(CMSharedPtr<DSPgNetSet> pg_nets) {
     pg_nets_ = std::move(pg_nets);
 }
 
 void TMDesignContext::add_partition_nets(
-    CMSharedPtr<const DSPartitionNets> nets) {
+    CMSharedPtr<DSPartitionNets> nets) {
     if (nets) {
         part_nets_[nets->part_id_.value()] = std::move(nets);
     }
@@ -593,10 +611,10 @@ CMPartitionId TMDesignContext::locate_net_partition(CMNetId net_id) const {
     return pid.is_valid() ? pid : CMPartitionId{};
 }
 
-CMSharedPtr<const DSPartitionNets> TMDesignContext::partition_nets(
+CMSharedPtr<DSPartitionNets> TMDesignContext::partition_nets(
     CMPartitionId pid) const {
     const auto it = part_nets_.find(pid.value());
-    return it == part_nets_.end() ? CMSharedPtr<const DSPartitionNets>{}
+    return it == part_nets_.end() ? CMSharedPtr<DSPartitionNets>{}
                                   : it->second;
 }
 
@@ -807,9 +825,11 @@ TMPartitionTiming tm_merge_partition(
 
 // T4 ①：统计聚合——全部块统计片段直和 + 按文件名归并逐文件表
 TMSummary tm_merge_summary(const CMVector<const TMStatsDelta*>& deltas,
-                           uint64_t cross_file_conflict_count) {
+                           uint64_t cross_file_conflict_count,
+                           uint64_t clock_conflict_count) {
     TMSummary s;
     s.cross_file_conflict_count_ = cross_file_conflict_count;
+    s.clock_conflict_count_ = clock_conflict_count;
     // 按文件名归并逐文件表（同文件多块：计数累加、首块定名/单位）
     CMUnorderedMap<CMString, size_t> file_index;
     for (const TMStatsDelta* delta : deltas) {

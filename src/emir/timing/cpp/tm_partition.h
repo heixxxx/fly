@@ -288,23 +288,28 @@ TMFileChunkPlan tm_plan_file_chunks(const CMString& path,
 // CMSharedPtr 持有——生命周期由本类计数管理，业务层零裸指针）。两维度
 // name mapper 于 set_design 时构造（持 design 内层级树观察指针——
 // ds_make_name_mapper 既有先例形态；design_ 共享计数保生命周期）。
+// 组装发生在 worker 任务内（master 把 design db 快照对象逐个写入本 db
+// 临时对象——全部已有序列化类型；T2 任务 read_object 后经 export 绑定
+// 的 setter 组装 ctx，mapper 构建为纯内存毫秒级操作）。
 class TMDesignContext {
 public:
     TMDesignContext() = default;
 
     // design 快照（层级树 + cell/pin hasher + 分区表）；构造两维度 mapper
-    void set_design(CMSharedPtr<const DSDesign> design);
+    void set_design(CMSharedPtr<DSDesign> design);
+    // mapper 重建（set_design 的重建半步——hasher 注入关系重挂）
+    void rebuild_mappers();
     // 块 local 名空间伴生对象（def 序逐个注入两 mapper + 块 hasher 索引）
     void add_block_names(CMSharedPtr<const DSBlockNames> names);
     // id → partition 反向映射（INST / NET 各一套：段表 + 全部非空段对象）
-    void set_inst_id_map(CMSharedPtr<const DSIdPartitionIndex> index);
-    void add_inst_segment(CMSharedPtr<const DSIdPartitionSegment> segment);
-    void set_net_id_map(CMSharedPtr<const DSIdPartitionIndex> index);
-    void add_net_segment(CMSharedPtr<const DSIdPartitionSegment> segment);
+    void set_inst_id_map(CMSharedPtr<DSIdPartitionIndex> index);
+    void add_inst_segment(CMSharedPtr<DSIdPartitionSegment> segment);
+    void set_net_id_map(CMSharedPtr<DSIdPartitionIndex> index);
+    void add_net_segment(CMSharedPtr<DSIdPartitionSegment> segment);
     // 全局 pg 网 id 集（§7.5 pg 条目跳过判定）
-    void set_pg_nets(CMSharedPtr<const DSPgNetSet> pg_nets);
+    void set_pg_nets(CMSharedPtr<DSPgNetSet> pg_nets);
     // 分区 NETS 对象（网条目 driver 位定位；键取对象 part_id_）
-    void add_partition_nets(CMSharedPtr<const DSPartitionNets> nets);
+    void add_partition_nets(CMSharedPtr<DSPartitionNets> nets);
 
     const DSDesign& design() const { return *design_; }
     const DSInstanceNameMapper& inst_mapper() const { return inst_mapper_; }
@@ -316,8 +321,13 @@ public:
     // 网全局 id → 分区 id（NET 段表 → 段对象；未命中返回默认哨兵）
     CMPartitionId locate_net_partition(CMNetId net_id) const;
     // 分区 NETS 对象观察（未快照该分区返回空 shared——调用方按悬空计数）
-    CMSharedPtr<const DSPartitionNets> partition_nets(
-        CMPartitionId pid) const;
+    CMSharedPtr<DSPartitionNets> partition_nets(CMPartitionId pid) const;
+    // 全部快照分区 NETS 对象（网条目遍历口——信号网 NETS 全量补全，任一
+    // 分区副本都有该网完整连接表；T2 逐对象查首个命中）
+    const CMUnorderedMap<uint32_t, CMSharedPtr<DSPartitionNets>>&
+    all_partition_nets() const {
+        return part_nets_;
+    }
     const DSPgNetSet* pg_nets() const {
         return pg_nets_ == nullptr ? nullptr : pg_nets_.get();
     }
@@ -328,23 +338,26 @@ public:
         CMCellId block_cell_id) const;
 
 private:
-    CMSharedPtr<const DSDesign> design_;
+    // —— 快照数据本体（逐对象临时对象传输，ctx 由 T2 任务在 worker 端
+    //    组装；hasher map 存非 const 形态——bitsery 序列化 shared 分支
+    //    不支持 const 元素，对外观察口返回 const 化）——
+    CMSharedPtr<DSDesign> design_;
+    CMUnorderedMap<uint32_t, CMSharedPtr<DSInstanceNameHasher>> inst_hashers_;
+    CMUnorderedMap<uint32_t, CMSharedPtr<DSNetNameHasher>> net_hashers_;
+    CMSharedPtr<DSIdPartitionIndex> inst_index_;
+    CMUnorderedMap<uint64_t, CMSharedPtr<DSIdPartitionSegment>> inst_segments_;
+    CMSharedPtr<DSIdPartitionIndex> net_index_;
+    CMUnorderedMap<uint64_t, CMSharedPtr<DSIdPartitionSegment>> net_segments_;
+    CMSharedPtr<DSPgNetSet> pg_nets_;
+    CMUnorderedMap<uint32_t, CMSharedPtr<DSPartitionNets>> part_nets_;
+
+    // —— 运行时构件（不序列化；set_design/rebuild_mappers 重建）——
     DSInstanceNameMapper inst_mapper_;
     DSNetNameMapper net_mapper_;
-    CMUnorderedMap<uint32_t, CMSharedPtr<const DSInstanceNameHasher>>
-        inst_hashers_;
-    CMUnorderedMap<uint32_t, CMSharedPtr<const DSNetNameHasher>> net_hashers_;
-    CMSharedPtr<const DSIdPartitionIndex> inst_index_;
-    CMUnorderedMap<uint64_t, CMSharedPtr<const DSIdPartitionSegment>>
-        inst_segments_;
-    CMSharedPtr<const DSIdPartitionIndex> net_index_;
-    CMUnorderedMap<uint64_t, CMSharedPtr<const DSIdPartitionSegment>>
-        net_segments_;
-    CMSharedPtr<const DSPgNetSet> pg_nets_;
-    CMUnorderedMap<uint32_t, CMSharedPtr<const DSPartitionNets>> part_nets_;
 };
 
-// 绑定描述（§2/plan §7；export 面 EXTMFileBinding 的 C++ 侧）
+// 绑定描述（§2/plan §7；export 面 EXTMFileBinding 的 C++ 侧。worker 端
+// Python 侧构建后直传 C++，不经任务参数传输——无序列化需求）
 struct TMFileBinding {
     int kind = 0;  // 0 全路径 / 1 block_inst / 2 block_cell
     CMString block_inst;
@@ -379,9 +392,11 @@ TMPartitionTiming tm_merge_partition(
     uint64_t& conflict_count);
 
 // 汇总任务（T4）①：统计聚合——全部块统计片段直和 + 按文件归并逐文件表
-// （同文件多块：条目/计数累加、文件名取首块）+ T3 分区侧冲突计数入表。
+// （同文件多块：条目/计数累加、文件名取首块）+ T3 分区侧跨文件冲突与
+// T4 时钟表差异计数入表（TIMG::0006 / 0007）。
 TMSummary tm_merge_summary(const CMVector<const TMStatsDelta*>& deltas,
-                           uint64_t cross_file_conflict_count);
+                           uint64_t cross_file_conflict_count,
+                           uint64_t clock_conflict_count);
 
 // 汇总任务（T4）②：时钟表跨文件合并——同文件跨块先归并（同名保留首份），
 // 再按文件优先级合并：顶层文件（无绑定、纯路径 kind 0）定义优先，其余

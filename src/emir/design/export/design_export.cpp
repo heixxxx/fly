@@ -1619,6 +1619,11 @@ FLY_EXPORT_CLASS(fly::DSIdPartitionIndex, "EXDSIdPartitionIndex")
                                  [](const fly::DSIdPartitionIndex& ix) {
         return static_cast<int>(ix.size());
     })
+    // 非空段起始 id 升序表（下游 timing db 快照等按段枚举加载的消费口）
+    FLY_EXPORT_READONLY_PROPERTY("id_starts",
+                                 [](const fly::DSIdPartitionIndex& ix) {
+        return ix.id_starts_;
+    })
     FLY_EXPORT_DEF("has_segment", [](const fly::DSIdPartitionIndex& ix,
                                      uint64_t id) {
         return ix.has_segment(id);
