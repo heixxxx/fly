@@ -531,3 +531,54 @@ TEST(SerializationExtendedTest, CompositeElementsInsideContainers) {
     EXPECT_EQ(*decoded.opts[2], 7);
 }
 
+
+// 局部类不能有成员模板（FLY_SERIALIZE 生成模板 serialize）——POD 与
+// 载体提到命名空间级。载体 = map 为字段（bitsery 顶层须有 serialize 的
+// 对象，裸 map 不作顶层——实际数据形态即如此）
+namespace shared_elem_test {
+struct RawPod {
+    uint32_t x = 0;
+    FLY_SERIALIZE(x)
+};
+struct SharedHolder {
+    CMUnorderedMap<uint32_t, CMSharedPtr<RawPod>> items;
+    FLY_SERIALIZE(items)
+};
+struct RawHolder {
+    CMUnorderedMap<uint32_t, RawPod> items;
+    FLY_SERIALIZE(items)
+};
+}  // namespace shared_elem_test
+
+TEST(SerializationSharedElemTest, SharedPtrValuePassthroughByteIdentical) {
+    // 2026-09-16 裁定（weak 观察化框架支撑）：容器元素 / 复合内层的
+    // CMSharedPtr 值序列化 = 值内容直通——字节级与裸值形态完全一致
+    //（不引入 StdSmartPtr 的 tracking 编码），既有落盘布局零变化
+    using shared_elem_test::RawPod;
+    using shared_elem_test::RawHolder;
+    using shared_elem_test::SharedHolder;
+    SharedHolder src;
+    auto v = std::make_shared<RawPod>();
+    v->x = 42;
+    src.items.emplace(1, std::move(v));
+    CMString bytes;
+    FLY_ENCODE(src, bytes);
+
+    // 字节级对照：同内容裸值 map 的编码
+    RawHolder raw_ref;
+    RawPod rp;
+    rp.x = 42;
+    raw_ref.items.emplace(1, rp);
+    CMString raw_bytes;
+    FLY_ENCODE(raw_ref, raw_bytes);
+
+    ASSERT_EQ(bytes.size(), raw_bytes.size());
+    EXPECT_EQ(bytes, raw_bytes);
+
+    // round-trip：读侧重建独立持有
+    SharedHolder dst;
+    FLY_DECODE(bytes, SharedHolder, dst);
+    ASSERT_EQ(dst.items.size(), 1u);
+    ASSERT_NE(dst.items.at(1), nullptr);
+    EXPECT_EQ(dst.items.at(1)->x, 42u);
+}

@@ -173,7 +173,8 @@ struct VerifyEnv {
         // 并查集（两层规范化形态：root 自映射 + 成员反向索引）
         net_union.root_of_[CMNetId{10}] = CMNetId{10};
         net_union.root_of_[CMNetId{11}] = CMNetId{10};
-        net_union.members_of_[CMNetId{10}] = CMVector<CMNetId>{CMNetId{10}, CMNetId{11}};
+        net_union.members_of_[CMNetId{10}] = std::make_shared<CMVector<CMNetId>>(
+        CMVector<CMNetId>{CMNetId{10}, CMNetId{11}});
     }
 };
 
@@ -200,13 +201,15 @@ PartitionPair make_products() {
     pp.p0.inst_connections_.items_[CMInstanceId{1}].push_back(c2);
     // NETS 信号侧对象（键 1；条目 = DSNetConnEntry——2026-09-13 重组裁定）
     DSPartitionNets& n0 = pp.p0.nets_;
-    n0.nets_[CMNetId{1}].net_id_ = CMNetId{1};
+    auto& net1 = n0.nets_[CMNetId{1}];
+    if (!net1) net1 = std::make_shared<DSNet>();
+    net1->net_id_ = CMNetId{1};
     DSNetConnEntry e1;
     e1.inst_id_ = CMInstanceId{1};
-    n0.nets_[CMNetId{1}].connections_.push_back(e1);
+    net1->connections_.push_back(e1);
     DSNetConnEntry e2;
     e2.inst_id_ = CMInstanceId{2};
-    n0.nets_[CMNetId{1}].connections_.push_back(e2);
+    net1->connections_.push_back(e2);
     DSGeomEntry g0;
     g0.layer_id_ = CMLayerId{0};
     g0.rect_ = GEORect(0, 100, 500, 140);
@@ -243,10 +246,12 @@ PartitionPair make_products() {
     c4.net_global_id_ = CMNetId{6};
     pp.p1.inst_connections_.items_[CMInstanceId{5}].push_back(c4);
     DSPartitionNets& n1 = pp.p1.nets_;
-    n1.nets_[CMNetId{5}].net_id_ = CMNetId{5};
+    auto& net5 = n1.nets_[CMNetId{5}];
+    if (!net5) net5 = std::make_shared<DSNet>();
+    net5->net_id_ = CMNetId{5};
     DSNetConnEntry e3;
     e3.inst_id_ = CMInstanceId{5};
-    n1.nets_[CMNetId{5}].connections_.push_back(e3);
+    net5->connections_.push_back(e3);
     DSGeomEntry g3;
     g3.layer_id_ = CMLayerId{0};
     g3.rect_ = GEORect(1100, 100, 1500, 140);
@@ -453,7 +458,7 @@ TEST(DSVerifyTest, UnionSelfMapBrokenFails) {
 TEST(DSVerifyTest, UnionMembersMismatchFails) {
     VerifyEnv env;
     // 反向索引漏登记成员 11：members 列表数 ≠ root_of_ 规模（双向破坏）
-    env.net_union.members_of_[CMNetId{10}] = CMVector<CMNetId>{CMNetId{10}};
+    env.net_union.members_of_[CMNetId{10}] = std::make_shared<CMVector<CMNetId>>(CMVector<CMNetId>{CMNetId{10}});
     PartitionPair pp = make_products();
     const DSDesignCheckReport report = verify_env_design(env,
                                                          check_products(pp));

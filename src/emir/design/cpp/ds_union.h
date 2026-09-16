@@ -75,15 +75,16 @@ public:
     // union 的网，find 返回自身）
     CMUnorderedMap<CMNetId, CMNetId> root_of_;
     // root → 成员 global id 列表（升序，含 root 自身；§2.6 反向索引——
-    // 物理网枚举）
-    CMUnorderedMap<CMNetId, CMVector<CMNetId>> members_of_;
+    // 物理网枚举）。值 CMSharedPtr 持有（2026-09-16 裁定：weak 观察化）
+    CMUnorderedMap<CMNetId, CMSharedPtr<CMVector<CMNetId>>> members_of_;
     // 悬空计数：单成员等价类数（悬空 port 网 root = 自身，裁定 ④）
     uint64_t dangling_count_ = 0;
 
     // find 恒一步（两层不变式）；不在表 = 自身
     CMNetId find(CMNetId net_global_id) const;
-    // root 的成员枚举（未命中 nullptr——非 root 或不在表）
-    const CMVector<CMNetId>* members(CMNetId root) const;
+    // root 的成员枚举（weak——lock 后持锁期使用，2026-09-16 裁定；未
+    // 命中 = 空 weak——非 root 或不在表）
+    CMWeakPtr<const CMVector<CMNetId>> members(CMNetId root) const;
     // 等价类总数（含单成员悬空类）
     uint64_t class_count() const;
 

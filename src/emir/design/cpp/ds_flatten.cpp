@@ -127,14 +127,16 @@ PointAssignment assign_point(const I64Point& p,
 
 // —— DSPartitionNets ——（单表查：本侧网表；未命中 nullptr——加载侧按
 // is_pg 路由到 NETS / NETS_PG 对应侧对象，本类不承担分派）
-const DSNet* DSPartitionNets::net_of(CMNetId net_id) const {
-    const auto it = nets_.find(net_id);
-    return it == nets_.end() ? nullptr : &it->second;
+CMWeakPtr<const DSNet> DSPartitionNets::net_of(CMNetId net_id) const {
+    auto it = nets_.find(net_id);
+    return it == nets_.end() ? CMWeakPtr<const DSNet>{}
+                             : CMWeakPtr<const DSNet>{it->second};
 }
 
-DSNet* DSPartitionNets::net_of(CMNetId net_id) {
+CMWeakPtr<DSNet> DSPartitionNets::net_of(CMNetId net_id) {
     auto it = nets_.find(net_id);
-    return it == nets_.end() ? nullptr : &it->second;
+    return it == nets_.end() ? CMWeakPtr<DSNet>{}
+                             : CMWeakPtr<DSNet>{it->second};
 }
 
 // —— DSPgNetSet ——（全局汇总：各分区片段键集并集——set 天然去重，
@@ -164,20 +166,26 @@ void DSPartitionProduct::merge_from(const DSPartitionProduct& src) {
     // 两侧 NETS 分别合并：同键 DSNet 连接条目追加；use/net_id 同键覆盖
     //（同 global net 只属一个 block 定义，use 同源——重放幂等）
     for (const auto& [nid, net] : src.nets_.nets_) {
-        DSNet& dst = nets_.nets_[nid];
-        dst.net_id_ = net.net_id_;
-        dst.use_ = net.use_;
-        dst.connections_.insert(dst.connections_.end(),
-                                net.connections_.begin(),
-                                net.connections_.end());
+        auto& dst = nets_.nets_[nid];
+        if (!dst) {
+            dst = std::make_shared<DSNet>();
+        }
+        dst->net_id_ = net->net_id_;
+        dst->use_ = net->use_;
+        dst->connections_.insert(dst->connections_.end(),
+                                 net->connections_.begin(),
+                                 net->connections_.end());
     }
     for (const auto& [nid, net] : src.nets_pg_.nets_) {
-        DSNet& dst = nets_pg_.nets_[nid];
-        dst.net_id_ = net.net_id_;
-        dst.use_ = net.use_;
-        dst.connections_.insert(dst.connections_.end(),
-                                net.connections_.begin(),
-                                net.connections_.end());
+        auto& dst = nets_pg_.nets_[nid];
+        if (!dst) {
+            dst = std::make_shared<DSNet>();
+        }
+        dst->net_id_ = net->net_id_;
+        dst->use_ = net->use_;
+        dst->connections_.insert(dst->connections_.end(),
+                                 net->connections_.begin(),
+                                 net->connections_.end());
     }
     // part_id_ 分片归属回填（0 = 未回填缺省，与分区 0 的合法 pid 值一致
     // ——同分区 id 恒一致，条件覆盖对空分片/重放均幂等；两侧同值）
@@ -188,15 +196,21 @@ void DSPartitionProduct::merge_from(const DSPartitionProduct& src) {
         nets_pg_.part_id_ = src.nets_pg_.part_id_;
     }
     for (const auto& [nid, entries] : src.geometry_.nets_) {
-        CMVector<DSGeomEntry>& dst = geometry_.nets_[nid];
-        dst.insert(dst.end(), entries.begin(), entries.end());
+        auto& dst = geometry_.nets_[nid];
+        if (!dst) {
+            dst = std::make_shared<CMVector<DSGeomEntry>>();
+        }
+        dst->insert(dst->end(), entries->begin(), entries->end());
     }
     for (const CMNetId nid : src.geometry_.crossing_nets_) {
         geometry_.mark_crossing(nid);
     }
     for (const auto& [nid, entries] : src.geometry_pg_.nets_) {
-        CMVector<DSGeomEntry>& dst = geometry_pg_.nets_[nid];
-        dst.insert(dst.end(), entries.begin(), entries.end());
+        auto& dst = geometry_pg_.nets_[nid];
+        if (!dst) {
+            dst = std::make_shared<CMVector<DSGeomEntry>>();
+        }
+        dst->insert(dst->end(), entries->begin(), entries->end());
     }
     for (const CMNetId nid : src.geometry_pg_.crossing_nets_) {
         geometry_pg_.mark_crossing(nid);
@@ -282,7 +296,7 @@ CMVector<std::pair<CMPartitionId, DSPartitionProduct>> ds_flatten_block(
             // global = net_start + local（区间含 local 0 空洞位，无 −1
             // ——2026-09-14 裁定；root 块空洞位 = global 0 = OBS 专属）
             const CMNetId global_net = net_start + local_net;
-            for (const DSNetConnection& c : conns) {
+            for (const DSNetConnection& c : *conns) {
                 DSPartConnection pc;
                 if (!make_connection(c, global_net, pc)) {
                     continue;
@@ -299,15 +313,16 @@ CMVector<std::pair<CMPartitionId, DSPartitionProduct>> ds_flatten_block(
             if (local_id == CMInstanceId{0}) {
                 continue;  // ⑧ 占位（块实例自身由父块展开产出副本）
             }
-            if (inst.get_placement_status() == DSPlacementStatus::UNPLACED) {
+            if (inst->get_placement_status() ==
+                DSPlacementStatus::UNPLACED) {
                 continue;  // 无物理放置（D14 兜底计数对象），不入分区
             }
-            const I64Transform g = t.compose(to_i64(inst.get_transform()));
+            const I64Transform g = t.compose(to_i64(inst->get_transform()));
             const CMInstanceId global_id = inst_start + local_id;
             const PointAssignment pa = assign_point(g.get_offset(),
                                                     partitions);
             for (const uint32_t pid : pa.copies) {
-                DSInstance copy = inst;
+                DSInstance copy = *inst;
                 if (!fits_i32(g.get_offset().get_x()) ||
                     !fits_i32(g.get_offset().get_y())) {
                     // 实例本体不可丢（连接完整性优先）：WARN + 保留截断
@@ -408,8 +423,7 @@ CMVector<std::pair<CMPartitionId, DSPartitionProduct>> ds_flatten_block(
 
             // wire 段矩形化：相邻点对 + 宽度半开区间外扩（同 S5b 密度
             // 节点口径，int64 中间量）
-            const auto* wires = nets.wires_of(local_net);
-            if (wires != nullptr) {
+            if (auto wires = nets.wires_of(local_net).lock()) {
                 for (const DSNetWire& wire : *wires) {
                     const int64_t half_w = wire.width_ / 2;
                     for (size_t i = 0; i + 1 < wire.points_.size(); ++i) {
@@ -430,8 +444,7 @@ CMVector<std::pair<CMPartitionId, DSPartitionProduct>> ds_flatten_block(
                 }
             }
             // rect 项原样变换
-            const auto* rects = nets.rects_of(local_net);
-            if (rects != nullptr) {
+            if (auto rects = nets.rects_of(local_net).lock()) {
                 for (const DSNetRect& rect : *rects) {
                     spread_rect(t.apply_box(to_i64(rect.rect_)),
                                 rect.layer_id_, DSGeomEntry::kNoViaCell, -1);
@@ -440,10 +453,9 @@ CMVector<std::pair<CMPartitionId, DSPartitionProduct>> ds_flatten_block(
             // via instance 图形展开：via cell 的 cut/enclosure 矩形平移
             // 至放置点后经复合变换（via 条目带 primary 位——放置点归属，
             // 裁定补记①；权威表快照外 id 防御跳过，同 S5b 密度节点口径）
-            const auto* via_ids = nets.via_ids_of(local_net);
-            if (via_ids != nullptr) {
+            if (auto via_ids = nets.via_ids_of(local_net).lock()) {
                 for (const CMViaInstanceId via_id : *via_ids) {
-                    const DSViaInstance* vi = nets.via_instance_at(via_id);
+                    const auto vi = nets.via_instance_at(via_id).lock();
                     if (vi == nullptr ||
                         vi->via_cell_id_ >= design.via_cells_.size()) {
                         WARN("ds_flatten_block: via instance {} not "
@@ -508,7 +520,7 @@ CMVector<std::pair<CMPartitionId, DSPartitionProduct>> ds_flatten_block(
             // ；is_pg_net 分侧——pg → nets_pg_ 仅本区 instance 副本相关
             // 条目不补全 / 信号 → nets_ 全量补全本分区自足；use 自 S5b
             // net_uses_ 随网写入，缺省 SIGNAL——USE 全量补收裁定）
-            const auto* conns = nets.connections_of(local_net);
+            const auto conns = nets.connections_of(local_net).lock();
             if (conns == nullptr || conns->empty()) {
                 continue;
             }
@@ -535,21 +547,22 @@ CMVector<std::pair<CMPartitionId, DSPartitionProduct>> ds_flatten_block(
                     const CMInstanceId local{(e.inst_id_ - inst_start)};
                     const auto iit = block.instances_.find(local);
                     if (iit != block.instances_.end() &&
-                        iit->second.get_placement_status() !=
+                        (*iit->second).get_placement_status() !=
                             DSPlacementStatus::UNPLACED) {
                         const I64Transform g =
-                            t.compose(to_i64(iit->second.get_transform()));
+                            t.compose(to_i64((*iit->second).get_transform()));
                         pids = assign_point(g.get_offset(), partitions).copies;
                     }
                 }
                 full.push_back(std::move(e));
                 entry_pids.push_back(std::move(pids));
             }
-            const auto make_net = [&](CMVector<DSNetConnEntry>&& entries) {
-                DSNet net;
-                net.net_id_ = global_net;
-                net.use_ = use;
-                net.connections_ = std::move(entries);
+            const auto make_net =
+                [&](CMVector<DSNetConnEntry>&& entries) -> CMSharedPtr<DSNet> {
+                auto net = std::make_shared<DSNet>();
+                net->net_id_ = global_net;
+                net->use_ = use;
+                net->connections_ = std::move(entries);
                 return net;
             };
             if (net_is_pg) {
@@ -617,10 +630,10 @@ DSPgNetSlice ds_collect_pg_net_slice(const DSPartitionNets& nets_pg) {
     DSPgNetSlice slice;
     for (const auto& [nid, net] : nets_pg.nets_) {
         (void)nid;
-        if (net.use() == DSNetUse::POWER) {
-            slice.power_ids_.push_back(net.net_id_);
-        } else if (net.use() == DSNetUse::GROUND) {
-            slice.ground_ids_.push_back(net.net_id_);
+        if (net->use() == DSNetUse::POWER) {
+            slice.power_ids_.push_back(net->net_id_);
+        } else if (net->use() == DSNetUse::GROUND) {
+            slice.ground_ids_.push_back(net->net_id_);
         }
     }
     return slice;

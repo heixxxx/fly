@@ -207,10 +207,10 @@ TEST(DSNetConnectionParseNodeTest, AlignsLocalIdAndConvertsConnectionIds) {
 
     // ⑨ local net id 沿用 S5a 网名扫描分配（n1 = 1）
     EXPECT_EQ(ctx.local_net_id, 1u);
-    ASSERT_EQ(net_data.connections_.at(CMNetId{1}).size(), 2u);
+    ASSERT_EQ(net_data.connections_.at(CMNetId{1})->size(), 2u);
     // 连接项 id 形态（2026-09-13 裁定）：(instance local id, 全局 pin id)
     // + flags 位——(u1 A)：local 1、pin A = 0、INPUT → receiver 位
-    const DSNetConnection& c0 = net_data.connections_.at(CMNetId{1})[0];
+    const DSNetConnection& c0 = (*net_data.connections_.at(CMNetId{1}))[0];
     EXPECT_EQ(c0.instance_local_id_, 1u);
     EXPECT_EQ(c0.pin_id_, 0u);
     EXPECT_FALSE(c0.is_port());
@@ -218,7 +218,7 @@ TEST(DSNetConnectionParseNodeTest, AlignsLocalIdAndConvertsConnectionIds) {
     EXPECT_FALSE(c0.is_driver());
     // ("PIN" PIN_A)：local 0 占位（⑧）、port pin = 3、port 位 + INPUT
     // → receiver 位
-    const DSNetConnection& c1 = net_data.connections_.at(CMNetId{1})[1];
+    const DSNetConnection& c1 = (*net_data.connections_.at(CMNetId{1}))[1];
     EXPECT_EQ(c1.instance_local_id_, 0u);
     EXPECT_EQ(c1.pin_id_, 5u);
     EXPECT_TRUE(c1.is_port());
@@ -247,30 +247,30 @@ TEST(DSNetConnectionParseNodeTest, FillsDriverReceiverPowerFlags) {
     DSNetConnectionParseNode node;
     node.handle(ctx);
 
-    ASSERT_EQ(net_data.connections_.at(CMNetId{2}).size(), 5u);
-    const DSNetConnection& hybrid = net_data.connections_.at(CMNetId{2})[0];
+    ASSERT_EQ(net_data.connections_.at(CMNetId{2})->size(), 5u);
+    const DSNetConnection& hybrid = (*net_data.connections_.at(CMNetId{2}))[0];
     EXPECT_EQ(hybrid.instance_local_id_, 1u);
     EXPECT_EQ(hybrid.pin_id_, 2u);  // INV_X1/VDD
     EXPECT_TRUE(hybrid.is_driver() && hybrid.is_receiver());  // hybrid
     EXPECT_TRUE(hybrid.is_power());
     EXPECT_FALSE(hybrid.is_ground());
-    const DSNetConnection& port = net_data.connections_.at(CMNetId{2})[1];
+    const DSNetConnection& port = (*net_data.connections_.at(CMNetId{2}))[1];
     EXPECT_EQ(port.instance_local_id_, 0u);
     EXPECT_EQ(port.pin_id_, 6u);  // nets_blk/POUT
     EXPECT_TRUE(port.is_port() && port.is_driver());
     EXPECT_FALSE(port.is_receiver());
-    const DSNetConnection& drv = net_data.connections_.at(CMNetId{2})[2];
+    const DSNetConnection& drv = (*net_data.connections_.at(CMNetId{2}))[2];
     EXPECT_EQ(drv.pin_id_, 1u);  // INV_X1/ZN
     EXPECT_TRUE(drv.is_driver());
     EXPECT_FALSE(drv.is_receiver());
     EXPECT_FALSE(drv.is_driver() && drv.is_receiver());  // 非 hybrid
     // ground 位（INPUT GROUND → receiver + ground，与 power 互斥）
-    const DSNetConnection& gnd = net_data.connections_.at(CMNetId{2})[3];
+    const DSNetConnection& gnd = (*net_data.connections_.at(CMNetId{2}))[3];
     EXPECT_EQ(gnd.pin_id_, 3u);  // INV_X1/VSS
     EXPECT_TRUE(gnd.is_receiver() && gnd.is_ground());
     EXPECT_FALSE(gnd.is_power() || gnd.is_driver() || gnd.is_clock());
     // clock 位（INPUT CLOCK → receiver + clock）
-    const DSNetConnection& clk = net_data.connections_.at(CMNetId{2})[4];
+    const DSNetConnection& clk = (*net_data.connections_.at(CMNetId{2}))[4];
     EXPECT_EQ(clk.pin_id_, 4u);  // INV_X1/CLK
     EXPECT_TRUE(clk.is_receiver() && clk.is_clock());
     EXPECT_FALSE(clk.is_power() || clk.is_ground() || clk.is_driver());
@@ -294,9 +294,9 @@ TEST(DSNetConnectionParseNodeTest, InvalidConnectionsSkippedAndCounted) {
     node.handle(ctx);
 
     EXPECT_FALSE(ctx.error);
-    ASSERT_EQ(net_data.connections_.at(CMNetId{1}).size(), 1u);
-    EXPECT_EQ(net_data.connections_.at(CMNetId{1})[0].instance_local_id_, 1u);
-    EXPECT_EQ(net_data.connections_.at(CMNetId{1})[0].pin_id_, 0u);
+    ASSERT_EQ(net_data.connections_.at(CMNetId{1})->size(), 1u);
+    EXPECT_EQ((*net_data.connections_.at(CMNetId{1}))[0].instance_local_id_, 1u);
+    EXPECT_EQ((*net_data.connections_.at(CMNetId{1}))[0].pin_id_, 0u);
     EXPECT_EQ(net_data.stats_.skipped_invalid_connection_count, 3u);
     EXPECT_EQ(net_data.stats_.connection_count, 1u);
 }
@@ -338,8 +338,8 @@ TEST(DSNetGeometryExpandNodeTest, ExpandsWireWithDefaultWidthFallback) {
     conn.handle(ctx);
     geo.handle(ctx);
 
-    ASSERT_EQ(net_data.wires_.at(CMNetId{1}).size(), 1u);
-    const DSNetWire& wire = net_data.wires_.at(CMNetId{1})[0];
+    ASSERT_EQ(net_data.wires_.at(CMNetId{1})->size(), 1u);
+    const DSNetWire& wire = (*net_data.wires_.at(CMNetId{1}))[0];
     EXPECT_EQ(wire.layer_id_, 0u);  // M1
     EXPECT_EQ(wire.width_, 70);     // 0.07 µm × 1000 DBU/µm（tech 缺省宽）
     ASSERT_EQ(wire.points_.size(), 2u);
@@ -368,10 +368,10 @@ TEST(DSNetGeometryExpandNodeTest, WireAndRectUndefinedLayerDropped) {
     geo.handle(ctx);
 
     EXPECT_FALSE(ctx.error);  // 兜底计数不拦截
-    ASSERT_EQ(net_data.wires_.at(CMNetId{1}).size(), 1u);   // 合法 wire 保留
-    EXPECT_EQ(net_data.wires_.at(CMNetId{1})[0].layer_id_, 0u);
-    ASSERT_EQ(net_data.rects_.at(CMNetId{1}).size(), 1u);   // 合法 rect 保留
-    EXPECT_EQ(net_data.rects_.at(CMNetId{1})[0].layer_id_, 2u);
+    ASSERT_EQ(net_data.wires_.at(CMNetId{1})->size(), 1u);   // 合法 wire 保留
+    EXPECT_EQ((*net_data.wires_.at(CMNetId{1}))[0].layer_id_, 0u);
+    ASSERT_EQ(net_data.rects_.at(CMNetId{1})->size(), 1u);   // 合法 rect 保留
+    EXPECT_EQ((*net_data.rects_.at(CMNetId{1}))[0].layer_id_, 2u);
     EXPECT_EQ(net_data.stats_.wire_count, 1u);
     EXPECT_EQ(net_data.stats_.rect_count, 1u);
     EXPECT_EQ(net_data.stats_.skipped_layer_ref_count, 2u);
@@ -393,12 +393,12 @@ TEST(DSNetGeometryExpandNodeTest, KeepsExplicitWidthAndRect) {
     conn.handle(ctx);
     geo.handle(ctx);
 
-    ASSERT_EQ(net_data.wires_.at(CMNetId{2}).size(), 1u);
-    EXPECT_EQ(net_data.wires_.at(CMNetId{2})[0].layer_id_, 2u);  // M2
-    EXPECT_EQ(net_data.wires_.at(CMNetId{2})[0].width_, 400);    // 显式宽度不回填
-    ASSERT_EQ(net_data.rects_.at(CMNetId{2}).size(), 1u);
-    EXPECT_EQ(net_data.rects_.at(CMNetId{2})[0].layer_id_, 2u);
-    EXPECT_EQ(net_data.rects_.at(CMNetId{2})[0].rect_.get_x_high(), 4240);
+    ASSERT_EQ(net_data.wires_.at(CMNetId{2})->size(), 1u);
+    EXPECT_EQ((*net_data.wires_.at(CMNetId{2}))[0].layer_id_, 2u);  // M2
+    EXPECT_EQ((*net_data.wires_.at(CMNetId{2}))[0].width_, 400);    // 显式宽度不回填
+    ASSERT_EQ(net_data.rects_.at(CMNetId{2})->size(), 1u);
+    EXPECT_EQ((*net_data.rects_.at(CMNetId{2}))[0].layer_id_, 2u);
+    EXPECT_EQ((*net_data.rects_.at(CMNetId{2}))[0].rect_.get_x_high(), 4240);
     EXPECT_EQ(net_data.stats_.wire_count, 1u);
     EXPECT_EQ(net_data.stats_.rect_count, 1u);
 }
@@ -420,17 +420,17 @@ TEST(DSNetGeometryExpandNodeTest, ResolvesViaPlainThenPrefixed) {
 
     // ⑩ via instance：专用 id 空间从 1 起、无 name，仅 via cell id + 位置
     ASSERT_EQ(net_data.via_instances_.size(), 2u);
-    const DSViaInstance& v1 = net_data.via_instances_.at(CMViaInstanceId{1});
+    const DSViaInstance& v1 = (*net_data.via_instances_.at(CMViaInstanceId{1}));
     EXPECT_EQ(v1.via_cell_id_, env.design.via_cell_names_.get_id("VIA12"));
     EXPECT_EQ(v1.pos_.get_x(), 1000);
     EXPECT_EQ(v1.pos_.get_y(), 600);
-    const DSViaInstance& v2 = net_data.via_instances_.at(CMViaInstanceId{2});
+    const DSViaInstance& v2 = (*net_data.via_instances_.at(CMViaInstanceId{2}));
     EXPECT_EQ(v2.via_cell_id_,
               env.design.via_cell_names_.get_id("nets_blk::VIADEF1"));
     EXPECT_EQ(v2.pos_.get_y(), 1600);
     // 网归属表
-    ASSERT_EQ(net_data.net_via_ids_.at(CMNetId{1}).size(), 2u);
-    EXPECT_EQ(net_data.net_via_ids_.at(CMNetId{1})[0], 1u);
+    ASSERT_EQ((*net_data.net_via_ids_.at(CMNetId{1})).size(), 2u);
+    EXPECT_EQ((*net_data.net_via_ids_.at(CMNetId{1}))[0], 1u);
     EXPECT_EQ(net_data.stats_.via_instance_count, 2u);
     EXPECT_EQ(net_data.stats_.skipped_via_count, 0u);
 }
@@ -453,8 +453,8 @@ TEST(DSNetGeometryExpandNodeTest, ExpandsViaDataArrayAndSkipsUndefined) {
     geo.handle(ctx);
 
     ASSERT_EQ(net_data.via_instances_.size(), 2u);
-    EXPECT_EQ(net_data.via_instances_.at(CMViaInstanceId{1}).pos_.get_x(), 0);
-    EXPECT_EQ(net_data.via_instances_.at(CMViaInstanceId{2}).pos_.get_x(), 400);
+    EXPECT_EQ((*net_data.via_instances_.at(CMViaInstanceId{1})).pos_.get_x(), 0);
+    EXPECT_EQ((*net_data.via_instances_.at(CMViaInstanceId{2})).pos_.get_x(), 400);
     EXPECT_EQ(net_data.stats_.via_instance_count, 2u);
     EXPECT_EQ(net_data.stats_.skipped_via_count, 1u);
     EXPECT_EQ(net_data.next_via_instance_id_, 3u);
@@ -516,20 +516,20 @@ TEST(DSNetBuildDataTest, SerializeRoundTrip) {
     FLY_DECODE(blob, DSNetBuildData, back);
 
     EXPECT_EQ(back.get_block_name(), "");
-    ASSERT_EQ(back.connections_.at(CMNetId{1}).size(), 2u);
-    EXPECT_EQ(back.connections_.at(CMNetId{1})[0].instance_local_id_, 1u);
-    EXPECT_EQ(back.connections_.at(CMNetId{1})[0].pin_id_, 0u);
-    EXPECT_TRUE(back.connections_.at(CMNetId{1})[1].is_port());
-    EXPECT_EQ(back.connections_.at(CMNetId{1})[1].pin_id_, 5u);
-    ASSERT_EQ(back.wires_.at(CMNetId{1}).size(), 1u);
-    EXPECT_EQ(back.wires_.at(CMNetId{1})[0].layer_id_, 0u);
-    EXPECT_EQ(back.wires_.at(CMNetId{1})[0].width_, 140);
-    EXPECT_EQ(back.wires_.at(CMNetId{1})[0].points_.size(), 2u);
-    ASSERT_EQ(back.rects_.at(CMNetId{1}).size(), 1u);
+    ASSERT_EQ(back.connections_.at(CMNetId{1})->size(), 2u);
+    EXPECT_EQ((*back.connections_.at(CMNetId{1}))[0].instance_local_id_, 1u);
+    EXPECT_EQ((*back.connections_.at(CMNetId{1}))[0].pin_id_, 0u);
+    EXPECT_TRUE((*back.connections_.at(CMNetId{1}))[1].is_port());
+    EXPECT_EQ((*back.connections_.at(CMNetId{1}))[1].pin_id_, 5u);
+    ASSERT_EQ(back.wires_.at(CMNetId{1})->size(), 1u);
+    EXPECT_EQ((*back.wires_.at(CMNetId{1}))[0].layer_id_, 0u);
+    EXPECT_EQ((*back.wires_.at(CMNetId{1}))[0].width_, 140);
+    EXPECT_EQ((*back.wires_.at(CMNetId{1}))[0].points_.size(), 2u);
+    ASSERT_EQ(back.rects_.at(CMNetId{1})->size(), 1u);
     ASSERT_EQ(back.via_instances_.size(), 1u);
-    EXPECT_EQ(back.via_instances_.at(CMViaInstanceId{1}).via_cell_id_,
+    EXPECT_EQ((*back.via_instances_.at(CMViaInstanceId{1})).via_cell_id_,
               env.design.via_cell_names_.get_id("VIA12"));
-    EXPECT_EQ(back.net_via_ids_.at(CMNetId{1}).size(), 1u);
+    EXPECT_EQ((*back.net_via_ids_.at(CMNetId{1})).size(), 1u);
     // M1 wire 段 2 格 + M2 rect 1 格；via cut (900,500)-(1100,700) 跨
     // col 0/1 边界 → 2 格
     EXPECT_EQ(back.density_.metal_total(), 3);
@@ -619,23 +619,23 @@ TEST(DsDefNetsTest, ParsesNetContentInBatches) {
     EXPECT_EQ(stats.skipped_layer_ref_count, 0);
 
     // n1：连接 + wire（缺省宽回填）+ via instance
-    ASSERT_EQ(net_data.connections_.at(CMNetId{1}).size(), 2u);
-    ASSERT_EQ(net_data.wires_.at(CMNetId{1}).size(), 2u);
-    EXPECT_EQ(net_data.wires_.at(CMNetId{1})[0].layer_id_, 0u);
-    EXPECT_EQ(net_data.wires_.at(CMNetId{1})[0].width_, 70);
-    EXPECT_EQ(net_data.wires_.at(CMNetId{1})[0].points_[0].get_x(), 100);
-    EXPECT_EQ(net_data.wires_.at(CMNetId{1})[1].points_[1].get_y(), 300);
+    ASSERT_EQ(net_data.connections_.at(CMNetId{1})->size(), 2u);
+    ASSERT_EQ(net_data.wires_.at(CMNetId{1})->size(), 2u);
+    EXPECT_EQ((*net_data.wires_.at(CMNetId{1}))[0].layer_id_, 0u);
+    EXPECT_EQ((*net_data.wires_.at(CMNetId{1}))[0].width_, 70);
+    EXPECT_EQ((*net_data.wires_.at(CMNetId{1}))[0].points_[0].get_x(), 100);
+    EXPECT_EQ((*net_data.wires_.at(CMNetId{1}))[1].points_[1].get_y(), 300);
     ASSERT_EQ(net_data.via_instances_.size(), 2u);
-    EXPECT_EQ(net_data.via_instances_.at(CMViaInstanceId{1}).pos_.get_x(), 500);
-    EXPECT_EQ(net_data.via_instances_.at(CMViaInstanceId{1}).pos_.get_y(), 300);
+    EXPECT_EQ((*net_data.via_instances_.at(CMViaInstanceId{1})).pos_.get_x(), 500);
+    EXPECT_EQ((*net_data.via_instances_.at(CMViaInstanceId{1})).pos_.get_y(), 300);
 
     // VDD（special）：显式宽度 + RECT + 前缀 via + 未定义 via 跳过
     const CMNetId vdd_id{block_data.net_names_->get_id("VDD")};
-    ASSERT_EQ(net_data.wires_.at(vdd_id).size(), 2u);
-    EXPECT_EQ(net_data.wires_.at(vdd_id)[0].width_, 200);
-    ASSERT_EQ(net_data.rects_.at(vdd_id).size(), 1u);
-    EXPECT_EQ(net_data.rects_.at(vdd_id)[0].rect_.get_x_high(), 2120);
-    EXPECT_EQ(net_data.via_instances_.at(CMViaInstanceId{2}).via_cell_id_,
+    ASSERT_EQ(net_data.wires_.at(vdd_id)->size(), 2u);
+    EXPECT_EQ((*net_data.wires_.at(vdd_id))[0].width_, 200);
+    ASSERT_EQ(net_data.rects_.at(vdd_id)->size(), 1u);
+    EXPECT_EQ((*net_data.rects_.at(vdd_id))[0].rect_.get_x_high(), 2120);
+    EXPECT_EQ((*net_data.via_instances_.at(CMViaInstanceId{2})).via_cell_id_,
               env.design.via_cell_names_.get_id("nets_blk::VIADEF1"));
 
     // 网侧密度（⑥）：格网由 DIEAREA 配置 (0,0)-(2000,1000) bin 1000 → 2×1

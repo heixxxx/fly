@@ -394,55 +394,79 @@ int64_t DSDensityGrid::channel_total(bool via_channel) const {
 // —— DSNetBuildData（S5b per-DEF 网内容产物；R7 ㊳ via/net id 64 位）——
 
 void DSNetBuildData::add_connection(CMNetId net_id, DSNetConnection&& conn) {
-    connections_[net_id].push_back(std::move(conn));
+    auto& vec = connections_[net_id];
+    if (!vec) {
+        vec = std::make_shared<CMVector<DSNetConnection>>();
+    }
+    vec->push_back(std::move(conn));
     ++stats_.connection_count;
 }
 
 void DSNetBuildData::add_wire(CMNetId net_id, DSNetWire&& wire) {
-    wires_[net_id].push_back(std::move(wire));
+    auto& vec = wires_[net_id];
+    if (!vec) {
+        vec = std::make_shared<CMVector<DSNetWire>>();
+    }
+    vec->push_back(std::move(wire));
     ++stats_.wire_count;
 }
 
 void DSNetBuildData::add_rect(CMNetId net_id, DSNetRect&& rect) {
-    rects_[net_id].push_back(std::move(rect));
+    auto& vec = rects_[net_id];
+    if (!vec) {
+        vec = std::make_shared<CMVector<DSNetRect>>();
+    }
+    vec->push_back(std::move(rect));
     ++stats_.rect_count;
 }
 
 CMViaInstanceId DSNetBuildData::add_via_instance(CMNetId net_id,
                                                  DSViaInstance&& via) {
     const CMViaInstanceId id = next_via_instance_id_++;
-    via_instances_.emplace(id, std::move(via));
-    net_via_ids_[net_id].push_back(id);
+    via_instances_[id] = std::make_shared<DSViaInstance>(std::move(via));
+    auto& ids = net_via_ids_[net_id];
+    if (!ids) {
+        ids = std::make_shared<CMVector<CMViaInstanceId>>();
+    }
+    ids->push_back(id);
     ++stats_.via_instance_count;
     return id;
 }
 
-const CMVector<DSNetConnection>* DSNetBuildData::connections_of(
+CMWeakPtr<const CMVector<DSNetConnection>> DSNetBuildData::connections_of(
     CMNetId net_id) const {
     auto it = connections_.find(net_id);
-    return it == connections_.end() ? nullptr : &it->second;
+    return it == connections_.end() ? CMWeakPtr<const CMVector<DSNetConnection>>{}
+                                    : CMWeakPtr<const CMVector<DSNetConnection>>{it->second};
 }
 
-const CMVector<DSNetWire>* DSNetBuildData::wires_of(CMNetId net_id) const {
+CMWeakPtr<const CMVector<DSNetWire>> DSNetBuildData::wires_of(
+    CMNetId net_id) const {
     auto it = wires_.find(net_id);
-    return it == wires_.end() ? nullptr : &it->second;
+    return it == wires_.end() ? CMWeakPtr<const CMVector<DSNetWire>>{}
+                              : CMWeakPtr<const CMVector<DSNetWire>>{it->second};
 }
 
-const CMVector<DSNetRect>* DSNetBuildData::rects_of(CMNetId net_id) const {
+CMWeakPtr<const CMVector<DSNetRect>> DSNetBuildData::rects_of(
+    CMNetId net_id) const {
     auto it = rects_.find(net_id);
-    return it == rects_.end() ? nullptr : &it->second;
+    return it == rects_.end() ? CMWeakPtr<const CMVector<DSNetRect>>{}
+                              : CMWeakPtr<const CMVector<DSNetRect>>{it->second};
 }
 
-const CMVector<CMViaInstanceId>* DSNetBuildData::via_ids_of(
+CMWeakPtr<const CMVector<CMViaInstanceId>> DSNetBuildData::via_ids_of(
     CMNetId net_id) const {
     auto it = net_via_ids_.find(net_id);
-    return it == net_via_ids_.end() ? nullptr : &it->second;
+    return it == net_via_ids_.end()
+               ? CMWeakPtr<const CMVector<CMViaInstanceId>>{}
+               : CMWeakPtr<const CMVector<CMViaInstanceId>>{it->second};
 }
 
-const DSViaInstance* DSNetBuildData::via_instance_at(
+CMWeakPtr<const DSViaInstance> DSNetBuildData::via_instance_at(
     CMViaInstanceId via_id) const {
     auto it = via_instances_.find(via_id);
-    return it == via_instances_.end() ? nullptr : &it->second;
+    return it == via_instances_.end() ? CMWeakPtr<const DSViaInstance>{}
+                                      : CMWeakPtr<const DSViaInstance>{it->second};
 }
 
 // —— DSBlockBuildData（S5a per-DEF 产物）——
@@ -454,8 +478,8 @@ void DSBlockBuildData::init_placeholder(const CMString& block_name,
     }
     ensure_names();  // 解析期惰性创建运行时 hasher（㊵②）
     block_name_ = block_name;
-    DSInstance placeholder;
-    placeholder.set_cell_id(block_cell_id);
+    auto placeholder = std::make_shared<DSInstance>();
+    placeholder->set_cell_id(block_cell_id);
     instances_.emplace(CMInstanceId{0}, std::move(placeholder));  // ⑧ 占位
     next_instance_id_ = CMInstanceId{1};
 }
@@ -467,7 +491,7 @@ CMInstanceId DSBlockBuildData::add_instance(DSInstance&& inst,
     // hasher 底座 IdT = 裸值域（查询机器参数），强类型边界显式转换
     const CMInstanceId id = next_instance_id_++;
     instance_names_->assign(name, id.value());
-    instances_.emplace(id, std::move(inst));
+    instances_.emplace(id, std::make_shared<DSInstance>(std::move(inst)));
     return id;
 }
 
@@ -484,19 +508,23 @@ CMNetId DSBlockBuildData::register_net(const CMString& name) {
     return id;
 }
 
-const DSInstance* DSBlockBuildData::find_instance(CMInstanceId id) const {
+CMWeakPtr<const DSInstance> DSBlockBuildData::find_instance(
+    CMInstanceId id) const {
     auto it = instances_.find(id);
-    return it == instances_.end() ? nullptr : &it->second;
+    if (it == instances_.end()) {
+        return {};
+    }
+    return CMWeakPtr<const DSInstance>{it->second};
 }
 
-const DSInstance* DSBlockBuildData::find_instance_by_name(
+CMWeakPtr<const DSInstance> DSBlockBuildData::find_instance_by_name(
     const CMString& name) const {
     // ㊱：经双向 instance hasher 查名（需已注入 DSBlockNames）
     if (!instance_names_) {
-        return nullptr;
+        return {};
     }
     const CMInstanceId id{instance_names_->get_id(name)};
-    return id.is_valid() ? find_instance(id) : nullptr;
+    return id.is_valid() ? find_instance(id) : CMWeakPtr<const DSInstance>{};
 }
 
 std::optional<CMString> DSBlockBuildData::net_name_at(CMNetId local_id) const {

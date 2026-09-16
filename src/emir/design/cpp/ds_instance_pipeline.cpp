@@ -136,7 +136,7 @@ void DSDensityNode::handle(DSInstanceContext& ctx) {
         ctx.design->cells_[ctx.cell_id.value()].is_block_cell()) {
         return;
     }
-    const DSInstance* inst = ctx.block_data->find_instance(ctx.instance_id);
+    const auto inst = ctx.block_data->find_instance(ctx.instance_id).lock();
     if (inst == nullptr) {
         ctx.error = true;
         return;

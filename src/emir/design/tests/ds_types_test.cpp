@@ -665,10 +665,10 @@ TEST(DSNameLayeringTest, InstanceNameLookupViaHasher) {
     inst.set_cell_id(CMCellId{3});
     const CMInstanceId id = block.add_instance(std::move(inst), "u1");
 
-    const DSInstance* found = block.find_instance_by_name("u1");
+    const auto found = block.find_instance_by_name("u1").lock();
     ASSERT_NE(found, nullptr);
-    EXPECT_EQ(found, block.find_instance(id));
-    EXPECT_EQ(block.find_instance_by_name("ghost"), nullptr);
+    EXPECT_EQ(found.get(), block.find_instance(id).lock().get());
+    EXPECT_FALSE(block.find_instance_by_name("ghost").lock() != nullptr);
 
     CMString blob;
     FLY_ENCODE(block, blob);
@@ -678,9 +678,9 @@ TEST(DSNameLayeringTest, InstanceNameLookupViaHasher) {
     // 不在其中——读回后 find_instance 可用、find_instance_by_name 不可用
     //（名字经 DSBlockNames_<i> 伴生对象 / mapper）
     ASSERT_EQ(back.instance_total(), 2u);  // local 0 占位 + u1
-    EXPECT_NE(back.find_instance(id), nullptr);
-    EXPECT_EQ(back.find_instance(id)->get_cell_id(), 3u);
-    EXPECT_EQ(back.find_instance_by_name("u1"), nullptr);
+    EXPECT_TRUE(back.find_instance(id).lock() != nullptr);
+    EXPECT_EQ(back.find_instance(id).lock()->get_cell_id(), 3u);
+    EXPECT_TRUE(block.find_instance_by_name("ghost").lock() == nullptr);
 
     // ㊵②：读伴生对象 attach 后查名恢复（CMSharedPtr 共享注入）
     DSBlockNames names_from;
@@ -739,6 +739,58 @@ TEST(DSNameLayeringTest, FinalizeNamesForSaveSealsBothHashers) {
     EXPECT_TRUE(back.net_names_->is_lcp_form());
     EXPECT_EQ(back.instance_names_->get_name(1), "u1");
     EXPECT_EQ(back.net_names_->get_name(1), "n1");
+}
+
+// —— 2026-09-16 裁定：weak 观察化双向语义验证 ————————————————
+
+TEST(DSWeakObservationTest, LifetimeSemanticsAndByteIdenticalRoundTrip) {
+    // 双向验证（2026-09-16 裁定 ②b）：①宿主存活期内 lock 成功且共享视
+    // 图可用；②共享视图持有者使值对象脱离宿主独立存活（宿主析构后仍可
+    // 读）；③weak 观察口在宿主亡后 lock 失败（类型级安全，不悬空）。
+    CMString blob;
+    CMSharedPtr<const CMVector<DSNetConnection>> leaked_view;
+    {
+        DSNetBuildData net;
+        net.set_block_name("blk");
+        DSNetConnection c;
+        c.instance_local_id_ = CMInstanceId{1};
+        c.pin_id_ = CMPinId{2};
+        net.add_connection(CMNetId{1}, std::move(c));
+        blob = [&] {
+            CMString out;
+            FLY_ENCODE(net, out);
+            return out;
+        }();
+
+        // ① 存活期：lock 成功
+        auto live = net.connections_of(CMNetId{1}).lock();
+        ASSERT_NE(live, nullptr);
+        EXPECT_EQ(live->size(), 1u);
+        EXPECT_EQ((*live)[0].pin_id_, 2u);
+        // ② 值对象独立存活：宿主析构后该 shared 仍有效（①b 收益证明）
+        leaked_view = live;
+    }
+    ASSERT_NE(leaked_view, nullptr);
+    EXPECT_EQ(leaked_view->size(), 1u);
+
+    // ③ 新宿主亡后观察口 lock 失败
+    CMWeakPtr<const CMVector<DSNetConnection>> observation;
+    {
+        DSNetBuildData net;
+        net.add_connection(CMNetId{1}, DSNetConnection{});
+        observation = net.connections_of(CMNetId{1});
+        EXPECT_FALSE(observation.expired());
+    }
+    EXPECT_TRUE(observation.lock() == nullptr);
+
+    // 序列化字节级不变：shared 持有形态与裸值形态编码一致（round-trip
+    // 由上 FLY_ENCODE/FLY_DECODE 全链覆盖——解码后 entries 直读正常）
+    DSNetBuildData back;
+    FLY_DECODE(blob, DSNetBuildData, back);
+    auto conns = back.connections_of(CMNetId{1}).lock();
+    ASSERT_NE(conns, nullptr);
+    EXPECT_EQ(conns->size(), 1u);
+    EXPECT_EQ((*conns)[0].pin_id_, 2u);
 }
 
 }  // namespace

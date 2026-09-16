@@ -332,8 +332,8 @@ TEST(DSFlattenTest, GeometryCopiesUncrossedAndCrossing) {
     // n_top(global 1) wire (0,1800)-(2000,1800) w40 → 段矩形
     // (−20,1780,2020,1820)（宽度向两端/两侧各扩 half_w=20，同 S5b 密度
     // 节点口径）：两分区 extend 均交叠 → 副本两份、原矩形不裁剪
-    const auto* e0 = p0->geometry_.entries_of(CMNetId{1});
-    const auto* e1 = p1->geometry_.entries_of(CMNetId{1});
+    const auto e0 = p0->geometry_.entries_of(CMNetId{1}).lock();
+    const auto e1 = p1->geometry_.entries_of(CMNetId{1}).lock();
     ASSERT_NE(e0, nullptr);
     ASSERT_NE(e1, nullptr);
     int wire0 = 0;
@@ -357,12 +357,12 @@ TEST(DSFlattenTest, GeometryCopiesUncrossedAndCrossing) {
     // n_pg(global 2) wire (0,1500)-(500,1500)：仅 p0 extend 命中 → 单区
     // 副本、不标 crossing。2026-09-14 拆分裁定：pg 网几何入 GEOMETRY_PG
     // 侧对象，信号侧不含
-    const auto* pg0 = p0->geometry_pg_.entries_of(CMNetId{2});
+    const auto pg0 = p0->geometry_pg_.entries_of(CMNetId{2}).lock();
     ASSERT_NE(pg0, nullptr);
     EXPECT_EQ(pg0->size(), 1u);
-    EXPECT_EQ(p1->geometry_pg_.entries_of(CMNetId{2}), nullptr);
-    EXPECT_EQ(p0->geometry_.entries_of(CMNetId{2}), nullptr);
-    EXPECT_EQ(p1->geometry_.entries_of(CMNetId{2}), nullptr);
+    EXPECT_TRUE(p1->geometry_pg_.entries_of(CMNetId{2}).expired());
+    EXPECT_TRUE(p0->geometry_.entries_of(CMNetId{2}).expired());
+    EXPECT_TRUE(p1->geometry_.entries_of(CMNetId{2}).expired());
     EXPECT_FALSE(p0->geometry_pg_.is_crossing(CMNetId{2}));
     EXPECT_FALSE(p1->geometry_pg_.is_crossing(CMNetId{2}));
 }
@@ -378,7 +378,7 @@ TEST(DSFlattenTest, ViaEntriesCarryCellIdAndPlacementPrimary) {
     // n1(global 4) via @ local (500,100) → 全局 (1500,600)：放置点在 p1
     // core → via 条目 primary 位仅 p1 置位；cut/enclosure 三组矩形按
     // via cell 定义展开、挂 via cell id
-    const auto* entries = p1->geometry_.entries_of(CMNetId{4});
+    const auto entries = p1->geometry_.entries_of(CMNetId{4}).lock();
     ASSERT_NE(entries, nullptr);
     // wire 段 1 条（非 via）+ via 图形 3 条 = 4
     ASSERT_EQ(entries->size(), 4u);
@@ -420,7 +420,7 @@ TEST(DSFlattenTest, ViaEntriesCarryCellIdAndPlacementPrimary) {
     // via 图形越出 p0 extend（x ≥ 1450 > 1140）→ p0 无 via 条目
     const DSPartitionProduct* p0 = product_of(slices, 0);
     ASSERT_NE(p0, nullptr);
-    const auto* e0 = p0->geometry_.entries_of(CMNetId{4});
+    const auto e0 = p0->geometry_.entries_of(CMNetId{4}).lock();
     ASSERT_NE(e0, nullptr);
     for (const auto& e : *e0) {
         EXPECT_FALSE(e.is_via());
@@ -441,7 +441,7 @@ TEST(DSFlattenTest, ObstructionGoesToNetZeroBucketWithObsFlag) {
     // (1010,510,1060,560)：两分区 extend 均命中 → net 0 桶 + obs 位
     //（root 首网 global 0 与 OBS 桶同键共存——obs 位判别）
     for (const DSPartitionProduct* p : {p0, p1}) {
-        const auto* entries = p->geometry_.entries_of(CMNetId{0});
+        const auto entries = p->geometry_.entries_of(CMNetId{0}).lock();
         ASSERT_NE(entries, nullptr) << "partition " << p->instances_.size();
         int obs_count = 0;
         for (const auto& e : *entries) {
@@ -476,9 +476,9 @@ TEST(DSFlattenTest, NonPgNetConnectionsFullyCompleted) {
     for (const DSPartitionProduct* p : {p0, p1}) {
         auto it = p->nets_.nets_.find(CMNetId{1});
         ASSERT_NE(it, p->nets_.nets_.end());
-        EXPECT_EQ(it->second.net_id_, 1u);
-        ASSERT_EQ(it->second.connections_.size(), 4u);
-        const CMVector<DSNetConnEntry>& conns = it->second.connections_;
+        EXPECT_EQ(it->second->net_id_, 1u);
+        ASSERT_EQ(it->second->connections_.size(), 4u);
+        const CMVector<DSNetConnEntry>& conns = it->second->connections_;
         EXPECT_EQ(conns[0].inst_id_, 1u);
         EXPECT_EQ(conns[0].pin_id_, 1u);
         EXPECT_FALSE(conns[0].is_port());
@@ -514,9 +514,9 @@ TEST(DSFlattenTest, PgNetConnectionsFilteredToLocalInstances) {
     //（分流断言——两对象互斥）
     auto it0 = p0->nets_pg_.nets_.find(CMNetId{2});
     ASSERT_NE(it0, p0->nets_pg_.nets_.end());
-    EXPECT_EQ(it0->second.net_id_, 2u);
-    EXPECT_EQ(it0->second.use(), DSNetUse::POWER);
-    ASSERT_EQ(it0->second.connections_.size(), 3u);
+    EXPECT_EQ(it0->second->net_id_, 2u);
+    EXPECT_EQ(it0->second->use(), DSNetUse::POWER);
+    ASSERT_EQ(it0->second->connections_.size(), 3u);
     EXPECT_EQ(p1->nets_pg_.nets_.count(CMNetId{2}), 0u);
     EXPECT_EQ(p0->nets_.nets_.count(CMNetId{2}), 0u);
     EXPECT_EQ(p1->nets_.nets_.count(CMNetId{2}), 0u);
@@ -622,8 +622,8 @@ TEST(DSFlattenTest, ProductSerializeRoundTrip) {
     EXPECT_TRUE(u1->is_primary());
     // geometry：net 0（OBS 桶）与 net 4（wire+via）共存
     EXPECT_EQ(back.geometry_.nets_.size(), p1->geometry_.nets_.size());
-    ASSERT_NE(back.geometry_.entries_of(CMNetId{4}), nullptr);
-    EXPECT_EQ(back.geometry_.entries_of(CMNetId{4})->size(), 4u);
+    ASSERT_TRUE(back.geometry_.entries_of(CMNetId{4}).lock() != nullptr);
+    EXPECT_EQ(back.geometry_.entries_of(CMNetId{4}).lock()->size(), 4u);
     EXPECT_TRUE(back.geometry_.is_crossing(CMNetId{4}));
     EXPECT_TRUE(back.geometry_pg_.nets_.empty());
     // 连接表往返（INST_CONNECTIONS 条目形态对齐：inst_id 更名断言）
@@ -634,12 +634,12 @@ TEST(DSFlattenTest, ProductSerializeRoundTrip) {
     // NETS 往返（2026-09-14 拆分裁定：sub n1(global 4, TIEOFF 信号网)
     // 入 NETS 侧对象、pg 网 n2 无几何不落、NETS_PG 侧空表）
     ASSERT_NE(back.nets_.nets_.find(CMNetId{4}), back.nets_.nets_.end());
-    EXPECT_EQ(back.nets_.nets_.at(CMNetId{4}).net_id_, 4u);
-    EXPECT_EQ(back.nets_.nets_.at(CMNetId{4}).connections_.size(), 2u);
+    EXPECT_EQ((*back.nets_.nets_.at(CMNetId{4})).net_id_, 4u);
+    EXPECT_EQ((*back.nets_.nets_.at(CMNetId{4})).connections_.size(), 2u);
     EXPECT_TRUE(back.nets_pg_.nets_.empty());
     // use 随网往返（2026-09-13 USE 全量补收：DSNet.use_ 缺省 SIGNAL）
-    EXPECT_EQ(back.nets_.nets_.at(CMNetId{4}).use(), DSNetUse::TIEOFF);
-    EXPECT_EQ(back.nets_.net_of(CMNetId{5}), nullptr);
+    EXPECT_EQ((*back.nets_.nets_.at(CMNetId{4})).use(), DSNetUse::TIEOFF);
+    EXPECT_TRUE(back.nets_.net_of(CMNetId{5}).expired());
     // part_id_ 分片归属往返（两侧同值）
     EXPECT_EQ(back.nets_.part_id_, p1->nets_.part_id_);
     EXPECT_EQ(back.nets_pg_.part_id_, p1->nets_.part_id_);
@@ -657,10 +657,10 @@ TEST(DSFlattenTest, PartitionNetUseFollowsNetCopies) {
     const DSPartitionProduct* tp1 = product_of(top_slices, 1);
     ASSERT_NE(tp0, nullptr);
     ASSERT_NE(tp1, nullptr);
-    EXPECT_EQ(tp0->nets_.nets_.at(CMNetId{1}).use(), DSNetUse::CLOCK);
-    EXPECT_EQ(tp1->nets_.nets_.at(CMNetId{1}).use(), DSNetUse::CLOCK);
-    EXPECT_EQ(tp0->nets_pg_.nets_.at(CMNetId{2}).use(), DSNetUse::POWER);
-    EXPECT_EQ(tp1->nets_pg_.net_of(CMNetId{2}), nullptr);
+    EXPECT_EQ(tp0->nets_.nets_.at(CMNetId{1})->use(), DSNetUse::CLOCK);
+    EXPECT_EQ(tp1->nets_.nets_.at(CMNetId{1})->use(), DSNetUse::CLOCK);
+    EXPECT_EQ(tp0->nets_pg_.nets_.at(CMNetId{2})->use(), DSNetUse::POWER);
+    EXPECT_TRUE(tp1->nets_pg_.net_of(CMNetId{2}).expired());
     // sub 展开：n1（global 4，use TIEOFF）几何落 p0/p1；n2（global 5，
     // use POWER 但 pg 无几何——无 net 副本，全域无条目）
     const auto sub_slices =
@@ -670,9 +670,9 @@ TEST(DSFlattenTest, PartitionNetUseFollowsNetCopies) {
     const DSPartitionProduct* sp1 = product_of(sub_slices, 1);
     ASSERT_NE(sp0, nullptr);
     ASSERT_NE(sp1, nullptr);
-    EXPECT_EQ(sp0->nets_.nets_.at(CMNetId{4}).use(), DSNetUse::TIEOFF);
-    EXPECT_EQ(sp1->nets_.nets_.at(CMNetId{4}).use(), DSNetUse::TIEOFF);
-    EXPECT_EQ(sp1->nets_pg_.net_of(CMNetId{5}), nullptr);
+    EXPECT_EQ(sp0->nets_.nets_.at(CMNetId{4})->use(), DSNetUse::TIEOFF);
+    EXPECT_EQ(sp1->nets_.nets_.at(CMNetId{4})->use(), DSNetUse::TIEOFF);
+    EXPECT_TRUE(sp1->nets_pg_.net_of(CMNetId{5}).expired());
 }
 
 TEST(DSFlattenTest, GeometryOnlyNetHasNoDSNetRecord) {
@@ -709,19 +709,19 @@ TEST(DSFlattenTest, GeometryOnlyNetHasNoDSNetRecord) {
     // 悬浮 pg 网入 GEOMETRY_PG、悬浮信号网入 GEOMETRY——2026-09-14 拆分）
     const CMNetId g3{3};
     const CMNetId g4{4};
-    EXPECT_EQ(tp0->nets_.net_of(g3), nullptr);
-    EXPECT_EQ(tp0->nets_pg_.net_of(g3), nullptr);
-    EXPECT_EQ(tp0->nets_.net_of(g4), nullptr);
-    EXPECT_EQ(tp0->nets_pg_.net_of(g4), nullptr);
+    EXPECT_TRUE(tp0->nets_.net_of(g3).expired());
+    EXPECT_TRUE(tp0->nets_pg_.net_of(g3).expired());
+    EXPECT_TRUE(tp0->nets_.net_of(g4).expired());
+    EXPECT_TRUE(tp0->nets_pg_.net_of(g4).expired());
     EXPECT_EQ(tp0->nets_.nets_.count(g3), 0u);
     EXPECT_EQ(tp0->nets_pg_.nets_.count(g3), 0u);
     EXPECT_EQ(tp0->nets_.nets_.count(g4), 0u);
     // 几何侧别跟随：悬浮 pg 网 wire 入 GEOMETRY_PG、悬浮信号网 rect 入
     // GEOMETRY（信号侧）
-    ASSERT_NE(tp0->geometry_pg_.entries_of(g3), nullptr);
-    EXPECT_EQ(tp0->geometry_.entries_of(g3), nullptr);
-    ASSERT_NE(tp0->geometry_.entries_of(g4), nullptr);
-    EXPECT_EQ(tp0->geometry_pg_.entries_of(g4), nullptr);
+    ASSERT_TRUE(tp0->geometry_pg_.entries_of(g3).lock() != nullptr);
+    EXPECT_TRUE(tp0->geometry_.entries_of(g3).expired());
+    ASSERT_TRUE(tp0->geometry_.entries_of(g4).lock() != nullptr);
+    EXPECT_TRUE(tp0->geometry_pg_.entries_of(g4).expired());
 }
 
 TEST(DSFlattenTest, OutOfCorePointFallsBackToNearestPrimary) {
@@ -777,7 +777,7 @@ TEST(DSFlattenTest, ObstructionOwnsNetZeroBucketExclusively) {
     const DSPartitionProduct* p0 = product_of(slices, 0);
     ASSERT_NE(p0, nullptr);
     // 键 0 桶：恒纯 OBS（无真网条目共存）
-    const auto* bucket = p0->geometry_.entries_of(CMNetId{0});
+    const auto bucket = p0->geometry_.entries_of(CMNetId{0}).lock();
     ASSERT_NE(bucket, nullptr);
     int wire_count = 0, obs_count = 0;
     for (const auto& e : *bucket) {
@@ -817,12 +817,12 @@ TEST(DSFlattenTest, ObstructionAndPartitionGeometryRoundTrip) {
     FLY_DECODE(blob, DSPartitionGeometry, back);
 
     EXPECT_EQ(back.nets_.size(), 2u);
-    ASSERT_NE(back.entries_of(CMNetId{0}), nullptr);
-    EXPECT_EQ(back.entries_of(CMNetId{0})->size(), 1u);
-    EXPECT_TRUE(back.entries_of(CMNetId{0})->front().is_obs());
-    ASSERT_NE(back.entries_of(CMNetId{2}), nullptr);
-    EXPECT_TRUE(back.entries_of(CMNetId{2})->front().is_via());
-    EXPECT_TRUE(back.entries_of(CMNetId{2})->front().is_primary());
+    ASSERT_TRUE(back.entries_of(CMNetId{0}).lock() != nullptr);
+    EXPECT_EQ(back.entries_of(CMNetId{0}).lock()->size(), 1u);
+    EXPECT_TRUE(back.entries_of(CMNetId{0}).lock()->front().is_obs());
+    ASSERT_TRUE(back.entries_of(CMNetId{2}).lock() != nullptr);
+    EXPECT_TRUE(back.entries_of(CMNetId{2}).lock()->front().is_via());
+    EXPECT_TRUE(back.entries_of(CMNetId{2}).lock()->front().is_primary());
     EXPECT_TRUE(back.is_crossing(CMNetId{0}));
     EXPECT_FALSE(back.is_crossing(CMNetId{2}));
 }

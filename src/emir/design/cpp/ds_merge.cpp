@@ -202,8 +202,8 @@ int ds_merge_block_build(DSDesign& dst, DSBlockBuildData& block_data,
         // per-cell 统计键 + fake 登记表
         if (id != id_it->second) {
             for (auto& [iid, inst] : block_data.instances_) {
-                if (inst.get_cell_id() == id_it->second) {
-                    inst.set_cell_id(id);
+                if ((*inst).get_cell_id() == id_it->second) {
+                    (*inst).set_cell_id(id);
                 }
             }
             CMUnorderedMap<CMCellId, uint64_t> remapped;
@@ -359,11 +359,12 @@ DSHierTree ds_build_hier_tree(const CMVector<const DSBlockBuildData*>& blocks,
         CMVector<std::pair<CMInstanceId, uint32_t>> refs;
         const DSBlockBuildData& block = *blocks[def_idx];
         for (const auto& [local_id, inst] : block.instances_) {
-            if (local_id == 0 || inst.get_cell_id() >= design.cells_.size()) {
+            if (local_id == CMInstanceId{0} ||
+                (*inst).get_cell_id() >= design.cells_.size()) {
                 continue;  // 占位 / fake（稀疏落位外的任务内 id）
             }
             const DSCell& cell =
-                design.cells_[inst.get_cell_id().value()];
+                design.cells_[(*inst).get_cell_id().value()];
             if (!cell.is_block_cell()) {
                 continue;
             }
@@ -464,7 +465,7 @@ DSHierTree ds_build_hier_tree(const CMVector<const DSBlockBuildData*>& blocks,
                 const auto iit = block.instances_.find(local_id);
                 const GEOTransform child_composite =
                     iit != block.instances_.end()
-                        ? composite.compose(iit->second.get_transform())
+                        ? composite.compose((*iit->second).get_transform())
                         : composite;
                 visit(child_def,
                       block.instance_names_->get_name(local_id.value()),

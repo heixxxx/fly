@@ -225,7 +225,7 @@ DSDensityGrid ds_merge_global_density(
                 const auto& instances = blocks[pit->second]->instances_;
                 const auto iit = instances.find(local_id);
                 if (iit != instances.end()) {
-                    inst = &iit->second;
+                    inst = iit->second.get();
                 }
             }
             // 实例缺失（不应发生——树与实例表同源）兜底恒等，不中断建库；

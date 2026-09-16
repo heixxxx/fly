@@ -226,7 +226,7 @@ TEST(DSInstanceBuildNodeTest, AssignsLocalIdsFromOneAndBuildsTransform) {
     build.handle(ctx);
 
     EXPECT_EQ(ctx.instance_id, 1u);  // ⑧ local id 从 1 起（local 0 = 占位）
-    const DSInstance& inst = block_data.instances_.at(CMInstanceId{1});
+    const DSInstance& inst = *block_data.instances_.at(CMInstanceId{1});
     // R7 ㊱：DSInstance 无 name——实例名经双向 instance hasher 查回
     EXPECT_EQ(block_data.instance_names_->get_name(1), "i1");
     EXPECT_EQ(inst.get_cell_id(), 0u);
@@ -250,7 +250,7 @@ TEST(DSInstanceBuildNodeTest, AssignsLocalIdsFromOneAndBuildsTransform) {
     resolve.handle(ctx2);
     build.handle(ctx2);
     EXPECT_EQ(ctx2.instance_id, 2u);
-    const DSInstance& inst2 = block_data.instances_.at(CMInstanceId{2});
+    const DSInstance& inst2 = *block_data.instances_.at(CMInstanceId{2});
     EXPECT_EQ(inst2.get_cell_id(), ctx2.cell_id);
     EXPECT_EQ(inst2.get_transform().get_offset().get_x(), 600);
     EXPECT_EQ(inst2.get_transform().get_offset().get_y(), 801);
@@ -443,7 +443,7 @@ TEST(DSBlockBuildDataTest, SerializeRoundTrip) {
     // R7 ㊱/㊵②：占位不进 instance hasher；hasher 不在 DSBlock_<i> 序列
     // 化面（名字经 DSBlockNames 伴生对象）
     EXPECT_EQ(back.instance_names_, nullptr);  // 读回未 attach = 空
-    const DSInstance& inst = back.instances_.at(CMInstanceId{1});
+    const DSInstance& inst = *back.instances_.at(CMInstanceId{1});
     // W 变换：box (0,0,1400,1400) → R_W ll=(−1400,0) → pos=(3400,2000)
     EXPECT_EQ(inst.get_transform().get_offset().get_x(), 3400);
     EXPECT_EQ(inst.get_transform().get_offset().get_y(), 2000);
@@ -480,7 +480,7 @@ TEST(DSMergeBlockBuildTest, MergesFakeCellsKeepingAssignedIds) {
     ASSERT_EQ(design.fake_cell_ids_.size(), 1u);
     EXPECT_EQ(design.fake_cell_ids_[0], assigned);
     // instance 引用保持（id 未冲突，无需重映射）
-    EXPECT_EQ(b1.instances_.at(CMInstanceId{1}).get_cell_id(), assigned);
+    EXPECT_EQ((*b1.instances_.at(CMInstanceId{1})).get_cell_id(), assigned);
 }
 
 TEST(DSMergeBlockBuildTest, ResolvesFakeIdConflictByShifting) {
@@ -512,7 +512,7 @@ TEST(DSMergeBlockBuildTest, ResolvesFakeIdConflictByShifting) {
     EXPECT_EQ(shifted, conflict_id + 1);
     EXPECT_EQ(design.cell_names_.get_id("blk::GHOST_A"), conflict_id);
     EXPECT_EQ(design.cell_names_.get_id("blk::GHOST_B"), shifted);
-    EXPECT_EQ(b2.instances_.at(CMInstanceId{1}).get_cell_id(), shifted);  // 引用重映射
+    EXPECT_EQ((*b2.instances_.at(CMInstanceId{1})).get_cell_id(), shifted);  // 引用重映射
     EXPECT_EQ(design.fake_cell_ids_.size(), 2u);
     // 同名 fake 重复并入被跳过（防御）
     EXPECT_EQ(ds_merge_block_build(design, b2, fake2), 0);
@@ -568,7 +568,7 @@ TEST(DsDefComponentsTest, ParsesComponentsAndNetNamesOnePass) {
 
     // inst1 INV_X1 + PLACED (100,200) N：t=(100,200)（×1）→ pos=(100,200)
     // R7 ㊱：实例名经双向 instance hasher 查回
-    const DSInstance& i1 = block_data.instances_.at(CMInstanceId{1});
+    const DSInstance& i1 = *block_data.instances_.at(CMInstanceId{1});
     EXPECT_EQ(block_data.instance_names_->get_name(1), "inst1");
     EXPECT_EQ(block_data.instance_names_->get_id("inst1"), 1u);
     EXPECT_EQ(i1.get_cell_id(), 0u);
@@ -579,7 +579,7 @@ TEST(DsDefComponentsTest, ParsesComponentsAndNetNamesOnePass) {
 
     // inst2 DFF_X1 + PLACED (300,400) FS：未定义 → fake；t=(300,400)，
     // fake 1×1 box 经 R_FS ll=(0,−1) → pos=(300,401)
-    const DSInstance& i2 = block_data.instances_.at(CMInstanceId{2});
+    const DSInstance& i2 = *block_data.instances_.at(CMInstanceId{2});
     EXPECT_EQ(block_data.instance_names_->get_name(2), "inst2");
     ASSERT_EQ(fake_cells.size(), 1u);
     EXPECT_EQ(fake_cells[0].get_name(), "block_a::DFF_X1");
@@ -625,7 +625,7 @@ TEST(DsDefComponentsTest, HandlesUnplacedAndDuplicateNets) {
 
     // u1：PLACED N；t=(100,100) → pos=(100,100)（WEIGHT 不再解析入库，
     // 2026-09-13 裁定：无消费者删除）
-    const DSInstance& u1 = block_data.instances_.at(CMInstanceId{1});
+    const DSInstance& u1 = *block_data.instances_.at(CMInstanceId{1});
     EXPECT_EQ(u1.get_placement_status(),
               DSPlacementStatus::PLACED);
     EXPECT_EQ(u1.get_transform().get_offset().get_x(), 100);
@@ -633,21 +633,21 @@ TEST(DsDefComponentsTest, HandlesUnplacedAndDuplicateNets) {
 
     // u2：FIXED FS；t=(200,100)、INV box 1400×1400 → R_FS ll=(0,−1400)
     // → pos=(200,1500)
-    const DSInstance& u2 = block_data.instances_.at(CMInstanceId{2});
+    const DSInstance& u2 = *block_data.instances_.at(CMInstanceId{2});
     EXPECT_EQ(u2.get_placement_status(),
               DSPlacementStatus::FIXED);
     EXPECT_EQ(u2.get_transform().get_offset().get_x(), 200);
     EXPECT_EQ(u2.get_transform().get_offset().get_y(), 1500);
 
     // u3：UNPLACED（defi 置坐标 (−1,−1) orient −1）→ 钳制 N、照收入表
-    const DSInstance& u3 = block_data.instances_.at(CMInstanceId{3});
+    const DSInstance& u3 = *block_data.instances_.at(CMInstanceId{3});
     EXPECT_EQ(u3.get_placement_status(),
               DSPlacementStatus::UNPLACED);
     EXPECT_EQ(u3.get_transform().get_orient(), GEOOrientation::N);
 
     // u4：COVER S（GHOST fake 1×1）：t=(300,300) → R_S box ll=(−1,−1)
     // → pos=(301,301)
-    const DSInstance& u4 = block_data.instances_.at(CMInstanceId{4});
+    const DSInstance& u4 = *block_data.instances_.at(CMInstanceId{4});
     EXPECT_EQ(u4.get_placement_status(),
               DSPlacementStatus::COVER);
     EXPECT_EQ(u4.get_transform().get_offset().get_x(), 301);

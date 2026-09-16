@@ -292,13 +292,12 @@ FLY_EXPORT_CLASS(fly::DSNetBuildData, "EXDSNetBuildData")
     FLY_EXPORT_DEF("connections_of",
                    [](const fly::DSNetBuildData& n, uint64_t net_id) {
         nb::list out;
-        const auto* conns = n.connections_of(fly::CMNetId{net_id});
-        if (conns != nullptr) {
+        if (auto conns = n.connections_of(fly::CMNetId{net_id}).lock()) {
             for (const auto& c : *conns) {
                 // id 形态（2026-09-13 裁定）：对象面 (instance local id +
                 // 全局 pin id + flags 六位)；port 引用条目 local id = 0
                 //（⑧ 占位）
-                out.append(c);  // 元素为值拷贝（24B 值类型，非引用）
+                out.append(c);  // 元素为值拷贝（非引用）
             }
         }
         return out;
@@ -306,8 +305,7 @@ FLY_EXPORT_CLASS(fly::DSNetBuildData, "EXDSNetBuildData")
     FLY_EXPORT_DEF("wires_of", [](const fly::DSNetBuildData& n,
                                   uint64_t net_id) {
         nb::list out;
-        const auto* wires = n.wires_of(fly::CMNetId{net_id});
-        if (wires != nullptr) {
+        if (auto wires = n.wires_of(fly::CMNetId{net_id}).lock()) {
             for (const auto& w : *wires) {
                 nb::list pts;
                 for (const auto& p : w.points_) {
@@ -322,8 +320,7 @@ FLY_EXPORT_CLASS(fly::DSNetBuildData, "EXDSNetBuildData")
     FLY_EXPORT_DEF("rects_of", [](const fly::DSNetBuildData& n,
                                   uint64_t net_id) {
         nb::list out;
-        const auto* rects = n.rects_of(fly::CMNetId{net_id});
-        if (rects != nullptr) {
+        if (auto rects = n.rects_of(fly::CMNetId{net_id}).lock()) {
             for (const auto& r : *rects) {
                 out.append(nb::make_tuple(r.layer_id_.value(),
                                           rect_to_tuple(r.rect_)));
@@ -334,16 +331,17 @@ FLY_EXPORT_CLASS(fly::DSNetBuildData, "EXDSNetBuildData")
     FLY_EXPORT_DEF("via_ids_of", [](const fly::DSNetBuildData& n,
                                     uint64_t net_id) {
         nb::list out;
-        const auto* ids = n.via_ids_of(fly::CMNetId{net_id});
-        if (ids != nullptr) {
+        if (auto ids = n.via_ids_of(fly::CMNetId{net_id}).lock()) {
             for (const fly::CMViaInstanceId id : *ids) out.append(id.value());
         }
         return out;
     })
     FLY_EXPORT_DEF("via_instance_at", [](const fly::DSNetBuildData& n,
                                          uint64_t via_id) {
-        const fly::DSViaInstance* v =
-            n.via_instance_at(fly::CMViaInstanceId{via_id});
+        // lock 桥：绑定参数保活宿主，lock 失败 = 键不存在（未命中 →
+        // None，与原 nullptr 语义一致；weak 观察的宿主亡场景在 Python
+        // 面不可达——引用持有即保活）
+        const auto v = n.via_instance_at(fly::CMViaInstanceId{via_id}).lock();
         if (v == nullptr) return std::optional<nb::tuple>();
         return std::optional(nb::make_tuple(v->via_cell_id_.value(),
                                             v->pos_.get_x(),
@@ -556,12 +554,13 @@ FLY_EXPORT_CLASS(fly::DSBlockBuildData, "EXDSBlockBuildData")
     })
     FLY_EXPORT_DEF("get_instance", [](const fly::DSBlockBuildData& b,
                                       uint64_t id) -> const fly::DSInstance& {
-        return b.instances_.at(fly::CMInstanceId{id});
+        return *b.instances_.at(fly::CMInstanceId{id});
     }, nb::rv_policy::reference_internal)
     FLY_EXPORT_DEF("find_instance_by_name",
                    [](const fly::DSBlockBuildData& b, const CMString& name)
                        -> const fly::DSInstance* {
-        return b.find_instance_by_name(name);
+        // lock 桥：宿主由绑定引用保活，lock 失败 = 未命中（None）
+        return b.find_instance_by_name(name).lock().get();
     }, nb::rv_policy::reference_internal)
     // local net 名空间（③ NetNameOnly；R7 ㊱ 经 net hasher 双向查询——
     // hasher 随 DSBlockNames_<i> 伴生对象落盘，需先 attach_names 注入）
@@ -1188,8 +1187,7 @@ FLY_EXPORT_CLASS(fly::DSNetUnion, "EXDSNetUnion")
     })
     FLY_EXPORT_DEF("members", [](const fly::DSNetUnion& u, uint64_t root) {
         nb::list out;
-        const auto* m = u.members(fly::CMNetId{root});
-        if (m != nullptr) {
+        if (auto m = u.members(fly::CMNetId{root}).lock()) {
             for (const fly::CMNetId id : *m) out.append(id.value());
         }
         return out;
@@ -1321,8 +1319,9 @@ FLY_EXPORT_CLASS(fly::DSPartitionGeometry, "EXDSPartitionGeometry")
     FLY_EXPORT_DEF("entries_of", [](const fly::DSPartitionGeometry& g,
                                     uint64_t net_global_id) {
         nb::list out;
-        const auto* entries = g.entries_of(fly::CMNetId{net_global_id});
-        if (entries != nullptr) {
+        // lock 桥：宿主由绑定引用保活，lock 失败 = 未命中（空列表）
+        if (auto entries =
+                g.entries_of(fly::CMNetId{net_global_id}).lock()) {
             for (const auto& e : *entries) out.append(e);
         }
         return out;
@@ -1436,7 +1435,8 @@ FLY_EXPORT_CLASS(fly::DSPartitionNets, "EXDSPartitionNets")
     FLY_EXPORT_DEF("net_of", [](const fly::DSPartitionNets& p,
                                 uint64_t net_global_id)
                             -> const fly::DSNet* {
-        return p.net_of(fly::CMNetId{net_global_id});
+        // lock 桥：宿主由绑定引用保活，lock 失败 = 未命中（None）
+        return p.net_of(fly::CMNetId{net_global_id}).lock().get();
     }, nb::rv_policy::reference_internal)
     // 本侧表键集只读视图（property 数据面——规模观测/分流核对手算用）
     FLY_EXPORT_READONLY_PROPERTY("ids", [](const fly::DSPartitionNets& p) {

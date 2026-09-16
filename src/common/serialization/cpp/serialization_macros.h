@@ -467,7 +467,7 @@ void chronoSizedExt(S& s, T& v, const Ext&) {
 // 元素、optional/variant/tuple/pair 内元素的唯一入口；与 FLY_FIELD 的
 // 字段级分派同语义（FLY_FIELD 扩展族分支委托本函数）。新增类型分派只
 // 改此处（单点）。
-template<typename S, typename T>
+template <typename S, typename T>
 void elem(S& s, T& v) {
     using fly_T_ = std::decay_t<T>;
     if constexpr (is_map_v<fly_T_>) {
@@ -475,6 +475,22 @@ void elem(S& s, T& v) {
             elem(s2, key);
             elem(s2, val);
         });
+    } else if constexpr (is_shared_ptr_v<fly_T_>) {
+        // 容器元素 / 复合内层的 shared_ptr（2026-09-16 裁定：weak 观察化
+        // 的框架支撑——值对象 CMSharedPtr 持有后经本分支序列化）。**值内
+        // 容直通**：不解 StdSmartPtr ext（其 tracking 编码会破坏「字节级
+        // 与裸值一致」约束）——写侧解引用直写、读侧重建独立持有（不保
+        // 共享拓扑：容器条目无共享语义）。空指针：写侧为调用方契约错误
+        //（debug 断言），读侧不存在空态。
+        using ElemT = typename fly_T_::element_type;
+        if constexpr (is_deserializer_v<S>) {
+            auto rebuilt = std::make_shared<ElemT>();
+            elem(s, *rebuilt);
+            v = std::move(rebuilt);
+        } else {
+            assert(v != nullptr && "null shared_ptr in elem (contract)");
+            elem(s, *v);
+        }
     } else if constexpr (is_set_v<fly_T_>) {
         // set 四种：size + 逐元素写出；读侧 clear + reserve + emplace_hint
         //（unordered 族 reserve 加速重建——bitsery StdSet 内建）

@@ -39,7 +39,10 @@ CMString ds_check_net_union(const DSNetUnion& u) {
             return "members_of_ key " + std::to_string(root.value()) +
                    " is not a root in root_of_";
         }
-        for (const CMNetId id : members) {
+        // 值为 CMSharedPtr 持有——结构化绑定后解引用（校验函数同步
+        // 持有宿主，无生命周期窗口）
+        const CMVector<CMNetId>& members_locked = *members;
+        for (const CMNetId id : members_locked) {
             const auto mit = u.root_of_.find(id);
             if (mit == u.root_of_.end() || mit->second != root) {
                 return "members_of_ entry " + std::to_string(id.value()) +
@@ -47,7 +50,7 @@ CMString ds_check_net_union(const DSNetUnion& u) {
                        std::to_string(root.value());
             }
         }
-        listed += members.size();
+        listed += members_locked.size();
     }
     if (listed != u.root_of_.size()) {
         return "members_of_ lists " + std::to_string(listed) +
@@ -223,11 +226,11 @@ DSPartitionCheckResult ds_verify_partition(
     // OBS，此过滤保留为防御）
     for (const DSPartitionGeometry* geo : {&geometry, &geometry_pg}) {
         for (const auto& [net_id, entries] : geo->nets_) {
-            r.geometry_entry_count_ += entries.size();
+            r.geometry_entry_count_ += entries->size();
             ++r.net_count_;
             const bool has_real_geometry =
                 net_id != CMNetId{0} ||
-                std::any_of(entries.begin(), entries.end(),
+                std::any_of(entries->begin(), entries->end(),
                             [](const DSGeomEntry& e) { return !e.is_obs(); });
             if (has_real_geometry) {
                 r.net_ids_.push_back(net_id);
@@ -246,7 +249,7 @@ DSPartitionCheckResult ds_verify_partition(
     for (const DSPartitionNets* side : {&nets, &nets_pg}) {
         for (const auto& [net_id, net] : side->nets_) {
             (void)net_id;
-            r.connection_count_ += net.connections_.size();
+            r.connection_count_ += net->connections_.size();
             r.net_ids_.push_back(net_id);
         }
     }

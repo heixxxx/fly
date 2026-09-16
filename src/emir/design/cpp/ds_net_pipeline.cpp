@@ -159,7 +159,7 @@ void DSNetConnectionParseNode::handle(DSNetContext& ctx) {
             }
             const auto iit = ctx.block_data->instances_.find(inst_local);
             if (iit == ctx.block_data->instances_.end() ||
-                iit->second.get_cell_id() >= ctx.design->cells_.size()) {
+                (*iit->second).get_cell_id() >= ctx.design->cells_.size()) {
                 // 占位（local 0）或 fake cell 引用（快照表外）：无 pin 可查
                 ++ctx.net_data->stats_.skipped_invalid_connection_count;
                 MSG("DSGN::0025", 0,
@@ -170,7 +170,7 @@ void DSNetConnectionParseNode::handle(DSNetContext& ctx) {
                 continue;
             }
             const DSCell& cell =
-                ctx.design->cells_[iit->second.get_cell_id().value()];
+                ctx.design->cells_[(*iit->second).get_cell_id().value()];
             const CMPinId pin_id{
                 ctx.design->pin_names_.get_id(raw.pin_name)};
             // 裁定 3 存在性校验：全局名字命中 ≠ 该 cell 有此 pin
@@ -275,7 +275,7 @@ void DSNetDensityNode::handle(DSNetContext& ctx) {
 
     // 金属通道：wire 段按相邻点对展开为段矩形（宽度向两侧各扩 width/2，
     // int64 中间量）；rect 项原样计入
-    const auto* wires = ctx.net_data->wires_of(ctx.local_net_id);
+    const auto wires = ctx.net_data->wires_of(ctx.local_net_id).lock();
     if (wires != nullptr) {
         for (const DSNetWire& wire : *wires) {
             const int64_t half_w = wire.width_ / 2;
@@ -299,7 +299,7 @@ void DSNetDensityNode::handle(DSNetContext& ctx) {
             }
         }
     }
-    const auto* rects = ctx.net_data->rects_of(ctx.local_net_id);
+    const auto rects = ctx.net_data->rects_of(ctx.local_net_id).lock();
     if (rects != nullptr) {
         for (const DSNetRect& rect : *rects) {
             density.accumulate_layer_shape(rect.layer_id_, false,
@@ -309,11 +309,10 @@ void DSNetDensityNode::handle(DSNetContext& ctx) {
 
     // 通孔通道：via instance 处 via cell 的 cut 图形平移（分层键 = via
     // cell 的 cut 层 id；未判定兜底回退 bottom 层）
-    const auto* via_ids = ctx.net_data->via_ids_of(ctx.local_net_id);
+    const auto via_ids = ctx.net_data->via_ids_of(ctx.local_net_id).lock();
     if (via_ids != nullptr) {
         for (const CMViaInstanceId via_id : *via_ids) {
-            const DSViaInstance* inst =
-                ctx.net_data->via_instance_at(via_id);
+            const auto inst = ctx.net_data->via_instance_at(via_id).lock();
             if (inst == nullptr ||
                 inst->via_cell_id_ >= ctx.design->via_cells_.size()) {
                 continue;  // 防御（权威表快照外 id）

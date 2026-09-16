@@ -47,9 +47,12 @@ CMNetId DSNetUnion::find(CMNetId net_global_id) const {
     return it == root_of_.end() ? net_global_id : it->second;
 }
 
-const CMVector<CMNetId>* DSNetUnion::members(CMNetId root) const {
-    const auto it = members_of_.find(root);
-    return it == members_of_.end() ? nullptr : &it->second;
+CMWeakPtr<const CMVector<CMNetId>> DSNetUnion::members(CMNetId root) const {
+    auto it = members_of_.find(root);
+    if (it == members_of_.end()) {
+        return {};
+    }
+    return CMWeakPtr<const CMVector<CMNetId>>{it->second};
 }
 
 uint64_t DSNetUnion::class_count() const { return members_of_.size(); }
@@ -87,7 +90,7 @@ DSNetUnionSlice ds_collect_net_union_slice(
             continue;  // 防御：子定义不在树上（对齐错误已在树构建期 fatal）
         }
         for (const auto& [local_id, conns] : child->connections_) {
-            for (const DSNetConnection& c : conns) {
+            for (const DSNetConnection& c : *conns) {
                 if (c.is_port()) {
                     port_pin_nets[c.pin_id_][cid_it->second].push_back(
                         local_id);
@@ -98,7 +101,7 @@ DSNetUnionSlice ds_collect_net_union_slice(
 
     // 本 def 的 port 网 local id 集（与实例化位置无关，一网一计）
     for (const auto& [local_id, conns] : parent_nets.connections_) {
-        for (const DSNetConnection& c : conns) {
+        for (const DSNetConnection& c : *conns) {
             if (c.is_port()) {
                 slice.port_net_ids_.push_back(local_id);
                 break;  // 一网一计
@@ -139,7 +142,7 @@ DSNetUnionSlice ds_collect_net_union_slice(
             if (!parent_global.is_valid()) {
                 continue;  // 防御：越界 local id（S5a/S5b 计数不一致兜底）
             }
-            for (const DSNetConnection& c : conns) {
+            for (const DSNetConnection& c : *conns) {
                 if (c.is_port()) {
                     continue;  // 顶层引脚连接：root 候选，不产生跨层 union
                 }
@@ -280,8 +283,9 @@ DSNetUnion ds_build_net_union(const DSHierTree& tree,
         for (const CMNetId m : members) {
             out.root_of_[m] = canonical;  // 含 canonical 自映射（两层不变式）
         }
-        out.members_of_[canonical] = std::move(members);
-        if (out.members_of_[canonical].size() == 1) {
+        out.members_of_[canonical] =
+            std::make_shared<CMVector<CMNetId>>(std::move(members));
+        if (out.members_of_[canonical]->size() == 1) {
             ++out.dangling_count_;  // 单成员类 = 悬空 port 网（裁定 ④）
         }
     }

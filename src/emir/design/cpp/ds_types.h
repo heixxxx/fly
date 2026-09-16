@@ -478,8 +478,10 @@ class DSBlockBuildData {
 public:
     // block 名（DEF DESIGN 语句；fake cell 命名前缀来源）
     CMString block_name_;
-    // local instance 表（⑧：id 从 1 起；id 0 = block 自身占位）
-    CMUnorderedMap<CMInstanceId, DSInstance> instances_;
+    // local instance 表（⑧：id 从 1 起；id 0 = block 自身占位）。值
+    // CMSharedPtr 持有（2026-09-16 裁定：weak 观察化——find_instance 返
+    // 回 CMWeakPtr，类型级生命周期安全）
+    CMUnorderedMap<CMInstanceId, CMSharedPtr<DSInstance>> instances_;
     // —— local 名空间（R7 hasher 底座；运行时字段不序列化 ㊵②）——
     // instance 名 ↔ local id（双向；local id 从 1 起，local 0 不入表）。
     // CMSharedPtr 共享持有：解析期惰性创建、attach_names 与伴生对象
@@ -561,10 +563,13 @@ public:
     CMNetId register_net(const CMString& name);
 
     size_t instance_total() const { return instances_.size(); }
-    const DSInstance* find_instance(CMInstanceId id) const;
-    // 经 instance hasher 查名（hasher 未注入/未命中返回 nullptr；
+    // 观察（weak——lock 后持锁期使用：宿主析构后 lock 失败而非悬空，
+    // 2026-09-16 裁定；未命中 = 空 weak）
+    CMWeakPtr<const DSInstance> find_instance(CMInstanceId id) const;
+    // 经 instance hasher 查名（hasher 未注入/未命中返回空 weak；
     // ㊵② 需先注入 DSBlockNames）
-    const DSInstance* find_instance_by_name(const CMString& name) const;
+    CMWeakPtr<const DSInstance> find_instance_by_name(
+        const CMString& name) const;
 
     // 已收录网数（hasher 未就位——读回未 attach——返回 0）
     size_t net_count() const { return net_names_ ? net_names_->size() : 0; }
@@ -700,15 +705,19 @@ class DSNetBuildData {
 public:
     // block 名（DESIGN 语句；与 DSBlockBuildData 对齐冗余）
     CMString block_name_;
-    // 连接表：local net id → 连接项列表
-    CMUnorderedMap<CMNetId, CMVector<DSNetConnection>> connections_;
+    // 连接表：local net id → 连接项列表。值 CMSharedPtr 持有（2026-09-16
+    // 裁定：weak 观察化——访问器返回 CMWeakPtr，类型级生命周期安全）
+    CMUnorderedMap<CMNetId, CMSharedPtr<CMVector<DSNetConnection>>>
+        connections_;
     // 几何表：local net id → wire 段 / rect 项列表
-    CMUnorderedMap<CMNetId, CMVector<DSNetWire>> wires_;
-    CMUnorderedMap<CMNetId, CMVector<DSNetRect>> rects_;
+    CMUnorderedMap<CMNetId, CMSharedPtr<CMVector<DSNetWire>>> wires_;
+    CMUnorderedMap<CMNetId, CMSharedPtr<CMVector<DSNetRect>>> rects_;
     // via instance 表（⑩ local id 从 1 起）+ 网归属（net id → 该网的
     // via instance id 列表）
-    CMUnorderedMap<CMViaInstanceId, DSViaInstance> via_instances_;
-    CMUnorderedMap<CMNetId, CMVector<CMViaInstanceId>> net_via_ids_;
+    CMUnorderedMap<CMViaInstanceId, CMSharedPtr<DSViaInstance>>
+        via_instances_;
+    CMUnorderedMap<CMNetId, CMSharedPtr<CMVector<CMViaInstanceId>>>
+        net_via_ids_;
     // pg 网判定（S9 分侧口径，2026-09-13 裁定补记② + 2026-09-14 拆分
     // 裁定：pg 判定 = special net 或 USE POWER/GROUND；pg 网的分区
     // NETS_PG 对象不做全量补全——靠 union + instance 维度拼装）。
@@ -743,12 +752,17 @@ public:
     // 收录 via instance 并登记网归属，返回分配的 via instance id
     CMViaInstanceId add_via_instance(CMNetId net_id, DSViaInstance&& via);
 
-    // 查询辅助（未命中 nullptr）
-    const CMVector<DSNetConnection>* connections_of(CMNetId net_id) const;
-    const CMVector<DSNetWire>* wires_of(CMNetId net_id) const;
-    const CMVector<DSNetRect>* rects_of(CMNetId net_id) const;
-    const CMVector<CMViaInstanceId>* via_ids_of(CMNetId net_id) const;
-    const DSViaInstance* via_instance_at(CMViaInstanceId via_id) const;
+    // 查询观察（weak——lock 后持锁期使用：宿主析构后 lock 失败而非悬
+    // 空，2026-09-16 裁定；未命中 = 空 weak。使用范式：
+    //   if (auto conns = n.connections_of(id).lock()) { conns->... }）
+    CMWeakPtr<const CMVector<DSNetConnection>> connections_of(
+        CMNetId net_id) const;
+    CMWeakPtr<const CMVector<DSNetWire>> wires_of(CMNetId net_id) const;
+    CMWeakPtr<const CMVector<DSNetRect>> rects_of(CMNetId net_id) const;
+    CMWeakPtr<const CMVector<CMViaInstanceId>> via_ids_of(
+        CMNetId net_id) const;
+    CMWeakPtr<const DSViaInstance> via_instance_at(
+        CMViaInstanceId via_id) const;
 
     // pg 网判定（S9 消费；local id 语义）
     bool is_pg_net(CMNetId local_net_id) const {

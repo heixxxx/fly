@@ -171,8 +171,9 @@ public:
 class DSPartitionGeometry {
 public:
     // 信号侧键 0 = OBS 桶（obs 位判别——2026-09-14 起恒纯 OBS，与真网
-    // 无同键共存；pg 侧无此键）
-    CMUnorderedMap<CMNetId, CMVector<DSGeomEntry>> nets_;
+    // 无同键共存；pg 侧无此键）。值 CMSharedPtr 持有（2026-09-16 裁定：
+    // weak 观察化——entries_of 返回 CMWeakPtr）
+    CMUnorderedMap<CMNetId, CMSharedPtr<CMVector<DSGeomEntry>>> nets_;
     // 跨分区网（is_crossing，补记④）：成员图形散布多于一个分区的
     // global net id 集（本分区有副本的网才登记；S10 统计口径）。
     // （2026-09-13 修正：原「CMUnorderedMap<uint64_t, uint8_t> 值恒 1 充
@@ -182,7 +183,11 @@ public:
 
     // 构建期接口（条目追加；跨分区判定由展开任务完成）
     void add_entry(CMNetId net_global_id, DSGeomEntry&& entry) {
-        nets_[net_global_id].push_back(std::move(entry));
+        auto& vec = nets_[net_global_id];
+        if (!vec) {
+            vec = std::make_shared<CMVector<DSGeomEntry>>();
+        }
+        vec->push_back(std::move(entry));
     }
     void mark_crossing(CMNetId net_global_id) {
         crossing_nets_.insert(net_global_id);
@@ -190,10 +195,14 @@ public:
     bool is_crossing(CMNetId net_global_id) const {
         return crossing_nets_.contains(net_global_id);
     }
-    // 未命中 nullptr（引用读取零拷贝）
-    const CMVector<DSGeomEntry>* entries_of(CMNetId net_global_id) const {
+    // 观察（weak——lock 后持锁期使用，2026-09-16 裁定；未命中 = 空 weak）
+    CMWeakPtr<const CMVector<DSGeomEntry>> entries_of(
+        CMNetId net_global_id) const {
         auto it = nets_.find(net_global_id);
-        return it == nets_.end() ? nullptr : &it->second;
+        if (it == nets_.end()) {
+            return {};
+        }
+        return CMWeakPtr<const CMVector<DSGeomEntry>>{it->second};
     }
 
     // —— OBS 桶过滤便捷接口（键 0 专属 OBS 后混叠风险已消，保留为防御
@@ -201,8 +210,7 @@ public:
     // 某网的真实几何条目（过滤 OBS；键 0 恒空——0 为 OBS 专属位）
     CMVector<DSGeomEntry> net_entries(CMNetId net_global_id) const {
         CMVector<DSGeomEntry> out;
-        const auto* all = entries_of(net_global_id);
-        if (all != nullptr) {
+        if (auto all = entries_of(net_global_id).lock()) {
             for (const DSGeomEntry& e : *all) {
                 if (!e.is_obs()) out.push_back(e);
             }
@@ -212,8 +220,7 @@ public:
     // 全部 OBS 条目（DEF obstruction，设计级无所属网）
     CMVector<DSGeomEntry> obs_entries() const {
         CMVector<DSGeomEntry> out;
-        const auto* all = entries_of(CMNetId{0});
-        if (all != nullptr) {
+        if (auto all = entries_of(CMNetId{0}).lock()) {
             for (const DSGeomEntry& e : *all) {
                 if (e.is_obs()) out.push_back(e);
             }
@@ -280,14 +287,16 @@ public:
     // 本分区 id（ds_flatten_block 分片产出时回填；merge 幂等——同分区
     // 分片同 id。NETS / NETS_PG 两侧同值）
     CMPartitionId part_id_;
-    // 本侧网表（键 = net global id；信号侧全量补全 / pg 侧不补全）
-    CMUnorderedMap<CMNetId, DSNet> nets_;
+    // 本侧网表（键 = net global id；信号侧全量补全 / pg 侧不补全）。值
+    // CMSharedPtr 持有（2026-09-16 裁定：weak 观察化——net_of 返回
+    // CMWeakPtr）
+    CMUnorderedMap<CMNetId, CMSharedPtr<DSNet>> nets_;
 
     size_t size() const { return nets_.size(); }
-    // 单表查（未命中 nullptr；引用读取零拷贝——加载侧按 is_pg 路由到
-    // 对应侧对象，本类不再承担两表分派）
-    const DSNet* net_of(CMNetId net_id) const;
-    DSNet* net_of(CMNetId net_id);
+    // 单表查（weak——lock 后持锁期使用；未命中 = 空 weak。加载侧按
+    // is_pg 路由到对应侧对象，本类不再承担两表分派）
+    CMWeakPtr<const DSNet> net_of(CMNetId net_id) const;
+    CMWeakPtr<DSNet> net_of(CMNetId net_id);
 
     FLY_SERIALIZE(part_id_, nets_)
 };

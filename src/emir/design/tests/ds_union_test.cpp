@@ -246,8 +246,8 @@ TEST(DSNetUnionTest, MergesEquivalentParentNetsWithCanonicalRoot) {
     EXPECT_EQ(u.find(CMNetId{na}).value(), na);
     // root 规范：na/nb 同级（root 块 depth 0）取最小 global id；nc 层级
     // 更低落选
-    ASSERT_NE(u.members(CMNetId{na}), nullptr);
-    EXPECT_EQ(*u.members(CMNetId{na}), (CMVector<CMNetId>{CMNetId{na}, CMNetId{nb}, CMNetId{nc}}));
+    ASSERT_TRUE(u.members(CMNetId{na}).lock() != nullptr);
+    EXPECT_EQ(*u.members(CMNetId{na}).lock(), (CMVector<CMNetId>{CMNetId{na}, CMNetId{nb}, CMNetId{nc}}));
     EXPECT_EQ(u.class_count(), 1u);
     EXPECT_EQ(u.dangling_count_, 0u);
     expect_two_layer_invariant(u);
@@ -262,15 +262,15 @@ TEST(DSNetUnionTest, ThreeLevelNestingRootAtTop) {
     // nt(0) ← nm@mid#1(3) ← nb@bottom#1(4)：跨三层归并 root = 顶层网
     EXPECT_EQ(u.find(CMNetId{env.g(1, 1)}).value(), env.g(0, 1));
     EXPECT_EQ(u.find(CMNetId{env.g(2, 1)}).value(), env.g(0, 1));
-    ASSERT_NE(u.members(CMNetId{env.g(0, 1)}), nullptr);
-    EXPECT_EQ(*u.members(CMNetId{env.g(0, 1)}),
+    ASSERT_TRUE(u.members(CMNetId{env.g(0, 1)}).lock() != nullptr);
+    EXPECT_EQ(*u.members(CMNetId{env.g(0, 1)}).lock(),
               (CMVector<CMNetId>{CMNetId{env.g(0, 1)}, CMNetId{env.g(1, 1)},
                                  CMNetId{env.g(2, 1)}}));
 
     // nx(1) ← nm@mid#2(7) ← nb@bottom#2(8)：第二实例化位置的独立类
     EXPECT_EQ(u.find(CMNetId{env.g(3, 1)}).value(), env.g(0, 2));
     EXPECT_EQ(u.find(CMNetId{env.g(4, 1)}).value(), env.g(0, 2));
-    EXPECT_EQ(*u.members(CMNetId{env.g(0, 2)}),
+    EXPECT_EQ(*u.members(CMNetId{env.g(0, 2)}).lock(),
               (CMVector<CMNetId>{CMNetId{env.g(0, 2)}, CMNetId{env.g(3, 1)},
                                  CMNetId{env.g(4, 1)}}));
 
@@ -289,8 +289,8 @@ TEST(DSNetUnionTest, TwoInstantiationsStaySeparate) {
     EXPECT_NE(nm1, nm2);
     EXPECT_NE(u.find(CMNetId{nm1}).value(), u.find(CMNetId{nm2}).value());
     // 成员枚举互不串类
-    const CMVector<CMNetId>& m1 = *u.members(u.find(CMNetId{nm1}));
-    const CMVector<CMNetId>& m2 = *u.members(u.find(CMNetId{nm2}));
+    const CMVector<CMNetId>& m1 = *u.members(u.find(CMNetId{nm1})).lock();
+    const CMVector<CMNetId>& m2 = *u.members(u.find(CMNetId{nm2})).lock();
     EXPECT_EQ(std::find(m1.begin(), m1.end(), nm2), m1.end());
     EXPECT_EQ(std::find(m2.begin(), m2.end(), nm1), m2.end());
 }
@@ -304,16 +304,16 @@ TEST(DSNetUnionTest, InternalNetExcludedDanglingPortCounted) {
     // internal net ni(5)：无 ("PIN", x) 引用 → 绝不入表（红线），find = 自身
     const uint64_t ni = env.g(2, 2);
     EXPECT_EQ(u.find(CMNetId{ni}).value(), ni);
-    EXPECT_EQ(u.members(CMNetId{ni}), nullptr);
+    EXPECT_TRUE(u.members(CMNetId{ni}).expired());
 
     // 悬空 port 网 nd：port PD 未连接任何父网 → 照常入表 root = 自身
     //（两个实例化位置各自独立悬空）+ 计数
     const uint64_t nd1 = env.g(2, 3);
     const uint64_t nd2 = env.g(4, 3);
     EXPECT_EQ(u.find(CMNetId{nd1}).value(), nd1);
-    EXPECT_EQ(*u.members(CMNetId{nd1}), (CMVector<CMNetId>{CMNetId{nd1}}));
+    EXPECT_EQ(*u.members(CMNetId{nd1}).lock(), (CMVector<CMNetId>{CMNetId{nd1}}));
     EXPECT_EQ(u.find(CMNetId{nd2}).value(), nd2);
-    EXPECT_EQ(*u.members(CMNetId{nd2}), (CMVector<CMNetId>{CMNetId{nd2}}));
+    EXPECT_EQ(*u.members(CMNetId{nd2}).lock(), (CMVector<CMNetId>{CMNetId{nd2}}));
     EXPECT_EQ(u.dangling_count_, 2u);
     EXPECT_EQ(u.class_count(), 4u);  // 2 个跨块类 + 2 个悬空单成员类
 
@@ -321,7 +321,7 @@ TEST(DSNetUnionTest, InternalNetExcludedDanglingPortCounted) {
     // 不入悬空口径
     const uint64_t niso = env.g(0, 3);
     EXPECT_EQ(u.find(CMNetId{niso}).value(), niso);
-    EXPECT_EQ(u.members(CMNetId{niso}), nullptr);
+    EXPECT_TRUE(u.members(CMNetId{niso}).expired());
 }
 
 // ── 6. 两层不变式：全部路径（含序列化往返后）成立 ───────────────────
@@ -343,9 +343,9 @@ TEST(DSNetUnionTest, TwoLayerInvariantHoldsAndRoundTrips) {
         EXPECT_EQ(back.find(member), root);
     }
     for (const auto& [root, members] : u.members_of_) {
-        const CMVector<CMNetId>* m = back.members(root);
+        const auto m = back.members(root).lock();
         ASSERT_NE(m, nullptr);
-        EXPECT_EQ(*m, members);
+        EXPECT_EQ(*m, *members);
     }
     expect_two_layer_invariant(back);
 }
@@ -359,7 +359,7 @@ TEST(DSNetUnionTest, EmptyInputsYieldEmptyUnion) {
     EXPECT_EQ(u.class_count(), 0u);
     EXPECT_EQ(u.dangling_count_, 0u);
     EXPECT_EQ(u.find(CMNetId{42}).value(), 42u);  // 不在表 = 自身
-    EXPECT_EQ(u.members(CMNetId{42}), nullptr);
+    EXPECT_TRUE(u.members(CMNetId{42}).expired());
 
     // 有树无边（无跨块连接的设计）同样空结果
     UnionEnv env;
@@ -407,7 +407,7 @@ TEST(DSNetUnionTest, NoEdgesStillCountsDanglingPorts) {
     EXPECT_EQ(u.find(CMNetId{env.g(bottom_node, 3)}).value(), env.g(bottom_node, 3));  // PD
     // internal 网（bottom 的 ni）不入表
     EXPECT_EQ(u.find(CMNetId{env.g(bottom_node, 2)}).value(), env.g(bottom_node, 2));
-    EXPECT_EQ(u.members(CMNetId{env.g(bottom_node, 2)}), nullptr);
+    EXPECT_TRUE(u.members(CMNetId{env.g(bottom_node, 2)}).expired());
 }
 
 // ── 8. 编排辅助：def 序号 → 子定义序号集 ────────────────────────────
