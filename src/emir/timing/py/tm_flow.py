@@ -13,17 +13,20 @@ MapReduce——用户裁定 2026-09-15）。
   → T1 切块扫描（master 侧单任务，同步执行——文件已入口校验可读，字节
     流扫顶层构造边界为毫秒级 I/O；块大小 = alpha chunk_size_mb）→
     TMChunkPlan 临时对象（块数就此确定，T2 静态提交）
-  → T2 逐块解析任务（每块一任务，全并行；块自包含 = 后续流式增强路径）：
+  → T2 逐块解析任务（每块一任务，全并行；块自包含 = 头段公共前缀拼块，
+    评审 P1-1）：
     [inputs 注入快照临时对象] → worker 端组装 EXTMDesignContext（共享
     注入零拷贝）→ tm_convert_chunk（块解析 + §7 名字换算 + 分区路由）→
     TMEntrySlice 分片临时对象（单块语法破损 → 空分片照常产出，依赖链
     保持满足——plan §6 范式 (b)）
-  → T3 每分区一合并任务 → PART_{xp}_{yp}.TIMING 正式对象唯一写定 +
-    跨文件冲突数临时对象
-  → T4 汇总任务（时钟表跨文件合并——顶层文件定义优先，块绑定文件序首
-    份兜底，2026-09-16 裁定 5；summary 聚合；TIMG 消息族一次汇总透出；
-    全部文件失败 → TIMG::0009 fatal 码 80，范式 (a)）→ clocks/summary
-    正式对象唯一写定
+  → 时钟表合并任务（独立任务，依赖全部 slices——评审 P1-1：提前至 T3
+    之前，产出 clocks 正式对象 + EXTMClockRemap 重映射桥 + TIMG::0007
+    冲突计数 temp）
+  → T3 每分区一合并任务（依赖 slices + remap——时钟归属经 remap 重写
+    为最终表 id）→ PART_{xp}_{yp}.TIMING 正式对象唯一写定 + 跨文件冲突
+    数临时对象
+  → T4 汇总任务（summary 聚合 + TIMG 消息族一次汇总透出 + 全部文件失
+    败 → TIMG::0009 fatal 码 80，范式 (a)）→ summary 正式对象唯一写定
   → freeze 任务（依赖全部分区对象 + clocks + summary 写完 + 中间对象
     清理）
 
@@ -171,21 +174,23 @@ def _t2_chunk_task(db, snapshot_keys, plan_key, file_index, chunk_index,
 
     plan = db.read_object(plan_key)
     file_plan = plan.files[file_index]
-    start = file_plan.chunk_starts[chunk_index]
-    end = file_plan.chunk_ends[chunk_index]
 
     binding = EXTMFileBinding()
     binding.kind = binding_kind
     binding.block_inst = block_inst
     binding.block_cell = block_cell
     binding.strip_prefix = strip_prefix
-    slice_obj = tm_convert_chunk(ctx, file_plan.file_name, start, end,
-                                 binding, file_index)
+    slice_obj = tm_convert_chunk(
+        ctx, file_plan.file_name, file_plan.prefix_start,
+        file_plan.prefix_end, file_plan.chunk_starts[chunk_index],
+        file_plan.chunk_ends[chunk_index], binding, file_index)
     from log import INFO
     if slice_obj.stats.files:
         fs = slice_obj.stats.files[0]
-        INFO(f"t2 chunk {file_index}/{chunk_index}: kind={binding_kind} "
-             f"bi='{block_inst}' entry={fs.entry_count} "
+        # 绑定形态才有 block_inst 字段（纯路径形态为空串，不拼 bi 段）
+        bi = f" bi='{block_inst}'" if binding_kind else ""
+        INFO(f"t2 chunk {file_index}/{chunk_index}: kind={binding_kind}"
+             f"{bi} entry={fs.entry_count} "
              f"hit={fs.hit_count} skip_inst={fs.skipped_instance_count} "
              f"net_miss={fs.net_name_miss_count} skip_pin={fs.skipped_pin_count} "
              f"dangling={fs.dangling_net_count} unplaced={fs.unplaced_instance_count} "
@@ -196,36 +201,17 @@ def _t2_chunk_task(db, snapshot_keys, plan_key, file_index, chunk_index,
     db.write_object(slice_key, slice_obj, save_to_db=False)
 
 
-# ── T3 每分区一合并任务 ─────────────────────────────────────────────
+# ── 时钟表合并任务（独立任务，评审 P1-1：提前至 T3 之前执行）──────────
 
-@as_task(inputs=lambda db, slice_keys, pid, xp, yp, part_key,
-         conflicts_key: [db.get_full_name(k) for k in slice_keys])
-def _t3_partition_task(db, slice_keys, pid, xp, yp, part_key, conflicts_key):
-    """每分区合并：收集各块分片中本分区片段 → merge → 正式对象唯一写定
-    （冲突保留首份计数 temp——TIMG::0006 由 T4 聚合入 summary）。"""
+@as_task(inputs=lambda db, files, slice_keys, clocks_key, remap_key,
+         clock_conflicts_key: (
+    [db.get_full_name(k) for k in slice_keys]))
+def _t_clock_merge_task(db, files, slice_keys, clocks_key, remap_key,
+                        clock_conflicts_key):
+    """时钟表跨文件合并（顶层文件定义优先，裁定 5）→ clocks 正式对象唯一
+    写定 + EXTMClockRemap 重映射桥（块内时钟 id → 最终表下标——T3 重写
+    时钟归属的依据）+ TIMG::0007 冲突计数 temp（T4 聚合入 summary）。"""
     slices = [db.read_object(k) for k in slice_keys]
-    part, conflicts = tm_merge_partition(slices, pid)
-    db.write_object(part_key, part, save_to_db=True)
-    db.write_object(conflicts_key, conflicts, save_to_db=False)
-
-
-# ── T4 汇总任务（时钟表 + summary + 消息族 + fatal 判定）────────────
-
-@as_task(inputs=lambda db, files, slice_keys, conflicts_keys, plan_key,
-         clocks_key, summary_key: (
-    [db.get_full_name(k) for k in slice_keys + conflicts_keys]
-    + [db.get_full_name(plan_key)]))
-def _t4_summary_task(db, files, slice_keys, conflicts_keys, plan_key,
-                     clocks_key, summary_key):
-    """汇总：时钟表跨文件合并（顶层文件定义优先，裁定 5）+ summary 聚合
-    + TIMG 消息族一次汇总透出 + 全部文件失败 fatal（TIMG::0009，范式
-    (a)）。正式对象 clocks/summary 唯一写定。"""
-    from log import INFO
-    slices = [db.read_object(k) for k in slice_keys]
-    cross_conflicts = sum(db.read_object(k) for k in conflicts_keys)
-    plan = db.read_object(plan_key)
-    file_chunk_counts = [len(fp.chunk_starts) for fp in plan.files]
-
     # 时钟表跨文件合并：文件内跨块收集 → 顶层文件（kind 0）定义优先、
     # 块绑定文件按文件序首份兜底；周期/沿差异计数（TIMG::0007）
     per_file_clocks = []
@@ -236,7 +222,50 @@ def _t4_summary_task(db, files, slice_keys, conflicts_keys, plan_key,
                 for c in s.stats.clocks:
                     table.add_clock(c.name, c.period, c.posedge, c.negedge)
         per_file_clocks.append((f["kind"], table))
-    clocks_table, clock_conflicts = tm_merge_clocks(per_file_clocks)
+    clocks_table, clock_conflicts, remap = tm_merge_clocks(per_file_clocks)
+    db.write_object(clocks_key, clocks_table, save_to_db=True)
+    db.write_object(remap_key, remap, save_to_db=False)
+    db.write_object(clock_conflicts_key, clock_conflicts, save_to_db=False)
+    from log import INFO
+    INFO(f"timing flow: clock table merged, {clocks_table.size} clock(s), "
+         f"{clock_conflicts} conflict(s)")
+
+
+# ── T3 每分区一合并任务 ─────────────────────────────────────────────
+
+@as_task(inputs=lambda db, slice_keys, remap_key, pid, xp, yp, part_key,
+         conflicts_key: (
+    [db.get_full_name(k) for k in slice_keys]
+    + [db.get_full_name(remap_key)]))
+def _t3_partition_task(db, slice_keys, remap_key, pid, xp, yp, part_key,
+                       conflicts_key):
+    """每分区合并：收集各块分片中本分区的片段 → 时钟归属经 remap 重写为
+    最终表 id（评审 P1-1）→ merge → 正式对象唯一写定（冲突保留首份计数
+    temp——TIMG::0006 由 T4 聚合入 summary）。"""
+    slices = [db.read_object(k) for k in slice_keys]
+    remap = db.read_object(remap_key)
+    part, conflicts = tm_merge_partition(slices, remap, pid)
+    db.write_object(part_key, part, save_to_db=True)
+    db.write_object(conflicts_key, conflicts, save_to_db=False)
+
+
+# ── T4 汇总任务（summary + 消息族 + fatal 判定）────────────────────
+
+@as_task(inputs=lambda db, files, slice_keys, conflicts_keys,
+         clock_conflicts_key, plan_key, summary_key: (
+    [db.get_full_name(k) for k in slice_keys + conflicts_keys]
+    + [db.get_full_name(clock_conflicts_key), db.get_full_name(plan_key)]))
+def _t4_summary_task(db, files, slice_keys, conflicts_keys,
+                     clock_conflicts_key, plan_key, summary_key):
+    """汇总：summary 聚合（时钟表与冲突计数由时钟表合并任务产出，本任务
+    读入 clock_conflicts）+ TIMG 消息族一次汇总透出 + 全部文件失败 fatal
+    （TIMG::0009，范式 (a)）。summary 正式对象唯一写定。"""
+    from log import INFO
+    slices = [db.read_object(k) for k in slice_keys]
+    cross_conflicts = sum(db.read_object(k) for k in conflicts_keys)
+    clock_conflicts = db.read_object(clock_conflicts_key)
+    plan = db.read_object(plan_key)
+    file_chunk_counts = [len(fp.chunk_starts) for fp in plan.files]
 
     summary = tm_merge_summary([s.stats for s in slices], cross_conflicts,
                                clock_conflicts)
@@ -292,11 +321,10 @@ def _t4_summary_task(db, files, slice_keys, conflicts_keys, plan_key,
         INFO(f"timing flow: {len(failed)}/{len(files)} file(s) fully failed "
              f"to parse: {listing}")
 
-    db.write_object(clocks_key, clocks_table, save_to_db=True)
     db.write_object(summary_key, summary, save_to_db=True)
     INFO(f"timing summary: {summary.total_hit_count}/"
          f"{summary.total_entry_count} entries matched, {len(files)} "
-         f"file(s), {clocks_table.size} clock(s)")
+         f"file(s), {summary.missing_clock_count} missing clock group(s)")
 
 
 # ── freeze：依赖正式对象写完 + 中间对象清理 ──────────────────────────
@@ -347,23 +375,31 @@ def run_timing_flow(db, design_db, files, settings):
                            files[fi]["block_cell"],
                            files[fi]["strip_prefix"], slice_key)
 
-    # T3 每分区一合并任务（正式对象唯一写定 + 冲突计数 temp）
+    # 时钟表合并任务（独立任务，依赖全部 slices——评审 P1-1：提前至 T3
+    # 之前，产出 clocks 正式对象 + remap 桥 + 0007 冲突计数 temp）
+    clocks_key = TimingDb.CLOCKS_OBJ
+    remap_key = _tmp_key(uid, "clock_remap")
+    clock_conflicts_key = _tmp_key(uid, "clock_conflicts")
+    _t_clock_merge_task(db, files, slice_keys, clocks_key, remap_key,
+                        clock_conflicts_key)
+
+    # T3 每分区一合并任务（依赖 remap——时钟归属重写为最终表 id；正式对
+    # 象唯一写定 + 冲突计数 temp）
     conflicts_keys = []
     for pid, xp, yp in partitions:
         conflicts_key = _tmp_key(uid, f"conflicts_{pid}")
         conflicts_keys.append(conflicts_key)
-        _t3_partition_task(db, slice_keys, pid, xp, yp,
+        _t3_partition_task(db, slice_keys, remap_key, pid, xp, yp,
                            TimingDb.partition_obj_name(xp, yp), conflicts_key)
 
-    # T4 汇总（时钟表 + summary 正式对象唯一写定 + 消息族 + fatal 判定）
-    clocks_key = TimingDb.CLOCKS_OBJ
+    # T4 汇总（summary 正式对象唯一写定 + 消息族 + fatal 判定）
     summary_key = TimingDb.SUMMARY_OBJ
-    _t4_summary_task(db, files, slice_keys, conflicts_keys, plan_key,
-                     clocks_key, summary_key)
+    _t4_summary_task(db, files, slice_keys, conflicts_keys,
+                     clock_conflicts_key, plan_key, summary_key)
 
     # freeze：正式对象集 + 中间对象清理（alpha_settings 入口已写定）
     final_keys = [TimingDb.partition_obj_name(xp, yp)
                   for _, xp, yp in partitions] + [clocks_key, summary_key]
     temp_keys = [plan_key] + list(snapshot_keys.values()) + slice_keys \
-        + conflicts_keys
+        + conflicts_keys + [remap_key, clock_conflicts_key]
     _freeze_timing_task(db, final_keys, temp_keys)

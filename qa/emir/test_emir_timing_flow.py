@@ -102,7 +102,7 @@ for tag, fname in TIMING_FILES.items():
     assert s.cross_file_conflict_count == 0, "single file has no conflict"
     assert len(s.files) == 1 and s.files[0].source_file.endswith(fname), \
         "per-file stats traceable"
-    assert s.files[0].time_scale_sec == 1e-9
+    assert abs(s.files[0].time_scale_sec - 1e-9) < 1e-12
     INFO(f"[OK] timing_{tag}: entry={entry} hit={hit} "
          f"dangling={dangling} skip_pin={skip_pin}")
 
@@ -244,5 +244,99 @@ INFO("[OK] top-level full-path names + clock merge top-level priority "
 info_named = tdb_top.get_timing("top1")
 assert info_named is not None, "top-level named instance query"
 INFO("[OK] get_timing accepts hierarchy path name")
+
+# ── 场景 3：多文件异构时钟表 + 时钟归属重映射（评审 P1-1：块内时钟 id
+#    与最终表 id 是两个编号空间，T3 合并必须经 remap 重写——文件 A 表
+#    [wclk, clk]（wclk=0/clk=1）、文件 B 表 [clk]（块内 clk=0）：未重映射
+#    时 B 条目 clock_id=0 被错指为 wclk）────────────────────────────────
+gid_inv = design_db.convert_to_id("inst", "u_inv")
+gid_nand = design_db.convert_to_id("inst", "u_nand")
+tdb_multi = proj.build_timing_db(
+    name="t_multi",
+    timing_files=[os.path.join(DATA, "tm_multi_a.twf"),
+                  os.path.join(DATA, "tm_multi_b.twf")],
+    design_db=design_db)
+assert proj.wait_frozen("t_multi", timeout=300)
+s5 = tdb_multi.load_timing_summary_obj()
+assert (s5.total_entry_count, s5.total_hit_count) == (4, 4), \
+    (s5.total_entry_count, s5.total_hit_count)
+assert s5.missing_clock_count == 0, s5.missing_clock_count
+assert s5.clock_conflict_count == 0, s5.clock_conflict_count
+# 最终表：文件序首份 = [wclk(2.0), clk(1.0)]（A 先出）
+clks5 = tdb_multi.load_timing_clocks_obj()
+assert clks5.size == 2, clks5.size
+assert clks5.entry_at(0).name == "wclk" \
+    and abs(clks5.entry_at(0).period - 2.0) < 1e-9
+assert clks5.entry_at(1).name == "clk" \
+    and abs(clks5.entry_at(1).period - 1.0) < 1e-9
+# 时钟归属按来源文件定义：u_cb/u_inv 挂 A 表（wclk/clk），u_nand 挂 B 表
+# 的 clk——B 块内 clk=0 必须重映射为最终表 id 1
+assert tdb_multi.get_timing(gid_cb)["clock"] == "wclk"
+assert tdb_multi.get_timing(gid_inv)["clock"] == "clk"
+info_nand = tdb_multi.get_timing(gid_nand)
+assert info_nand is not None and info_nand["clock"] == "clk", \
+    f"u_nand clock={info_nand['clock'] if info_nand else None}"
+assert info_nand["pins"][0]["rise_arrival"] == (0.03, 0.03), \
+    info_nand["pins"][0]["rise_arrival"]
+INFO("[OK] heterogeneous clock tables: per-file clock id remapped to "
+     "merged table (u_nand stays clk)")
+
+# ── 场景 4：多块切分时钟归属不丢（评审 P1-1：WAVEFORM 只入首块时非首
+#    块 CAUSED_BY 时钟名未登记 → missing_clock + 归属哨兵。alpha 下限
+#    chunk_size_mb=16 + 程序生成 >16MB 输入强制多块）────────────────────
+from test import qa_tmp
+
+BIG_DIR = qa_tmp("timing_multiblock")
+BIG_TWF = os.path.join(BIG_DIR, "big.twf")
+os.makedirs(BIG_DIR, exist_ok=True)
+CHUNK_MB = 16
+fill_row = '(PIN "u_cb/A" 0.100000:0.100000 0.010000 * * ' \
+    '0.200000:0.200000 0.020000 * *)\n'
+# 填充组 > chunk 阈值（同名条目建库期合并，计数不膨胀）；u_inv/Z 独立尾组
+# 落非首块——修复前该条目时钟归属静默丢失
+fill_rows = (CHUNK_MB + 1) * 1024 * 1024 // len(fill_row)
+with open(BIG_TWF, "w") as f:
+    f.write("(TIMING_WINDOWS\n")
+    f.write('(HEADER (VERSION "fly-timing-qa 1.0") (DESIGN "tm_design") '
+            '(DELIMITERS "/") (TIME_SCALE 1.000E-09))\n')
+    f.write('(WAVEFORM "clk" 1.000000 (POSEDGE 0.000000) '
+            '(NEGEDGE 0.500000))\n')
+    f.write('(CAUSED_BY "clk"\n')
+    f.write(fill_row * fill_rows)
+    f.write(')\n')
+    f.write('(CAUSED_BY "clk"\n')
+    f.write('(PIN "u_inv/Z" 0.300000:0.300000 0.030000 * * '
+            '0.400000:0.400000 0.040000 * *)\n')
+    f.write(')\n')
+    f.write(')\n')
+assert os.path.getsize(BIG_TWF) > CHUNK_MB * 1024 * 1024, "fixture too small"
+# T1 真实切块表：确认输入确实切出 ≥2 块（场景构造性证据）
+from emir.timing import tm_plan_file_chunks
+fp_big = tm_plan_file_chunks(BIG_TWF, CHUNK_MB * 1024 * 1024)
+assert len(fp_big.chunk_starts) >= 2, \
+    f"fixture must chunk into >=2 blocks, got {len(fp_big.chunk_starts)}"
+INFO(f"[WAIT] multiblock fixture: {os.path.getsize(BIG_TWF)} bytes -> "
+     f"{len(fp_big.chunk_starts)} chunks")
+
+tdb_big = proj.build_timing_db(
+    name="t_multiblock",
+    timing_files=[BIG_TWF],
+    design_db=design_db,
+    alpha={"chunk_size_mb": CHUNK_MB})
+assert proj.wait_frozen("t_multiblock", timeout=300)
+s6 = tdb_big.load_timing_summary_obj()
+# 非首块条目时钟不丢：missing_clock 聚合进 summary 且为 0（修复前 = 1 且
+# summary 不可见）
+assert s6.missing_clock_count == 0, s6.missing_clock_count
+assert (s6.total_entry_count, s6.total_hit_count) == (2, 2), \
+    (s6.total_entry_count, s6.total_hit_count)
+info_inv = tdb_big.get_timing(gid_inv)
+assert info_inv is not None and info_inv["clock"] == "clk", \
+    f"u_inv clock={info_inv['clock'] if info_inv else None}"
+assert info_inv["pins"][0]["rise_arrival"] == (0.3, 0.3), \
+    info_inv["pins"][0]["rise_arrival"]
+INFO("[OK] multiblock chunking: non-first-block clock ownership preserved "
+     "(missing_clock=0)")
+shutil.rmtree(BIG_DIR, ignore_errors=True)
 
 print("[PASS] test_emir_timing_flow")

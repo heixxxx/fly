@@ -246,8 +246,36 @@ protected:
                                uint32_t file_index) const {
         const TMFileChunkPlan plan = tm_plan_file_chunks(path, 1u << 30);
         // 大块界恒单块（测试文件规模 << 1 GiB）
-        return tm_convert_chunk(ctx, path, plan.chunk_starts_[0],
+        return tm_convert_chunk(ctx, path, plan.prefix_start_,
+                                plan.prefix_end_, plan.chunk_starts_[0],
                                 plan.chunk_ends_[0], binding, file_index);
+    }
+
+    // 时钟表合并 + 重映射表（生产路径口径：每文件块序表 → tm_merge_clocks
+    // ——T3 时钟归属重写的 remap 来源，评审 P1-1）
+    static TMClockRemap merge_clocks_of(
+        const CMVector<std::pair<int, TMClockTable>>& file_clocks,
+        TMClockTable& out_table) {
+        TMClockRemap remap;
+        uint64_t conflicts = 0;
+        out_table = tm_merge_clocks(file_clocks, remap, conflicts);
+        return remap;
+    }
+
+    // 单文件块序时钟表收集（同 flow 时钟合并任务的表组装口径）
+    static TMClockTable clocks_table_of(const CMVector<TMEntrySlice>& slices) {
+        TMClockTable table;
+        for (const TMEntrySlice& s : slices) {
+            for (const TMClock& c : s.stats_.clocks_) {
+                TMClockTable::Entry e;
+                e.name_ = c.name_;
+                e.period_ = c.period_;
+                e.posedge_ = c.posedge_;
+                e.negedge_ = c.negedge_;
+                table.clocks_.push_back(std::move(e));
+            }
+        }
+        return table;
     }
 
     static const TMInstanceTiming* find_inst(const TMPartitionTiming& part,
@@ -286,37 +314,43 @@ TEST_F(TmPartitionTest, PlanFileChunksSingleBlock) {
         tm_plan_file_chunks(file_path("top.twf"), 1u << 20);
     EXPECT_EQ(plan.file_name_, file_path("top.twf"));
     EXPECT_EQ(plan.chunk_starts_.size(), 1u);   // 大块界 = 单块
-    // 首块起于首个顶层子构造（跳过 (TIMING_WINDOWS 外皮）
+    // 头段公共前缀（评审 P1-1）= [首个顶层子构造, 首个数据构造)：HEADER
+    // + WAVEFORM 段；块自首个 CAUSED_BY 起
     const size_t header_pos = CMString(kTopTwf).find("(HEADER");
-    EXPECT_EQ(plan.chunk_starts_[0], header_pos);
+    const size_t data_pos = CMString(kTopTwf).find("(CAUSED_BY");
+    EXPECT_EQ(plan.prefix_start_, header_pos);
+    EXPECT_EQ(plan.prefix_end_, data_pos);
+    EXPECT_EQ(plan.chunk_starts_[0], data_pos);
     EXPECT_EQ(plan.file_size_, CMString(kTopTwf).size());
 }
 
 TEST_F(TmPartitionTest, PlanFileChunksRespectsBoundary) {
     // 引号内括号不计深度（字符串含 '(' ——切块边界不落入引号内子构造）
-    write_file("quoted.twf",
-               "(TIMING_WINDOWS\n"
-               "(HEADER (VERSION \"a(b\")\n"
-               "(CAUSED_BY NULL (NET \"n1\" 1:1 1:1 * * 1:1 1:1 * *))\n"
-               "(CAUSED_BY NULL (NET \"n2\" 1:1 1:1 * * 1:1 1:1 * *))\n"
-               ")\n");
-    // 小块界 → 顶层子构造间切分（HEADER/两个 CAUSED_BY 三段 ≥ 2 块）
+    const CMString quoted_text =
+        "(TIMING_WINDOWS\n"
+        "(HEADER (VERSION \"a(b\"))\n"
+        "(CAUSED_BY NULL (NET \"n1\" 1:1 1:1 * * 1:1 1:1 * *))\n"
+        "(CAUSED_BY NULL (NET \"n2\" 1:1 1:1 * * 1:1 1:1 * *))\n"
+        ")\n";
+    write_file("quoted.twf", quoted_text);
+    // 小块界 → 顶层子构造间切分（CAUSED_BY 两段 ≥ 2 块）
     const TMFileChunkPlan plan =
         tm_plan_file_chunks(file_path("quoted.twf"), 64);
     ASSERT_GE(plan.chunk_starts_.size(), 2u);
-    // 每块包装外皮后均可独立解析（安全切点的本质语义——切点恒落在顶层
-    // 构造边界，不落入引号/字段内容）
+    // 头段 = HEADER（首个 CAUSED_BY 之前）
+    EXPECT_EQ(plan.prefix_start_, quoted_text.find("(HEADER"));
+    EXPECT_EQ(plan.prefix_end_, quoted_text.find("(CAUSED_BY"));
+    // 每块拼头段前缀后均可独立解析（安全切点的本质语义——切点恒落在顶
+    // 层构造边界，不落入引号/字段内容）
     for (size_t i = 0; i < plan.chunk_starts_.size(); ++i) {
-        const uint64_t end = plan.chunk_ends_[i];
-        std::ifstream in(file_path("quoted.twf"), std::ios::binary);
-        in.seekg(static_cast<std::streamoff>(plan.chunk_starts_[i]));
-        std::ostringstream ss;
-        ss << in.rdbuf();
-        const CMString text = ss.str().substr(0, end - plan.chunk_starts_[i]);
-        const TMTimingFile chunk = tm_parse_twf_text(
-            "(TIMING_WINDOWS\n" + text + "\n)", "chunk");
-        EXPECT_EQ(chunk.bad_record_count_, 0u);
-        EXPECT_EQ(chunk.unknown_construct_count_, 0u);
+        const CMString prefix = quoted_text.substr(
+            plan.prefix_start_, plan.prefix_end_ - plan.prefix_start_);
+        const CMString chunk = quoted_text.substr(
+            plan.chunk_starts_[i], plan.chunk_ends_[i] - plan.chunk_starts_[i]);
+        const TMTimingFile parsed = tm_parse_twf_text(
+            "(TIMING_WINDOWS\n" + prefix + "\n" + chunk + "\n)", "chunk");
+        EXPECT_EQ(parsed.bad_record_count_, 0u);
+        EXPECT_EQ(parsed.unknown_construct_count_, 0u);
     }
 }
 
@@ -341,14 +375,20 @@ TEST_F(TmPartitionTest, ChunkedConversionEqualsWholeFile) {
     slice_ptrs.reserve(chunk_count);
     for (size_t i = 0; i < chunk_count; ++i) {
         slices.push_back(tm_convert_chunk(*ctx, file_path("top.twf"),
+                                          plan.prefix_start_,
+                                          plan.prefix_end_,
                                           plan.chunk_starts_[i],
                                           plan.chunk_ends_[i],
                                           TMFileBinding{}, 0));
         slice_ptrs.push_back(&slices.back());
     }
+    // 时钟表合并 + T3 分区合并（生产路径口径：时钟归属经 remap 重写）
+    TMClockTable merged_clocks;
+    const TMClockRemap remap =
+        merge_clocks_of({{0, clocks_table_of(slices)}}, merged_clocks);
     uint64_t conflicts = 0;
     const TMPartitionTiming merged =
-        tm_merge_partition(slice_ptrs, kPid, conflicts);
+        tm_merge_partition(slice_ptrs, remap, kPid, conflicts);
 
     // 条目级等价：合并分区对象 vs 整文件分区的条目集一致（同文件跨块
     // 的 NET 条目与其驱动 PIN 条目同指 (1, Z)——同源静默合并不计冲突）
@@ -357,6 +397,8 @@ TEST_F(TmPartitionTest, ChunkedConversionEqualsWholeFile) {
     ASSERT_NE(nt_whole, nullptr);
     ASSERT_NE(nt_merged, nullptr);
     ASSERT_EQ(nt_merged->pins_.size(), nt_whole->pins_.size());
+    // 时钟归属等价：两路径下实例 1 均挂 clk（最终表下标一致）
+    EXPECT_EQ(nt_merged->clock_id_, nt_whole->clock_id_);
     EXPECT_EQ(conflicts, 0u);
     EXPECT_EQ(nt_merged->pins_[0].pin_id_, kPinZ);
 }
@@ -572,7 +614,7 @@ TEST_F(TmPartitionTest, BrokenChunkYieldsEmptySliceWithCounter) {
     const auto ctx = make_context(env, make_partition_nets());
     write_file("bad.twf", "(TIMING_WINDOWS (CAUSED_BY NULL (NET \"n\"");
     const TMEntrySlice slice =
-        tm_convert_chunk(*ctx, file_path("bad.twf"), 0, UINT64_MAX,
+        tm_convert_chunk(*ctx, file_path("bad.twf"), 0, 0, 0, UINT64_MAX,
                          TMFileBinding{}, 0);
     EXPECT_TRUE(slice.partitions_.empty());
     ASSERT_EQ(slice.stats_.files_.size(), 1u);
@@ -589,7 +631,8 @@ TEST_F(TmPartitionTest, MissingBindingTargetFallsBackToChunkFailure) {
     binding.kind = 1;
     binding.block_inst = "no_such_inst";
     const TMEntrySlice slice =
-        tm_convert_chunk(*ctx, file_path("ok.twf"), 0, UINT64_MAX, binding, 0);
+        tm_convert_chunk(*ctx, file_path("ok.twf"), 0, 0, 0, UINT64_MAX,
+                         binding, 0);
     EXPECT_TRUE(slice.partitions_.empty());
     EXPECT_EQ(slice.stats_.files_[0].failed_chunk_count_, 1u);
 }
@@ -612,9 +655,11 @@ TEST_F(TmPartitionTest, MergePartitionConflictsKeepFirst) {
     const TMEntrySlice sb = convert_whole(*ctx, file_path("b.twf"),
                                           TMFileBinding{}, 1);
     CMVector<const TMEntrySlice*> slices = {&sa, &sb};
+    TMClockTable merged_clocks;
+    const TMClockRemap remap = merge_clocks_of({}, merged_clocks);
     uint64_t conflicts = 0;
     const TMPartitionTiming merged =
-        tm_merge_partition(slices, kPid, conflicts);
+        tm_merge_partition(slices, remap, kPid, conflicts);
     EXPECT_EQ(conflicts, 1u);
     const TMInstanceTiming* top1 = find_inst(merged, 1);
     ASSERT_NE(top1, nullptr);
@@ -665,7 +710,7 @@ TEST_F(TmPartitionTest, MergeClocksTopLevelPriority) {
     const TMEntrySlice st = convert_whole(*ctx, file_path("top.twf"),
                                           TMFileBinding{}, 1);
     // 文件内跨块归并（同名首份）后按 (kind, clocks) 传入（TMClock →
-    // TMClockTable::Entry 搬运）
+    // TMClockTable::Entry 搬运）；remap 出参 = 块内 id → 最终表下标
     CMVector<std::pair<int, TMClockTable>> file_clocks;
     TMClockTable blk_table;
     for (const TMClock& c : sb.stats_.clocks_) {
@@ -687,8 +732,9 @@ TEST_F(TmPartitionTest, MergeClocksTopLevelPriority) {
         top_table.clocks_.push_back(std::move(e));
     }
     file_clocks.emplace_back(0, std::move(top_table));   // 顶层（kind 0）
+    TMClockRemap remap;
     uint64_t conflicts = 0;
-    const TMClockTable merged = tm_merge_clocks(file_clocks, conflicts);
+    const TMClockTable merged = tm_merge_clocks(file_clocks, remap, conflicts);
     ASSERT_EQ(merged.clocks_.size(), 2u);
     EXPECT_EQ(merged.clocks_[0].name_, "clk");
     EXPECT_DOUBLE_EQ(merged.clocks_[0].period_, 1.0);    // 顶层定义保留
@@ -696,6 +742,14 @@ TEST_F(TmPartitionTest, MergeClocksTopLevelPriority) {
     EXPECT_EQ(conflicts, 1u);   // clk 周期差异（2.0 vs 1.0）
     EXPECT_EQ(merged.find("clk")->posedge_, 0.0);
     EXPECT_EQ(merged.find("clk")->negedge_, 0.5);
+    // 重映射表：blk 文件（序 0）clk 块内 0 → 最终 0；top 文件（序 1）
+    // clk → 0、clk2 → 1（评审 P1-1 的桥）
+    ASSERT_EQ(remap.file_maps_.size(), 2u);
+    ASSERT_EQ(remap.file_maps_[0].size(), 1u);
+    EXPECT_EQ(remap.file_maps_[0][0], 0u);
+    ASSERT_EQ(remap.file_maps_[1].size(), 2u);
+    EXPECT_EQ(remap.file_maps_[1][0], 0u);
+    EXPECT_EQ(remap.file_maps_[1][1], 1u);
 }
 
 TEST_F(TmPartitionTest, MergeClocksBindsFileOrderFallback) {
@@ -713,11 +767,173 @@ TEST_F(TmPartitionTest, MergeClocksBindsFileOrderFallback) {
     c2.period_ = 3.0;
     second.clocks_.push_back(c2);
     file_clocks.emplace_back(2, std::move(second));
+    TMClockRemap remap;
     uint64_t conflicts = 0;
-    const TMClockTable merged = tm_merge_clocks(file_clocks, conflicts);
+    const TMClockTable merged = tm_merge_clocks(file_clocks, remap, conflicts);
     ASSERT_EQ(merged.clocks_.size(), 1u);
     EXPECT_DOUBLE_EQ(merged.clocks_[0].period_, 2.0);   // 文件序首份兜底
     EXPECT_EQ(conflicts, 1u);
+    // 两绑定文件均映射到最终表唯一条目
+    EXPECT_EQ(remap.file_maps_[0][0], 0u);
+    EXPECT_EQ(remap.file_maps_[1][0], 0u);
+}
+
+// ── 8.5 时钟 id 域修复（评审 P1-1 回归）─────────────────────────────
+
+// 多块切分：头段公共前缀使块间时钟表一致，非首块条目时钟归属不丢
+//（修复前：WAVEFORM 只入首块 → 非首块 CAUSED_BY 时钟名未登记 →
+// missing_clock 计数 + 归属哨兵）
+TEST_F(TmPartitionTest, ChunkedConversionKeepsClockOwnership) {
+    // 带时钟组落在切分点之后的多块文件：组1(nt) / 组2(ghost 填充拉大间
+    // 距) / 组3(nb → u1#1(5)/Z)——chunk_size 100 下组3 落非首块
+    write_file("multi.twf",
+               "(TIMING_WINDOWS\n"
+               "(HEADER (DELIMITERS \"/\") (TIME_SCALE 1.000E-09))\n"
+               "(WAVEFORM \"clk\" 1.0 (POSEDGE 0.0) (NEGEDGE 0.5))\n"
+               "(CAUSED_BY \"clk\"\n"
+               "(NET \"nt\" 0.1:0.2 0.01 0.5 0.001 0.3:0.4 0.02 0.5 "
+               "0.001)\n"
+               ")\n"
+               "(CAUSED_BY NULL\n"
+               "(NET \"ghost1\" 0.1:0.1 0.01 * * 0.2:0.2 0.02 * *)\n"
+               ")\n"
+               "(CAUSED_BY \"clk\"\n"
+               "(NET \"c1/nb\" 0.2:0.3 0.01 * * 0.4:0.5 0.02 * *)\n"
+               ")\n"
+               ")\n");
+    const SynthEnv env;
+    const auto ctx = make_context(env, make_partition_nets());
+    const TMFileChunkPlan plan =
+        tm_plan_file_chunks(file_path("multi.twf"), 100);
+    ASSERT_GE(plan.chunk_starts_.size(), 2u);   // 组3 必须落非首块
+
+    const size_t chunk_count = plan.chunk_starts_.size();
+    CMVector<TMEntrySlice> slices;
+    slices.reserve(chunk_count);
+    for (size_t i = 0; i < chunk_count; ++i) {
+        slices.push_back(tm_convert_chunk(*ctx, file_path("multi.twf"),
+                                          plan.prefix_start_,
+                                          plan.prefix_end_,
+                                          plan.chunk_starts_[i],
+                                          plan.chunk_ends_[i],
+                                          TMFileBinding{}, 0));
+    }
+    for (const TMEntrySlice& s : slices) {
+        // 头段公共前缀 → 每块时钟表与首块一致
+        ASSERT_EQ(s.stats_.clocks_.size(), 1u);
+        EXPECT_EQ(s.stats_.clocks_[0].name_, "clk");
+        // 修复前非首块 missing_clock_count_ = 1
+        EXPECT_EQ(s.stats_.missing_clock_count_, 0u);
+    }
+
+    TMClockTable merged_clocks;
+    const TMClockRemap remap =
+        merge_clocks_of({{0, clocks_table_of(slices)}}, merged_clocks);
+    CMVector<const TMEntrySlice*> slice_ptrs;
+    slice_ptrs.reserve(slices.size());
+    for (const TMEntrySlice& s : slices) {
+        slice_ptrs.push_back(&s);
+    }
+    uint64_t conflicts = 0;
+    const TMPartitionTiming merged =
+        tm_merge_partition(slice_ptrs, remap, kPid, conflicts);
+    // 非首块条目（nb → u1#1(5)）时钟归属有效且指向最终表 clk 条目
+    const TMInstanceTiming* u1 = find_inst(merged, 5);
+    ASSERT_NE(u1, nullptr);
+    EXPECT_EQ(u1->clock_id_, CMClockId{0});
+    // summary 聚合可见（missing_clock 不再静默）
+    CMVector<const TMStatsDelta*> deltas;
+    for (const TMEntrySlice& s : slices) {
+        deltas.push_back(&s.stats_);
+    }
+    const TMSummary summary = tm_merge_summary(deltas, 0, 0);
+    EXPECT_EQ(summary.missing_clock_count_, 0u);
+}
+
+// 多文件异构时钟表：块内 id 域必须经 remap 重映射到最终表（修复前：文
+// 件 B 块内 clk=0 直接搬入合并对象 → 错指最终表 0 = wclk）
+TEST_F(TmPartitionTest, ClockRemapAcrossFilesWithHeterogeneousTables) {
+    const SynthEnv env;
+    const auto ctx = make_context(env, make_partition_nets());
+    // 文件 A 表 [wclk, clk]（块内 wclk=0/clk=1）；文件 B 表 [clk]（块内
+    // clk=0）——两文件均为顶层（kind 0），合并按文件序 [wclk→0, clk→1]
+    write_file("a.twf",
+               "(TIMING_WINDOWS\n"
+               "(HEADER (DELIMITERS \"/\") (TIME_SCALE 1.000E-09))\n"
+               "(WAVEFORM \"wclk\" 2.0 (POSEDGE 0.0) (NEGEDGE 1.0))\n"
+               "(WAVEFORM \"clk\" 1.0 (POSEDGE 0.0) (NEGEDGE 0.5))\n"
+               "(CAUSED_BY \"wclk\"\n"
+               "(PIN \"top1/Z\" 0.1:0.2 0.01 * * 0.3:0.4 0.02 * *)\n"
+               ")\n"
+               "(CAUSED_BY \"clk\"\n"
+               "(PIN \"top1/A\" 0.1:0.2 0.01 * * 0.3:0.4 0.02 * *)\n"
+               ")\n"
+               ")\n");
+    write_file("b.twf",
+               "(TIMING_WINDOWS\n"
+               "(HEADER (DELIMITERS \"/\") (TIME_SCALE 1.000E-09))\n"
+               "(WAVEFORM \"clk\" 1.0 (POSEDGE 0.0) (NEGEDGE 0.5))\n"
+               "(CAUSED_BY \"clk\"\n"
+               "(NET \"c1/nb\" 0.2:0.3 0.01 * * 0.4:0.5 0.02 * *)\n"
+               ")\n"
+               ")\n");
+    const TMEntrySlice sa = convert_whole(*ctx, file_path("a.twf"),
+                                          TMFileBinding{}, 0);
+    const TMEntrySlice sb = convert_whole(*ctx, file_path("b.twf"),
+                                          TMFileBinding{}, 1);
+
+    TMClockTable merged_clocks;
+    const TMClockRemap remap = merge_clocks_of(
+        {{0, clocks_table_of({sa})}, {0, clocks_table_of({sb})}},
+        merged_clocks);
+    ASSERT_EQ(merged_clocks.clocks_.size(), 2u);   // [wclk, clk]
+    EXPECT_EQ(merged_clocks.clocks_[0].name_, "wclk");
+    EXPECT_EQ(merged_clocks.clocks_[1].name_, "clk");
+    // A：wclk→0 / clk→1；B：clk 块内 0 → 最终 1（修复前无重映射）
+    ASSERT_EQ(remap.file_maps_.size(), 2u);
+    ASSERT_EQ(remap.file_maps_[0].size(), 2u);
+    EXPECT_EQ(remap.file_maps_[0][0], 0u);
+    EXPECT_EQ(remap.file_maps_[0][1], 1u);
+    ASSERT_EQ(remap.file_maps_[1].size(), 1u);
+    EXPECT_EQ(remap.file_maps_[1][0], 1u);
+
+    CMVector<const TMEntrySlice*> slices = {&sa, &sb};
+    uint64_t conflicts = 0;
+    const TMPartitionTiming merged =
+        tm_merge_partition(slices, remap, kPid, conflicts);
+    // top1(1)：A 文件 clk 组条目 top1/A 首见 → clock = clk(1)；wclk 组
+    // top1/Z 同实例——首份保留语义（A 文件内 upsert 已取 wclk 首见 0，
+    // T3 首份 = slice 序 A 的块内重映射值）
+    const TMInstanceTiming* top1 = find_inst(merged, 1);
+    ASSERT_NE(top1, nullptr);
+    EXPECT_EQ(top1->clock_id_, CMClockId{0});   // wclk（A 首见组）
+    // u1#1(5)：B 文件 nb → (5, Z)——B 块内 clk=0 必须重映射为 1（clk）
+    const TMInstanceTiming* u1 = find_inst(merged, 5);
+    ASSERT_NE(u1, nullptr);
+    EXPECT_EQ(u1->clock_id_, CMClockId{1});   // 修复前错指 0 = wclk
+}
+
+// missing_clock 计数聚合链：解析产物 → TMStatsDelta → TMSummary（修复
+// 前计数止步于解析产物，summary 无字段不可见）
+TEST_F(TmPartitionTest, MissingClockCountAggregatesToSummary) {
+    const SynthEnv env;
+    const auto ctx = make_context(env, make_partition_nets());
+    // CAUSED_BY 引用未登记 WAVEFORM 时钟名（数据破损形态——与多块丢失
+    // 同一计数器，独立于前缀机制验证聚合链）
+    write_file("missing.twf",
+               "(TIMING_WINDOWS\n"
+               "(HEADER (DELIMITERS \"/\") (TIME_SCALE 1.000E-09))\n"
+               "(CAUSED_BY \"nosuch\"\n"
+               "(NET \"nt\" 0.1:0.2 0.01 * * 0.3:0.4 0.02 * *)\n"
+               ")\n"
+               ")\n");
+    const TMEntrySlice slice = convert_whole(*ctx, file_path("missing.twf"),
+                                             TMFileBinding{}, 0);
+    EXPECT_EQ(slice.stats_.missing_clock_count_, 1u);
+    const TMStatsDelta delta = slice.stats_;
+    CMVector<const TMStatsDelta*> deltas = {&delta};
+    const TMSummary summary = tm_merge_summary(deltas, 0, 0);
+    EXPECT_EQ(summary.missing_clock_count_, 1u);
 }
 
 // ── 9. 落库形态序列化 round-trip ────────────────────────────────────
@@ -781,8 +997,10 @@ TEST_F(TmPartitionTest, SerializationRoundTrip) {
     fp.file_name_ = "x.twf";
     fp.binding_kind_ = 1;
     fp.block_inst_ = "c1";
-    fp.chunk_starts_ = {3, 100};
-    fp.chunk_ends_ = {100, 300};
+    fp.prefix_start_ = 3;
+    fp.prefix_end_ = 100;
+    fp.chunk_starts_ = {100};
+    fp.chunk_ends_ = {300};
     plan.files_.push_back(fp);
     CMString plan_blob;
     FLY_ENCODE(plan, plan_blob);
@@ -791,8 +1009,21 @@ TEST_F(TmPartitionTest, SerializationRoundTrip) {
     ASSERT_EQ(plan_back.files_.size(), 1u);
     EXPECT_EQ(plan_back.files_[0].binding_kind_, 1);
     EXPECT_EQ(plan_back.files_[0].block_inst_, "c1");
-    ASSERT_EQ(plan_back.files_[0].chunk_starts_.size(), 2u);
-    EXPECT_EQ(plan_back.files_[0].chunk_ends_[1], 300u);
+    EXPECT_EQ(plan_back.files_[0].prefix_start_, 3u);
+    EXPECT_EQ(plan_back.files_[0].prefix_end_, 100u);
+    ASSERT_EQ(plan_back.files_[0].chunk_starts_.size(), 1u);
+    EXPECT_EQ(plan_back.files_[0].chunk_ends_[0], 300u);
+
+    // TMClockRemap（块内 id → 最终表下标桥，评审 P1-1）
+    TMClockRemap remap;
+    remap.file_maps_ = {{0u, 1u}, {1u}};
+    CMString remap_blob;
+    FLY_ENCODE(remap, remap_blob);
+    TMClockRemap remap_back;
+    FLY_DECODE(remap_blob, TMClockRemap, remap_back);
+    ASSERT_EQ(remap_back.file_maps_.size(), 2u);
+    ASSERT_EQ(remap_back.file_maps_[0].size(), 2u);
+    EXPECT_EQ(remap_back.file_maps_[0][1], 1u);
 }
 
 

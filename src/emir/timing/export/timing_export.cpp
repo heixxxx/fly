@@ -1,8 +1,8 @@
 // _fly_emir_timing.so — emir timing 模块（⑦ timing db）的 Python 绑定。
 // 导出落库形态（EXTMPartitionTiming / EXTMClockTable / EXTMSummary 正式
-// 对象 + EXTMChunkPlan / EXTMEntrySlice 中间对象，FLY_EXPORT_SERIALIZE_
-// PICKLE 支持 pickle 落 db）+ T1/T2/T3/T4 执行函数 + EXTMDesignContext
-//（design db 快照共享注入上下文）。
+// 对象 + EXTMChunkPlan / EXTMEntrySlice / EXTMClockRemap 中间对象，
+// FLY_EXPORT_SERIALIZE_PICKLE 支持 pickle 落 db）+ T1/T2/T3/T4 执行函数
+// + EXTMDesignContext（design db 快照共享注入上下文）。
 // 类型纪律（DEVELOPMENT_GUIDELINES §16）：强类型 id / enum class 成员禁止
 // def_ro 直绑（运行期 SystemError）——一律 READONLY_PROPERTY + `.value()`
 // 桥，Python 边界保持 int。
@@ -63,6 +63,9 @@ FLY_EXPORT_CLASS(fly::TMFileChunkPlan, "EXTMFileChunkPlan")
     FLY_EXPORT_READONLY_ATTR("block_cell", &fly::TMFileChunkPlan::block_cell_)
     FLY_EXPORT_READONLY_ATTR("strip_prefix", &fly::TMFileChunkPlan::strip_prefix_)
     FLY_EXPORT_READONLY_ATTR("file_size", &fly::TMFileChunkPlan::file_size_)
+    // 头段公共前缀字节区间（评审 P1-1：T2 每块拼 prefix——块间时钟表一致）
+    FLY_EXPORT_READONLY_ATTR("prefix_start", &fly::TMFileChunkPlan::prefix_start_)
+    FLY_EXPORT_READONLY_ATTR("prefix_end", &fly::TMFileChunkPlan::prefix_end_)
     FLY_EXPORT_READONLY_ATTR("chunk_starts", &fly::TMFileChunkPlan::chunk_starts_)
     FLY_EXPORT_READONLY_ATTR("chunk_ends", &fly::TMFileChunkPlan::chunk_ends_)
     FLY_EXPORT_SERIALIZE_PICKLE(fly::TMFileChunkPlan);
@@ -119,6 +122,8 @@ FLY_EXPORT_CLASS(fly::TMStatsDelta, "EXTMStatsDelta")
                              &fly::TMStatsDelta::dropped_source_res_count_)
     FLY_EXPORT_READONLY_ATTR("dropped_slack_count",
                              &fly::TMStatsDelta::dropped_slack_count_)
+    FLY_EXPORT_READONLY_ATTR("missing_clock_count",
+                             &fly::TMStatsDelta::missing_clock_count_)
     FLY_EXPORT_READONLY_ATTR("cd_flag_c_count",
                              &fly::TMStatsDelta::cd_flag_c_count_)
     FLY_EXPORT_READONLY_ATTR("cd_flag_d_count",
@@ -160,6 +165,8 @@ FLY_EXPORT_CLASS(fly::TMSummary, "EXTMSummary")
                              &fly::TMSummary::dropped_source_res_count_)
     FLY_EXPORT_READONLY_ATTR("dropped_slack_count",
                              &fly::TMSummary::dropped_slack_count_)
+    FLY_EXPORT_READONLY_ATTR("missing_clock_count",
+                             &fly::TMSummary::missing_clock_count_)
     FLY_EXPORT_READONLY_ATTR("cd_flag_c_count",
                              &fly::TMSummary::cd_flag_c_count_)
     FLY_EXPORT_READONLY_ATTR("cd_flag_d_count",
@@ -279,6 +286,13 @@ FLY_EXPORT_CLASS(fly::TMClockTable, "EXTMClockTable")
 
 // ── T2 分片（temp 对象）──
 
+// 时钟 id 重映射表（时钟表合并任务产出 → T3 每分区合并消费；评审 P1-1）
+FLY_EXPORT_CLASS(fly::TMClockRemap, "EXTMClockRemap")
+    FLY_EXPORT_INIT()
+    // [file_index][块内 id] = 最终时钟表下标
+    FLY_EXPORT_READONLY_ATTR("file_maps", &fly::TMClockRemap::file_maps_)
+    FLY_EXPORT_SERIALIZE_PICKLE(fly::TMClockRemap);
+
 FLY_EXPORT_CLASS(fly::TMEntrySlice, "EXTMEntrySlice")
     FLY_EXPORT_INIT()
     // 本块触及分区 id 枚举（编排观测面；T3 合并直传对象不逐分区取）
@@ -355,25 +369,29 @@ FLY_EXPORT_FUNCTION("tm_plan_file_chunks",
     return fly::tm_plan_file_chunks(path, chunk_size);
 });
 
-// T2：逐块换算（bind 写法——FLY_EXPORT_DEF 仅类内，模块级函数用此形态）
+// T2：逐块换算（bind 写法——FLY_EXPORT_DEF 仅类内，模块级函数用此形态；
+// prefix 区间 = 文件头段公共前缀，评审 P1-1）
 m.def("tm_convert_chunk",
       [](const fly::TMDesignContext& ctx, const CMString& path,
+         uint64_t prefix_start, uint64_t prefix_end,
          uint64_t chunk_start, uint64_t chunk_end,
          const fly::TMFileBinding& binding, uint32_t file_index) {
-          return fly::tm_convert_chunk(ctx, path, chunk_start, chunk_end,
-                                       binding, file_index);
+          return fly::tm_convert_chunk(ctx, path, prefix_start, prefix_end,
+                                       chunk_start, chunk_end, binding,
+                                       file_index);
       });
 
-// T3：每分区合并（slices = EXTMEntrySlice 列表；返回 (分区对象, 冲突数)）
+// T3：每分区合并（slices = EXTMEntrySlice 列表 + EXTMClockRemap——时钟
+// 归属重写为最终表 id；返回 (分区对象, 冲突数)）
 m.def("tm_merge_partition",
-      [](nb::list slices, uint32_t pid) {
+      [](nb::list slices, const fly::TMClockRemap& remap, uint32_t pid) {
           fly::CMVector<const fly::TMEntrySlice*> ptrs;
           for (nb::handle item : slices) {
               ptrs.push_back(&nb::cast<const fly::TMEntrySlice&>(item));
           }
           uint64_t conflicts = 0;
           auto part = fly::tm_merge_partition(
-              ptrs, fly::CMPartitionId{pid}, conflicts);
+              ptrs, remap, fly::CMPartitionId{pid}, conflicts);
           return nb::make_tuple(nb::cast(std::move(part)), conflicts);
       });
 
@@ -390,7 +408,8 @@ m.def("tm_merge_summary",
       });
 
 // T4 ②：时钟表跨文件合并（file_clocks = [(kind, EXTMClockTable)] 列表；
-// 返回 (时钟表, 冲突数)）
+// 返回 (时钟表, 冲突数, EXTMClockRemap) 三元组——remap 为 T3 时钟归属
+// 重写的桥，评审 P1-1）
 m.def("tm_merge_clocks",
       [](nb::list file_clocks) {
           fly::CMVector<std::pair<int, fly::TMClockTable>> clocks;
@@ -398,9 +417,11 @@ m.def("tm_merge_clocks",
               const auto pair = nb::cast<std::pair<int, fly::TMClockTable>>(item);
               clocks.emplace_back(pair.first, std::move(pair.second));
           }
+          fly::TMClockRemap remap;
           uint64_t conflicts = 0;
-          auto table = fly::tm_merge_clocks(clocks, conflicts);
-          return nb::make_tuple(nb::cast(std::move(table)), conflicts);
+          auto table = fly::tm_merge_clocks(clocks, remap, conflicts);
+          return nb::make_tuple(nb::cast(std::move(table)), conflicts,
+                                nb::cast(std::move(remap)));
       });
 
 }  // FLY_EXPORT_MODULE

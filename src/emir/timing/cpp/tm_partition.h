@@ -5,13 +5,15 @@
 // §5.2/§5.3/§7/§8，2026-09-16 全裁定）。
 //
 // 三层结构（对齐 plan §6 直接任务链）：
-//   TMChunkPlan       T1 切块扫描产物（temp）：逐文件字节区间切块表 +
-//                     绑定描述（§2 名字空间三形态：纯路径全层级名 /
-//                     block_inst 块实例绑定 / block_cell 块定义绑定 +
-//                     strip_prefix 段级前缀剥离）
+//   TMChunkPlan       T1 切块扫描产物（temp）：逐文件头段公共前缀 + 字节
+//                     区间切块表 + 绑定描述（§2 名字空间三形态：纯路径全
+//                     层级名 / block_inst 块实例绑定 / block_cell 块定义
+//                     绑定 + strip_prefix 段级前缀剥离）
 //   TMEntrySlice      T2 逐块解析产物分区分片（temp）：本块所涉各分区的
-//                     实例时序片段 + 统计片段（含本块时钟表，T4 跨文件
-//                     合并输入）
+//                     实例时序片段（时钟归属 = 块内 id）+ 统计片段（含
+//                     本块时钟表——头段公共前缀保证块间一致）
+//   TMClockRemap      时钟表合并任务产出（temp）：块内时钟 id → 最终表
+//                     下标的逐文件重映射桥（评审 P1-1）
 //   正式对象          T3/T4 产物：TMPartitionTiming（PART_{xp}_{yp}.TIMING，
 //                     primary 恰一——时序为点数据无 extend 副本语义）+
 //                     TMClockTable（"clocks"）+ TMSummary（"summary"）
@@ -167,6 +169,9 @@ struct TMStatsDelta {
     // 弃收计数（自解析产物聚合，plan §5.2）
     uint64_t dropped_source_res_count_ = 0;
     uint64_t dropped_slack_count_ = 0;
+    // CAUSED_BY 引用未登记 WAVEFORM 时钟名的条目分组数（自解析产物聚合
+    // ——评审 P1-1：修复前该计数未入片段/汇总，时钟归属丢失不可见）
+    uint64_t missing_clock_count_ = 0;
     // C/D 结尾标记观测（不入库仅观测）
     uint64_t cd_flag_c_count_ = 0;
     uint64_t cd_flag_d_count_ = 0;
@@ -174,7 +179,7 @@ struct TMStatsDelta {
     FLY_SERIALIZE(file_index_, clocks_, files_, multi_driver_net_count_,
                   pg_net_skip_count_, const_entry_count_, no_window_count_,
                   dropped_source_res_count_, dropped_slack_count_,
-                  cd_flag_c_count_, cd_flag_d_count_)
+                  missing_clock_count_, cd_flag_c_count_, cd_flag_d_count_)
 };
 
 // 汇总正式对象（"summary"；T4 唯一写定）：逐来源文件统计 + 全局计数 +
@@ -210,6 +215,9 @@ public:
     // 弃收与 C/D 观测
     uint64_t dropped_source_res_count_ = 0;
     uint64_t dropped_slack_count_ = 0;
+    // CAUSED_BY 引用未登记 WAVEFORM 时钟名的条目分组数（0001 家族之外的
+    // 解析级兜底观测——评审 P1-1 补聚合，时钟归属丢失可追溯）
+    uint64_t missing_clock_count_ = 0;
     uint64_t cd_flag_c_count_ = 0;
     uint64_t cd_flag_d_count_ = 0;
     // 块语法破损总数（全部文件全块失败 → flow 侧 TIMG::0009 fatal）
@@ -223,7 +231,8 @@ public:
                   multi_driver_net_count_, pg_net_skip_count_,
                   const_entry_count_, no_window_count_,
                   dropped_source_res_count_, dropped_slack_count_,
-                  cd_flag_c_count_, cd_flag_d_count_, failed_chunk_count_)
+                  missing_clock_count_, cd_flag_c_count_, cd_flag_d_count_,
+                  failed_chunk_count_)
 };
 
 // ── 中间形态（plan §5.3 temp 对象，freeze 清理）─────────────────────
@@ -231,6 +240,14 @@ public:
 // 单文件切块表（§2 绑定描述符随计划传递；块区间 = [chunk_starts_[i],
 // i+1 < n ? chunk_starts_[i+1] : file_size_)——文件去掉 (TIMING_WINDOWS
 // 外皮后的顶层子构造序列，T2 解析时重包外皮，块自包含）
+//
+// 头段公共前缀（评审 P1-1 修复，2026-09-17）：首个 CAUSED_BY（数据构
+// 造）之前的全部顶层构造 = 文件头（HEADER + WAVEFORM 段），单独切为
+// [prefix_start_, prefix_end_)，T2 组装每块文本时拼在块前——同文件各
+// 块解析出的时钟表逐字节一致，块内时钟 id 编号域统一（否则 WAVEFORM 只
+// 落首块，非首块 CAUSED_BY 引用的时钟名块内未登记，时钟归属静默丢失）。
+// 无数据构造时 prefix = 全部闭合构造（单空块）；流级破损（无闭合构造）
+// prefix 置空、块包全文本交解析器判破损兜底。
 struct TMFileChunkPlan {
     CMString file_name_;
     // 绑定形态（§2）：0 = 纯路径（条目名 = 全层级路径）；1 = block_inst
@@ -242,6 +259,9 @@ struct TMFileChunkPlan {
     // 段级前缀剥离（§7.4；仅绑定形态可附加，空 = 不剥离）
     CMString strip_prefix_;
     uint64_t file_size_ = 0;
+    // 头段公共前缀字节区间（[prefix_start_, prefix_end_)；空表 = 无头段）
+    uint64_t prefix_start_ = 0;
+    uint64_t prefix_end_ = 0;
     // 块起点/终点偏移（平行数组；块 i = [chunk_starts_[i], chunk_ends_[i])
     // ——起点升序，块界 = 顶层子构造边界（行/构造对齐）。**末块终点 =
     // 最后顶层子构造终点**（文件尾 ')' 外皮不入块——T2 重包外皮语义）；
@@ -250,7 +270,8 @@ struct TMFileChunkPlan {
     CMVector<uint64_t> chunk_ends_;
 
     FLY_SERIALIZE(file_name_, binding_kind_, block_inst_, block_cell_,
-                  strip_prefix_, file_size_, chunk_starts_, chunk_ends_)
+                  strip_prefix_, file_size_, prefix_start_, prefix_end_,
+                  chunk_starts_, chunk_ends_)
 };
 
 // T1 切块清单（temp；master 侧单任务产出）
@@ -270,6 +291,19 @@ public:
     TMStatsDelta stats_;
 
     FLY_SERIALIZE(partitions_, stats_)
+};
+
+// 时钟 id 重映射表（temp；时钟表合并任务产出、T3 每分区合并消费——
+// 评审 P1-1：块内时钟 id（TMTimingFile::clock_index_ 局部编号）与最终
+// TMClockTable 下标（跨文件按优先级重排）是两个编号空间，中间必须经本
+// 表桥接，否则条目时钟归属指错时钟）。按文件序；file_maps_[file_index]
+// [块内 id] = 最终表下标（块内 id 越界/文件号越界由消费方按无归属哨兵
+// 兜底——正常流程由同批 slices 产出，不触发）
+class TMClockRemap {
+public:
+    CMVector<CMVector<uint32_t>> file_maps_;
+
+    FLY_SERIALIZE(file_maps_)
 };
 
 // ── T1 切块扫描 ─────────────────────────────────────────────────────
@@ -367,44 +401,55 @@ struct TMFileBinding {
 
 // ── T2 逐块换算 ─────────────────────────────────────────────────────
 
-// 单块执行体：读文件字节区间 [chunk_start, chunk_end)（顶层子构造序列），
-// 重包 (TIMING_WINDOWS 外皮解析（复用 tm_parse_twf_text；单块语法破损
-// → 空分片 + failed_chunk 计数，依赖链保持满足——plan §6 单块失败兜底），
-// 逐条目名字换算 → 分区路由 → 分片产出。块绑定形态（kind 1/2）在此解析
-// 定位（绑定目标未命中 = 防御场景——入口校验已拦，按块失败兜底计数）。
+// 单块执行体：读文件头段公共前缀 [prefix_start, prefix_end)（HEADER +
+// WAVEFORM 段——块间时钟表一致的保证，评审 P1-1）与块字节区间
+// [chunk_start, chunk_end)（顶层子构造序列），重包 (TIMING_WINDOWS 外皮
+// 解析（复用 tm_parse_twf_text；单块语法破损 → 空分片 + failed_chunk 计
+// 数，依赖链保持满足——plan §6 单块失败兜底），逐条目名字换算 → 分区路
+// 由 → 分片产出。块绑定形态（kind 1/2）在此解析定位（绑定目标未命中 =
+// 防御场景——入口校验已拦，按块失败兜底计数）。
 TMEntrySlice tm_convert_chunk(const TMDesignContext& ctx,
-                              const CMString& path, uint64_t chunk_start,
+                              const CMString& path, uint64_t prefix_start,
+                              uint64_t prefix_end, uint64_t chunk_start,
                               uint64_t chunk_end,
                               const TMFileBinding& binding,
                               uint32_t file_index);
 
 // ── T3 / T4 合并 ────────────────────────────────────────────────────
 
-// 每分区合并（T3 每分区一任务）：收集各块分片中本分区的片段 → merge →
-// 正式对象。冲突判定按来源文件区分（TIMG::0006 = **跨文件**同名条目；
-// 同文件跨块的 NET 条目与其驱动 PIN 条目同指 (实例, pin) 是合法同源形
-// 态——静默保留首份，不计冲突）：同 (实例, pin) 首见来源文件号记录于合
-// 并过程局部表（不序列化），再现时来源相同 = 静默丢弃、不同 = conflict
-// 出参累加（flow 侧经 T4 聚合入 summary）。slices 为观察指针集（借引用
-// 不拷贝，同 ds_merge_id_partition_slices 入参约定）。
+// 时钟 id 域重映射（块内 id → 最终表 id；review P1-1 的桥）。文件号或块
+// 内 id 越界（正常流程不发生——remap 由同批 slices 产出）返回默认哨兵。
+CMClockId tm_remap_clock_id(const TMClockRemap& remap, uint32_t file_index,
+                            CMClockId chunk_clock_id);
+
+// 每分区合并（T3 每分区一任务）：收集各块分片中本分区的片段 → 时钟归属
+// 经 remap 重写为最终表 id → merge → 正式对象。冲突判定按来源文件区分
+//（TIMG::0006 = **跨文件**同名条目；同文件跨块的 NET 条目与其驱动 PIN
+// 条目同指 (实例, pin) 是合法同源形态——静默保留首份，不计冲突）：同
+// (实例, pin) 首见来源文件号记录于合并过程局部表（不序列化），再现时来
+// 源相同 = 静默丢弃、不同 = conflict 出参累加（flow 侧经 T4 聚合入
+// summary）。slices 为观察指针集（借引用不拷贝，同
+// ds_merge_id_partition_slices 入参约定）。
 TMPartitionTiming tm_merge_partition(
-    const CMVector<const TMEntrySlice*>& slices, CMPartitionId pid,
-    uint64_t& conflict_count);
+    const CMVector<const TMEntrySlice*>& slices, const TMClockRemap& remap,
+    CMPartitionId pid, uint64_t& conflict_count);
 
 // 汇总任务（T4）①：统计聚合——全部块统计片段直和 + 按文件归并逐文件表
 // （同文件多块：条目/计数累加、文件名取首块）+ T3 分区侧跨文件冲突与
-// T4 时钟表差异计数入表（TIMG::0006 / 0007）。
+// 时钟表侧差异计数入表（TIMG::0006 / 0007）。
 TMSummary tm_merge_summary(const CMVector<const TMStatsDelta*>& deltas,
                            uint64_t cross_file_conflict_count,
                            uint64_t clock_conflict_count);
 
-// 汇总任务（T4）②：时钟表跨文件合并——同文件跨块先归并（同名保留首份），
+// 时钟表跨文件合并（独立任务——评审 P1-1：提前至 T3 之前执行，产出最
+// 终 clocks 表 + per-file remap 桥）：同文件跨块先归并（同名保留首份），
 // 再按文件优先级合并：顶层文件（无绑定、纯路径 kind 0）定义优先，其余
 // （块绑定文件）按文件序首份兜底（2026-09-16 裁定 5）。任何周期/沿时刻
 // 差异计数出参累加（TIMG::0007，保留首份不 raise）。入参 = 每文件
-// (binding_kind, 时钟表)（clocks 已按文件归并的块序表）。
+// (binding_kind, 时钟表)（clocks 已按文件归并的块序表）；remap 出参按
+// 文件序给出 [file_index][块内 id] → 最终表下标。
 TMClockTable tm_merge_clocks(
     const CMVector<std::pair<int, TMClockTable>>& file_clocks,
-    uint64_t& conflict_count);
+    TMClockRemap& remap, uint64_t& conflict_count);
 
 }  // namespace fly

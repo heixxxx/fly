@@ -392,7 +392,8 @@ private:
                 clock_id = it->second;
             } else {
                 ++out_.missing_clock_count_;
-            }        } else if (!(t.kind == Kind::kAtom && t.text == "NULL")) {
+            }
+        } else if (!(t.kind == Kind::kAtom && t.text == "NULL")) {
             skip_construct(1);
             ++out_.unknown_construct_count_;
             return;

@@ -446,14 +446,31 @@ TMFileChunkPlan tm_plan_file_chunks(const CMString& path,
     plan.file_name_ = path;
     // 流式扫描：顶层子构造边界（(TIMING_WINDOWS 外皮 depth=1；子构造
     // 1↔2——起点 = 1→2 的 '('、终点 = 2→1 的 ')'；引号内不计深度，与
-    // 解析器词法同口径：TWF 字符串无引号转义形态）
+    // 解析器词法同口径：TWF 字符串无引号转义形态）。起点后识别构造关键
+    // 字（跳空白取原子，限长截断视为未知构造）定位首个数据构造
+    // CAUSED_BY：其之前的全部顶层构造 = 文件头段（HEADER + WAVEFORM，
+    // 评审 P1-1 的每块公共前缀——保证同文件各块时钟表一致、块内时钟 id
+    // 编号域统一）
     constexpr size_t kBufSize = 1u << 16;
+    constexpr size_t kKeywordMax = 32;
     char buf[kBufSize];
     bool in_string = false;
     int depth = 0;
     uint64_t off = 0;
     uint64_t first_construct = UINT64_MAX;
+    uint64_t data_start = UINT64_MAX;   // 首个 CAUSED_BY 构造起点
+    uint64_t construct_start = 0;       // 当前顶层子构造起点
+    bool kw_pending = false;            // 构造起点后等待/正在读关键字
+    bool kw_over = false;               // 关键字超长（按未知构造处理）
+    CMString keyword;
     CMVector<uint64_t> bounds;
+    // 关键字读毕判定（空白/构造闭合终止时调用）
+    const auto judge_keyword = [&]() {
+        if (!kw_over && keyword == "CAUSED_BY" && data_start == UINT64_MAX) {
+            data_start = construct_start;
+        }
+        kw_pending = false;
+    };
     while (in) {
         in.read(buf, static_cast<std::streamsize>(kBufSize));
         const size_t got = static_cast<size_t>(in.gcount());
@@ -465,16 +482,39 @@ TMFileChunkPlan tm_plan_file_chunks(const CMString& path,
                 }
             } else if (c == '"') {
                 in_string = true;
+                kw_pending = false;  // 构造名不会是引号形态（异形）
             } else if (c == '(') {
                 ++depth;
-                if (depth == 2 && off < first_construct) {
-                    first_construct = off;
+                if (depth == 2) {
+                    if (off < first_construct) {
+                        first_construct = off;
+                    }
+                    construct_start = off;
+                    kw_pending = true;
+                    kw_over = false;
+                    keyword.clear();
+                } else {
+                    kw_pending = false;  // 名字未完成即嵌套（异形）
                 }
             } else if (c == ')') {
                 if (depth == 2) {
                     bounds.push_back(off + 1);
+                    if (kw_pending && !keyword.empty()) {
+                        judge_keyword();  // "(CAUSED_BY)" 紧闭形态
+                    }
                 }
                 --depth;
+                kw_pending = false;
+            } else if (kw_pending && depth == 2) {
+                if (static_cast<unsigned char>(c) <= ' ') {
+                    if (!keyword.empty()) {
+                        judge_keyword();
+                    }
+                } else if (keyword.size() < kKeywordMax) {
+                    keyword.push_back(c);
+                } else {
+                    kw_over = true;
+                }
             }
             ++off;
         }
@@ -487,20 +527,45 @@ TMFileChunkPlan tm_plan_file_chunks(const CMString& path,
         plan.chunk_ends_.push_back(0);
         return plan;
     }
-    plan.chunk_starts_.push_back(first_construct);
-    uint64_t last = first_construct;
-    for (const uint64_t b : bounds) {
-        if (b - last >= chunk_size) {
-            plan.chunk_ends_.push_back(b);      // 当前块终点 = 新块起点
-            plan.chunk_starts_.push_back(b);
-            last = b;
+    if (data_start != UINT64_MAX) {
+        // 有数据构造：prefix = 首个 CAUSED_BY 之前的全部顶层构造（头段）
+        plan.prefix_start_ = first_construct;
+        plan.prefix_end_ = data_start;
+        plan.chunk_starts_.push_back(data_start);
+        uint64_t last = data_start;
+        for (const uint64_t b : bounds) {
+            if (b <= last) {
+                continue;  // 头段构造终点
+            }
+            if (b - last >= chunk_size) {
+                plan.chunk_ends_.push_back(b);      // 当前块终点 = 新块起点
+                plan.chunk_starts_.push_back(b);
+                last = b;
+            }
         }
+        // 末块终点 = 最后顶层子构造终点（文件尾 ')' 外皮不入块——T2 重包
+        // 外皮语义）；流级破损（全部构造未闭合）时 bounds 空——末块终点
+        // 回退 file_size，把剩余文本包进块让解析器判破损（failed_chunk
+        // 兜底计数，不静默吞掉破损）。max 防护：数据构造未闭合时
+        // bounds.back() 为头段终点（< 块起点），不得倒挂块区间
+        plan.chunk_ends_.push_back(
+            std::max(bounds.empty() ? plan.file_size_ : bounds.back(),
+                     plan.chunk_starts_.back()));
+        return plan;
     }
-    // 末块终点 = 最后顶层子构造终点（文件尾 ')' 外皮不入块）；流级破损
-    // （顶层未闭合）时 bounds 空——末块终点回退 file_size，把剩余文本包
-    // 进块让解析器判破损（failed_chunk 兜底计数，不静默吞掉破损）
-    plan.chunk_ends_.push_back(bounds.empty() ? plan.file_size_
-                                              : bounds.back());
+    if (bounds.empty()) {
+        // 有起点无闭合构造（流级破损）：prefix 置空，块包全部剩余文本交
+        // 解析器判破损兜底（不静默吞掉）
+        plan.chunk_starts_.push_back(first_construct);
+        plan.chunk_ends_.push_back(plan.file_size_);
+        return plan;
+    }
+    // 无数据构造（纯文件头）：prefix = 全部闭合构造（每块拼 prefix 解析
+    // 仍产出时钟表——T4 合并输入保持有效），单空块承接「无条目」语义
+    plan.prefix_start_ = first_construct;
+    plan.prefix_end_ = bounds.back();
+    plan.chunk_starts_.push_back(bounds.back());
+    plan.chunk_ends_.push_back(bounds.back());
     return plan;
 }
 
@@ -642,7 +707,8 @@ CMSharedPtr<const DSNetNameHasher> TMDesignContext::net_hasher_of(
 // ── T2 逐块换算 ─────────────────────────────────────────────────────
 
 TMEntrySlice tm_convert_chunk(const TMDesignContext& ctx,
-                              const CMString& path, uint64_t chunk_start,
+                              const CMString& path, uint64_t prefix_start,
+                              uint64_t prefix_end, uint64_t chunk_start,
                               uint64_t chunk_end,
                               const TMFileBinding& binding,
                               uint32_t file_index) {
@@ -651,17 +717,23 @@ TMEntrySlice tm_convert_chunk(const TMDesignContext& ctx,
     TMFileStats file_stats;
     file_stats.source_file_ = path;
 
-    // 读块字节区间并重包外皮（T1 已剥离 (TIMING_WINDOWS 外皮——块 =
-    // 顶层子构造序列，包装后即自包含合法 TWF）
+    // 读文件头段公共前缀（HEADER + WAVEFORM 段——评审 P1-1：拼在每块前
+    // 使同文件各块时钟表一致、块内时钟 id 域统一）与块字节区间，重包外皮
+    //（T1 已剥离 (TIMING_WINDOWS 外皮——块 = 顶层子构造序列，包装后即
+    // 自包含合法 TWF）
+    CMString prefix_text;
     CMString text;
-    if (!read_byte_range(path, chunk_start, chunk_end, text)) {
+    if (!read_byte_range(path, prefix_start, prefix_end, prefix_text) ||
+        !read_byte_range(path, chunk_start, chunk_end, text)) {
         ++file_stats.failed_chunk_count_;  // 运行期不可读（环境异常兜底）
         slice.stats_.files_.push_back(std::move(file_stats));
         return slice;
     }
     TMTimingFile file;
     try {
-        file = tm_parse_twf_text("(TIMING_WINDOWS\n" + text + "\n)", path);
+        file = tm_parse_twf_text("(TIMING_WINDOWS\n" + prefix_text + "\n" +
+                                     text + "\n)",
+                                 path);
     } catch (const std::exception&) {
         // 单块语法破损兜底（plan §6 范式 (b)）：跳过 + 计数，空分片照常
         // 产出（依赖链保持满足）
@@ -762,12 +834,15 @@ TMEntrySlice tm_convert_chunk(const TMDesignContext& ctx,
             ++env.stats->no_window_count_;  // NO_TW 覆盖观测
         }
     }
-    // 弃收与 C/D 观测（自解析产物聚合；块序直和）
+    // 弃收与 C/D 观测（自解析产物聚合；块序直和）+ 引用未登记时钟的条
+    // 目分组数（评审 P1-1 补聚合——时钟归属丢失在 summary 可见）
     env.stats->dropped_source_res_count_ += file.dropped_source_res_count_;
     env.stats->dropped_slack_count_ += file.dropped_slack_count_;
+    env.stats->missing_clock_count_ += file.missing_clock_count_;
     env.stats->cd_flag_c_count_ += file.cd_flag_c_count_;
     env.stats->cd_flag_d_count_ += file.cd_flag_d_count_;
-    env.stats->clocks_ = file.clocks_;  // T4 时钟表合并输入（ns 已换算）
+    env.stats->clocks_ = file.clocks_;  // 时钟表合并任务输入（ns 已换算；
+                                        // 头段公共前缀保证块间一致）
 
     slice.stats_.files_.push_back(std::move(file_stats));
     return slice;
@@ -775,10 +850,29 @@ TMEntrySlice tm_convert_chunk(const TMDesignContext& ctx,
 
 // ── T3 / T4 合并 ────────────────────────────────────────────────────
 
-// T3：每分区合并（文件感知冲突判定，见头文件注释）
+// 时钟 id 域重映射（块内 id → 最终表 id；评审 P1-1 的桥）。文件号或块内
+// id 越界（正常流程不发生——remap 由同批 slices 产出）返回默认哨兵，归
+// 属降级为无时钟不指错
+CMClockId tm_remap_clock_id(const TMClockRemap& remap, uint32_t file_index,
+                            CMClockId chunk_clock_id) {
+    if (!chunk_clock_id.is_valid()) {
+        return chunk_clock_id;
+    }
+    if (file_index >= remap.file_maps_.size()) {
+        return CMClockId{};
+    }
+    const CMVector<uint32_t>& file_map = remap.file_maps_[file_index];
+    if (chunk_clock_id.value() >= file_map.size()) {
+        return CMClockId{};
+    }
+    return CMClockId{file_map[chunk_clock_id.value()]};
+}
+
+// T3：每分区合并（时钟归属经 remap 重写为最终表 id；文件感知冲突判定，
+// 见头文件注释）
 TMPartitionTiming tm_merge_partition(
-    const CMVector<const TMEntrySlice*>& slices, CMPartitionId pid,
-    uint64_t& conflict_count) {
+    const CMVector<const TMEntrySlice*>& slices, const TMClockRemap& remap,
+    CMPartitionId pid, uint64_t& conflict_count) {
     TMPartitionTiming out;
     out.part_id_ = pid;
     // 同 (实例, pin) 首见来源文件号（合并过程局部表，不序列化——键 =
@@ -798,10 +892,14 @@ TMPartitionTiming tm_merge_partition(
         }
         const uint32_t file_index = slice->stats_.file_index_;
         for (const auto& [inst_id, src] : it->second.items_) {
+            // 时钟归属先重映射到最终表 id 域（块内 id 不可跨块/跨文件比
+            // 较——评审 P1-1）
+            const CMClockId clock_id =
+                tm_remap_clock_id(remap, file_index, src.clock_id_);
             auto dit = out.items_.find(inst_id);
             if (dit == out.items_.end()) {
                 TMInstanceTiming& slot = out.items_[inst_id];
-                slot.clock_id_ = src.clock_id_;
+                slot.clock_id_ = clock_id;
                 slot.pins_ = src.pins_;
                 for (const TMPinTiming& pin : src.pins_) {
                     first_file[key_of(inst_id, pin.pin_id_)] = file_index;
@@ -810,8 +908,8 @@ TMPartitionTiming tm_merge_partition(
             }
             TMInstanceTiming& dst = dit->second;
             // 实例时钟归属：无 → 有补齐（无信息损失）；双有不同保留首份
-            if (!dst.clock_id_.is_valid() && src.clock_id_.is_valid()) {
-                dst.clock_id_ = src.clock_id_;
+            if (!dst.clock_id_.is_valid() && clock_id.is_valid()) {
+                dst.clock_id_ = clock_id;
             }
             for (const TMPinTiming& pin : src.pins_) {
                 const uint64_t key = key_of(inst_id, pin.pin_id_);
@@ -868,6 +966,7 @@ TMSummary tm_merge_summary(const CMVector<const TMStatsDelta*>& deltas,
         s.no_window_count_ += delta->no_window_count_;
         s.dropped_source_res_count_ += delta->dropped_source_res_count_;
         s.dropped_slack_count_ += delta->dropped_slack_count_;
+        s.missing_clock_count_ += delta->missing_clock_count_;
         s.cd_flag_c_count_ += delta->cd_flag_c_count_;
         s.cd_flag_d_count_ += delta->cd_flag_d_count_;
     }
@@ -886,34 +985,48 @@ TMSummary tm_merge_summary(const CMVector<const TMStatsDelta*>& deltas,
     return s;
 }
 
-// T4 ②：时钟表跨文件合并（同名保留首份；周期/沿任一差异计 TIMG::0007）
+// T4 ②（时钟表合并任务本体）：时钟表跨文件合并（同名保留首份；周期/沿
+// 任一差异计 TIMG::0007）+ per-file 重映射表产出
 namespace {
-void merge_clock_file(TMClockTable& out, const TMClockTable& src,
-                      uint64_t& conflict_count) {
+
+// 单文件表归并进 out（同名保留首份），返回 src 每条目在 out 表的下标
+//（评审 P1-1：重映射依据）
+CMVector<uint32_t> merge_clock_file(TMClockTable& out,
+                                    const TMClockTable& src,
+                                    uint64_t& conflict_count) {
+    CMVector<uint32_t> map;
+    map.reserve(src.clocks_.size());
     for (const TMClockTable::Entry& c : src.clocks_) {
-        const TMClockTable::Entry* existing = out.find(c.name_);
-        if (existing == nullptr) {
+        size_t found = out.clocks_.size();
+        for (size_t i = 0; i < out.clocks_.size(); ++i) {
+            if (out.clocks_[i].name_ == c.name_) {
+                found = i;
+                break;
+            }
+        }
+        if (found == out.clocks_.size()) {
             TMClockTable::Entry e;
             e.name_ = c.name_;
             e.period_ = c.period_;
             e.posedge_ = c.posedge_;
             e.negedge_ = c.negedge_;
             out.clocks_.push_back(std::move(e));
-            continue;
-        }
-        if (existing->period_ != c.period_ ||
-            existing->posedge_ != c.posedge_ ||
-            existing->negedge_ != c.negedge_) {
+        } else if (out.clocks_[found].period_ != c.period_ ||
+                   out.clocks_[found].posedge_ != c.posedge_ ||
+                   out.clocks_[found].negedge_ != c.negedge_) {
             ++conflict_count;  // TIMG::0007：保留首份
         }
+        map.push_back(static_cast<uint32_t>(found));
     }
+    return map;
 }
 }  // namespace
 
 TMClockTable tm_merge_clocks(
     const CMVector<std::pair<int, TMClockTable>>& file_clocks,
-    uint64_t& conflict_count) {
-    // ① 文件内归并（同名保留首份——同文件跨块 WAVEFORM 表一致，防御异形）
+    TMClockRemap& remap, uint64_t& conflict_count) {
+    // ① 文件内归并（同名保留首份——头段公共前缀保证同文件跨块 WAVEFORM
+    // 表一致，防御异形）
     CMVector<TMClockTable> per_file;
     per_file.reserve(file_clocks.size());
     for (const auto& [kind, clocks] : file_clocks) {
@@ -924,16 +1037,20 @@ TMClockTable tm_merge_clocks(
         per_file.push_back(std::move(merged));
     }
     // ② 跨文件优先级合并（2026-09-16 裁定 5）：顶层文件（无绑定、纯路径
-    // kind 0）定义优先，其余（块绑定文件）按文件序首份兜底
+    // kind 0）定义优先，其余（块绑定文件）按文件序首份兜底。逐文件记录
+    // 块内 id → 最终表下标（T3 时钟归属重写依据——评审 P1-1）
     TMClockTable out;
+    remap.file_maps_.assign(file_clocks.size(), {});
     for (size_t i = 0; i < file_clocks.size(); ++i) {
         if (file_clocks[i].first == 0) {
-            merge_clock_file(out, per_file[i], conflict_count);
+            remap.file_maps_[i] = merge_clock_file(out, per_file[i],
+                                                   conflict_count);
         }
     }
     for (size_t i = 0; i < file_clocks.size(); ++i) {
         if (file_clocks[i].first != 0) {
-            merge_clock_file(out, per_file[i], conflict_count);
+            remap.file_maps_[i] = merge_clock_file(out, per_file[i],
+                                                   conflict_count);
         }
     }
     return out;
