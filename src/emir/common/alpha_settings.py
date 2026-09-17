@@ -30,7 +30,9 @@ class AlphaSetting:
 
     类属性挂在 AlphaSettings 子类上即完成声明；``__set_name__`` 在类创建
     时绑定 setting 名。实例读写经描述符直达持有方的 ``_values``（缺失/
-    异常兜底 deepcopy 默认——读回旧对象的缺键场景不炸面）。
+    无 ``_values`` 时 deepcopy 默认兜底——读回旧对象的缺键场景不炸面；
+    判定为显式 ``in`` 检查〔E10，§19 批次 2026-09-17：对齐 apply/
+    normalize 的显式风格，查找表自身故障透传，不被 try/except 吞掉〕）。
     """
 
     def __init__(self, default, value_type, constraint="", validator=None,
@@ -54,10 +56,12 @@ class AlphaSetting:
     def __get__(self, obj, objtype=None):
         if obj is None:
             return self
-        try:
-            return obj._values[self.name]
-        except Exception:
-            return copy.deepcopy(self.default)
+        # 显式判定（E10，§19 批次）：缺键 / 无 _values → deepcopy 默认；
+        # 查找表自身故障（__contains__/__getitem__ 抛异常）透传不吞
+        values = getattr(obj, "_values", None)
+        if values is not None and self.name in values:
+            return values[self.name]
+        return copy.deepcopy(self.default)
 
     def __set__(self, obj, value):
         # 直接赋值不经 validator——apply 是唯一校验入口（有意设计：

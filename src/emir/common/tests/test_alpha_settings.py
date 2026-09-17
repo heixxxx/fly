@@ -205,6 +205,45 @@ def test_descriptor_base():
     print("[OK] descriptor base: five elements, __set_name__, get fallback")
 
 
+class _PoisonedValues(dict):
+    """__contains__ 抛异常的值表——E10（§19 批次 2026-09-17）：描述符
+    __get__ 的显式判定路径必须透传查找表自身故障（原 try/except Exception
+    会吞掉一切异常返回默认值，对齐 apply/normalize 的显式风格）。"""
+
+    def __contains__(self, key):
+        raise RuntimeError("poisoned contains")
+
+
+def test_descriptor_get_explicit_not_swallowing():
+    # 查找表自身故障 → 透传（原实现吞异常静默回默认——red 用例）
+    s = get_default_alpha_settings()
+    s._values = _PoisonedValues()
+    try:
+        s.net_batch_size
+        raise AssertionError(
+            "descriptor __get__ must propagate lookup-table errors "
+            "(explicit check, not try/except)")
+    except RuntimeError as e:
+        assert "poisoned" in str(e), str(e)
+    print("[OK] descriptor __get__: lookup errors propagate (explicit)")
+
+
+def test_descriptor_get_missing_paths_fall_back():
+    # 缺键 → deepcopy 默认（读回旧对象缺键场景）
+    s = get_default_alpha_settings()
+    del s._values["net_batch_size"]
+    assert s.net_batch_size == 1000
+    # 无 _values 属性形态 → deepcopy 默认
+    s2 = get_default_alpha_settings()
+    del s2._values
+    assert s2.net_batch_size == 1000
+    # dict 型默认值兜底独立（deepcopy 语义不变）
+    assert s2.density_channel_weights == {"instance": 6.0, "metal": 2.0,
+                                          "via": 2.0}
+    print("[OK] descriptor __get__: missing key / no _values fall back "
+          "to deepcopy default")
+
+
 test_default_independence()
 test_apply_three_states()
 test_none_default_apply()
@@ -213,4 +252,6 @@ test_pickle_roundtrip()
 test_validator_rules()
 test_channel_weights_merge_semantics()
 test_descriptor_base()
+test_descriptor_get_explicit_not_swallowing()
+test_descriptor_get_missing_paths_fall_back()
 print("[PASS] test_alpha_settings")
