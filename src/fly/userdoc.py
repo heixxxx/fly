@@ -101,7 +101,7 @@ class Schema:
 
     @classmethod
     def dict(cls, *, required=None, optional=None, allow_extra=False,
-             check=None, error=None, desc=None):
+             check=None, error=None, desc=None, extra_error=None):
         """dict 容器 schema。
 
         Args:
@@ -110,12 +110,16 @@ class Schema:
             allow_extra: ``False``（默认）时多余 key 报错（白名单模式）。
             check: 所有 field 校验通过后对整个 dict 执行的深度校验。
             error / desc: 同基础 schema。
+            extra_error: 白名单模式下多余 key 的自定义错误文案（模板 str，
+                支持 ``{key}`` 与 ``{value}`` 占位；``None`` 用默认文案
+                ``unexpected key '<k>'``）。适用于"当前无可用键"一类需要
+                向用户解释合法键集合本身的场景。
         """
         return _DictSchema(
             required={k: _wrap_schema(v) for k, v in (required or {}).items()},
             optional={k: _wrap_schema(v) for k, v in (optional or {}).items()},
             allow_extra=allow_extra,
-            check=check, error=error, desc=desc,
+            check=check, error=error, desc=desc, extra_error=extra_error,
         )
 
     @classmethod
@@ -171,11 +175,13 @@ class Schema:
 class _DictSchema(Schema):
     """dict 容器。required/optional 直接是 {key: schema} 字典。"""
 
-    def __init__(self, *, required, optional, allow_extra, check, error, desc):
+    def __init__(self, *, required, optional, allow_extra, check, error,
+                 desc, extra_error):
         super().__init__(dict, check=check, error=error, desc=desc)
         self._required = required
         self._optional = optional
         self._allow_extra = allow_extra
+        self._extra_error = extra_error
 
     def validate(self, value, path=""):
         errors = []
@@ -186,12 +192,17 @@ class _DictSchema(Schema):
         for k in self._required:
             if k not in value:
                 errors.append(f"{path or 'value'}: missing required key '{k}'")
-        # 2. extra key（白名单模式）
+        # 2. extra key（白名单模式；extra_error 可定制文案）
         if not self._allow_extra:
             allowed = set(self._required) | set(self._optional)
             for k in value:
                 if k not in allowed:
-                    errors.append(f"{path or 'value'}: unexpected key '{k}'")
+                    if self._extra_error is not None:
+                        msg = self._extra_error.format(
+                            key=repr(k), value=repr(value))
+                    else:
+                        msg = f"unexpected key '{k}'"
+                    errors.append(f"{path or 'value'}: {msg}")
         # 3. 递归校验存在的 field（子项错误收集后仍跑深度 check）
         for k, schema in self._required.items():
             if k in value:

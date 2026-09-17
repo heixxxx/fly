@@ -167,6 +167,79 @@ def test_dict_allow_extra():
     assert d.validate({"host": "h", "extra": 1}) == []
 
 
+def test_dict_extra_error_custom_message():
+    """白名单多余 key 的自定义文案（{key}/{value} 占位，"无可用键"场景）。"""
+    d = Schema.dict(allow_extra=False,
+                    extra_error="no keys available yet, got {key}")
+    errs = d.validate({"foo": 1})
+    assert len(errs) == 1
+    assert "no keys available yet, got 'foo'" in errs[0]
+    # 空白名单 + 空 dict 合法（None 由 none_ok 控制）
+    assert d.validate({}) == []
+
+
+def test_dict_extra_error_none_keeps_default():
+    d = Schema.dict(required={"a": Schema(str)})
+    errs = d.validate({"a": "x", "b": 2})
+    assert any("unexpected key 'b'" in e for e in errs)
+
+
+def test_document_register_flow_validates_on_call():
+    """@document + @register_flow 组合：调用时按 schema 校验并 raise。
+
+    document 的包装函数被 register_flow setattr 到类上后，实例方法调用
+    依然先过校验 wrapper——非法参数抛 ValueError（聚合），合法参数透传。
+    这是建库 API 入口参数校验的框架触发点（2026-09-17 裁定接线依据）。
+    """
+    _fresh_registry()
+    doc = UserDoc("combined flow")
+    doc.add_param("nsd", schema=Schema(int, check=lambda n: n >= 1,
+                                      error="must be >= 1, got {value}"),
+                  required=True)
+
+    @document(doc)
+    def solve(self, nsd):
+        return ("solved", nsd)
+
+    class MockProject:
+        pass
+
+    # 模拟 register_flow：setattr 到类（描述符协议自动绑 self）
+    MockProject.solve = solve
+    proj = MockProject()
+
+    # 合法参数透传（self 自动绑定）
+    assert proj.solve(4) == ("solved", 4)
+    # 非法参数：调用时抛 ValueError，含参数名 + 期望 + 实得值
+    try:
+        proj.solve(0)
+        raise AssertionError("must raise on invalid nsd")
+    except ValueError as e:
+        msg = str(e)
+        assert "solve" in msg            # api_name
+        assert "nsd" in msg              # 参数名（path 前缀）
+        assert "must be >= 1" in msg     # 期望
+        assert "0" in msg                # 实得值
+    # 多参数错误聚合为一条 ValueError
+    doc2 = UserDoc("aggregate")
+    doc2.add_param("a", schema=Schema(int, check=lambda n: n > 0,
+                                     error="must be > 0, got {value}"),
+                   required=True)
+    doc2.add_param("b", schema=Schema(str, check=lambda s: len(s) > 0,
+                                     error="must not be empty"),
+                   required=True)
+
+    @document(doc2)
+    def flow2(self, a, b):
+        return a, b
+
+    try:
+        flow2(proj, 0, "")
+        raise AssertionError("must aggregate both errors")
+    except ValueError as e:
+        assert "a:" in str(e) and "b:" in str(e)
+
+
 def test_dict_field_check():
     d = Schema.dict(
         required={"port": Schema(int, check=lambda p: 1 <= p <= 65535,
