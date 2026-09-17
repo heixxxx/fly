@@ -203,20 +203,24 @@ class DesignDb(Database):
         mappers = self._lru_get("_mapper_cache", "mappers")
         if mappers is not None:
             return mappers
-        from .ds_export import ds_make_name_mapper
+        from .ds_export import (
+            ds_make_instance_name_mapper,
+            ds_make_net_name_mapper,
+        )
         design = self._cached_design()
         names_list = []
         i = 0
         while True:
             try:
                 names_list.append(self.read_object(self.names_obj_name(i)))
-            except Exception:
-                break  # 连续段结束（per-DEF 伴生对象序 = def_paths 序）
+            except KeyError:
+                break  # 连续段结束（read_object 未命中抛 KeyError——宽
+                       # catch 会吞真异常，终审 #2 收窄）
             i += 1
         mappers = self._lru_put("_mapper_cache", 1, "mappers", (
             design,
-            ds_make_name_mapper(design, names_list, 0),   # instance 维度
-            ds_make_name_mapper(design, names_list, 1),   # net 维度
+            ds_make_instance_name_mapper(design, names_list),  # instance 维度
+            ds_make_net_name_mapper(design, names_list),       # net 维度
         ))
         return mappers
 

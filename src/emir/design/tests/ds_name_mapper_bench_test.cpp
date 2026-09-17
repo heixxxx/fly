@@ -145,7 +145,7 @@ CMSharedPtr<DSInstanceNameHasher> make_leaf_hasher(uint64_t names_count) {
     for (uint64_t i = 1; i <= names_count; ++i) {
         std::snprintf(buf, sizeof(buf), "n%07llu",
                       static_cast<unsigned long long>(i));
-        hasher->assign(buf, i);
+        hasher->assign(buf, CMInstanceId{i});
     }
     return hasher;
 }
@@ -194,8 +194,7 @@ void run_grid(int depth, int fanout, uint64_t names_count,
     // 装置：树 + mapper（叶 cell 注入共享 hasher）
     BenchTree bt = make_bench_tree(depth, fanout, names_count);
     DSInstanceNameMapper mapper(
-        CMSharedPtr<const DSHierTree>{CMSharedPtr<DSHierTree>(), &bt.tree},
-        DSNameMapperKind::INSTANCE);
+        CMSharedPtr<const DSHierTree>{CMSharedPtr<DSHierTree>(), &bt.tree});
     mapper.set_block_hasher(CMCellId{kLeafCellId}, leaf_hasher);
 
     // 查询样本：随机叶节点 × 随机叶名（固定 seed 可复现）
@@ -229,7 +228,8 @@ void run_grid(int depth, int fanout, uint64_t names_count,
         ASSERT_EQ(mapper.get_global_id(paths[static_cast<size_t>(q)]),
                   expect[static_cast<size_t>(q)])
             << "fwd hit mismatch at q=" << q;
-        ASSERT_EQ(mapper.get_full_name(expect[static_cast<size_t>(q)]),
+        ASSERT_EQ(mapper.get_full_name(
+                      CMInstanceId{expect[static_cast<size_t>(q)]}),
                   paths[static_cast<size_t>(q)])
             << "round-trip mismatch at q=" << q;
     }
@@ -238,11 +238,11 @@ void run_grid(int depth, int fanout, uint64_t names_count,
     std::vector<uint64_t> lat(static_cast<size_t>(kQueryCount));
     for (int q = 0; q < kQueryCount; ++q) {
         const auto a = Clock::now();
-        const uint64_t id =
+        const CMInstanceId id =
             mapper.get_global_id(paths[static_cast<size_t>(q)]);
         const auto b = Clock::now();
         lat[static_cast<size_t>(q)] = static_cast<uint64_t>(elapsed_ns(a, b));
-        g_sink += id;
+        g_sink += id.value();
     }
     double p50 = 0.0;
     double p99 = 0.0;
@@ -250,7 +250,8 @@ void run_grid(int depth, int fanout, uint64_t names_count,
     // 正向命中：吞吐轮（连续调用不逐次计时）
     const auto t0 = Clock::now();
     for (int q = 0; q < kQueryCount; ++q) {
-        g_sink += mapper.get_global_id(paths[static_cast<size_t>(q)]);
+        g_sink +=
+            mapper.get_global_id(paths[static_cast<size_t>(q)]).value();
     }
     const auto t1 = Clock::now();
     const double hit_secs = static_cast<double>(elapsed_ns(t0, t1)) / 1e9;
@@ -273,16 +274,17 @@ void run_grid(int depth, int fanout, uint64_t names_count,
     }
     for (int q = 0; q < kMissCount; ++q) {
         const auto a = Clock::now();
-        const uint64_t id =
+        const CMInstanceId id =
             mapper.get_global_id(miss_paths[static_cast<size_t>(q)]);
         const auto b = Clock::now();
         lat[static_cast<size_t>(q)] = static_cast<uint64_t>(elapsed_ns(a, b));
-        g_sink += id;
+        g_sink += id.value();
     }
     percentiles(lat, p50, p99);
     const auto m0 = Clock::now();
     for (int q = 0; q < kMissCount; ++q) {
-        g_sink += mapper.get_global_id(miss_paths[static_cast<size_t>(q)]);
+        g_sink += mapper.get_global_id(miss_paths[static_cast<size_t>(q)])
+                      .value();
     }
     const auto m1 = Clock::now();
     const double miss_secs = static_cast<double>(elapsed_ns(m0, m1)) / 1e9;
@@ -294,7 +296,8 @@ void run_grid(int depth, int fanout, uint64_t names_count,
     for (int q = 0; q < kQueryCount; ++q) {
         const auto a = Clock::now();
         const CMString name =
-            mapper.get_full_name(expect[static_cast<size_t>(q)]);
+            mapper.get_full_name(
+                CMInstanceId{expect[static_cast<size_t>(q)]});
         const auto b = Clock::now();
         lat[static_cast<size_t>(q)] = static_cast<uint64_t>(elapsed_ns(a, b));
         g_sink += name.size();
@@ -303,7 +306,8 @@ void run_grid(int depth, int fanout, uint64_t names_count,
     const auto r0 = Clock::now();
     for (int q = 0; q < kQueryCount; ++q) {
         g_sink +=
-            mapper.get_full_name(expect[static_cast<size_t>(q)]).size();
+            mapper.get_full_name(CMInstanceId{expect[static_cast<size_t>(q)]})
+                .size();
     }
     const auto r1 = Clock::now();
     const double rev_secs = static_cast<double>(elapsed_ns(r0, r1)) / 1e9;

@@ -99,10 +99,10 @@ uint32_t find_node_by_path(const DSHierTree& tree, const CMString& path) {
 }
 
 // 块内 local 实例 id → global（⑧⑨ 区间换算：local 0 = 块实例自身占位
-// → self_global_id；hasher 哨兵/越界 → 默认哨兵）。hasher 底座裸值域
-// 豁免边界：入参出参均裸 uint64，调用点显式互转。
+// → self_global_id；hasher 哨兵/越界 → 默认哨兵）。hasher 底座强类型
+// 化（审计 B-4）：入参 = CMInstanceId（DSInstanceNameHasher id 域）
 CMInstanceId local_to_global_instance(const DSHierNode& node,
-                                      uint64_t local) {
+                                      CMInstanceId local) {
     if (local == 0) {
         return node.get_self_global_id();
     }
@@ -172,29 +172,26 @@ void accumulate_pin(EntryConvertEnv& env, CMPartitionId pid,
 }
 
 // 块内局部下降：从节点起按段降到叶块，返回叶块 hasher 查末段的 local id
-//（未命中 = hasher 哨兵）。block 节点自身 = 单段场景的叶。
-uint64_t descend_local(const EntryConvertEnv& env, const DSHierNode* leaf,
-                       const CMVector<CMString>& segs, bool instance_kind,
-                       uint64_t invalid_local) {
+//（未注入/未命中 = 默认哨兵）。block 节点自身 = 单段场景的叶。维度 =
+// HasherT 强类型推导（hasher 底座强类型化后 local 值不再裸承载——
+// DSInstanceNameHasher → CMInstanceId、DSNetNameHasher → CMNetId）。
+template <typename HasherT>
+typename HasherT::id_type descend_local(const EntryConvertEnv& env,
+                                        const DSHierNode* leaf,
+                                        const CMVector<CMString>& segs,
+                                        const HasherT* hasher) {
+    using LocalT = typename HasherT::id_type;
+    if (hasher == nullptr) {
+        return LocalT{};  // 默认哨兵（叶块未注入防御）
+    }
     const DSHierTree& tree = env.ctx->design().get_hier_tree();
     for (size_t i = 0; i + 1 < segs.size(); ++i) {
         const uint32_t child =
             tree.find_child_by_instance_name(leaf->get_id(), segs[i]);
         if (child == DSHierTree::kNoNode) {
-            return invalid_local;
+            return LocalT{};
         }
         leaf = &tree.node(child);
-    }
-    if (instance_kind) {
-        const auto hasher = env.ctx->inst_hasher_of(leaf->get_block_cell_id());
-        if (hasher == nullptr) {
-            return invalid_local;
-        }
-        return hasher->get_id(segs.back());
-    }
-    const auto hasher = env.ctx->net_hasher_of(leaf->get_block_cell_id());
-    if (hasher == nullptr) {
-        return invalid_local;
     }
     return hasher->get_id(segs.back());
 }
@@ -213,7 +210,7 @@ bool convert_pin_entry(EntryConvertEnv& env, const CMString& name,
         split_segments(CMString(name.data(), last), env.delim));
     // pin 全局名字空间单哈希查（2026-09-16 裁定 3：键 = 裸 pin 名——
     // plan §7 表「无 cell 组合键」）
-    const CMPinId pin_id{env.ctx->design().pin_names_.get_id(pin_name)};
+    const CMPinId pin_id = env.ctx->design().pin_names_.get_id(pin_name);
     if (!pin_id.is_valid()) {
         ++env.file_stats->skipped_pin_count_;  // TIMG::0002
         return false;
@@ -221,8 +218,8 @@ bool convert_pin_entry(EntryConvertEnv& env, const CMString& name,
 
     if (env.block_nodes == nullptr || env.block_nodes->empty()) {
         // 纯路径：全局 instance mapper（名换算路径 §7 表首行口径）
-        const CMInstanceId inst_id{
-            env.ctx->inst_mapper().get_global_id(inst_path)};
+        const CMInstanceId inst_id =
+            env.ctx->inst_mapper().get_global_id(inst_path);
         if (!inst_id.is_valid()) {
             ++env.file_stats->skipped_instance_count_;  // TIMG::0001
             return false;
@@ -242,9 +239,9 @@ bool convert_pin_entry(EntryConvertEnv& env, const CMString& name,
     for (uint32_t node_id : *env.block_nodes) {
         const DSHierTree& tree = env.ctx->design().get_hier_tree();
         const DSHierNode* leaf = &tree.node(node_id);
-        const uint64_t local = descend_local(
+        const CMInstanceId local = descend_local(
             env, leaf, split_segments(inst_path, env.delim),
-            /*instance_kind=*/true, DSInstanceNameHasher::kInvalidId);
+            env.ctx->inst_hasher_of(leaf->get_block_cell_id()).get());
         if (local == DSInstanceNameHasher::kInvalidId) {
             continue;
         }
@@ -325,7 +322,7 @@ ConvertOutcome convert_net_entry(EntryConvertEnv& env, const CMString& name,
 
     if (env.block_nodes == nullptr || env.block_nodes->empty()) {
         // 纯路径：全局 net mapper
-        const CMNetId net_id{env.ctx->net_mapper().get_global_id(name)};
+        const CMNetId net_id = env.ctx->net_mapper().get_global_id(name);
         if (!net_id.is_valid()) {
             return ConvertOutcome::kNameMiss;  // 0001 家族（网名，调用方计）
         }
@@ -389,14 +386,16 @@ ConvertOutcome convert_net_entry(EntryConvertEnv& env, const CMString& name,
         }
         // 块内真实网：局部下降 + net hasher → 偏移换算（net local 从 1
         // 起、global = net_start + local——2026-09-14 空洞位口径）
-        const uint64_t local = descend_local(
+        const CMNetId local = descend_local(
             env, leaf, split_segments(name, env.delim),
-            /*instance_kind=*/false, DSNetNameHasher::kInvalidId);
+            env.ctx->net_hasher_of(leaf->get_block_cell_id()).get());
         if (local == DSNetNameHasher::kInvalidId || local == 0 ||
             local >= leaf->get_net_count()) {
             continue;  // 块内未命中（local 0 = 空洞位不登记名）
         }
-        const CMNetId net_id{leaf->get_net_start().value() + local};
+        // 区间换算（start + local 无 −1，2026-09-14 裁定）：强类型同型
+        // 相加，值域与裸值形态逐位一致
+        const CMNetId net_id = leaf->get_net_start() + local;
         if (pg != nullptr && pg->is_pg(net_id)) {
             ++env.stats->pg_net_skip_count_;  // §7.5
             return ConvertOutcome::kSkip;  // 跳过形态（不计命中）
@@ -584,8 +583,8 @@ void TMDesignContext::rebuild_mappers() {
     // §16 业务层零裸指针，评审 B-5a；构造即建分派索引）。
     const CMSharedPtr<const DSHierTree> tree{design_,
                                              &design_->get_hier_tree()};
-    inst_mapper_ = DSInstanceNameMapper(tree, DSNameMapperKind::INSTANCE);
-    net_mapper_ = DSNetNameMapper(tree, DSNameMapperKind::NET);
+    inst_mapper_ = DSInstanceNameMapper(tree);
+    net_mapper_ = DSNetNameMapper(tree);
     // hasher 注入关系重挂（mapper 为运行时构件，重组装后由此恢复）
     for (const auto& entry : inst_hashers_) {
         inst_mapper_.set_block_hasher(entry.first, entry.second);
@@ -600,12 +599,11 @@ void TMDesignContext::add_block_names(
     if (!names || !design_) {
         return;
     }
-    // hasher 底座裸值域豁免边界：cell id 查询/注入两侧显式互转
-    const uint32_t cell_id = design_->cell_names_.get_id(names->block_name_);
-    if (!DSCellNameHasher::is_valid_id(cell_id)) {
+    const CMCellId block_cell_id =
+        design_->cell_names_.get_id(names->block_name_);
+    if (!block_cell_id.is_valid()) {
         return;  // block cell 未入全局表（防御跳过，同 ds_make_name_mapper）
     }
-    const CMCellId block_cell_id{cell_id};
     // map 存非 const（序列化约束）、mapper 注入 const 化只读视图
     inst_hashers_[block_cell_id] = names->instance_names_;
     net_hashers_[block_cell_id] = names->net_names_;
@@ -732,16 +730,16 @@ TMEntrySlice tm_convert_chunk(const TMDesignContext& ctx,
         }
         block_nodes.push_back(node_id);
     } else if (binding.kind == TMFileBindingKind::BLOCK_CELL) {
-        const uint32_t cell_id =
+        const CMCellId block_cell =
             ctx.design().cell_names_.get_id(binding.block_cell);
-        if (!DSCellNameHasher::is_valid_id(cell_id)) {
+        if (!block_cell.is_valid()) {
             ++file_stats.failed_chunk_count_;
             slice.stats_.files_.push_back(std::move(file_stats));
             return slice;
         }
         const DSHierTree& tree = ctx.design().get_hier_tree();
         for (uint32_t i = 0; i < tree.node_count(); ++i) {
-            if (tree.node(i).get_block_cell_id().value() == cell_id) {
+            if (tree.node(i).get_block_cell_id() == block_cell) {
                 block_nodes.push_back(i);
             }
         }
@@ -998,7 +996,7 @@ CMVector<uint32_t> merge_clock_file(TMClockTable& out,
 }  // namespace
 
 TMClockTable tm_merge_clocks(
-    const CMVector<std::pair<int, TMClockTable>>& file_clocks,
+    const CMVector<std::pair<TMFileBindingKind, TMClockTable>>& file_clocks,
     TMClockRemap& remap, uint64_t& conflict_count) {
     // ① 文件内归并（同名保留首份——头段公共前缀保证同文件跨块 WAVEFORM
     // 表一致，防御异形）
@@ -1017,13 +1015,13 @@ TMClockTable tm_merge_clocks(
     TMClockTable out;
     remap.file_maps_.assign(file_clocks.size(), {});
     for (size_t i = 0; i < file_clocks.size(); ++i) {
-        if (file_clocks[i].first == 0) {
+        if (file_clocks[i].first == TMFileBindingKind::PATH) {
             remap.file_maps_[i] = merge_clock_file(out, per_file[i],
                                                    conflict_count);
         }
     }
     for (size_t i = 0; i < file_clocks.size(); ++i) {
-        if (file_clocks[i].first != 0) {
+        if (file_clocks[i].first != TMFileBindingKind::PATH) {
             remap.file_maps_[i] = merge_clock_file(out, per_file[i],
                                                    conflict_count);
         }

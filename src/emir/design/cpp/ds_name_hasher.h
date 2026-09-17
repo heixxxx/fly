@@ -44,7 +44,10 @@
 //
 // 实体语义别名（㊸ 用户钦定清单，别名不带位宽标识——位宽切换只改别名
 // 定义一处；id 位宽按实体数量级分组，裁定 ㊳；backend 默认按 ㊷/52
-// 差异化：32 位组 hash、64 位组 hat-trie）：
+// 差异化：32 位组 hash、64 位组 hat-trie）。IdT = emir 强类型 id 族
+//（emir_ids.h 的 CMCellId 等 StrongIdT——审计 B-4 收官：hasher 底座
+// id 参数/返回值类型级区分实体，裸值手误编译期报错；StrongIdT 值直
+// 通同宽、序列化与裸整型逐位一致，落盘面零变化）：
 //   32 位组（十万级以内）：DSCellNameHasher / DSPinNameHasher /
 //                          DSViaCellNameHasher / DSLayerNameHasher
 //   64 位组（instance 可达 10⁹ 级）：DSInstanceNameHasher / DSNetNameHasher
@@ -66,6 +69,7 @@
 #include <common/serialization/cpp/serialization_macros.h>
 #include <common/types/cpp/property_macro.h>
 #include <container/cpp/container_aliases.h>
+#include <emir/common/cpp/emir_ids.h>
 #include <message/cpp/message_macros.h>  // MSG_FATAL_EXIT（DSGN::0012 权威段损坏）
 
 #include <algorithm>
@@ -324,9 +328,30 @@ struct DSSuffixSlot {
     FLY_SERIALIZE(offset, length, lcp_len)
 };
 
+// id→name 侧双形态（R8d 裁定 54/55；审计 B-2 残留 P3 收敛——原 uint8_t
+// 二值状态字段 lcp_form_ 枚举定型存储，序列化走整型路径 1B 逐位不变）
+enum class DSNameHasherForm : uint8_t {
+    ARENA = 0,  // 形态一：全名 arena + {offset,len} 偏移表（默认）
+    LCP = 1,    // 形态二：LCP 后缀压缩（finalize_for_save 封口后）
+};
+
+// IdT 裸值域 traits（强类型 = 其内部整型 int_type；裸整型 = 本身。
+// void_t 探测延迟实例化——裸整型无 int_type 成员也不报错）
+template <typename IdT, typename = void>
+struct DSHasherRawTraits {
+    using type = IdT;
+};
+template <typename IdT>
+struct DSHasherRawTraits<IdT, std::void_t<typename IdT::int_type>> {
+    using type = typename IdT::int_type;
+};
+
 // name ↔ id 双向映射模板底座（㊲：所有 name mapper 共享同一底层结构，
 // 只有保存数据类型不同——id 类型即模板参数 IdT；BackendT 为 name→id
 // 索引实现，默认按位宽组差异化，见文件头注释）。
+// IdT 契约 = emir 强类型 id（StrongIdT）或裸整型（测试参照锚用——生产
+// 实例化组全部强类型，见六实体别名）：裸值域经 RawT/raw_of/id_from_raw
+// 单点适配，业务零感知。
 template <typename IdT, typename BackendT = DSHasherBackendHatrie<IdT>>
 class DSNameHasherT {
     // BackendT 满足 Backend 概念（裁定 52 抽象面——编译期即检查，防止
@@ -336,11 +361,29 @@ class DSNameHasherT {
                   "(insert/find/size/clear)");
 
 public:
+    // id 类型别名（业务侧模板代码按 hasher 类型推导 local id 类型用）
+    using id_type = IdT;
+    // 裸值域类型（强类型 IdT = 其内部整型；裸整型 IdT = 本身）——模板
+    // 内部下标/位宽运算的单点出口（void_t 探测延迟实例化，两形态通用）
+    using RawT = typename DSHasherRawTraits<IdT>::type;
+
+    // 裸值读取（强类型 → RawT；裸整型恒等）
+    static constexpr RawT raw_of(IdT id) {
+        if constexpr (std::is_class_v<IdT>) {
+            return id.value();
+        } else {
+            return id;
+        }
+    }
+    // 裸值构造（强类型 explicit 构造；裸整型直接初始化）
+    static constexpr IdT id_from_raw(RawT v) { return IdT{v}; }
+
     // 无效 id 哨兵（㊴）= id 类型最大值（32 位组 = 0xFFFFFFFF、64 位组 =
-    // 0xFFFFFFFFFFFFFFFF）。有效 id 空间因此排除 max 值（与空洞容忍不
-    // 冲突：现有哨兵 DSDesign::kInvalidId / DSStack::kNoLayer 值不变、
-    // 已收编到本口径）。
-    static constexpr IdT kInvalidId = std::numeric_limits<IdT>::max();
+    // 0xFFFFFFFFFFFFFFFF；与 StrongIdT 默认哨兵 kInvalid 同值口径）。
+    // 有效 id 空间因此排除 max 值（与空洞容忍不冲突：现有哨兵
+    // DSDesign::kInvalidId / DSStack::kNoLayer 值不变、已收编到本口径）。
+    static constexpr IdT kInvalidId =
+        id_from_raw(std::numeric_limits<RawT>::max());
 
     // 哨兵判定（㊴/㊵②）：static constexpr 纯值函数，零状态零依赖——
     // 不加载 hasher/mapper 时同样可用（编译期可判定）。
@@ -356,12 +399,13 @@ public:
 
     // 形态判定（R8d）：true = 形态二 LCP 压缩（finalize_for_save 封口
     // 后）；false = 形态一全名 arena（默认）
-    bool is_lcp_form() const { return lcp_form_ != 0; }
+    bool is_lcp_form() const { return lcp_form_ == DSNameHasherForm::LCP; }
 
     // id→name 域规模（越界判别用）：形态一 = 偏移表规模；形态二 =
     // id→rank 表规模（空洞占位含内——域语义两形态一致）
     size_t name_domain() const {
-        return lcp_form_ != 0 ? id_to_rank_.size() : name_table_.size();
+        return lcp_form_ == DSNameHasherForm::LCP ? id_to_rank_.size()
+                                                  : name_table_.size();
     }
 
     // 正向查询：name → id，委托 backend；未命中返回 kInvalidId（返回值
@@ -380,16 +424,16 @@ public:
     // 逐级截断拼接——基准 54 随机访问 4.1x 劣化的载体，亚微秒可接受；
     // 批量场景请走 for_each_name_by_rank 规避注册序 27.8x 劣化）
     CMString get_name(IdT id) const {
-        if (lcp_form_ != 0) {
-            assert(static_cast<size_t>(id) < id_to_rank_.size());
-            const uint32_t rank = id_to_rank_[static_cast<size_t>(id)];
+        if (lcp_form_ == DSNameHasherForm::LCP) {
+            assert(raw_of(id) < id_to_rank_.size());
+            const uint32_t rank = id_to_rank_[raw_of(id)];
             if (rank == kNoRank) {
                 return CMString{};  // 空洞占位（形态一空名占位语义不变）
             }
             return name_by_rank(rank);
         }
-        assert(id < name_table_.size());
-        const DSNameSlot& slot = name_table_[static_cast<size_t>(id)];
+        assert(raw_of(id) < name_table_.size());
+        const DSNameSlot& slot = name_table_[raw_of(id)];
         return CMString(name_arena_.data() + slot.offset, slot.length);
     }
 
@@ -402,7 +446,7 @@ public:
         if (is_valid_id(existing)) {
             return existing;
         }
-        const IdT id = static_cast<IdT>(name_table_.size());
+        const IdT id = id_from_raw(static_cast<RawT>(name_table_.size()));
         name_table_.push_back(append_name(name));
         backend_.insert(name, id);
         return id;
@@ -419,13 +463,13 @@ public:
         check_not_sealed();
         const IdT old = backend_.find(name, kInvalidId);
         if (is_valid_id(old) && old != id &&
-            static_cast<size_t>(old) < name_table_.size()) {
-            name_table_[static_cast<size_t>(old)] = DSNameSlot{};
+            raw_of(old) < name_table_.size()) {
+            name_table_[raw_of(old)] = DSNameSlot{};
         }
-        if (id >= name_table_.size()) {
-            name_table_.resize(static_cast<size_t>(id) + 1);
+        if (raw_of(id) >= name_table_.size()) {
+            name_table_.resize(raw_of(id) + 1);
         }
-        name_table_[static_cast<size_t>(id)] = append_name(name);
+        name_table_[raw_of(id)] = append_name(name);
         backend_.insert(name, id);
     }
 
@@ -456,11 +500,11 @@ public:
     // for_each_name_by_rank 全部可用。相邻名公共前缀超 2B 容量（>64KB，
     // EDA 名不现实）显式报错防静默截断。
     void finalize_for_save(bool lcp_enabled) {
-        if (!lcp_enabled || lcp_form_ != 0) {
+        if (!lcp_enabled || lcp_form_ == DSNameHasherForm::LCP) {
             return;
         }
         build_lcp_form();
-        lcp_form_ = 1;
+        lcp_form_ = DSNameHasherForm::LCP;
         // 释放形态一存储（与空临时 swap 保证容量归还——arena 是 64 位
         // 组存储大头，clear 不缩容等于白做）
         CMString().swap(name_arena_);
@@ -476,12 +520,12 @@ public:
     //   形态二：rank 0..n−1 直接回溯（rank→id 逆表一次构建，O(n) 临时）。
     template <typename Fn>
     void for_each_name_by_rank(Fn&& fn) const {
-        if (lcp_form_ != 0) {
+        if (lcp_form_ == DSNameHasherForm::LCP) {
             CMVector<IdT> rank_to_id(lcp_suffix_table_.size(), kInvalidId);
             for (size_t id = 0; id < id_to_rank_.size(); ++id) {
                 const uint32_t r = id_to_rank_[id];
                 if (r != kNoRank) {
-                    rank_to_id[r] = static_cast<IdT>(id);
+                    rank_to_id[r] = id_from_raw(static_cast<RawT>(id));
                 }
             }
             for (size_t r = 0; r < rank_to_id.size(); ++r) {
@@ -493,14 +537,14 @@ public:
         order.reserve(backend_.size());
         for (size_t id = 0; id < name_table_.size(); ++id) {
             if (name_table_[id].length != 0) {
-                order.push_back(static_cast<IdT>(id));
+                order.push_back(id_from_raw(static_cast<RawT>(id)));
             }
         }
         std::sort(order.begin(), order.end(), [this](IdT a, IdT b) {
             return name_view(a) < name_view(b);
         });
         for (const IdT id : order) {
-            const DSNameSlot& slot = name_table_[static_cast<size_t>(id)];
+            const DSNameSlot& slot = name_table_[raw_of(id)];
             fn(id, CMString(name_arena_.data() + slot.offset, slot.length));
         }
     }
@@ -511,12 +555,12 @@ public:
     //   形态二：rank→id 逆表（栈上临时）→ rank 序回溯全名逐条登记。
     void rebuild_backend() {
         backend_.clear();
-        if (lcp_form_ != 0) {
+        if (lcp_form_ == DSNameHasherForm::LCP) {
             CMVector<IdT> rank_to_id(lcp_suffix_table_.size(), kInvalidId);
             for (size_t id = 0; id < id_to_rank_.size(); ++id) {
                 const uint32_t r = id_to_rank_[id];
                 if (r != kNoRank) {
-                    rank_to_id[r] = static_cast<IdT>(id);
+                    rank_to_id[r] = id_from_raw(static_cast<RawT>(id));
                 }
             }
             for (size_t r = 0; r < rank_to_id.size(); ++r) {
@@ -530,9 +574,9 @@ public:
             if (slot.length == 0) {
                 continue;  // 空洞占位不重建
             }
-            backend_.insert(
-                CMString(name_arena_.data() + slot.offset, slot.length),
-                static_cast<IdT>(id));
+            backend_.insert(CMString(name_arena_.data() + slot.offset,
+                                     slot.length),
+                            id_from_raw(static_cast<RawT>(id)));
         }
     }
 
@@ -546,10 +590,10 @@ public:
 
     // —— R8d 形态二成员（LCP 后缀共享，裁定 54/55；finalize_for_save
     //    构建填充，公开成员同本类字段风格，基准/测试直书）——
-    // 形态标记位：0 = 形态一全名 arena+偏移表；1 = 形态二 LCP 压缩。
-    // 随权威段落盘（读回自识别重建对应形态；两形态均活跃使用——alpha
-    // 运行期选择——此为功能区分字段、非版本兼容机制）
-    uint8_t lcp_form_ = 0;
+    // 形态标记（枚举定型存储，DSNameHasherForm）：随权威段落盘（读回
+    // 自识别重建对应形态；两形态均活跃使用——alpha 运行期选择——此为
+    // 功能区分字段、非版本兼容机制）
+    DSNameHasherForm lcp_form_ = DSNameHasherForm::ARENA;
     // 后缀字符池：rank 序相邻名公共前缀之后的后缀连续拼接
     CMString lcp_suffix_arena_;
     // 后缀偏移表（下标 = rank：{后缀定位, 与前名公共前缀长}）
@@ -582,9 +626,10 @@ public:
     FLY_SERIALIZE_BEGIN(1)
         // 宏体 lambda 无 this 捕获——保存/加载两侧统一经 o 访问
         uint64_t fly_count_ = static_cast<uint64_t>(o.backend_.size());
-        // 形态标记位（1B）：读侧先读后按标记分派权威段布局
+        // 形态标记（1B 整型路径——枚举定型存储逐位不变）：读侧先读后
+        // 按标记分派权威段布局
         fly_ser::value(s, o.lcp_form_);
-        if (o.lcp_form_ == 0) {
+        if (o.lcp_form_ == DSNameHasherForm::ARENA) {
             // 权威段·形态一：全名 arena + {off,len} 偏移表
             FLY_FIELD(name_arena_);
             FLY_FIELD(name_table_);
@@ -612,7 +657,7 @@ public:
                         "after backend rebuild (corrupt data)");
                 }
             }
-            if (o.lcp_form_ != 0 &&
+            if (o.lcp_form_ == DSNameHasherForm::LCP &&
                 o.id_to_rank_.size() < o.backend_.size()) {
                 MSG_FATAL_EXIT("DSGN::0012", 0, 80,
                     "DSNameHasherT: LCP rank domain smaller than "
@@ -626,7 +671,7 @@ private:
     // 登记接口拒绝（快速失败，防半更新态：backend 有名而 rank 空间
     // 不知情）
     void check_not_sealed() const {
-        if (lcp_form_ != 0) {
+        if (lcp_form_ == DSNameHasherForm::LCP) {
             throw std::logic_error(
                 "DSNameHasherT: emplace/assign after finalize_for_save "
                 "(sealed read-only LCP form)");
@@ -635,7 +680,7 @@ private:
 
     // 名视图（形态一 arena 偏移表切片——排序比较/封口构建共用）
     std::string_view name_view(IdT id) const {
-        const DSNameSlot& slot = name_table_[static_cast<size_t>(id)];
+        const DSNameSlot& slot = name_table_[raw_of(id)];
         return std::string_view(name_arena_.data() + slot.offset,
                                 slot.length);
     }
@@ -649,7 +694,7 @@ private:
         order.reserve(backend_.size());
         for (size_t id = 0; id < domain; ++id) {
             if (name_table_[id].length != 0) {
-                order.push_back(static_cast<IdT>(id));
+                order.push_back(id_from_raw(static_cast<RawT>(id)));
             }
         }
         if (order.size() > static_cast<size_t>(kNoRank)) {
@@ -666,7 +711,7 @@ private:
         lcp_suffix_table_.resize(n);
         size_t suffix_total = 0;
         for (size_t r = 0; r < n; ++r) {
-            id_to_rank_[static_cast<size_t>(order[r])] =
+            id_to_rank_[raw_of(order[r])] =
                 static_cast<uint32_t>(r);
             const std::string_view cur = name_view(order[r]);
             uint32_t l = 0;
@@ -744,26 +789,32 @@ private:
 };
 
 // —— 实体语义别名（㊸ 用户钦定清单；别名不带位宽标识，裁定 ㊳ 位宽
-//    分组：32 位组十万级以内、64 位组 instance 可达 10⁹ 级。BackendT
-//    实参 = R8b 替换点——未来换 backend（marisa 等）只改此处）——
+//    分组：32 位组十万级以内、64 位组 instance 可达 10⁹ 级。IdT =
+//    emir 强类型 id 族（emir_ids.h）——审计 B-4 收官：assign/get_id/
+//    emplace 的 id 参数与返回值类型级区分实体，跨实体裸值手误编译期
+//    报错；StrongIdT 值直通同宽（序列化与裸整型逐位一致，落盘面零
+//    变化）。BackendT 实参 = R8b 替换点——未来换 backend（marisa 等）
+//    只改此处）——
 
 // cell 名 ↔ 全局 cell id（DSDesign；block cell 与 macro 同一编号空间）
-using DSCellNameHasher = DSNameHasherT<uint32_t, DSHasherBackendHash<uint32_t>>;
+using DSCellNameHasher = DSNameHasherT<CMCellId, DSHasherBackendHash<CMCellId>>;
 // 全局 pin 名字空间（2026-09-16 裁定 3，键 = 裸 pin 名，同名 pin 跨
 // cell 共享 id）↔ 全局 pin id（DSDesign）
-using DSPinNameHasher = DSNameHasherT<uint32_t, DSHasherBackendHash<uint32_t>>;
+using DSPinNameHasher = DSNameHasherT<CMPinId, DSHasherBackendHash<CMPinId>>;
 // via cell 名 ↔ via cell id（DSDesign；⑫ DEF 来源带 design:: 前缀）
 using DSViaCellNameHasher =
-    DSNameHasherT<uint32_t, DSHasherBackendHash<uint32_t>>;
+    DSNameHasherT<CMViaCellId, DSHasherBackendHash<CMViaCellId>>;
 // 层名 ↔ 层 id（DSStack；layer_index_ 惰性索引的序列化替代）
-using DSLayerNameHasher = DSNameHasherT<uint32_t, DSHasherBackendHash<uint32_t>>;
+using DSLayerNameHasher =
+    DSNameHasherT<CMLayerId, DSHasherBackendHash<CMLayerId>>;
 // block 内实例名 ↔ local instance id（DSBlockBuildData；local id 从 1
 // 起、local 0 = block 自身占位不入表，⑧）
 using DSInstanceNameHasher =
-    DSNameHasherT<uint64_t, DSHasherBackendHatrie<uint64_t>>;
+    DSNameHasherT<CMInstanceId, DSHasherBackendHatrie<CMInstanceId>>;
 // block 内网名 ↔ local net id（DSBlockBuildData；local id 从 1 起、
 // 0 保留未用，⑨）
-using DSNetNameHasher = DSNameHasherT<uint64_t, DSHasherBackendHatrie<uint64_t>>;
+using DSNetNameHasher =
+    DSNameHasherT<CMNetId, DSHasherBackendHatrie<CMNetId>>;
 
 // —— per-DEF local 名空间伴生对象（㊵②）——
 

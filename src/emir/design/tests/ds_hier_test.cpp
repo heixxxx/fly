@@ -42,13 +42,13 @@ using namespace fly;
 // 合成 per-DEF 产物：init_placeholder + 实例（cell id 直填 = local 1..k）
 // + 网名
 DSBlockBuildData make_block(const char* name,
-                            const std::vector<uint32_t>& instance_cell_ids,
+                            const std::vector<CMCellId>& instance_cell_ids,
                             size_t net_count) {
     DSBlockBuildData b;
     b.init_placeholder(name, CMCellId{});
-    for (const uint32_t cell_id : instance_cell_ids) {
+    for (const CMCellId cell_id : instance_cell_ids) {
         DSInstance inst;
-        inst.set_cell_id(CMCellId{cell_id});
+        inst.set_cell_id(cell_id);
         // R7 ㊱：DSInstance 不存 name——实例名经 add_instance 登记
         // instance hasher（per-DEF local 名空间）
         b.add_instance(std::move(inst),
@@ -100,9 +100,10 @@ struct HierEnv {
         bot.set_block_cell();
         design.add_cell(std::move(bot));
 
-        blocks.push_back(make_block("top", {0, 1, 0}, 2));     // def0
-        blocks.push_back(make_block("mid", {2, 2}, 1));        // def1
-        blocks.push_back(make_block("bottom", {0}, 1));        // def2
+        blocks.push_back(
+            make_block("top", {CMCellId{0}, CMCellId{1}, CMCellId{0}}, 2));
+        blocks.push_back(make_block("mid", {CMCellId{2}, CMCellId{2}}, 1));
+        blocks.push_back(make_block("bottom", {CMCellId{0}}, 1));
         nets.push_back(make_net(2));
         nets.push_back(make_net(1));
         nets.push_back(make_net(0));
@@ -397,10 +398,10 @@ TEST(DSHierTreeTest, CycleFatalsWithCode80) {
     loop_b.set_block_cell();
     env.design.add_cell(std::move(loop_b));
 
-    const uint32_t loopa_id = env.design.cell_names_.get_id("LOOPA");
-    const uint32_t loopb_id = env.design.cell_names_.get_id("LOOPB");
+    const CMCellId loopa_id = env.design.cell_names_.get_id("LOOPA");
+    const CMCellId loopb_id = env.design.cell_names_.get_id("LOOPB");
     // root → A → B → A（A 被引用两次仍唯一根 root；DFS 入环 → fatal）
-    env.blocks.push_back(make_block("root", {loopa_id}, 1));
+    env.blocks.push_back(make_block("root", {loopa_id}, 1));  // CMCellId 列表
     env.blocks.push_back(make_block("LOOPA", {loopb_id}, 1));
     env.blocks.push_back(make_block("LOOPB", {loopa_id}, 1));
     env.nets.push_back(make_net(0));

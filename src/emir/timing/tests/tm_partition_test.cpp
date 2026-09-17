@@ -134,10 +134,11 @@ struct SynthEnv {
             auto n = std::make_shared<DSBlockNames>();
             n->block_name_ = block;
             for (const auto& item : insts) {
-                n->instance_names_->assign(item.first, item.second);
+                n->instance_names_->assign(item.first,
+                                           CMInstanceId{item.second});
             }
             for (const auto& item : nets_) {
-                n->net_names_->assign(item.first, item.second);
+                n->net_names_->assign(item.first, CMNetId{item.second});
             }
             return n;
         };
@@ -256,7 +257,8 @@ protected:
     // 时钟表合并 + 重映射表（生产路径口径：每文件块序表 → tm_merge_clocks
     // ——T3 时钟归属重写的 remap 来源，评审 P1-1）
     static TMClockRemap merge_clocks_of(
-        const CMVector<std::pair<int, TMClockTable>>& file_clocks,
+        const CMVector<std::pair<TMFileBindingKind, TMClockTable>>&
+            file_clocks,
         TMClockTable& out_table) {
         TMClockRemap remap;
         uint64_t conflicts = 0;
@@ -387,7 +389,8 @@ TEST_F(TmPartitionTest, ChunkedConversionEqualsWholeFile) {
     // 时钟表合并 + T3 分区合并（生产路径口径：时钟归属经 remap 重写）
     TMClockTable merged_clocks;
     const TMClockRemap remap =
-        merge_clocks_of({{0, clocks_table_of(slices)}}, merged_clocks);
+        merge_clocks_of({{TMFileBindingKind::PATH, clocks_table_of(slices)}},
+                        merged_clocks);
     uint64_t conflicts = 0;
     const TMPartitionTiming merged =
         tm_merge_partition(slice_ptrs, remap, kPid, conflicts);
@@ -713,7 +716,7 @@ TEST_F(TmPartitionTest, MergeClocksTopLevelPriority) {
                                           TMFileBinding{}, 1);
     // 文件内跨块归并（同名首份）后按 (kind, clocks) 传入（TMClock →
     // TMClockTable::Entry 搬运）；remap 出参 = 块内 id → 最终表下标
-    CMVector<std::pair<int, TMClockTable>> file_clocks;
+    CMVector<std::pair<TMFileBindingKind, TMClockTable>> file_clocks;
     TMClockTable blk_table;
     for (const TMClock& c : sb.stats_.clocks_) {
         TMClockTable::Entry e;
@@ -723,7 +726,8 @@ TEST_F(TmPartitionTest, MergeClocksTopLevelPriority) {
         e.negedge_ = c.negedge_;
         blk_table.clocks_.push_back(std::move(e));
     }
-    file_clocks.emplace_back(2, std::move(blk_table));   // 块绑定（kind 2）
+    file_clocks.emplace_back(TMFileBindingKind::BLOCK_CELL,
+                             std::move(blk_table));  // 块绑定
     TMClockTable top_table;
     for (const TMClock& c : st.stats_.clocks_) {
         TMClockTable::Entry e;
@@ -733,7 +737,8 @@ TEST_F(TmPartitionTest, MergeClocksTopLevelPriority) {
         e.negedge_ = c.negedge_;
         top_table.clocks_.push_back(std::move(e));
     }
-    file_clocks.emplace_back(0, std::move(top_table));   // 顶层（kind 0）
+    file_clocks.emplace_back(TMFileBindingKind::PATH,
+                             std::move(top_table));  // 顶层（纯路径）
     TMClockRemap remap;
     uint64_t conflicts = 0;
     const TMClockTable merged = tm_merge_clocks(file_clocks, remap, conflicts);
@@ -756,19 +761,21 @@ TEST_F(TmPartitionTest, MergeClocksTopLevelPriority) {
 
 TEST_F(TmPartitionTest, MergeClocksBindsFileOrderFallback) {
     // 无顶层文件：块绑定文件按文件序首份兜底
-    CMVector<std::pair<int, TMClockTable>> file_clocks;
+    CMVector<std::pair<TMFileBindingKind, TMClockTable>> file_clocks;
     TMClockTable first;
     TMClockTable::Entry c1;
     c1.name_ = "clk";
     c1.period_ = 2.0;
     first.clocks_.push_back(c1);
-    file_clocks.emplace_back(1, std::move(first));
+    file_clocks.emplace_back(TMFileBindingKind::BLOCK_INST,
+                             std::move(first));
     TMClockTable second;
     TMClockTable::Entry c2;
     c2.name_ = "clk";
     c2.period_ = 3.0;
     second.clocks_.push_back(c2);
-    file_clocks.emplace_back(2, std::move(second));
+    file_clocks.emplace_back(TMFileBindingKind::BLOCK_CELL,
+                             std::move(second));
     TMClockRemap remap;
     uint64_t conflicts = 0;
     const TMClockTable merged = tm_merge_clocks(file_clocks, remap, conflicts);
@@ -830,7 +837,8 @@ TEST_F(TmPartitionTest, ChunkedConversionKeepsClockOwnership) {
 
     TMClockTable merged_clocks;
     const TMClockRemap remap =
-        merge_clocks_of({{0, clocks_table_of(slices)}}, merged_clocks);
+        merge_clocks_of({{TMFileBindingKind::PATH, clocks_table_of(slices)}},
+                        merged_clocks);
     CMVector<const TMEntrySlice*> slice_ptrs;
     slice_ptrs.reserve(slices.size());
     for (const TMEntrySlice& s : slices) {
@@ -886,7 +894,8 @@ TEST_F(TmPartitionTest, ClockRemapAcrossFilesWithHeterogeneousTables) {
 
     TMClockTable merged_clocks;
     const TMClockRemap remap = merge_clocks_of(
-        {{0, clocks_table_of({sa})}, {0, clocks_table_of({sb})}},
+        {{TMFileBindingKind::PATH, clocks_table_of({sa})},
+         {TMFileBindingKind::PATH, clocks_table_of({sb})}},
         merged_clocks);
     ASSERT_EQ(merged_clocks.clocks_.size(), 2u);   // [wclk, clk]
     EXPECT_EQ(merged_clocks.clocks_[0].name_, "wclk");

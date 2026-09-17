@@ -6,11 +6,15 @@
 //   3. 空洞容忍：assign 指定 id 稀疏落位（resize 空洞为空名占位），
 //      id→name 反查不受空洞影响；
 //   4. 位宽分组（㊳）+ 实体别名（㊸ 用户钦定清单）+ R8b backend 默认
-//      差异化（32 位组 = hash、64 位组 = hat-trie）——编译断言；
+//      差异化（32 位组 = hash、64 位组 = hat-trie）——编译断言；实体
+//      别名 = emir 强类型 id 族（审计 B-4：跨实体 id 手误编译期报错）；
 //   5. 序列化 round-trip：双段制（权威段 arena+偏移+计数 + 加速段），
-//      纯通用（关加速段）/ 双段两形态 + 空/非空/空洞；
+//      纯通用（关加速段）/ 双段两形态 + 空/非空/空洞；**字节级不变
+//      锚（审计 B-4）**：强类型 IdT 与裸值 IdT 参照实例化编码逐字节
+//      一致（StrongIdT serialize 直通 + htrie 加速段 memcpy 同宽）；
 //   6. backend 替换性（裁定 52）：极简 dummy backend（std::map 包装，
-//      仅测试用）实例化 DSNameHasherT——抽象面完备性证明；
+//      仅测试用）实例化 DSNameHasherT——抽象面完备性证明（顺带锚定
+//      模板对裸整型 IdT 的多实例化能力）；
 //   7. htrie backend 一致性：与 unordered_map 参照的随机名集对比
 //      （R8a 语义等价红线）；for_each 遍历导出；
 //   8. DSBlockNames 伴生对象（㊵②）：instance/net 两 hasher 一体
@@ -22,7 +26,7 @@
 //      报告 §4 坑：中间名尾部残留）；空 hasher/纯空洞域；
 //  10. for_each_name_by_rank 两形态产出同一 rank 序（名字典序）；
 //  11. 封口点语义：finalize_for_save 幂等/false 零变化/封口后
-//      emplace-assign 拒绝；形态一默认路径回归（lcp_form_ = 0）；
+//      emplace-assign 拒绝；形态一默认路径回归（lcp_form_ = ARENA）；
 //  12. 形态二序列化 round-trip（标记位自识别 + 直载/重建两路径 +
 //      空封口形态）；轻量性能观测（10 万名 get_name 随机采样 +
 //      内存自算对照，供 alpha 文档参考）。
@@ -77,40 +81,45 @@ FLY_SERIALIZE_EXTERNAL_BEGIN(DSDummyNameBackend<IdT>, typename IdT)
     fly_ser::text(s, segment);
 FLY_SERIALIZE_EXTERNAL_END
 
-// dummy 实例化别名（类型含逗号——FLY_DECODE 宏参数须走别名）
+// dummy 实例化别名（类型含逗号——FLY_DECODE 宏参数须走别名）。裸整型
+// IdT 实例化 = 模板多实例化能力验证 + 序列化字节级不变的参照锚（生产
+// 实例化组全部为 emir 强类型 id，见六实体别名）
 using DummyHasher = DSNameHasherT<uint64_t, DSDummyNameBackend<uint64_t>>;
+// 裸值参照实例化（字节级一致锚定用，见 SerializationByteIdenticalToRaw）
+using RawNetHasherRef =
+    DSNameHasherT<uint64_t, DSHasherBackendHatrie<uint64_t>>;
+using RawCellHasherRef =
+    DSNameHasherT<uint32_t, DSHasherBackendHash<uint32_t>>;
 
-// ── 1/2. 双向一致性 + 哨兵（uint64 实例，显式模板参数为多实例化
-//         能力验证，§2.2 例外条款）────────────────────────────────────
+// ── 1/2. 双向一致性 + 哨兵（DSNetNameHasher 实体别名实例）────────────
 
 TEST(DSNameHasherTest, EmplaceBidirectionalAndSentinel) {
-    DSNameHasherT<uint64_t> h;
+    DSNetNameHasher h;
     EXPECT_EQ(h.size(), 0u);
     EXPECT_TRUE(h.name_table_.empty());
     EXPECT_TRUE(h.name_arena_.empty());
 
     // emplace：新名登记双写，id = 当前规模
-    const uint64_t a = h.emplace("alpha");
-    const uint64_t b = h.emplace("beta");
-    EXPECT_EQ(a, 0u);
-    EXPECT_EQ(b, 1u);
+    const CMNetId a = h.emplace("alpha");
+    const CMNetId b = h.emplace("beta");
+    EXPECT_EQ(a, CMNetId{0});
+    EXPECT_EQ(b, CMNetId{1});
     EXPECT_EQ(h.size(), 2u);
 
     // 正向：命中返回登记 id（hatrie backend）
-    EXPECT_EQ(h.get_id("alpha"), 0u);
-    EXPECT_EQ(h.get_id("beta"), 1u);
+    EXPECT_EQ(h.get_id("alpha"), CMNetId{0});
+    EXPECT_EQ(h.get_id("beta"), CMNetId{1});
     // 反向：已登记域内必达（arena 拼接无损）
-    EXPECT_EQ(h.get_name(0), "alpha");
-    EXPECT_EQ(h.get_name(1), "beta");
+    EXPECT_EQ(h.get_name(CMNetId{0}), "alpha");
+    EXPECT_EQ(h.get_name(CMNetId{1}), "beta");
 
     // 哨兵（㊴）：未命中 = id 类型最大值；is_valid_id 纯值判定
-    EXPECT_EQ(h.get_id("missing"), DSNameHasherT<uint64_t>::kInvalidId);
-    EXPECT_EQ(DSNameHasherT<uint64_t>::kInvalidId, UINT64_MAX);
-    EXPECT_FALSE(DSNameHasherT<uint64_t>::is_valid_id(
-        DSNameHasherT<uint64_t>::kInvalidId));
-    EXPECT_TRUE(DSNameHasherT<uint64_t>::is_valid_id(0u));
+    EXPECT_EQ(h.get_id("missing"), DSNetNameHasher::kInvalidId);
+    EXPECT_EQ(DSNetNameHasher::kInvalidId, CMNetId{UINT64_MAX});
+    EXPECT_FALSE(DSNetNameHasher::is_valid_id(DSNetNameHasher::kInvalidId));
+    EXPECT_TRUE(DSNetNameHasher::is_valid_id(CMNetId{0}));
     // static：零实例可用（不依赖 mapper/hasher 加载，㊵②）
-    EXPECT_FALSE(DSNameHasherT<uint64_t>::is_valid_id(UINT64_MAX));
+    EXPECT_FALSE(DSNetNameHasher::is_valid_id(CMNetId{UINT64_MAX}));
 
     // arena/偏移表形态：两名字节拼一池，槽位各自定位
     EXPECT_EQ(h.name_arena_, "alphabeta");
@@ -123,9 +132,9 @@ TEST(DSNameHasherTest, EmplaceBidirectionalAndSentinel) {
 
 TEST(DSNameHasherTest, EmplaceDuplicateKeepsFirst) {
     // 重名保留首份返回既有 id（幂等登记，与 register_net 兜底同语义）
-    DSNameHasherT<uint64_t> h;
-    const uint64_t first = h.emplace("dup");
-    const uint64_t second = h.emplace("dup");
+    DSNetNameHasher h;
+    const CMNetId first = h.emplace("dup");
+    const CMNetId second = h.emplace("dup");
     EXPECT_EQ(first, second);
     EXPECT_EQ(h.size(), 1u);
     EXPECT_EQ(h.get_name(second), "dup");
@@ -134,79 +143,88 @@ TEST(DSNameHasherTest, EmplaceDuplicateKeepsFirst) {
 // ── 3. assign 指定 id 双写 + 空洞容忍 ────────────────────────────────
 
 TEST(DSNameHasherTest, AssignSparseIdsTolerateHoles) {
-    DSNameHasherT<uint64_t> h;
+    DSNetNameHasher h;
     // 指定 id 稀疏落位（instance id 从 1 起、fake cell 稀疏 id 场景）：
     // resize 容忍空洞——id 0 空置（空洞 = 空名占位）
-    h.assign("one", 1);
-    h.assign("three", 3);
+    h.assign("one", CMNetId{1});
+    h.assign("three", CMNetId{3});
     EXPECT_EQ(h.size(), 2u);
-    EXPECT_EQ(h.get_id("one"), 1u);
-    EXPECT_EQ(h.get_id("three"), 3u);
-    EXPECT_EQ(h.get_name(1), "one");
-    EXPECT_EQ(h.get_name(3), "three");
+    EXPECT_EQ(h.get_id("one"), CMNetId{1});
+    EXPECT_EQ(h.get_id("three"), CMNetId{3});
+    EXPECT_EQ(h.get_name(CMNetId{1}), "one");
+    EXPECT_EQ(h.get_name(CMNetId{3}), "three");
     // 空洞：id 0/2 未登记——域内（已 resize）返回空名占位，可判别
-    EXPECT_EQ(h.get_name(0), "");
-    EXPECT_EQ(h.get_name(2), "");
+    EXPECT_EQ(h.get_name(CMNetId{0}), "");
+    EXPECT_EQ(h.get_name(CMNetId{2}), "");
     // emplace 在空洞之后追加：id = 当前规模（偏移表尾部）
-    const uint64_t next = h.emplace("four");
-    EXPECT_EQ(next, 4u);
+    const CMNetId next = h.emplace("four");
+    EXPECT_EQ(next, CMNetId{4});
     EXPECT_EQ(h.get_name(next), "four");
     // assign 同名重挂：覆盖指向新 id（register_pin 重挂语义）；旧 id
     // 槽位清空洞（偏移表与 backend 保持一致——序列化重建无损）
-    h.assign("one", 9);
-    EXPECT_EQ(h.get_id("one"), 9u);
-    EXPECT_EQ(h.get_name(9), "one");
-    EXPECT_EQ(h.get_name(1), "");  // 旧槽位清空
-    EXPECT_EQ(h.size(), 3u);       // 重挂不增规模
+    h.assign("one", CMNetId{9});
+    EXPECT_EQ(h.get_id("one"), CMNetId{9});
+    EXPECT_EQ(h.get_name(CMNetId{9}), "one");
+    EXPECT_EQ(h.get_name(CMNetId{1}), "");  // 旧槽位清空
+    EXPECT_EQ(h.size(), 3u);                // 重挂不增规模
 }
 
-// ── 4. 位宽分组 + 实体别名 + backend 默认差异化（编译断言；㊳㊸52）──
+// ── 4. 位宽分组 + 实体别名 + backend 默认差异化（编译断言；㊳㊸52；
+//       审计 B-4：六别名全部 = emir 强类型 id 族实例）──────────────────
 
 static_assert(
     std::is_same_v<DSCellNameHasher,
-                   DSNameHasherT<uint32_t, DSHasherBackendHash<uint32_t>>>);
+                   DSNameHasherT<CMCellId, DSHasherBackendHash<CMCellId>>>);
 static_assert(
     std::is_same_v<DSPinNameHasher,
-                   DSNameHasherT<uint32_t, DSHasherBackendHash<uint32_t>>>);
+                   DSNameHasherT<CMPinId, DSHasherBackendHash<CMPinId>>>);
 static_assert(std::is_same_v<
               DSViaCellNameHasher,
-              DSNameHasherT<uint32_t, DSHasherBackendHash<uint32_t>>>);
+              DSNameHasherT<CMViaCellId, DSHasherBackendHash<CMViaCellId>>>);
 static_assert(
     std::is_same_v<DSLayerNameHasher,
-                   DSNameHasherT<uint32_t, DSHasherBackendHash<uint32_t>>>);
+                   DSNameHasherT<CMLayerId, DSHasherBackendHash<CMLayerId>>>);
 static_assert(std::is_same_v<
               DSInstanceNameHasher,
-              DSNameHasherT<uint64_t, DSHasherBackendHatrie<uint64_t>>>);
+              DSNameHasherT<CMInstanceId, DSHasherBackendHatrie<CMInstanceId>>>);
 static_assert(
     std::is_same_v<DSNetNameHasher,
-                   DSNameHasherT<uint64_t, DSHasherBackendHatrie<uint64_t>>>);
+                   DSNameHasherT<CMNetId, DSHasherBackendHatrie<CMNetId>>>);
+// 哨兵同值口径（StrongIdT 默认哨兵 = 内部整型最大值，与裸值形态逐位一致）
 static_assert(
-    std::is_same_v<decltype(DSCellNameHasher::kInvalidId), const uint32_t>);
-static_assert(DSCellNameHasher::kInvalidId == UINT32_MAX);
-static_assert(DSInstanceNameHasher::kInvalidId == UINT64_MAX);
-static_assert(DSCellNameHasher::is_valid_id(0));
-static_assert(!DSCellNameHasher::is_valid_id(UINT32_MAX));
-// Backend 概念（裁定 52）编译期约束：两实现 + dummy 均满足
+    std::is_same_v<decltype(DSCellNameHasher::kInvalidId), const CMCellId>);
+static_assert(DSCellNameHasher::kInvalidId.value() == UINT32_MAX);
+static_assert(DSInstanceNameHasher::kInvalidId.value() == UINT64_MAX);
+static_assert(DSCellNameHasher::is_valid_id(CMCellId{0}));
+static_assert(!DSCellNameHasher::is_valid_id(
+    CMCellId{std::numeric_limits<uint32_t>::max()}));
+static_assert(DSNetNameHasher::kInvalidId == CMNetId::kInvalid);
+// 跨实体 id 防护（审计 B-4 语义面）：裸值不再隐式流入 hasher 的 id 参数
+// （StrongIdT 显式构造、无隐式转换——裸值手误须逐点 CMXxxId{} 声明）
+static_assert(!std::is_convertible_v<int, CMCellId>);
+static_assert(!std::is_convertible_v<uint32_t, CMNetId>);
+// Backend 概念（裁定 52）编译期约束：两实现 + dummy 均满足（强类型 +
+// 裸值两形态）
 static_assert(DSNameBackendConcept<DSDummyNameBackend<uint64_t>, uint64_t>);
-static_assert(DSNameBackendConcept<DSHasherBackendHash<uint32_t>, uint32_t>);
+static_assert(DSNameBackendConcept<DSHasherBackendHash<CMCellId>, CMCellId>);
 static_assert(
-    DSNameBackendConcept<DSHasherBackendHatrie<uint64_t>, uint64_t>);
+    DSNameBackendConcept<DSHasherBackendHatrie<CMNetId>, CMNetId>);
 
 TEST(DSNameHasherTest, BothWidthGroupsWork) {
     // 32 位组（layer 场景直书实体别名，hash backend）
     DSLayerNameHasher h32;
-    EXPECT_EQ(h32.emplace("M1"), 0u);
-    EXPECT_EQ(h32.emplace("M2"), 1u);
-    EXPECT_EQ(h32.get_id("M1"), 0u);
-    EXPECT_EQ(h32.get_name(1), "M2");
+    EXPECT_EQ(h32.emplace("M1"), CMLayerId{0});
+    EXPECT_EQ(h32.emplace("M2"), CMLayerId{1});
+    EXPECT_EQ(h32.get_id("M1"), CMLayerId{0});
+    EXPECT_EQ(h32.get_name(CMLayerId{1}), "M2");
     EXPECT_EQ(h32.get_id("nope"), DSLayerNameHasher::kInvalidId);
 
     // 64 位组（instance 场景直书实体别名，hat-trie backend）
     DSInstanceNameHasher h64;
-    h64.assign("u1", 1);
-    h64.assign("u2", 2);
-    EXPECT_EQ(h64.get_id("u2"), 2u);
-    EXPECT_EQ(h64.get_name(1), "u1");
+    h64.assign("u1", CMInstanceId{1});
+    h64.assign("u2", CMInstanceId{2});
+    EXPECT_EQ(h64.get_id("u2"), CMInstanceId{2});
+    EXPECT_EQ(h64.get_name(CMInstanceId{1}), "u1");
     EXPECT_EQ(h64.get_id("nope"), DSInstanceNameHasher::kInvalidId);
 }
 
@@ -239,9 +257,9 @@ TEST(DSNameHasherTest, DummyBackendReplaceability) {
 
 TEST(DSNameHasherTest, SerializeRoundTrip) {
     DSNetNameHasher h;  // net 场景：local id 从 1 起、0 空置
-    h.assign("n1", 1);
-    h.assign("n2", 2);
-    h.assign("VDD", 3);
+    h.assign("n1", CMNetId{1});
+    h.assign("n2", CMNetId{2});
+    h.assign("VDD", CMNetId{3});
 
     CMString blob;
     FLY_ENCODE(h, blob);
@@ -249,20 +267,79 @@ TEST(DSNameHasherTest, SerializeRoundTrip) {
     FLY_DECODE(blob, DSNetNameHasher, back);
 
     EXPECT_EQ(back.size(), 3u);
-    EXPECT_EQ(back.get_id("n1"), 1u);
-    EXPECT_EQ(back.get_id("VDD"), 3u);
+    EXPECT_EQ(back.get_id("n1"), CMNetId{1});
+    EXPECT_EQ(back.get_id("VDD"), CMNetId{3});
     EXPECT_EQ(back.get_id("missing"), DSNetNameHasher::kInvalidId);
-    EXPECT_EQ(back.get_name(1), "n1");
-    EXPECT_EQ(back.get_name(3), "VDD");
-    EXPECT_EQ(back.get_name(0), "");  // 空洞随序列化保留
+    EXPECT_EQ(back.get_name(CMNetId{1}), "n1");
+    EXPECT_EQ(back.get_name(CMNetId{3}), "VDD");
+    EXPECT_EQ(back.get_name(CMNetId{0}), "");  // 空洞随序列化保留
+}
+
+TEST(DSNameHasherTest, SerializationByteIdenticalToRawIdForm) {
+    // 审计 B-4 字节级不变锚：同一名集同一 id 值，强类型 IdT 实体实例化
+    // 与裸值 IdT 参照实例化的编码**逐字节一致**（StrongIdT serialize
+    // 直通 value4b/8b 无版本前缀；htrie 加速段 = sizeof 值 memcpy 同宽
+    // 同布局；权威段不含 id 值）。64 位组锁 htrie 加速段（id 值字节
+    // 所在段），32 位组锁 hash backend 恒空段 + 权威段。
+    RawNetHasherRef raw64;
+    DSNetNameHasher strong64;
+    for (int i = 0; i < 8; ++i) {
+        const std::string n = "top/u_" + std::to_string(i) + "/net_reg";
+        raw64.assign(n, static_cast<uint64_t>(i) + 1);
+        strong64.assign(n, CMNetId{static_cast<uint64_t>(i) + 1});
+    }
+    CMString blob_raw;
+    CMString blob_strong;
+    FLY_ENCODE(raw64, blob_raw);
+    FLY_ENCODE(strong64, blob_strong);
+    ASSERT_EQ(blob_raw.size(), blob_strong.size());
+    EXPECT_EQ(blob_raw, blob_strong);
+
+    // round-trip 值无损（强类型读回）
+    DSNetNameHasher back;
+    FLY_DECODE(blob_strong, DSNetNameHasher, back);
+    EXPECT_EQ(back.get_id("top/u_3/net_reg"), CMNetId{4});
+    EXPECT_EQ(back.get_name(CMNetId{8}), "top/u_7/net_reg");
+
+    // 32 位组（hash backend，加速段恒空段——权威段逐字节一致）
+    RawCellHasherRef raw32;
+    DSCellNameHasher strong32;
+    raw32.emplace("INV_X1");
+    raw32.emplace("BUF_X1");
+    strong32.emplace("INV_X1");
+    strong32.emplace("BUF_X1");
+    CMString blob_raw32;
+    CMString blob_strong32;
+    FLY_ENCODE(raw32, blob_raw32);
+    FLY_ENCODE(strong32, blob_strong32);
+    ASSERT_EQ(blob_raw32.size(), blob_strong32.size());
+    EXPECT_EQ(blob_raw32, blob_strong32);
+
+    // LCP 封口形态（形态标记位枚举定型存储 1B 逐位不变——两形态锁全）
+    RawNetHasherRef raw_lcp;
+    DSNetNameHasher strong_lcp;
+    for (int i = 0; i < 4; ++i) {
+        const std::string n =
+            "top/mod/inst_[" + std::to_string(i) + "]_reg_q_out";
+        raw_lcp.emplace(n);
+        strong_lcp.emplace(n);
+    }
+    raw_lcp.finalize_for_save(true);
+    strong_lcp.finalize_for_save(true);
+    CMString blob_raw_lcp;
+    CMString blob_strong_lcp;
+    FLY_ENCODE(raw_lcp, blob_raw_lcp);
+    FLY_ENCODE(strong_lcp, blob_strong_lcp);
+    ASSERT_EQ(blob_raw_lcp.size(), blob_strong_lcp.size());
+    EXPECT_EQ(blob_raw_lcp, blob_strong_lcp);
 }
 
 TEST(DSNameHasherTest, SerializeRoundTripRebuildPath) {
     // 纯通用名集格式（加速段开关关闭——重建式读回路径）
     DSNetNameHasher h;
     h.backend_.native_cache_on_save_ = false;
-    h.assign("n1", 1);
-    h.assign("VDD", 2);
+    h.assign("n1", CMNetId{1});
+    h.assign("VDD", CMNetId{2});
 
     CMString blob;
     FLY_ENCODE(h, blob);
@@ -270,8 +347,8 @@ TEST(DSNameHasherTest, SerializeRoundTripRebuildPath) {
     FLY_DECODE(blob, DSNetNameHasher, back);
 
     EXPECT_EQ(back.size(), 2u);
-    EXPECT_EQ(back.get_id("n1"), 1u);
-    EXPECT_EQ(back.get_name(2), "VDD");
+    EXPECT_EQ(back.get_id("n1"), CMNetId{1});
+    EXPECT_EQ(back.get_name(CMNetId{2}), "VDD");
 }
 
 TEST(DSNameHasherTest, SerializeRoundTripU32HashBackend) {
@@ -286,8 +363,8 @@ TEST(DSNameHasherTest, SerializeRoundTripU32HashBackend) {
     FLY_DECODE(blob, DSCellNameHasher, back);
 
     EXPECT_EQ(back.size(), 2u);
-    EXPECT_EQ(back.get_id("INV_X1"), 0u);
-    EXPECT_EQ(back.get_name(1), "BUF_X1");
+    EXPECT_EQ(back.get_id("INV_X1"), CMCellId{0});
+    EXPECT_EQ(back.get_name(CMCellId{1}), "BUF_X1");
 }
 
 TEST(DSNameHasherTest, SerializeRoundTripEmpty) {
@@ -323,36 +400,36 @@ TEST(DSNameHasherTest, HatrieConsistencyAgainstReference) {
     // 构造：emplace 700（重名保留首份语义）
     for (int i = 0; i < 700; ++i) {
         const std::string n = make_name(static_cast<uint64_t>(i));
-        const uint64_t got = h.emplace(n);
+        const CMNetId got = h.emplace(n);
         // 参照：已存在取既有 id；新名 id = emplace 后规模-1
         const uint64_t expect =
             ref.emplace(n, static_cast<uint64_t>(h.size() - 1)).first->second;
-        EXPECT_EQ(got, expect);
+        EXPECT_EQ(got, CMNetId{expect});
     }
     // 构造：assign 稀疏 300（id 1000 起步长 3——域内大量空洞）
     for (int i = 0; i < 300; ++i) {
         const std::string n = make_name(static_cast<uint64_t>(1000 + i));
         const uint64_t id = 1000 + static_cast<uint64_t>(i) * 3;
-        h.assign(n, id);
+        h.assign(n, CMNetId{id});
         ref[n] = id;
     }
     ASSERT_EQ(h.size(), ref.size());
 
     // 正向全量比对
     for (const auto& [n, id] : ref) {
-        EXPECT_EQ(h.get_id(n), id) << n;
+        EXPECT_EQ(h.get_id(n), CMNetId{id}) << n;
     }
     EXPECT_EQ(h.get_id("no_such_name"), DSNetNameHasher::kInvalidId);
 
     // 反向抽样比对：域内（含空洞）——非空洞槽位名必须在参照表且指向
     // 回该 id；空洞返回空名
-    const uint64_t domain = h.name_table_.size();
+    const size_t domain = h.name_table_.size();
     for (int i = 0; i < 500; ++i) {
         const uint64_t id = rng() % domain;
         if (h.name_table_[id].length == 0) {
-            EXPECT_EQ(h.get_name(id), "");
+            EXPECT_EQ(h.get_name(CMNetId{id}), "");
         } else {
-            const std::string n = h.get_name(id);
+            const std::string n = h.get_name(CMNetId{id});
             const auto it = ref.find(n);
             ASSERT_NE(it, ref.end()) << "id=" << id;
             EXPECT_EQ(it->second, id) << n;
@@ -361,8 +438,8 @@ TEST(DSNameHasherTest, HatrieConsistencyAgainstReference) {
 
     // for_each 遍历导出：与参照集全量一致（backend 遍历契约）
     std::unordered_map<std::string, uint64_t> exported;
-    h.for_each([&exported](const CMString& n, uint64_t id) {
-        exported[n] = id;
+    h.for_each([&exported](const CMString& n, CMNetId id) {
+        exported[n] = id.value();
     });
     EXPECT_EQ(exported.size(), ref.size());
     for (const auto& [n, id] : ref) {
@@ -375,10 +452,10 @@ TEST(DSNameHasherTest, HatrieConsistencyAgainstReference) {
 TEST(DSBlockNamesTest, SerializeRoundTripBothHashers) {
     DSBlockNames names;  // 成员构造即非空（CMSharedPtr）
     names.block_name_ = "block_a";
-    names.instance_names_->assign("u1", 1);
-    names.instance_names_->assign("u2", 2);
-    names.net_names_->assign("n1", 1);
-    names.net_names_->assign("n2", 2);
+    names.instance_names_->assign("u1", CMInstanceId{1});
+    names.instance_names_->assign("u2", CMInstanceId{2});
+    names.net_names_->assign("n1", CMNetId{1});
+    names.net_names_->assign("n2", CMNetId{2});
 
     CMString blob;
     FLY_ENCODE(names, blob);
@@ -389,10 +466,10 @@ TEST(DSBlockNamesTest, SerializeRoundTripBothHashers) {
     // 成员为 CMSharedPtr（构造即非空）——框架 shared_ptr 分支按值落盘
     ASSERT_TRUE(back.instance_names_ != nullptr);
     ASSERT_TRUE(back.net_names_ != nullptr);
-    EXPECT_EQ(back.instance_names_->get_id("u1"), 1u);
-    EXPECT_EQ(back.instance_names_->get_name(2), "u2");
-    EXPECT_EQ(back.net_names_->get_id("n1"), 1u);
-    EXPECT_EQ(back.net_names_->get_name(2), "n2");
+    EXPECT_EQ(back.instance_names_->get_id("u1"), CMInstanceId{1});
+    EXPECT_EQ(back.instance_names_->get_name(CMInstanceId{2}), "u2");
+    EXPECT_EQ(back.net_names_->get_id("n1"), CMNetId{1});
+    EXPECT_EQ(back.net_names_->get_name(CMNetId{2}), "n2");
     EXPECT_EQ(back.net_names_->get_id("ghost"), DSNetNameHasher::kInvalidId);
 }
 
@@ -429,8 +506,8 @@ TEST(DSNameHasherR8dTest, LcpFormRandomNamesMatchForm1) {
         const std::string n =
             "sparse/" + make_hier_name(static_cast<uint64_t>(10000 + i * 3));
         const uint64_t id = 5000 + static_cast<uint64_t>(i) * 3;
-        form1.assign(n, id);
-        sealed_lcp.assign(n, id);
+        form1.assign(n, CMNetId{id});
+        sealed_lcp.assign(n, CMNetId{id});
     }
     ASSERT_EQ(form1.size(), sealed_lcp.size());
     sealed_lcp.finalize_for_save(true);
@@ -444,10 +521,12 @@ TEST(DSNameHasherR8dTest, LcpFormRandomNamesMatchForm1) {
     // 命中 checkpoint（rem=0 直取）与回退链（rem≠0 逐级截断）全覆盖
     const uint64_t domain = form1.name_domain();
     for (uint64_t id = 0; id < domain; ++id) {
-        EXPECT_EQ(sealed_lcp.get_name(id), form1.get_name(id)) << "id=" << id;
+        EXPECT_EQ(sealed_lcp.get_name(CMNetId{id}),
+                  form1.get_name(CMNetId{id}))
+            << "id=" << id;
     }
     // 正向：全部登记名 get_id 相等（backend 与 id→name 形态无关）
-    sealed_lcp.for_each([&](const CMString& n, uint64_t id) {
+    sealed_lcp.for_each([&](const CMString& n, CMNetId id) {
         EXPECT_EQ(form1.get_id(n), id) << n;
         EXPECT_EQ(sealed_lcp.get_id(n), id) << n;
     });
@@ -456,13 +535,13 @@ TEST(DSNameHasherR8dTest, LcpFormRandomNamesMatchForm1) {
 TEST(DSNameHasherR8dTest, LcpFormHolesAndEmptyDomain) {
     // 空洞占位语义封口后不变：未登记 id 域内返回空串
     DSNetNameHasher h;
-    h.assign("one", 1);
-    h.assign("three", 3);
+    h.assign("one", CMNetId{1});
+    h.assign("three", CMNetId{3});
     h.finalize_for_save(true);
-    EXPECT_EQ(h.get_name(0), "");
-    EXPECT_EQ(h.get_name(2), "");
-    EXPECT_EQ(h.get_name(1), "one");
-    EXPECT_EQ(h.get_name(3), "three");
+    EXPECT_EQ(h.get_name(CMNetId{0}), "");
+    EXPECT_EQ(h.get_name(CMNetId{2}), "");
+    EXPECT_EQ(h.get_name(CMNetId{1}), "one");
+    EXPECT_EQ(h.get_name(CMNetId{3}), "three");
     EXPECT_EQ(h.name_domain(), 4u);
 
     // 空 hasher 封口：形态置位、零结构、backend 可查（空）
@@ -502,10 +581,9 @@ TEST(DSNameHasherR8dTest, LcpFormLongClusterTruncation) {
     ASSERT_TRUE(sealed_lcp.is_lcp_form());
     // 逐 id 与形态一/原始名集双比对（emplace 序 = id 序）
     for (size_t i = 0; i < names.size(); ++i) {
-        EXPECT_EQ(sealed_lcp.get_name(static_cast<uint64_t>(i)), names[i])
-            << "name#" << i;
-        EXPECT_EQ(sealed_lcp.get_name(static_cast<uint64_t>(i)),
-                  form1.get_name(static_cast<uint64_t>(i)))
+        EXPECT_EQ(sealed_lcp.get_name(CMNetId{i}), names[i]) << "name#" << i;
+        EXPECT_EQ(sealed_lcp.get_name(CMNetId{i}),
+                  form1.get_name(CMNetId{i}))
             << "name#" << i;
     }
     EXPECT_EQ(sealed_lcp.lcp_suffix_table_.size(), names.size());
@@ -528,16 +606,16 @@ TEST(DSNameHasherR8dTest, ForEachNameByRankBothFormsSameOrder) {
         const std::string n = "sparse/" +
             make_hier_name(static_cast<uint64_t>(30000 + i * 7));
         const uint64_t id = 2000 + static_cast<uint64_t>(i) * 5;
-        form1.assign(n, id);
-        sealed_lcp.assign(n, id);
+        form1.assign(n, CMNetId{id});
+        sealed_lcp.assign(n, CMNetId{id});
     }
 
     using Entry = std::pair<uint64_t, std::string>;
     auto collect = [](const DSNetNameHasher& h) {
         std::vector<Entry> out;
         h.for_each_name_by_rank(
-            [&out](uint64_t id, const CMString& name) {
-                out.emplace_back(id, name);
+            [&out](CMNetId id, const CMString& name) {
+                out.emplace_back(id.value(), name);
             });
         return out;
     };
@@ -546,7 +624,7 @@ TEST(DSNameHasherR8dTest, ForEachNameByRankBothFormsSameOrder) {
     ASSERT_EQ(form1_seq.size(), form1.size());
     // 名字典序严格递增（rank 序语义）且 id 指向与 backend 全集一致
     std::unordered_map<std::string, uint64_t> ref;
-    form1.for_each([&ref](const CMString& n, uint64_t id) { ref[n] = id; });
+    form1.for_each([&ref](const CMString& n, CMNetId id) { ref[n] = id.value(); });
     for (size_t i = 1; i < form1_seq.size(); ++i) {
         EXPECT_LT(form1_seq[i - 1].second, form1_seq[i].second)
             << "rank=" << i;
@@ -571,17 +649,19 @@ TEST(DSNameHasherR8dTest, SealedReadOnlyAndFalseNoop) {
     // false 恒无操作（形态一默认路径零变化——arena/偏移表原样）
     h.finalize_for_save(false);
     EXPECT_FALSE(h.is_lcp_form());
+    EXPECT_EQ(h.lcp_form_, DSNameHasherForm::ARENA);
     EXPECT_EQ(h.name_arena_, "ba");
     EXPECT_EQ(h.name_table_.size(), 2u);
 
     h.finalize_for_save(true);
     EXPECT_TRUE(h.is_lcp_form());
+    EXPECT_EQ(h.lcp_form_, DSNameHasherForm::LCP);
     // 封口后构建期接口拒绝（快速失败防半更新态）
     EXPECT_THROW(h.emplace("c"), std::logic_error);
-    EXPECT_THROW(h.assign("d", 5), std::logic_error);
+    EXPECT_THROW(h.assign("d", CMNetId{5}), std::logic_error);
     // 查询面封口后可用
-    EXPECT_EQ(h.get_id("a"), 1u);
-    EXPECT_EQ(h.get_name(0), "b");
+    EXPECT_EQ(h.get_id("a"), CMNetId{1});
+    EXPECT_EQ(h.get_name(CMNetId{0}), "b");
     // 幂等：重复封口无操作（结构不重建）
     const size_t suffix_bytes = h.lcp_suffix_arena_.size();
     h.finalize_for_save(true);
@@ -594,7 +674,7 @@ TEST(DSNameHasherR8dTest, LcpFormSerializeRoundTrip) {
     DSNetNameHasher h;
     h.emplace("top/mod_a/inst_1_reg");
     h.emplace("top/mod_a/inst_12_reg");
-    h.assign("sparse/x_long_tail_name", 500);
+    h.assign("sparse/x_long_tail_name", CMNetId{500});
     h.finalize_for_save(true);
 
     CMString blob;
@@ -604,12 +684,12 @@ TEST(DSNameHasherR8dTest, LcpFormSerializeRoundTrip) {
     EXPECT_TRUE(back.is_lcp_form());
     EXPECT_EQ(back.size(), 3u);
     EXPECT_EQ(back.name_domain(), 501u);
-    EXPECT_EQ(back.get_name(0), "top/mod_a/inst_1_reg");
-    EXPECT_EQ(back.get_name(1), "top/mod_a/inst_12_reg");
-    EXPECT_EQ(back.get_name(500), "sparse/x_long_tail_name");
-    EXPECT_EQ(back.get_name(250), "");  // 空洞随形态二保留
-    EXPECT_EQ(back.get_id("top/mod_a/inst_12_reg"), 1u);
-    EXPECT_EQ(back.get_id("sparse/x_long_tail_name"), 500u);
+    EXPECT_EQ(back.get_name(CMNetId{0}), "top/mod_a/inst_1_reg");
+    EXPECT_EQ(back.get_name(CMNetId{1}), "top/mod_a/inst_12_reg");
+    EXPECT_EQ(back.get_name(CMNetId{500}), "sparse/x_long_tail_name");
+    EXPECT_EQ(back.get_name(CMNetId{250}), "");  // 空洞随形态二保留
+    EXPECT_EQ(back.get_id("top/mod_a/inst_12_reg"), CMNetId{1});
+    EXPECT_EQ(back.get_id("sparse/x_long_tail_name"), CMNetId{500});
 }
 
 TEST(DSNameHasherR8dTest, LcpFormSerializeRoundTripRebuildPath) {
@@ -627,10 +707,10 @@ TEST(DSNameHasherR8dTest, LcpFormSerializeRoundTripRebuildPath) {
     FLY_DECODE(blob, DSNetNameHasher, back);
     EXPECT_TRUE(back.is_lcp_form());
     EXPECT_EQ(back.size(), 2u);
-    EXPECT_EQ(back.get_id("aa/bb_x1"), 0u);
-    EXPECT_EQ(back.get_id("aa/bb_x2"), 1u);
-    EXPECT_EQ(back.get_name(0), "aa/bb_x1");
-    EXPECT_EQ(back.get_name(1), "aa/bb_x2");
+    EXPECT_EQ(back.get_id("aa/bb_x1"), CMNetId{0});
+    EXPECT_EQ(back.get_id("aa/bb_x2"), CMNetId{1});
+    EXPECT_EQ(back.get_name(CMNetId{0}), "aa/bb_x1");
+    EXPECT_EQ(back.get_name(CMNetId{1}), "aa/bb_x2");
 }
 
 TEST(DSNameHasherR8dTest, LcpFormSerializeRoundTripEmpty) {
@@ -668,14 +748,18 @@ TEST(DSNameHasherR8dTest, LightweightPerfObservation) {
         names.push_back(std::string("top/") + kScopes[rng() % 8] + "/u_" +
                         std::to_string(rng() % 4096) + "/inst_[" +
                         std::to_string(i) + "]_reg_q_out");
-        h.assign(names.back(), static_cast<uint64_t>(i + 1));  // id 1..kN
+        h.assign(names.back(),
+                 CMNetId{static_cast<uint64_t>(i + 1)});  // id 1..kN
     }
 
     // 计时辅助：随机 id get_name（结果累计防消除；返回毫秒 + 吞吐字节）
     auto time_random_get = [&h, &rng](int iters, uint64_t* sink) {
         const auto t0 = std::chrono::steady_clock::now();
         for (int i = 0; i < iters; ++i) {
-            *sink += h.get_name(static_cast<uint64_t>(rng() % kN) + 1).size();
+            *sink += h
+                         .get_name(CMNetId{
+                             (rng() % kN) + 1})
+                         .size();
         }
         const auto t1 = std::chrono::steady_clock::now();
         return std::chrono::duration<double, std::milli>(t1 - t0).count();
@@ -701,7 +785,7 @@ TEST(DSNameHasherR8dTest, LightweightPerfObservation) {
     // 正确性红线（观测用例同样保真）：随机 1000 id 与注册 oracle 全等
     for (int i = 0; i < 1000; ++i) {
         const size_t k = static_cast<size_t>(rng() % kN);
-        EXPECT_EQ(h.get_name(static_cast<uint64_t>(k) + 1), names[k]);
+        EXPECT_EQ(h.get_name(CMNetId{k + 1}), names[k]);
     }
     EXPECT_GT(sink1 + sink2, 0u);
 

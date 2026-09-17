@@ -7,7 +7,8 @@ EXDSCell、VIARULE 展开为 EXDSViaCell）。
 R6：EXDSInstance（pos/orient 二元组）。
 R7 name 体系收敛（㊱㊳㊴㊸㊹㊻）：EXDSPin/EXDSInstance 删 name 面（name
 分层存储在 hasher）；EXDSBlockNames（㊵② 伴生对象，DSBlockNames_<i>
-独立落盘）+ EXDSNameMapper（㊻ 注入式轻壳，运行时构造不落盘）+
+独立落盘）+ EXDSInstanceNameMapper/EXDSNetNameMapper（㊻ 注入式轻壳双实例
+绑定，运行时构造不落盘）+
 ds_make_name_mapper 统一组装工厂。
 COMPONENTS 解析：EXDSDensityGrid/EXDSInstanceStats/EXDSBlockBuildData
 （per-DEF 产物只读面）+ EXDSDefComponentsStats + ds_parse_def_components
@@ -76,7 +77,8 @@ from _fly_emir_design import (
     EXDSInstanceStats,
     EXDSLayer,
     EXDSLefParseStats,
-    EXDSNameMapper,
+    EXDSInstanceNameMapper,
+    EXDSNetNameMapper,
     EXDSNetBuildData,
     EXDSNetConnection,
     EXDSNetStats,
@@ -108,7 +110,8 @@ from _fly_emir_design import (
     ds_collect_pg_net_slice,
     ds_decide_partitions,
     ds_flatten_block,
-    ds_make_name_mapper,
+    ds_make_instance_name_mapper,
+    ds_make_net_name_mapper,
     ds_merge_block_build,
     ds_merge_cell_lef,
     ds_merge_def_header,

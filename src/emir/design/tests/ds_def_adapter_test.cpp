@@ -263,9 +263,9 @@ TEST(DsDefRoundTripTest, ProductsIntoDesignRoundTrip) {
 
     // port pin id 进全局 pin 名字空间（裁定 3：键 = 裸 port 名）+ 几何
     // 重挂（(block cell id, 全局 pin id) 键，经独立对象往返）
-    const uint32_t block_cell_id = back.cell_names_.get_id("block_a");
-    const uint32_t pin_in_id = back.pin_names_.get_id("PIN_A");
-    const uint32_t pin_out_id = back.pin_names_.get_id("PIN_OUT");
+    const CMCellId block_cell_id = back.cell_names_.get_id("block_a");
+    const CMPinId pin_in_id = back.pin_names_.get_id("PIN_A");
+    const CMPinId pin_out_id = back.pin_names_.get_id("PIN_OUT");
     EXPECT_EQ(pin_in_id, 0u);
     EXPECT_EQ(pin_out_id, 1u);
     EXPECT_EQ(blk->pin_at(0).get_pin_id(), pin_in_id);
@@ -291,8 +291,8 @@ TEST(DsDefRoundTripTest, ProductsIntoDesignRoundTrip) {
     EXPECT_EQ(gen->top_enclosure_at(0).get_x_low(), -90);
 
     // namemap 双向（block cell id ↔ 名，同一 cell 空间）
-    EXPECT_EQ(back.cell_names_.get_id("block_a"), 0u);
-    EXPECT_EQ(back.cell_names_.get_name(0), "block_a");
+    EXPECT_EQ(back.cell_names_.get_id("block_a"), CMCellId{0});
+    EXPECT_EQ(back.cell_names_.get_name(CMCellId{0}), "block_a");
 }
 
 }  // namespace

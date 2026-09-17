@@ -9,6 +9,11 @@ namespace fly {
 // 实例/网 = 单段名）；root 实例名恒空串（get_full_name(0) 返回 ""、
 // get_global_id("") = 0，对称语义，仅 instance 维度）。
 
+// 维度编译期判别（审计 B-5c：类型即维度——DSNameMapperKind 运行时
+// 分派废除后的 if constexpr 分派键）
+template <typename IdT>
+inline constexpr bool kIsInstanceMapper = std::is_same_v<IdT, CMInstanceId>;
+
 // —— set_block_hasher 便利口（cell name 经树解析）——
 
 template <typename IdT>
@@ -90,9 +95,11 @@ IdT DSNameMapperT<IdT>::get_global_id(const CMString& full_hier_name) const {
     // 空串 = root 自身（2026-09-16 裁定 2 对称语义：root 实例名恒空串，
     // global id 0）。net 维度无「root 网」，恒未命中
     if (full_hier_name.empty()) {
-        return kind_ == DSNameMapperKind::INSTANCE
-                   ? tree_->node(0).get_self_global_id().value()
-                   : kInvalidId;
+        if constexpr (kIsInstanceMapper<IdT>) {
+            return tree_->node(0).get_self_global_id();
+        } else {
+            return kInvalidId;
+        }
     }
     // 分段全程无堆（R8c 裁定 53 顺带项）：叶段 = 最后一个 '/' 之后的
     // 尾段（最后一段必经叶层 hasher），前缀 = 其前全部段（即目标 block
@@ -130,24 +137,24 @@ IdT DSNameMapperT<IdT>::get_global_id(const CMString& full_hier_name) const {
     if (!is_valid_id(local)) {
         return kInvalidId;
     }
-    // 区间换算（⑨）：instance = start + local（local 0 → 自身 ⑧，hasher
-    // 不登记 local 0、防御分支）；net = start + local（区间长度含 local 0
-    // 空洞位，2026-09-14 裁定——无 −1）。树字段为强类型 id，机器值域
-    // （IdT = 裸 uint64）边界显式转换
-    if (kind_ == DSNameMapperKind::INSTANCE) {
+    // 区间换算（⑨）——维度即类型（审计 B-5c：if constexpr 编译期分派
+    // 各维度唯一路径）：instance = start + local（local 0 → 自身 ⑧，
+    // hasher 不登记 local 0、防御分支）；net = start + local（区间长度
+    // 含 local 0 空洞位，2026-09-14 裁定——无 −1）
+    if constexpr (kIsInstanceMapper<IdT>) {
         if (local == 0) {
-            return cur.get_self_global_id().value();
+            return cur.get_self_global_id();
         }
         if (local >= cur.get_instance_count()) {
             return kInvalidId;  // 越出该 block 区间（防御）
         }
-        return (cur.get_instance_start() + local).value();
+        return cur.get_instance_start() + local;
+    } else {
+        if (local == 0 || local >= cur.get_net_count()) {
+            return kInvalidId;  // net local 0 = 空洞位（不登记名）/ 越界
+        }
+        return cur.get_net_start() + local;
     }
-    if (local == 0 || local >= cur.get_net_count()) {
-        return kInvalidId;  // net local 0 = 空洞位（不登记名）/ 越界
-    }
-    // 区间长度含空洞位（2026-09-14 裁定）：global = start + local 无 −1
-    return (cur.get_net_start() + local).value();
 }
 
 // —— get_full_name：区间反查 → 叶层 hasher → 递归向上拼 prefix ——
@@ -157,15 +164,15 @@ CMString DSNameMapperT<IdT>::get_full_name(IdT global_id) const {
     if (tree_ == nullptr || tree_->node_count() == 0 || !is_valid_id(global_id)) {
         return {};
     }
-    if (kind_ == DSNameMapperKind::INSTANCE) {
-        const uint32_t node_id = tree_->block_of_instance(
-            CMInstanceId{global_id});
+    if constexpr (kIsInstanceMapper<IdT>) {
+        const uint32_t node_id = tree_->block_of_instance(global_id);
         if (node_id == DSHierTree::kNoNode) {
             return {};
         }
         const DSHierNode& n = tree_->node(node_id);
         const CMString prefix = hier_path_of(*tree_, node_id);
-        // 树字段强类型 id——与机器值域 IdT（裸 uint64）边界显式转换
+        // 树区间 start 强类型同型——local = global − start（同类减法 =
+        // 裸差值，回本维度强类型）
         const IdT local = global_id - n.get_instance_start().value();
         if (local == 0) {
             return prefix;  // block instance 自身路径（⑧ local 0 占位）
@@ -180,58 +187,80 @@ CMString DSNameMapperT<IdT>::get_full_name(IdT global_id) const {
         }
         // 裁定 1：root 块（prefix 空）的顶层实例 = 单段名
         return prefix.empty() ? name : prefix + "/" + name;
+    } else {
+        const uint32_t node_id = tree_->block_of_net(global_id);
+        if (node_id == DSHierTree::kNoNode) {
+            return {};
+        }
+        const DSHierNode& n = tree_->node(node_id);
+        const auto it = injected_.find(n.get_block_cell_id());
+        if (it == injected_.end()) {
+            return {};
+        }
+        const CMString& name =
+            it->second->get_name(global_id - n.get_net_start().value());
+        if (name.empty()) {
+            return {};  // 空洞（local 0 空洞位 / 未登记下标）
+        }
+        // 裁定 1：root 块（prefix 空）的顶层网 = 单段名
+        const CMString prefix = hier_path_of(*tree_, node_id);
+        return prefix.empty() ? name : prefix + "/" + name;
     }
-    const uint32_t node_id =
-        tree_->block_of_net(CMNetId{global_id});
-    if (node_id == DSHierTree::kNoNode) {
-        return {};
-    }
-    const DSHierNode& n = tree_->node(node_id);
-    const auto it = injected_.find(n.get_block_cell_id());
-    if (it == injected_.end()) {
-        return {};
-    }
-    const CMString& name =
-        it->second->get_name(global_id - n.get_net_start().value());
-    if (name.empty()) {
-        return {};  // 空洞（local 0 空洞位 / 未登记下标）
-    }
-    // 裁定 1：root 块（prefix 空）的顶层网 = 单段名
-    const CMString prefix = hier_path_of(*tree_, node_id);
-    return prefix.empty() ? name : prefix + "/" + name;
 }
 
-// 显式实例化（业务唯一实例化组；IdT = uint64，㊹ global id 空间）
-template class DSNameMapperT<uint64_t>;
+// 显式实例化（业务唯一实例化组；两维度强类型，审计 B-5c）
+template class DSNameMapperT<CMInstanceId>;
+template class DSNameMapperT<CMNetId>;
 
 // —— 统一组装工厂（㊵②+㊻：读 DSBlockNames + 构造 mapper + 注入）——
 
-DSInstanceNameMapper ds_make_name_mapper(
+namespace {
+
+// 树观察 = aliasing shared_ptr（持 design 计数、指向其内联树成员——
+// 评审 B-5a：mapper 生命周期自保证树存活，调用侧不再背「design 存活
+// 期覆盖 mapper」的契约）
+CMSharedPtr<const DSHierTree> design_tree_view(
+    const CMSharedPtr<const DSDesign>& design) {
+    // aliasing 构造持同一计数、指向宿主内联树成员（design 引用传参——
+    // 先取成员地址再共享计数，避开实参求值顺序陷阱）
+    return CMSharedPtr<const DSHierTree>(design, &design->get_hier_tree());
+}
+}  // namespace
+
+DSInstanceNameMapper ds_make_instance_name_mapper(
     CMSharedPtr<const DSDesign> design,
-    const CMVector<CMSharedPtr<const DSBlockNames>>& names,
-    DSNameMapperKind kind) {
-    // 树观察 = aliasing shared_ptr（持 design 计数、指向其内联树成员
-    // ——评审 B-5a：mapper 生命周期自保证树存活，调用侧不再背
-    // 「design 存活期覆盖 mapper」的契约）
-    DSInstanceNameMapper mapper(
-        CMSharedPtr<const DSHierTree>(design, &design->get_hier_tree()),
-        kind);
+    const CMVector<CMSharedPtr<const DSBlockNames>>& names) {
+    DSInstanceNameMapper mapper(design_tree_view(design));
     for (const CMSharedPtr<const DSBlockNames>& bn : names) {
         if (bn == nullptr) {
             continue;
         }
-        // hasher 底座裸值域豁免边界：cell id 查询/注入两侧显式互转
-        const uint32_t cell_id = design->cell_names_.get_id(bn->block_name_);
-        if (!DSCellNameHasher::is_valid_id(cell_id)) {
+        const CMCellId cell_id = design->cell_names_.get_id(bn->block_name_);
+        if (!cell_id.is_valid()) {
             continue;  // block cell 未入全局表（防御跳过）
         }
         // 零拷贝：伴生对象持有即 CMSharedPtr，const 化转换共享计数
         //（CMSharedPtr<T> → CMSharedPtr<const T> 隐式）
-        const CMSharedPtr<const DSNameHasherT<uint64_t>> view =
-            kind == DSNameMapperKind::INSTANCE
-                ? CMSharedPtr<const DSInstanceNameHasher>(bn->instance_names_)
-                : CMSharedPtr<const DSNetNameHasher>(bn->net_names_);
-        mapper.set_block_hasher(CMCellId{cell_id}, view);
+        mapper.set_block_hasher(
+            cell_id, CMSharedPtr<const DSInstanceNameHasher>(bn->instance_names_));
+    }
+    return mapper;
+}
+
+DSNetNameMapper ds_make_net_name_mapper(
+    CMSharedPtr<const DSDesign> design,
+    const CMVector<CMSharedPtr<const DSBlockNames>>& names) {
+    DSNetNameMapper mapper(design_tree_view(design));
+    for (const CMSharedPtr<const DSBlockNames>& bn : names) {
+        if (bn == nullptr) {
+            continue;
+        }
+        const CMCellId cell_id = design->cell_names_.get_id(bn->block_name_);
+        if (!cell_id.is_valid()) {
+            continue;  // block cell 未入全局表（防御跳过）
+        }
+        mapper.set_block_hasher(
+            cell_id, CMSharedPtr<const DSNetNameHasher>(bn->net_names_));
     }
     return mapper;
 }

@@ -31,14 +31,14 @@ CMViaCellId ds_resolve_via_cell(const DSDesign& design,
     //（design_name::via_name）——tech/cell lef 的同名 via（形状可能不同，
     // ⑫ 正为防此合并污染而独立登记）不得遮蔽本 DEF 定义
     if (!design_name.empty()) {
-        const CMViaCellId prefixed{
-            design.via_cell_names_.get_id(design_name + "::" + via_name)};
+        const CMViaCellId prefixed =
+            design.via_cell_names_.get_id(design_name + "::" + via_name);
         if (prefixed.is_valid()) {
             return prefixed;
         }
     }
     // 回退：plain 名（tech/cell lef 来源 via）
-    const CMViaCellId plain{design.via_cell_names_.get_id(via_name)};
+    const CMViaCellId plain = design.via_cell_names_.get_id(via_name);
     if (plain.is_valid()) {
         return plain;
     }
@@ -57,10 +57,10 @@ void DSNetConnectionParseNode::handle(DSNetContext& ctx) {
     // ⑨ local net id 沿用 S5a 网名扫描分配的 local id；未收录（正常数据
     // 流不会发生——S5a NetNameCbk 对全部网名登记，防御兜底）计数跳过。
     // R7 ㊱/㊵②：经 net hasher 查询（block_data 需已注入 DSBlockNames）
-    const CMNetId local_id{
+    const CMNetId local_id =
         ctx.block_data->net_names_
             ? ctx.block_data->net_names_->get_id(ctx.net_name)
-            : 0};
+            : CMNetId{};
     if (!local_id.is_valid()) {
         ++ctx.net_data->stats_.skipped_net_count;
         return;  // local_net_id 保持 0，后续节点跳过
@@ -125,10 +125,10 @@ void DSNetConnectionParseNode::handle(DSNetContext& ctx) {
     for (DSNetRawConnection& raw : ctx.connections) {
         DSNetConnection conn;
         if (raw.instance_name == "PIN") {
-            const CMPinId port_pin{
-                ctx.design->pin_names_.get_id(raw.pin_name)};
-            const CMCellId block_cell_id{
-                ctx.design->cell_names_.get_id(block_name)};
+            const CMPinId port_pin =
+                ctx.design->pin_names_.get_id(raw.pin_name);
+            const CMCellId block_cell_id =
+                ctx.design->cell_names_.get_id(block_name);
             const bool cell_known = block_cell_id.is_valid() &&
                                     block_cell_id < ctx.design->cells_.size();
             // 裁定 3 存在性校验：port pin 须在 block cell 定义内
@@ -145,11 +145,11 @@ void DSNetConnectionParseNode::handle(DSNetContext& ctx) {
             conn.pin_id_ = port_pin;
             conn.set_port();
         } else {
-            const CMInstanceId inst_local{
+            const CMInstanceId inst_local =
                 ctx.block_data->instance_names_
                     ? ctx.block_data->instance_names_->get_id(
                           raw.instance_name)
-                    : CMInstanceId::kInvalid};
+                    : CMInstanceId{};
             if (!inst_local.is_valid()) {
                 ++ctx.net_data->stats_.skipped_invalid_connection_count;
                 MSG("DSGN::0025", 0,
@@ -171,8 +171,8 @@ void DSNetConnectionParseNode::handle(DSNetContext& ctx) {
             }
             const DSCell& cell =
                 ctx.design->cells_[(*iit->second).get_cell_id().value()];
-            const CMPinId pin_id{
-                ctx.design->pin_names_.get_id(raw.pin_name)};
+            const CMPinId pin_id =
+                ctx.design->pin_names_.get_id(raw.pin_name);
             // 裁定 3 存在性校验：全局名字命中 ≠ 该 cell 有此 pin
             if (!pin_id.is_valid() || !fill_pin_flags(conn, cell, pin_id)) {
                 ++ctx.net_data->stats_.skipped_invalid_connection_count;

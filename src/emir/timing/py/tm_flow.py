@@ -40,7 +40,7 @@ from uuid import uuid4
 
 from fly import as_task, fatal_message, message
 
-from emir.design import DesignDb, ds_make_name_mapper
+from emir.design import DesignDb, ds_make_instance_name_mapper
 
 from .tm_db import TimingDb
 from .tm_export import (
@@ -93,11 +93,12 @@ def _snapshot_design_task(db, design_db, uid, files, plan_key):
         try:
             names_list.append(
                 design_db.read_object(DesignDb.names_obj_name(i)))
-        except Exception:
-            break
+        except KeyError:
+            break  # 连续段结束（read_object 未命中抛 KeyError——宽 catch
+                   # 会吞真异常，终审 #2 收窄）
         i += 1
 
-    mapper = ds_make_name_mapper(design, names_list, 0)  # instance 维度
+    mapper = ds_make_instance_name_mapper(design, names_list)
     for f in files:
         if f["kind"] == 1 and mapper.get_global_id(f["block_inst"]) is None:
             raise ValueError(

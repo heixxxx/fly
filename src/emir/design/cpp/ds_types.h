@@ -151,8 +151,9 @@ public:
     DSLayerNameHasher layer_names_;
 
     // find_layer 未命中的层 id（R7 ㊴ 收编：值不变 = 类型最大值，与
-    // DSLayerNameHasher::kInvalidId 等值，指向 hasher 哨兵口径）
-    static constexpr uint32_t kNoLayer = DSLayerNameHasher::kInvalidId;
+    // DSLayerNameHasher::kInvalidId 同一口径；hasher 底座强类型化后
+    // 随之为 CMLayerId 哨兵实例）
+    static constexpr CMLayerId kNoLayer = DSLayerNameHasher::kInvalidId;
 
     // 构建期接口。add_layer 追加并分配回填层 id（重名由调用方负责——
     // lef 间重复层的 DSGN 语义在适配层处理；name 索引重名保留首个）；
@@ -1089,9 +1090,9 @@ public:
     CMSharedPtr<DSPinGeometry> pin_geometry_;
 
     // find_* 未命中的 id（R7 ㊴ 收编：值不变 = 类型最大值，与
-    // DSCellNameHasher::kInvalidId 等值同口径；is_valid_id 判定见
-    // DSCellNameHasher）
-    static constexpr uint32_t kInvalidId = DSCellNameHasher::kInvalidId;
+    // DSCellNameHasher::kInvalidId 同一口径；hasher 底座强类型化后随之
+    // 为 CMCellId 哨兵实例。is_valid_id 判定见 DSCellNameHasher）
+    static constexpr CMCellId kInvalidId = DSCellNameHasher::kInvalidId;
 
     // 构建期接口：追加并注册 hasher，返回 id（重名由调用方保证唯一——
     // 重复 macro 的保留首份 DSGN 语义在适配层处理；hasher emplace 重名

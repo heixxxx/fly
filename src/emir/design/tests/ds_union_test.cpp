@@ -33,13 +33,13 @@ using namespace fly;
 // 合成 per-DEF 实例产物：(实例名, cell id) 序列 + 网数（网名 n0..n{k-1}）
 DSBlockBuildData make_block(
     const char* name,
-    const CMVector<std::pair<CMString, uint32_t>>& instances,
+    const CMVector<std::pair<CMString, CMCellId>>& instances,
     size_t net_count) {
     DSBlockBuildData b;
     b.init_placeholder(name, CMCellId{});
     for (const auto& [iname, cell_id] : instances) {
         DSInstance inst;
-        inst.set_cell_id(CMCellId{cell_id});
+        inst.set_cell_id(cell_id);
         b.add_instance(std::move(inst), iname);
     }
     for (size_t i = 0; i < net_count; ++i) {
@@ -115,8 +115,8 @@ struct UnionEnv {
         bot.set_name("bottom");
         bot.set_block_cell();
         design.add_cell(std::move(bot));
-        const uint32_t mid_id = design.cell_names_.get_id("mid");
-        const uint32_t bottom_id = design.cell_names_.get_id("bottom");
+        const CMCellId mid_id = design.cell_names_.get_id("mid");
+        const CMCellId bottom_id = design.cell_names_.get_id("bottom");
 
         top = make_block("top", {{"m1", mid_id}, {"m2", mid_id}}, 3);
         top_nets = make_nets("top", {
@@ -215,7 +215,7 @@ TEST(DSNetUnionTest, MergesEquivalentParentNetsWithCanonicalRoot) {
     cb.set_name("cb");
     cb.set_block_cell();
     design.add_cell(std::move(cb));
-    const uint32_t cb_id = design.cell_names_.get_id("cb");
+    const CMCellId cb_id = design.cell_names_.get_id("cb");
 
     // top：c1→cb；网 na(1)：(c1 P1)、nb(2)：(c1 P2)
     // cb ：网 nc(1)：(PIN P1) + (PIN P2)——一子网连两 port → 两父网

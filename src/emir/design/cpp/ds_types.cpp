@@ -72,8 +72,9 @@ CMLayerId DSStack::add_layer(DSLayer&& layer) {
 }
 
 CMLayerId DSStack::find_layer(const CMString& name) const {
-    // R7 ㊸：直查序列化 hasher（原 layer_index_ 惰性重建已删除）
-    return CMLayerId{layer_names_.get_id(name)};
+    // R7 ㊴：直查序列化 hasher（原 layer_index_ 惰性重建已删除）；hasher
+    // 底座强类型化后 get_id 即返回 CMLayerId（值域不变）
+    return layer_names_.get_id(name);
 }
 
 CMLayerId ds_resolve_layer_id(const CMString& name, const DSStack& stack) {
@@ -169,13 +170,13 @@ const CMVector<DSShapeRef>* DSPinGeometry::geometry_of(
 // —— DSDesign ——
 
 CMCellId DSDesign::add_cell(DSCell&& cell) {
-    const CMCellId id{cell_names_.emplace(cell.name_)};
+    const CMCellId id = cell_names_.emplace(cell.name_);
     cells_.push_back(std::move(cell));
     return id;
 }
 
 CMViaCellId DSDesign::add_via_cell(DSViaCell&& via) {
-    const CMViaCellId id{via_cell_names_.emplace(via.name_)};
+    const CMViaCellId id = via_cell_names_.emplace(via.name_);
     via_cells_.push_back(std::move(via));
     return id;
 }
@@ -183,12 +184,12 @@ CMViaCellId DSDesign::add_via_cell(DSViaCell&& via) {
 CMPinId DSDesign::register_pin(const CMString& pin_name) {
     // 2026-09-16 裁定 3：键 = 裸 pin 名，同名保留首份返回既有 id（幂等
     // 分配）；未命中分配新 id（= 已登记名数）并双写
-    const CMPinId existing{pin_names_.get_id(pin_name)};
+    const CMPinId existing = pin_names_.get_id(pin_name);
     if (existing.is_valid()) {
         return existing;
     }
     const CMPinId id{static_cast<CMPinId::int_type>(pin_names_.size())};
-    pin_names_.assign(pin_name, id.value());
+    pin_names_.assign(pin_name, id);
     return id;
 }
 
@@ -199,12 +200,12 @@ void DSDesign::add_cell_at(CMCellId cell_id, DSCell&& cell) {
     if (cell_id >= cells_.size()) {
         cells_.resize(cell_id.value() + 1);
     }
-    cell_names_.assign(cell.name_, cell_id.value());
+    cell_names_.assign(cell.name_, cell_id);
     cells_[cell_id.value()] = std::move(cell);
 }
 
 const DSCell* DSDesign::find_cell(const CMString& name) const {
-    const CMCellId id{cell_names_.get_id(name)};
+    const CMCellId id = cell_names_.get_id(name);
     if (!id.is_valid()) {
         return nullptr;
     }
@@ -213,7 +214,7 @@ const DSCell* DSDesign::find_cell(const CMString& name) const {
 }
 
 const DSViaCell* DSDesign::find_via_cell(const CMString& name) const {
-    const CMViaCellId id{via_cell_names_.get_id(name)};
+    const CMViaCellId id = via_cell_names_.get_id(name);
     if (!id.is_valid()) {
         return nullptr;
     }
@@ -227,7 +228,7 @@ CMString DSDesign::pin_name_of(CMPinId pin_id) const {
     if (!pin_id.is_valid() || pin_id >= pin_names_.name_table_.size()) {
         return {};
     }
-    return pin_names_.get_name(pin_id.value());
+    return pin_names_.get_name(pin_id);
 }
 
 DSCell& DSDesign::get_cell(CMCellId cell_id) {
@@ -488,9 +489,10 @@ CMInstanceId DSBlockBuildData::add_instance(DSInstance&& inst,
                                             const CMString& name) {
     // ㊳ 64 位 local id（⑧ 从 1 起）；实例名登记双向 hasher（R7 ㊱：
     // DSInstance 不存 name）。重名防御性覆盖（DEF 语义保证唯一）。
-    // hasher 底座 IdT = 裸值域（查询机器参数），强类型边界显式转换
+    // hasher 底座强类型化（审计 B-4）：assign 的 id 参数 = CMInstanceId，
+    // 值域与裸值形态逐位同宽
     const CMInstanceId id = next_instance_id_++;
-    instance_names_->assign(name, id.value());
+    instance_names_->assign(name, id);
     instances_.emplace(id, std::make_shared<DSInstance>(std::move(inst)));
     return id;
 }
@@ -499,12 +501,12 @@ CMNetId DSBlockBuildData::register_net(const CMString& name) {
     // 重名保留首份（同 DEF 内 NETS/SPECIALNETS 跨段重名兜底，⑨ local
     // id 从 1 起）
     ensure_names();
-    const CMNetId existing{net_names_->get_id(name)};
+    const CMNetId existing = net_names_->get_id(name);
     if (existing.is_valid()) {
         return existing;
     }
     const CMNetId id = next_net_id_++;
-    net_names_->assign(name, id.value());
+    net_names_->assign(name, id);
     return id;
 }
 
@@ -523,7 +525,7 @@ CMWeakPtr<const DSInstance> DSBlockBuildData::find_instance_by_name(
     if (!instance_names_) {
         return {};
     }
-    const CMInstanceId id{instance_names_->get_id(name)};
+    const CMInstanceId id = instance_names_->get_id(name);
     return id.is_valid() ? find_instance(id) : CMWeakPtr<const DSInstance>{};
 }
 
@@ -535,7 +537,7 @@ std::optional<CMString> DSBlockBuildData::net_name_at(CMNetId local_id) const {
         return std::nullopt;
     }
     // 空洞返回空串（语义同 R7 空名占位——与 nullopt 可区分）
-    return net_names_->get_name(local_id.value());
+    return net_names_->get_name(local_id);
 }
 
 

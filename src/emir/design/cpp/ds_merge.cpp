@@ -64,7 +64,7 @@ int ds_merge_cell_lef(DSDesign& dst, const DSDesign& src_part,
                 continue;  // 局部 hasher 与 pin 集不一致（不应发生，防御）
             }
             const CMString key =
-                src_part.pin_names_.get_name(local_pin_id.value());
+                src_part.pin_names_.get_name(local_pin_id);
             if (key.empty()) {
                 continue;  // 局部 hasher 空洞（assign 稀疏未登记下标）
             }
@@ -470,7 +470,7 @@ DSHierTree ds_build_hier_tree(
                         ? composite.compose((*iit->second).get_transform())
                         : composite;
                 visit(child_def,
-                      block.instance_names_->get_name(local_id.value()),
+                      block.instance_names_->get_name(local_id),
                       node_id, node.instance_start_ + local_id,
                       child_composite);
             }

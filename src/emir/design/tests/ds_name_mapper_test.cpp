@@ -11,8 +11,10 @@
 //   5. 注入式轻壳（㊻）：set_block_hasher 按 cell id（主口）/ cell name
 //      （便利口，经树解析）注入；mapper 不序列化 hasher（编译面无
 //      FLY_SERIALIZE）；
-//   6. 两维度（DSInstanceNameMapper/DSNetNameMapper = <uint64_t>，㊹）
-//      同一模板实例化、维度运行时区分——net 的区间换算与 instance 不同。
+//   6. 两维度（审计 B-5c：DSInstanceNameMapper = <CMInstanceId>、
+//      DSNetNameMapper = <CMNetId> 强类型双实例化，维度即类型——原
+//      DSNameMapperKind 运行时分派废除）；net 的区间换算与 instance
+//      不同。
 // 构造：三层嵌套（top → mid ×1 → bottom ×2）纯合成，hasher 手工登记。
 #include <emir/design/cpp/ds_name_hasher.h>
 #include <emir/design/cpp/ds_name_mapper.h>
@@ -109,16 +111,16 @@ struct MapperEnv {
         tree.design_name_ = "top";
 
         // hasher 登记（S5a 语义：local id 从 1 起）
-        top.inst.assign("i1", 1);
-        top.inst.assign("i2", 2);
-        top.inst.assign("i3", 3);
-        top.net.assign("n0", 1);
-        top.net.assign("n1", 2);
-        mid.inst.assign("i1", 1);
-        mid.inst.assign("i2", 2);
-        mid.net.assign("n0", 1);
-        bottom.inst.assign("i1", 1);
-        bottom.net.assign("n0", 1);
+        top.inst.assign("i1", CMInstanceId{1});
+        top.inst.assign("i2", CMInstanceId{2});
+        top.inst.assign("i3", CMInstanceId{3});
+        top.net.assign("n0", CMNetId{1});
+        top.net.assign("n1", CMNetId{2});
+        mid.inst.assign("i1", CMInstanceId{1});
+        mid.inst.assign("i2", CMInstanceId{2});
+        mid.net.assign("n0", CMNetId{1});
+        bottom.inst.assign("i1", CMInstanceId{1});
+        bottom.net.assign("n0", CMNetId{1});
     }
 };
 
@@ -134,8 +136,7 @@ void attach_cell_ids(MapperEnv& env) {
 // 全量注入的 instance mapper
 DSInstanceNameMapper make_full_instance_mapper(MapperEnv& env) {
     attach_cell_ids(env);
-    DSInstanceNameMapper mapper(test::borrow(env.tree),
-                                DSNameMapperKind::INSTANCE);
+    DSInstanceNameMapper mapper(test::borrow(env.tree));
     // hasher 级共享注入：CMSharedPtr const 化（零拷贝零 move）
     mapper.set_block_hasher(CMCellId{0}, env.top.names->instance_names_);
     mapper.set_block_hasher(CMCellId{1}, env.mid.names->instance_names_);
@@ -182,19 +183,19 @@ TEST(DSNameMapperTest, GetFullNameBuildsHierarchyPrefix) {
     const DSInstanceNameMapper mapper = make_full_instance_mapper(env);
 
     // 裁定 2 对称语义：root（global 0）→ 空串（root 实例名恒空串）
-    EXPECT_EQ(mapper.get_full_name(0), "");
+    EXPECT_EQ(mapper.get_full_name(CMInstanceId{0}), "");
     // block instance 自身（self_global_id 落在父块区间）→ 自身路径
-    EXPECT_EQ(mapper.get_full_name(2), "i2");
-    EXPECT_EQ(mapper.get_full_name(5), "i2/i1");
-    EXPECT_EQ(mapper.get_full_name(6), "i2/i2");
+    EXPECT_EQ(mapper.get_full_name(CMInstanceId{2}), "i2");
+    EXPECT_EQ(mapper.get_full_name(CMInstanceId{5}), "i2/i1");
+    EXPECT_EQ(mapper.get_full_name(CMInstanceId{6}), "i2/i2");
     // 叶实例 → prefix + 实例名（顶层叶 = 单段名）
-    EXPECT_EQ(mapper.get_full_name(1), "i1");
-    EXPECT_EQ(mapper.get_full_name(3), "i3");
-    EXPECT_EQ(mapper.get_full_name(8), "i2/i1/i1");
-    EXPECT_EQ(mapper.get_full_name(10), "i2/i2/i1");
+    EXPECT_EQ(mapper.get_full_name(CMInstanceId{1}), "i1");
+    EXPECT_EQ(mapper.get_full_name(CMInstanceId{3}), "i3");
+    EXPECT_EQ(mapper.get_full_name(CMInstanceId{8}), "i2/i1/i1");
+    EXPECT_EQ(mapper.get_full_name(CMInstanceId{10}), "i2/i2/i1");
 
     // 未命中（越界区间反查）→ 空名
-    EXPECT_EQ(mapper.get_full_name(11), "");
+    EXPECT_EQ(mapper.get_full_name(CMInstanceId{11}), "");
     EXPECT_EQ(mapper.get_full_name(DSInstanceNameMapper::kInvalidId), "");
 }
 
@@ -208,7 +209,7 @@ TEST(DSNameMapperTest, GlobalIdAndFullNameRoundTrip) {
         "i2/i2", "i2/i1/i1", "i2/i2/i1",
     };
     for (const CMString& p : paths) {
-        const uint64_t gid = mapper.get_global_id(p);
+        const CMInstanceId gid = mapper.get_global_id(p);
         ASSERT_TRUE(DSInstanceNameMapper::is_valid_id(gid)) << p;
         EXPECT_EQ(mapper.get_full_name(gid), p) << p;
     }
@@ -219,29 +220,27 @@ TEST(DSNameMapperTest, GlobalIdAndFullNameRoundTrip) {
 TEST(DSNameMapperTest, PartialInjectionQueries) {
     MapperEnv env;
     attach_cell_ids(env);
-    DSInstanceNameMapper mapper(test::borrow(env.tree),
-                                DSNameMapperKind::INSTANCE);
+    DSInstanceNameMapper mapper(test::borrow(env.tree));
     mapper.set_block_hasher(CMCellId{0}, env.top.names->instance_names_);  // 仅注入 top
 
     // top 域内可查
     EXPECT_EQ(mapper.get_global_id("i1"), 1u);
-    EXPECT_EQ(mapper.get_full_name(1), "i1");
-    EXPECT_EQ(mapper.get_full_name(2), "i2");  // self 路径不经 hasher
+    EXPECT_EQ(mapper.get_full_name(CMInstanceId{1}), "i1");
+    EXPECT_EQ(mapper.get_full_name(CMInstanceId{2}), "i2");  // self 路径不经 hasher
     // mid/bottom 域未注入 → 哨兵 / 空名
     EXPECT_EQ(mapper.get_global_id("i2/i1"),
               DSInstanceNameMapper::kInvalidId);
     EXPECT_EQ(mapper.get_global_id("i2/i1/i1"),
               DSInstanceNameMapper::kInvalidId);
-    EXPECT_EQ(mapper.get_full_name(5), "");
-    EXPECT_EQ(mapper.get_full_name(8), "");
+    EXPECT_EQ(mapper.get_full_name(CMInstanceId{5}), "");
+    EXPECT_EQ(mapper.get_full_name(CMInstanceId{8}), "");
 }
 
 TEST(DSNameMapperTest, SetBlockHasherByCellName) {
     // 便利口：cell name 经树解析（block_cell_name_ → block_cell_id_）
     MapperEnv env;
     attach_cell_ids(env);
-    DSInstanceNameMapper mapper(test::borrow(env.tree),
-                                DSNameMapperKind::INSTANCE);
+    DSInstanceNameMapper mapper(test::borrow(env.tree));
     mapper.set_block_hasher("top", env.top.names->instance_names_);
     mapper.set_block_hasher("bottom", env.bottom.names->instance_names_);
 
@@ -264,8 +263,7 @@ TEST(DSNameMapperTest, SetBlockHasherByCellName) {
 TEST(DSNameMapperTest, NetDimensionMapping) {
     MapperEnv env;
     attach_cell_ids(env);
-    DSNetNameMapper mapper(test::borrow(env.tree),
-                            DSNameMapperKind::NET);
+    DSNetNameMapper mapper(test::borrow(env.tree));
     mapper.set_block_hasher(CMCellId{0}, env.top.names->net_names_);
     mapper.set_block_hasher(CMCellId{1}, env.mid.names->net_names_);
     mapper.set_block_hasher(CMCellId{2}, env.bottom.names->net_names_);
@@ -280,11 +278,11 @@ TEST(DSNameMapperTest, NetDimensionMapping) {
     EXPECT_EQ(mapper.get_global_id("i2/i2/n0"), 8u);
 
     // 反向（含嵌套 prefix）
-    EXPECT_EQ(mapper.get_full_name(1), "n0");
-    EXPECT_EQ(mapper.get_full_name(4), "i2/n0");
-    EXPECT_EQ(mapper.get_full_name(8), "i2/i2/n0");
-    EXPECT_EQ(mapper.get_full_name(9), "");  // 越界
-    EXPECT_STREQ(mapper.get_full_name(0).c_str(), "");  // 空洞位（review 2026-09-14：root local 0 → global 0，无名返回空）
+    EXPECT_EQ(mapper.get_full_name(CMNetId{1}), "n0");
+    EXPECT_EQ(mapper.get_full_name(CMNetId{4}), "i2/n0");
+    EXPECT_EQ(mapper.get_full_name(CMNetId{8}), "i2/i2/n0");
+    EXPECT_EQ(mapper.get_full_name(CMNetId{9}), "");  // 越界
+    EXPECT_STREQ(mapper.get_full_name(CMNetId{0}).c_str(), "");  // 空洞位（review 2026-09-14：root local 0 → global 0，无名返回空）
 
     // net local 0 = 空洞位（不登记名）：换算不可达路径防御
     EXPECT_EQ(mapper.get_global_id("ghost"),
@@ -314,8 +312,7 @@ TEST(DSNameMapperTest, MapperIsLightweightShell) {
     // FLY_SERIALIZE 缺席——运行时构造、不落盘（static_assert 见文件头）。
     MapperEnv env;
     attach_cell_ids(env);
-    DSInstanceNameMapper mapper(test::borrow(env.tree),
-                                DSNameMapperKind::INSTANCE);
+    DSInstanceNameMapper mapper(test::borrow(env.tree));
     mapper.set_block_hasher(CMCellId{0}, env.top.names->instance_names_);
     EXPECT_EQ(mapper.injected_count(), 1u);
     // 重复注入同键覆盖（指向更新）：cell id 0 的 hasher 换成 mid 定义
@@ -333,16 +330,15 @@ TEST(DSNameMapperTest, EmptyTreeAndDefaults) {
     DSInstanceNameMapper bare;
     EXPECT_EQ(bare.get_global_id("i1"),
               DSInstanceNameMapper::kInvalidId);
-    EXPECT_EQ(bare.get_full_name(0), "");
+    EXPECT_EQ(bare.get_full_name(CMInstanceId{0}), "");
     // 有树未注入：一切查询未命中（任务书裁定：叶层只走注入 hasher，
     // 树仅提供层级结构——树自身无 leaf 名空间；local 0 的路径反查除外，
     // ⑧ 结构性占位）
-    DSInstanceNameMapper mapper(test::borrow(env.tree),
-                                DSNameMapperKind::INSTANCE);
+    DSInstanceNameMapper mapper(test::borrow(env.tree));
     EXPECT_EQ(mapper.get_global_id("i1"),
               DSInstanceNameMapper::kInvalidId);
-    EXPECT_EQ(mapper.get_full_name(2), "");
-    EXPECT_EQ(mapper.get_full_name(1), "");
+    EXPECT_EQ(mapper.get_full_name(CMInstanceId{2}), "");
+    EXPECT_EQ(mapper.get_full_name(CMInstanceId{1}), "");
 }
 
 // ── 6. 分派索引（R8c，裁定 53 方案 B）：正确性专项 ────────────────────
@@ -404,10 +400,10 @@ struct DispatchEnv {
         mid.instance_count_ = cursor - 1;
         tree.design_name_ = "top";
         // 叶 hasher 登记（local 1..4；叶区间起点 = 2 + k×(1+4) + 1）
-        leaf_names->instance_names_->assign("f0", 1);
-        leaf_names->instance_names_->assign("f1", 2);
-        leaf_names->instance_names_->assign("f2", 3);
-        leaf_names->instance_names_->assign("f3", 4);
+        leaf_names->instance_names_->assign("f0", CMInstanceId{1});
+        leaf_names->instance_names_->assign("f1", CMInstanceId{2});
+        leaf_names->instance_names_->assign("f2", CMInstanceId{3});
+        leaf_names->instance_names_->assign("f3", CMInstanceId{4});
     }
 
     // 叶 k 的叶名 local l 的期望 global id（区间换算独立于 mapper 计算）
@@ -419,8 +415,7 @@ struct DispatchEnv {
 
 TEST(DSNameMapperDispatchTest, MultiLayerMultiFanoutMatchesExpectation) {
     DispatchEnv env;
-    DSInstanceNameMapper mapper(test::borrow(env.tree),
-                                DSNameMapperKind::INSTANCE);
+    DSInstanceNameMapper mapper(test::borrow(env.tree));
     mapper.set_block_hasher(CMCellId{DispatchEnv::kLeafCellId}, env.leaf_names->instance_names_);
 
     // 全叶节点 × 全叶名逐条对齐独立计算的期望 id（50 × 4 = 200 条全量）
@@ -446,7 +441,7 @@ TEST(DSNameMapperDispatchTest, MultiLayerMultiFanoutMatchesExpectation) {
             const CMString path =
                 "m1/leaf_" + std::to_string(k) + "/f" +
                 std::to_string(local - 1);
-            EXPECT_EQ(mapper.get_full_name(gid), path);
+            EXPECT_EQ(mapper.get_full_name(CMInstanceId{gid}), path);
         }
     }
 }
@@ -469,8 +464,7 @@ TEST(DSNameMapperDispatchTest, SameNameSiblingsResolveToFirstNode) {
     env.tree.nodes_.push_back(std::move(dup));
     env.tree.nodes_[1].get_ref_children_ids().push_back(52);
 
-    DSInstanceNameMapper mapper(test::borrow(env.tree),
-                                DSNameMapperKind::INSTANCE);
+    DSInstanceNameMapper mapper(test::borrow(env.tree));
     mapper.set_block_hasher(CMCellId{DispatchEnv::kLeafCellId},
                             env.leaf_names->instance_names_);
     // 分派命中首个（node 2，区间起点 2 的后继）而非后登记者（node 52）
@@ -480,8 +474,7 @@ TEST(DSNameMapperDispatchTest, SameNameSiblingsResolveToFirstNode) {
 
 TEST(DSNameMapperDispatchTest, IllegalPathsStayInvalid) {
     DispatchEnv env;
-    DSInstanceNameMapper mapper(test::borrow(env.tree),
-                                DSNameMapperKind::INSTANCE);
+    DSInstanceNameMapper mapper(test::borrow(env.tree));
     mapper.set_block_hasher(CMCellId{DispatchEnv::kLeafCellId},
                             env.leaf_names->instance_names_);
 
@@ -534,7 +527,6 @@ TEST(DSNameMapperDispatchTest, SetTreeRebuildsDispatchIndex) {
               DSInstanceNameMapper::kInvalidId);
     EXPECT_EQ(mapper.get_global_id("i2/i1/i1"), 8u);
     // 显式重建入口（树原地修改后的兜底）：空树重建后一切未命中
-    mapper.set_kind(DSNameMapperKind::INSTANCE);
     other_env.tree.nodes_.clear();
     mapper.rebuild_dispatch_index();
     EXPECT_EQ(mapper.get_global_id("i2/i1/i1"),
@@ -545,8 +537,7 @@ TEST(DSNameMapperDispatchTest, IndexBuildCostObservable) {
     // 索引构建开销观测（非断言——基准报告引用；万级节点毫秒量级）
     DispatchEnv env;
     const auto t0 = std::chrono::steady_clock::now();
-    DSInstanceNameMapper mapper(test::borrow(env.tree),
-                                DSNameMapperKind::INSTANCE);
+    DSInstanceNameMapper mapper(test::borrow(env.tree));
     const auto t1 = std::chrono::steady_clock::now();
     const double ms =
         static_cast<double>(

@@ -16,7 +16,10 @@ lambda 声明防依赖漂移）。调用规范：
 from fly import wait_obj
 
 from .ds_db import DesignDb
-from .ds_export import ds_make_name_mapper
+from .ds_export import (
+    ds_make_instance_name_mapper,
+    ds_make_net_name_mapper,
+)
 
 
 @wait_obj(inputs=lambda db: [db.get_full_name(DesignDb.DESIGN_OBJ)])
@@ -179,7 +182,9 @@ def load_block_names(db, index: int):
 ))
 def load_name_mapper(db, kind: int = 0, name_indexes: list = None):
     """㊻ 统一加载 API：读 DSDesign + 全部（或指定序号集的）DSBlockNames_<i>
-    → ds_make_name_mapper 组装注入式轻壳 mapper（运行时构造不落盘，
+    → ds_make_instance_name_mapper / ds_make_net_name_mapper 组装注入
+    式轻壳 mapper（审计 B-5c 双实例化——维度即类型，本函数按 kind 分派
+    到对应 C++ 口；运行时构造不落盘，
     ㊻）。
 
     kind: 0 = instance 维度（层级实例路径 ↔ global instance id）、
@@ -203,11 +208,14 @@ def load_name_mapper(db, kind: int = 0, name_indexes: list = None):
             try:
                 names_list.append(
                     db.read_object(DesignDb.names_obj_name(i)))
-            except Exception:
-                break  # 连续段结束（per-DEF 伴生对象序 = def_paths 序）
+            except KeyError:
+                break  # 连续段结束（read_object 未命中抛 KeyError——宽
+                       # catch 会吞真异常，终审 #2 收窄）
             i += 1
     else:
         names_list = [db.read_object(DesignDb.names_obj_name(i))
                       for i in name_indexes]
-    mapper = ds_make_name_mapper(design, names_list, kind)
+    make_mapper = (ds_make_instance_name_mapper if kind == 0
+                   else ds_make_net_name_mapper)
+    mapper = make_mapper(design, names_list)
     return design, mapper

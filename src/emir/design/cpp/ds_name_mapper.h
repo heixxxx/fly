@@ -9,7 +9,7 @@
 //   get_global_id(full_hier_name) = 拆路径（'/' 分隔）→ 自根按实例名
 //     逐层定位 DSHierNode → 叶层 hasher get_id(leaf) → local id +
 //     该节点区间 start（⑨ 换算：instance = start + local、local 0 →
-//     self_global_id ⑧；net = start + local − 1、local 从 1 起）；
+//     self_global_id ⑧；net = start + local、local 从 1 起）；
 //   get_full_name(global_id) = 区间反查节点 → 叶层 hasher get_name →
 //     递归向上拼 block instance 名 prefix（'/' 连接）。
 //
@@ -21,7 +21,8 @@
 // 返回 kInvalidId、get_full_name 返回空名（局部注入 = 局部可查）。
 // hasher 随 DSBlockNames_<i> 伴生对象独立落盘（㊵②）、read_object 读回
 // 后经共享指针注入——「用户需要什么专门加载什么」的按需体系完成形态
-//（⑰/⑱ 同构）。统一组装经 ds_make_name_mapper 工厂。
+//（⑰/⑱ 同构）。统一组装经 ds_make_instance_name_mapper /
+// ds_make_net_name_mapper 双口工厂。
 //
 // 分派索引（R8c，裁定 53：方案 B——全局 block 路径前缀索引 + 最长前缀
 // 下降）：get_global_id 的树逐层下降原为 find_child_by_instance_name
@@ -39,24 +40,25 @@
 //
 // 边界（㊺）：仅服务 instance/net 两维度（唯它们有 local id 与层级组装
 // 需求）；cell/pin/layer/via cell 的 id 天然全局、其 hasher 即完整查询
-// 结构，与 DSNameMapper 无任何关联。两维度共享 <uint64_t> 实例化（㊹），
-// 维度运行时区分（DSNameMapperKind）——net 的区间换算与 instance 不同。
+// 结构，与 DSNameMapper 无任何关联。
+// 两维度 = 两个强类型实例化（DSInstanceNameMapper = <CMInstanceId>、
+// DSNetNameMapper = <CMNetId>，审计 B-4/B-5c：hasher 底座强类型化后
+// 两维度 hasher 不再同型，维度即类型——原 DSNameMapperKind 运行时
+// 分派废除，区间换算差异由 if constexpr 编译期编码，跨维度误用编译期
+// 报错）。
 // =============================================================================
 
 #include <container/cpp/container_aliases.h>
+#include <emir/common/cpp/emir_ids.h>
 #include <emir/design/cpp/ds_name_hasher.h>
 #include <emir/design/cpp/ds_types.h>
 
 #include <cstdint>
+#include <type_traits>
 
 namespace fly {
 
-// mapper 维度（㊹：两维度实例构造时分别注入 instance/net hasher 集；
-// 区间换算公式随维度不同——instance local 0 = block 自身占位、net
-// local 0 保留未用）
-enum class DSNameMapperKind : uint8_t { INSTANCE, NET };
-
-template <typename IdT = uint64_t>
+template <typename IdT>
 class DSNameMapperT {
 public:
     // 哨兵口径收编（㊴）：与 hasher 底座同值（id 类型最大值）
@@ -70,9 +72,10 @@ public:
     // tree 为共享观察（§16 业务层零裸指针——评审 B-5a：aliasing
     // shared_ptr 持宿主 DSDesign 计数、指向其内联层级树成员，mapper 生
     // 命期自保证树存活）。构造即建分派索引（R8c 裁定 53，见文件头——
-    // 索引只依赖树，与 hasher 注入无关）
-    DSNameMapperT(CMSharedPtr<const DSHierTree> tree, DSNameMapperKind kind)
-        : tree_(std::move(tree)), kind_(kind) {
+    // 索引只依赖树，与 hasher 注入无关）。维度 = IdT 类型本身
+    //（CMInstanceId/CMNetId——审计 B-5c 双实例化）
+    explicit DSNameMapperT(CMSharedPtr<const DSHierTree> tree)
+        : tree_(std::move(tree)) {
         rebuild_dispatch_index();
     }
 
@@ -82,8 +85,6 @@ public:
         tree_ = std::move(tree);
         rebuild_dispatch_index();
     }
-    void set_kind(DSNameMapperKind kind) { kind_ = kind; }
-    DSNameMapperKind kind() const { return kind_; }
 
     // 分派索引显式重建（R8c 裁定 53）：树在 mapper 生命周期内被原地
     // 修改（children 增删 / 实例名改写——罕见，构建完成后的树对 mapper
@@ -96,9 +97,9 @@ public:
     // CMSharedPtr<const T>，计数管理生命周期），查询全程只读（get_id/
     // get_name 均 const；emplace/assign 仅建库期使用、不经 mapper）。
     // 主口：block 标识 = cell id（block 与 DSCell 同构，㉙；树节点经
-    // block_cell_id_ 关联；CMCellId 强类型——评审 B-5b，hasher 底座裸
-    // 值域边界 CMCellId{} 显式构造）。重复注入同键覆盖指向；空指针撤
-    // 销注入。
+    // block_cell_id_ 关联；CMCellId 强类型——评审 B-5b）。重复注入同键
+    // 覆盖指向；空指针撤销注入。注入 hasher 类型与 mapper 维度强绑定
+    //（instance mapper 只收 instance hasher——类型即维度，审计 B-5c）
     void set_block_hasher(CMCellId cell_id,
                           CMSharedPtr<const DSNameHasherT<IdT>> hasher) {
         if (hasher == nullptr) {
@@ -128,9 +129,8 @@ private:
     // 层级树共享观察（aliasing shared_ptr 持宿主 design 计数——§16 业
     // 务层零裸指针，评审 B-5a）
     CMSharedPtr<const DSHierTree> tree_;
-    DSNameMapperKind kind_ = DSNameMapperKind::INSTANCE;
     // 注入表：block cell id → hasher 只读视图（CMSharedPtr 共享计数，㊻
-    // 不序列化不落盘；维度语义由 kind 定——instance/net hasher 同型）
+    // 不序列化不落盘；hasher 类型与 mapper 维度同 IdT 强绑定）
     CMUnorderedMap<CMCellId, CMSharedPtr<const DSNameHasherT<IdT>>> injected_;
     // 分派索引（R8c 裁定 53 方案 B）：block 层次全路径 → 树节点 id 的
     // 纯 name→id 视图（DSHasherBackendHatrie<uint32_t> 直接实例，复用
@@ -139,10 +139,13 @@ private:
     DSHasherBackendHatrie<uint32_t> dispatch_;
 };
 
-// 实体别名（㊹：两维度 = <uint64_t> 的全局 mapper，按维度构造注入各自
-// hasher 集；别名不带位宽标识）
-using DSInstanceNameMapper = DSNameMapperT<uint64_t>;
-using DSNetNameMapper = DSNameMapperT<uint64_t>;
+// 实体别名（㊹ 两维度 = 强类型双实例化，审计 B-5c；别名不带位宽标识）
+using DSInstanceNameMapper = DSNameMapperT<CMInstanceId>;
+using DSNetNameMapper = DSNameMapperT<CMNetId>;
+
+// 显式实例化（双维度唯一实例化组；定义在 ds_name_mapper.cpp）
+extern template class DSNameMapperT<CMInstanceId>;
+extern template class DSNameMapperT<CMNetId>;
 
 // 统一组装工厂（㊵②+㊻ 的「读 DSBlockNames + 构造 mapper + 注入」封装
 // 的 C++ 侧；Python 统一加载 API 同构）：遍历 per-DEF 伴生对象集，按
@@ -150,10 +153,13 @@ using DSNetNameMapper = DSNameMapperT<uint64_t>;
 // 同名 block 保留首份（与 ds_build_hier_tree 的 def_by_cell_name 一致）。
 // 返回的 mapper 经 aliasing shared_ptr 持 design 内树（评审 B-5a：生命
 // 周期自持——调用侧不必再保证 design 存活期覆盖 mapper）。names 为共
-// 享集（§16 业务层零裸指针——评审 B-12）。
-DSInstanceNameMapper ds_make_name_mapper(
+// 享集（§16 业务层零裸指针——评审 B-12）。双口 = 两维度各一（维度即
+// 类型，审计 B-5c——原 kind 入参运行时分派废除）。
+DSInstanceNameMapper ds_make_instance_name_mapper(
     CMSharedPtr<const DSDesign> design,
-    const CMVector<CMSharedPtr<const DSBlockNames>>& names,
-    DSNameMapperKind kind);
+    const CMVector<CMSharedPtr<const DSBlockNames>>& names);
+DSNetNameMapper ds_make_net_name_mapper(
+    CMSharedPtr<const DSDesign> design,
+    const CMVector<CMSharedPtr<const DSBlockNames>>& names);
 
 }  // namespace fly

@@ -440,14 +440,15 @@ TMSummary tm_merge_summary(const CMVector<const TMStatsDelta*>& deltas,
 
 // 时钟表跨文件合并（独立任务——评审 P1-1：提前至 T3 之前执行，产出最
 // 终 clocks 表 + per-file remap 桥）：同文件跨块先归并（同名保留首份），
-// 再按文件优先级合并：顶层文件（无绑定、纯路径 kind 0）定义优先，其余
-// （块绑定文件）按文件序首份兜底（2026-09-16 裁定 5）。任何周期/沿时刻
-// 差异计数出参累加（TIMG::0007，保留首份不 raise）。入参 = 每文件
-// (绑定形态 int 0/1/2——flow 归一化文件的 kind, 时钟表)（clocks 已按
-// 文件归并的块序表）；remap 出参按
-// 文件序给出 [file_index][块内 id] → 最终表下标。
+// 再按文件优先级合并：顶层文件（无绑定、纯路径）定义优先，其余（块绑
+// 定文件）按文件序首份兜底（2026-09-16 裁定 5）。任何周期/沿时刻差异
+// 计数出参累加（TIMG::0007，保留首份不 raise）。入参 = 每文件
+// (绑定形态——flow 归一化文件的 kind，TMFileBindingKind 枚举定型存储
+// ——终审 #1：原裸 int 0/1/2 承载改为枚举，值域编译期可见；Python 侧
+// 经 export 桥 set_kind 同款值域校验转换)（clocks 已按文件归并的块序
+// 表）；remap 出参按文件序给出 [file_index][块内 id] → 最终表下标。
 TMClockTable tm_merge_clocks(
-    const CMVector<std::pair<int, TMClockTable>>& file_clocks,
+    const CMVector<std::pair<TMFileBindingKind, TMClockTable>>& file_clocks,
     TMClockRemap& remap, uint64_t& conflict_count);
 
 }  // namespace fly

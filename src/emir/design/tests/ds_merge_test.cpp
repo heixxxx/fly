@@ -174,8 +174,8 @@ TEST(DsMergeDefHeaderTest, BlocksEnterCellNameMapAndViaTable) {
 
     // port pin id 进全局 pin 名字空间（裁定 3：键 = 裸 port 名；基址 =
     // macro pin A 占用的 0 → P0 = 1）+ pin_id_ 回填
-    EXPECT_EQ(dst.pin_names_.get_id("P0"), 1u);
-    EXPECT_EQ(dst.pin_names_.get_name(1), "P0");
+    EXPECT_EQ(dst.pin_names_.get_id("P0"), CMPinId{1});
+    EXPECT_EQ(dst.pin_names_.get_name(CMPinId{1}), "P0");
     EXPECT_EQ(dst.cells_[1].pins_[0].get_pin_id(), 1u);
 
     // port 几何按 (block cell id 1, 全局 pin id) 重挂

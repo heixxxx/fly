@@ -434,10 +434,12 @@ namespace {
 // S5a 回调上下文（经 defrRead userData 传递，无全局状态）
 struct DefComponentsContext {
     // 环境共享注入（§16 业务层零裸指针——评审 B-10；pipeline 为本入口
-    // 栈对象的同步期观察）
+    // 共享持有——终审 D-5：Si2 defrRead 回调为同步栈契约，原栈对象裸
+    // 观察无悬空实害，收拢为 CMSharedPtr 后类型级生命周期安全、零行为
+    // 变化）
     CMSharedPtr<const DSStack> stack;
     CMSharedPtr<const DSDesign> design;
-    const DSInstancePipeline* pipeline;
+    CMSharedPtr<const DSInstancePipeline> pipeline;
     CMSharedPtr<DSBlockBuildData> block_data;
     DSDefComponentsStats* stats;
     // fake cell 独立容器（⑳：2026-09-13 裁定不入产物本体——解析任务经
@@ -573,12 +575,13 @@ void ds_parse_def_components(const CMString& path,
                              DSDefComponentsStats& stats,
                              int32_t density_bin_dbu,
                              CMSharedPtr<CMVector<DSCell>> fake_cells_out) {
-    const DSInstancePipeline pipeline = ds_make_components_pipeline();
+    auto pipeline = CMMakeShared<const DSInstancePipeline>(
+        ds_make_components_pipeline());
 
     DefComponentsContext ctx;
     ctx.stack = std::move(stack);
     ctx.design = std::move(design);
-    ctx.pipeline = &pipeline;
+    ctx.pipeline = std::move(pipeline);
     ctx.block_data = std::move(block_data);
     ctx.stats = &stats;
     ctx.fake_cells = std::move(fake_cells_out);
@@ -634,7 +637,8 @@ struct DefNetsContext {
     CMSharedPtr<const DSStack> stack;
     CMSharedPtr<const DSDesign> design;
     CMSharedPtr<const DSBlockBuildData> block_data;
-    const DSNetPipeline* pipeline;
+    // 共享持有（终审 D-5 同 DefComponentsContext::pipeline 口径）
+    CMSharedPtr<const DSNetPipeline> pipeline;
     CMSharedPtr<DSNetBuildData> net_data;
     DSDefNetsStats* stats;
     // UNITS 缺省 100（防无 UNITS 语句文件除零，同 S4/S5a）
@@ -890,13 +894,14 @@ void ds_parse_def_nets(const CMString& path,
                        CMSharedPtr<DSNetBuildData> net_data,
                        DSDefNetsStats& stats, int32_t density_bin_dbu,
                        int net_batch_size) {
-    const DSNetPipeline pipeline = ds_make_nets_pipeline();
+    auto pipeline =
+        CMMakeShared<const DSNetPipeline>(ds_make_nets_pipeline());
 
     DefNetsContext ctx;
     ctx.stack = std::move(stack);
     ctx.design = std::move(design);
     ctx.block_data = std::move(block_data);
-    ctx.pipeline = &pipeline;
+    ctx.pipeline = std::move(pipeline);
     ctx.net_data = std::move(net_data);
     ctx.stats = &stats;
     ctx.bin_dbu = density_bin_dbu;

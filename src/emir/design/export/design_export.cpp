@@ -12,7 +12,8 @@
 // R7 name 体系收敛（㊱㊳㊴㊸㊹㊻）：①EXDSPin/EXDSInstance 删 name 面
 //（name 分层存储，查询经 hasher/mapper）；②EXDSBlockNames（㊵② 伴生
 // 对象：instance/net 两 hasher，DSBlockNames_<i> 独立落盘的 Python 面）
-// + EXDSNameMapper（㊻ 注入式轻壳 DSNameMapperT<uint64_t>，运行时构造
+// + EXDSInstanceNameMapper/EXDSNetNameMapper（㊻ 注入式轻壳双实例化
+// 绑定，运行时构造
 // 不落盘；DSInstanceNameMapper/DSNetNameMapper 同型异 kind）+
 // ds_make_name_mapper 统一组装工厂；③id 64 位化——instance/net/via
 // instance id 与层级树区间/self_global_id 的接口参数一律 uint64_t。
@@ -227,7 +228,8 @@ FLY_EXPORT_CLASS(fly::DSCell, "EXDSCell")
 FLY_EXPORT_CLASS(fly::DSInstance, "EXDSInstance")
     FLY_EXPORT_INIT()
     // R7 ㊱：DSInstance 不存 name（实例名在 DSInstanceNameHasher，
-    // 随 DSBlockNames_<i> 伴生对象落盘；查询经 EXDSNameMapper）
+    // 随 DSBlockNames_<i> 伴生对象落盘；查询经 EXDSInstanceNameMapper
+    // / EXDSNetNameMapper）
     FLY_EXPORT_READONLY_PROPERTY("cell_id", [](const fly::DSInstance& i) { return i.get_cell_id().value(); })
     // R6：pos/orient 二元组（pos = cell 原坐标系 (0,0) 点的全局位置）
     FLY_EXPORT_READONLY_PROPERTY("pos_x", [](const fly::DSInstance& i) {
@@ -606,11 +608,11 @@ FLY_EXPORT_CLASS(fly::DSBlockBuildData, "EXDSBlockBuildData")
     FLY_EXPORT_DEF("net_id_by_name", [](const fly::DSBlockBuildData& b,
                                         const CMString& name) {
         if (!b.net_names_) return std::optional<uint64_t>();
-        const uint64_t id = b.net_names_->get_id(name);
-        if (id == fly::DSNetNameHasher::kInvalidId) {
+        const fly::CMNetId id = b.net_names_->get_id(name);
+        if (!id.is_valid()) {
             return std::optional<uint64_t>();
         }
-        return std::optional<uint64_t>(id);
+        return std::optional<uint64_t>(id.value());
     })
     FLY_EXPORT_DEF("net_name_by_id", [](const fly::DSBlockBuildData& b,
                                         uint64_t id) {
@@ -697,11 +699,11 @@ FLY_EXPORT_CLASS(fly::DSBlockNames, "EXDSBlockNames")
     // instance 名 ↔ local id（local id 从 1 起、0 = 占位不入表）
     FLY_EXPORT_DEF("instance_id_by_name", [](const fly::DSBlockNames& n,
                                              const CMString& name) {
-        const uint64_t id = n.instance_names_->get_id(name);
-        if (id == fly::DSInstanceNameHasher::kInvalidId) {
+        const fly::CMInstanceId id = n.instance_names_->get_id(name);
+        if (!id.is_valid()) {
             return std::optional<uint64_t>();
         }
-        return std::optional<uint64_t>(id);
+        return std::optional<uint64_t>(id.value());
     })
     FLY_EXPORT_DEF("instance_name_by_id", [](const fly::DSBlockNames& n,
                                              uint64_t id) {
@@ -709,16 +711,17 @@ FLY_EXPORT_CLASS(fly::DSBlockNames, "EXDSBlockNames")
         if (id >= n.instance_names_->name_domain()) {
             return std::optional<CMString>();
         }
-        return std::optional<CMString>(n.instance_names_->get_name(id));
+        return std::optional<CMString>(
+            n.instance_names_->get_name(fly::CMInstanceId{id}));
     })
     // net 名 ↔ local id（local id 从 1 起、0 保留未用）
     FLY_EXPORT_DEF("net_id_by_name", [](const fly::DSBlockNames& n,
                                         const CMString& name) {
-        const uint64_t id = n.net_names_->get_id(name);
-        if (id == fly::DSNetNameHasher::kInvalidId) {
+        const fly::CMNetId id = n.net_names_->get_id(name);
+        if (!id.is_valid()) {
             return std::optional<uint64_t>();
         }
-        return std::optional<uint64_t>(id);
+        return std::optional<uint64_t>(id.value());
     })
     FLY_EXPORT_DEF("net_name_by_id", [](const fly::DSBlockNames& n,
                                         uint64_t id) {
@@ -726,7 +729,8 @@ FLY_EXPORT_CLASS(fly::DSBlockNames, "EXDSBlockNames")
         if (id >= n.net_names_->name_domain()) {
             return std::optional<CMString>();
         }
-        return std::optional<CMString>(n.net_names_->get_name(id));
+        return std::optional<CMString>(
+            n.net_names_->get_name(fly::CMNetId{id}));
     })
     // R8d 形态观测（alpha 传递链验证面）：两 hasher 是否均处 LCP 封口形态
     FLY_EXPORT_READONLY_PROPERTY("names_lcp_form",
@@ -911,11 +915,11 @@ FLY_EXPORT_CLASS(fly::DSDesign, "EXDSDesign")
     FLY_EXPORT_DEF("via_cell_id_by_name",
                    [](const fly::DSDesign& d, const CMString& name) {
         // R7 ㊲：经 via cell hasher 直查（未命中 None）
-        const uint32_t id = d.via_cell_names_.get_id(name);
-        if (id == fly::DSViaCellNameHasher::kInvalidId) {
+        const fly::CMViaCellId id = d.via_cell_names_.get_id(name);
+        if (!id.is_valid()) {
             return std::optional<uint32_t>();
         }
-        return std::optional<uint32_t>(id);
+        return std::optional<uint32_t>(id.value());
     })
     // S6 层级树（⑬ 挂容器）：只读面 + 构建产物写定口（正式 DSDesign
     // 写定前嵌树，容器唯一写定原则）
@@ -943,17 +947,17 @@ FLY_EXPORT_CLASS(fly::DSDesign, "EXDSDesign")
     // 返回 None——不透出 kInvalidId 哨兵到 Python 面）
     FLY_EXPORT_DEF("cell_id_by_name",
                    [](const fly::DSDesign& d, const CMString& name) {
-        const uint32_t id = d.cell_names_.get_id(name);
-        if (id == fly::DSCellNameHasher::kInvalidId) {
+        const fly::CMCellId id = d.cell_names_.get_id(name);
+        if (!id.is_valid()) {
             return std::optional<uint32_t>();
         }
-        return std::optional<uint32_t>(id);
+        return std::optional<uint32_t>(id.value());
     })
     FLY_EXPORT_DEF("cell_name_by_id", [](const fly::DSDesign& d, uint32_t id) {
         if (id >= d.cell_names_.name_table_.size()) {
             return std::optional<CMString>();
         }
-        const CMString& name = d.cell_names_.get_name(id);
+        const CMString name = d.cell_names_.get_name(fly::CMCellId{id});
         if (name.empty()) return std::optional<CMString>();  // 空洞
         return std::optional<CMString>(name);
     })
@@ -964,11 +968,11 @@ FLY_EXPORT_CLASS(fly::DSDesign, "EXDSDesign")
                    [](const fly::DSDesign& d, const CMString& cell_name,
                      const CMString& pin_name) {
         (void)cell_name;
-        const uint32_t id = d.pin_names_.get_id(pin_name);
-        if (id == fly::DSPinNameHasher::kInvalidId) {
+        const fly::CMPinId id = d.pin_names_.get_id(pin_name);
+        if (!id.is_valid()) {
             return std::optional<uint32_t>();
         }
-        return std::optional<uint32_t>(id);
+        return std::optional<uint32_t>(id.value());
     })
     // R7 ㊱：pin 名反查（DSPin 不存 name；经 pin hasher 直查）
     FLY_EXPORT_DEF("pin_name_of", [](const fly::DSDesign& d, uint32_t pin_id) {
@@ -980,11 +984,11 @@ FLY_EXPORT_CLASS(fly::DSDesign, "EXDSDesign")
     // 裸 pin 名，与 pin_name_of 同值——保留 API 名兼容既有调用）
     FLY_EXPORT_DEF("pin_key_by_id", [](const fly::DSDesign& d,
                                        uint32_t pin_id) {
-        if (!fly::DSPinNameHasher::is_valid_id(pin_id) ||
+        if (!fly::DSPinNameHasher::is_valid_id(fly::CMPinId{pin_id}) ||
             pin_id >= d.pin_names_.name_table_.size()) {
             return std::optional<CMString>();
         }
-        const CMString key = d.pin_names_.get_name(pin_id);
+        const CMString key = d.pin_names_.get_name(fly::CMPinId{pin_id});
         if (key.empty()) return std::optional<CMString>();
         return std::optional<CMString>(key);
     })
@@ -992,11 +996,13 @@ FLY_EXPORT_CLASS(fly::DSDesign, "EXDSDesign")
     // 未命中/空洞 None）
     FLY_EXPORT_DEF("via_cell_name_by_id", [](const fly::DSDesign& d,
                                              uint32_t via_cell_id) {
-        if (!fly::DSViaCellNameHasher::is_valid_id(via_cell_id) ||
+        if (!fly::DSViaCellNameHasher::is_valid_id(
+                fly::CMViaCellId{via_cell_id}) ||
             via_cell_id >= d.via_cell_names_.name_table_.size()) {
             return std::optional<CMString>();
         }
-        const CMString name = d.via_cell_names_.get_name(via_cell_id);
+        const CMString name = d.via_cell_names_.get_name(
+            fly::CMViaCellId{via_cell_id});
         if (name.empty()) return std::optional<CMString>();
         return std::optional<CMString>(name);
     })
@@ -1861,51 +1867,45 @@ FLY_EXPORT_FUNCTION("ds_verify_report_or_fatal",
 
 // ── R7 全局 name 组装（㊻ 注入式轻壳 + ㊵② 统一组装工厂）────────────
 
-// DSNameMapperT<uint64_t>（EXDSNameMapper；DSInstanceNameMapper/
-// DSNetNameMapper 为同型 using 别名，维度经 kind 运行时区分——区间
-// 换算公式不同）。hasher 注入主口 = block cell id、便利口 = cell 名；
-// 未命中查询返回 None（不透出 kInvalidId 哨兵）。无 pickle 面（㊻：
-// 注入式轻壳不序列化不落盘——运行时经工厂/注入构造；树引用为 design
-// 内观察，Python 侧须同时持有 design 引用）。
-FLY_EXPORT_CLASS(fly::DSInstanceNameMapper, "EXDSNameMapper")
+// DSNameMapperT 双实例化绑定（审计 B-5c：DSInstanceNameMapper =
+// <CMInstanceId>、DSNetNameMapper = <CMNetId>，维度即类型——原
+// DSNameMapperKind 运行时分派与注入口的 kind 参数废除；instance mapper
+// 只收 instance hasher、net mapper 只收 net hasher，跨维度误用编译期
+// 报错）。hasher 注入主口 = block cell id、便利口 = cell 名；未命中
+// 查询返回 None（不透出 kInvalidId 哨兵）。无 pickle 面（㊻：注入式
+// 轻壳不序列化不落盘——运行时经工厂/注入构造；树引用为 design 内观
+// 察，Python 侧须同时持有 design 引用）。两类型接口同构，直书两份。
+FLY_EXPORT_CLASS(fly::DSInstanceNameMapper, "EXDSInstanceNameMapper")
     FLY_EXPORT_INIT()
     // 注入主口：block 标识 = cell id（hasher 级共享注入——从伴生对象取
     // CMSharedPtr const 化、零拷贝；重复注入同键覆盖；names=None 撤销）
     FLY_EXPORT_DEF("set_block_hasher_by_cell_id",
                    [](fly::DSInstanceNameMapper& m, uint32_t cell_id,
-                      const fly::DSBlockNames* names, int kind) {
-        // hasher 底座裸值域豁免边界：cell id 注入侧 CMCellId{} 显式构造
-        //（评审 B-5b——注入主口键强类型化）
+                      const fly::DSBlockNames* names) {
         const fly::CMCellId block_cell_id{cell_id};
         if (names == nullptr) {
             m.set_block_hasher(
                 block_cell_id,
-                CMSharedPtr<const fly::DSNameHasherT<uint64_t>>());
+                CMSharedPtr<const fly::DSInstanceNameHasher>());
             return;
         }
         m.set_block_hasher(
             block_cell_id,
-            kind == 0 ? fly::CMSharedPtr<const fly::DSInstanceNameHasher>(
-                            names->instance_names_)
-                      : fly::CMSharedPtr<const fly::DSNetNameHasher>(
-                            names->net_names_));
+            CMSharedPtr<const fly::DSInstanceNameHasher>(
+                names->instance_names_));
     })
     // 注入便利口：block cell 名经树解析（取首个同名 block 定义）
     FLY_EXPORT_DEF("set_block_hasher_by_cell_name",
                    [](fly::DSInstanceNameMapper& m, const CMString& cell_name,
-                      const fly::DSBlockNames* names, int kind) {
+                      const fly::DSBlockNames* names) {
         if (names == nullptr) {
             m.set_block_hasher(
-                cell_name,
-                CMSharedPtr<const fly::DSNameHasherT<uint64_t>>());
+                cell_name, CMSharedPtr<const fly::DSInstanceNameHasher>());
             return;
         }
         m.set_block_hasher(
-            cell_name,
-            kind == 0 ? fly::CMSharedPtr<const fly::DSInstanceNameHasher>(
-                            names->instance_names_)
-                      : fly::CMSharedPtr<const fly::DSNetNameHasher>(
-                            names->net_names_));
+            cell_name, CMSharedPtr<const fly::DSInstanceNameHasher>(
+                           names->instance_names_));
     })
     FLY_EXPORT_READONLY_PROPERTY("injected_count",
                                  [](const fly::DSInstanceNameMapper& m) {
@@ -1914,36 +1914,95 @@ FLY_EXPORT_CLASS(fly::DSInstanceNameMapper, "EXDSNameMapper")
     // 正向组装：完整层级实例名路径（'/' 分隔）→ global id
     FLY_EXPORT_DEF("get_global_id", [](const fly::DSInstanceNameMapper& m,
                                        const CMString& full_hier_name) {
-        const uint64_t id = m.get_global_id(full_hier_name);
+        const fly::CMInstanceId id = m.get_global_id(full_hier_name);
         if (id == fly::DSInstanceNameMapper::kInvalidId) {
             return std::optional<uint64_t>();
         }
-        return std::optional<uint64_t>(id);
+        return std::optional<uint64_t>(id.value());
     })
     // 反向组装：global id → 完整层级路径（未命中/未注入 → None）
     FLY_EXPORT_DEF("get_full_name", [](const fly::DSInstanceNameMapper& m,
                                        uint64_t global_id) {
-        const CMString name = m.get_full_name(global_id);
+        const CMString name = m.get_full_name(fly::CMInstanceId{global_id});
+        if (name.empty()) return std::optional<CMString>();
+        return std::optional<CMString>(name);
+    });
+
+// net 维度（DSNetNameMapper = <CMNetId>；EXDSNetNameMapper——接口与
+// instance 维度同构，注入/查询类型强绑定 CMNetId）
+FLY_EXPORT_CLASS(fly::DSNetNameMapper, "EXDSNetNameMapper")
+    FLY_EXPORT_INIT()
+    FLY_EXPORT_DEF("set_block_hasher_by_cell_id",
+                   [](fly::DSNetNameMapper& m, uint32_t cell_id,
+                      const fly::DSBlockNames* names) {
+        const fly::CMCellId block_cell_id{cell_id};
+        if (names == nullptr) {
+            m.set_block_hasher(
+                block_cell_id, CMSharedPtr<const fly::DSNetNameHasher>());
+            return;
+        }
+        m.set_block_hasher(
+            block_cell_id, CMSharedPtr<const fly::DSNetNameHasher>(
+                               names->net_names_));
+    })
+    FLY_EXPORT_DEF("set_block_hasher_by_cell_name",
+                   [](fly::DSNetNameMapper& m, const CMString& cell_name,
+                      const fly::DSBlockNames* names) {
+        if (names == nullptr) {
+            m.set_block_hasher(
+                cell_name, CMSharedPtr<const fly::DSNetNameHasher>());
+            return;
+        }
+        m.set_block_hasher(cell_name,
+                           CMSharedPtr<const fly::DSNetNameHasher>(
+                               names->net_names_));
+    })
+    FLY_EXPORT_READONLY_PROPERTY("injected_count",
+                                 [](const fly::DSNetNameMapper& m) {
+        return static_cast<int>(m.injected_count());
+    })
+    FLY_EXPORT_DEF("get_global_id", [](const fly::DSNetNameMapper& m,
+                                       const CMString& full_hier_name) {
+        const fly::CMNetId id = m.get_global_id(full_hier_name);
+        if (id == fly::DSNetNameMapper::kInvalidId) {
+            return std::optional<uint64_t>();
+        }
+        return std::optional<uint64_t>(id.value());
+    })
+    FLY_EXPORT_DEF("get_full_name", [](const fly::DSNetNameMapper& m,
+                                       uint64_t global_id) {
+        const CMString name = m.get_full_name(fly::CMNetId{global_id});
         if (name.empty()) return std::optional<CMString>();
         return std::optional<CMString>(name);
     });
 
 // ㊵②+㊻ 统一组装工厂（Python 统一加载 API 的 C++ 底座）：遍历
-// DSBlockNames 集，block 名经容器 cell hasher 解析 cell id 注入。kind：
-// 0 = INSTANCE、1 = NET。返回的 mapper 经 aliasing shared_ptr 持 design
-// 内树（评审 B-5a：生命周期自持，Python 侧不必再同时持有 design）。
-// names 为共享集（评审 B-12——§16 业务层零裸指针）。
-FLY_EXPORT_FUNCTION("ds_make_name_mapper",
+// DSBlockNames 集，block 名经容器 cell hasher 解析 cell id 注入。双口
+// = 两维度各一（维度即类型，审计 B-5c——原 kind 入参废除）。返回的
+// mapper 经 aliasing shared_ptr 持 design 内树（评审 B-5a：生命周期自
+// 持，Python 侧不必再同时持有 design）。names 为共享集（评审 B-12——
+// §16 业务层零裸指针）。
+FLY_EXPORT_FUNCTION("ds_make_instance_name_mapper",
                     [](std::shared_ptr<const fly::DSDesign> design,
-                       nb::list names, int kind) {
+                       nb::list names) {
     fly::CMVector<fly::CMSharedPtr<const fly::DSBlockNames>> name_shares;
     for (nb::handle item : names) {
         name_shares.push_back(
             nb::cast<fly::CMSharedPtr<const fly::DSBlockNames>>(item));
     }
-    return nb::cast(fly::ds_make_name_mapper(
-        std::move(design), name_shares,
-        kind == 0 ? fly::DSNameMapperKind::INSTANCE
-                  : fly::DSNameMapperKind::NET));
+    return nb::cast(fly::ds_make_instance_name_mapper(std::move(design),
+                                                      name_shares));
+});
+
+FLY_EXPORT_FUNCTION("ds_make_net_name_mapper",
+                    [](std::shared_ptr<const fly::DSDesign> design,
+                       nb::list names) {
+    fly::CMVector<fly::CMSharedPtr<const fly::DSBlockNames>> name_shares;
+    for (nb::handle item : names) {
+        name_shares.push_back(
+            nb::cast<fly::CMSharedPtr<const fly::DSBlockNames>>(item));
+    }
+    return nb::cast(fly::ds_make_net_name_mapper(std::move(design),
+                                                 name_shares));
 });
 }

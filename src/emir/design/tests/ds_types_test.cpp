@@ -399,9 +399,9 @@ TEST(DSDesignTest, NameMapBidirectionalConsistency) {
     // cell：双向闭环 find_cell ↔ cell_names_（hasher 双向）
     const DSCell* inv = back.find_cell("INV_X1");
     ASSERT_NE(inv, nullptr);
-    const uint32_t inv_id = back.cell_names_.get_id("INV_X1");
+    const CMCellId inv_id = back.cell_names_.get_id("INV_X1");
     EXPECT_EQ(back.cell_names_.get_name(inv_id), "INV_X1");
-    EXPECT_EQ(&back.cells_[inv_id], inv);
+    EXPECT_EQ(&back.cells_[inv_id.value()], inv);
     EXPECT_EQ(back.find_cell("FILLER01"), &back.cells_[1]);
     EXPECT_EQ(back.find_cell("NOT_EXIST"), nullptr);
 
@@ -418,12 +418,12 @@ TEST(DSDesignTest, NameMapBidirectionalConsistency) {
     // pin 裸键（2026-09-16 裁定 3：全局 pin 名字空间；block port pin
     // 同一名字空间）经 pin hasher 双向底座（R7 ㊲：assign 指定 id 双写 +
     // 空洞容忍）
-    EXPECT_EQ(back.pin_names_.get_id("A"), 0u);
-    EXPECT_EQ(back.pin_names_.get_id("ZN"), 1u);
-    EXPECT_EQ(back.pin_names_.get_id("PIN_A"), 2u);
-    EXPECT_EQ(back.pin_names_.get_name(0), "A");
-    EXPECT_EQ(back.pin_names_.get_name(1), "ZN");
-    EXPECT_EQ(back.pin_names_.get_name(2), "PIN_A");
+    EXPECT_EQ(back.pin_names_.get_id("A"), CMPinId{0});
+    EXPECT_EQ(back.pin_names_.get_id("ZN"), CMPinId{1});
+    EXPECT_EQ(back.pin_names_.get_id("PIN_A"), CMPinId{2});
+    EXPECT_EQ(back.pin_names_.get_name(CMPinId{0}), "A");
+    EXPECT_EQ(back.pin_names_.get_name(CMPinId{1}), "ZN");
+    EXPECT_EQ(back.pin_names_.get_name(CMPinId{2}), "PIN_A");
     EXPECT_EQ(back.pin_name_of(CMPinId{2}), "PIN_A");  // 直查（㊱ 查名功能）
     EXPECT_EQ(back.pin_name_of(CMPinId{DSPinNameHasher::kInvalidId}), "");
 }
@@ -684,9 +684,9 @@ TEST(DSNameLayeringTest, InstanceNameLookupViaHasher) {
 
     // ㊵②：读伴生对象 attach 后查名恢复（CMSharedPtr 共享注入）
     DSBlockNames names_from;
-    names_from.instance_names_->assign("u1", id.value());
+    names_from.instance_names_->assign("u1", id);
     back.set_instance_names(names_from.instance_names_);
-    EXPECT_EQ(back.instance_names_->get_name(id.value()), "u1");
+    EXPECT_EQ(back.instance_names_->get_name(id), "u1");
 }
 
 TEST(DSNameLayeringTest, PinNameLookupViaDesignHasher) {
@@ -721,8 +721,8 @@ TEST(DSNameLayeringTest, FinalizeNamesForSaveSealsBothHashers) {
     EXPECT_TRUE(block.instance_names_->is_lcp_form());
     EXPECT_TRUE(block.net_names_->is_lcp_form());
     // 封口后查询面可用、构建期接口拒绝
-    EXPECT_EQ(block.instance_names_->get_name(1), "u1");
-    EXPECT_EQ(block.net_names_->get_id("n1"), 1u);
+    EXPECT_EQ(block.instance_names_->get_name(CMInstanceId{1}), "u1");
+    EXPECT_EQ(block.net_names_->get_id("n1"), CMNetId{1});
     EXPECT_THROW(block.net_names_->emplace("n2"), std::logic_error);
 
     // 伴生对象（与运行时 hasher 同一实例，extract_names 同构）落盘
@@ -737,8 +737,8 @@ TEST(DSNameLayeringTest, FinalizeNamesForSaveSealsBothHashers) {
     FLY_DECODE(blob, DSBlockNames, back);
     EXPECT_TRUE(back.instance_names_->is_lcp_form());
     EXPECT_TRUE(back.net_names_->is_lcp_form());
-    EXPECT_EQ(back.instance_names_->get_name(1), "u1");
-    EXPECT_EQ(back.net_names_->get_name(1), "n1");
+    EXPECT_EQ(back.instance_names_->get_name(CMInstanceId{1}), "u1");
+    EXPECT_EQ(back.net_names_->get_name(CMNetId{1}), "n1");
 }
 
 // —— 2026-09-16 裁定：weak 观察化双向语义验证 ————————————————

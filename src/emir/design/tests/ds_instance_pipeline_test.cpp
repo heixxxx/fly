@@ -230,13 +230,13 @@ TEST(DSInstanceBuildNodeTest, AssignsLocalIdsFromOneAndBuildsTransform) {
     EXPECT_EQ(ctx.instance_id, 1u);  // ⑧ local id 从 1 起（local 0 = 占位）
     const DSInstance& inst = *block_data.instances_.at(CMInstanceId{1});
     // R7 ㊱：DSInstance 无 name——实例名经双向 instance hasher 查回
-    EXPECT_EQ(block_data.instance_names_->get_name(1), "i1");
+    EXPECT_EQ(block_data.instance_names_->get_name(CMInstanceId{1}), "i1");
     EXPECT_EQ(inst.get_cell_id(), 0u);
     EXPECT_EQ(inst.get_transform().get_offset().get_x(), 200);
     EXPECT_EQ(inst.get_transform().get_offset().get_y(), 400);
     EXPECT_EQ(inst.get_placement_status(),
               DSPlacementStatus::PLACED);
-    EXPECT_EQ(block_data.instance_names_->get_id("i1"), 1u);
+    EXPECT_EQ(block_data.instance_names_->get_id("i1"), CMInstanceId{1});
     // local 0 = block 自身占位（⑧；占位不进 instance hasher——非真实
     // 实例，R7 ㊱）
     EXPECT_EQ(block_data.instance_names_->get_id("blk"),
@@ -532,16 +532,16 @@ TEST(DSDesignAddCellAtTest, SparsePlacementKeepsIdSemantics) {
     design.add_cell_at(CMCellId{5}, std::move(fake));
     // id = 下标语义保持；空洞为占位（空名）
     EXPECT_EQ(design.cells_.size(), 6u);
-    EXPECT_EQ(design.cell_names_.get_id("x::y"), 5u);
-    EXPECT_EQ(design.cell_names_.get_name(5), "x::y");
+    EXPECT_EQ(design.cell_names_.get_id("x::y"), CMCellId{5});
+    EXPECT_EQ(design.cell_names_.get_name(CMCellId{5}), "x::y");
     EXPECT_EQ(design.get_cell(CMCellId{5}).get_name(), "x::y");
     EXPECT_TRUE(design.cells_[2].get_name().empty());
-    EXPECT_EQ(design.cell_names_.get_name(2), "");
+    EXPECT_EQ(design.cell_names_.get_name(CMCellId{2}), "");
     // 低位落位（无 resize）
     DSCell b;
     b.set_name("b");
     design.add_cell_at(CMCellId{1}, std::move(b));
-    EXPECT_EQ(design.cell_names_.get_id("b"), 1u);
+    EXPECT_EQ(design.cell_names_.get_id("b"), CMCellId{1});
 }
 
 // ── 8. 适配层全链（COMPONENTS 回调 ∥ 网名扫描，同一遍读取）──────────
@@ -573,8 +573,8 @@ TEST(DsDefComponentsTest, ParsesComponentsAndNetNamesOnePass) {
     // inst1 INV_X1 + PLACED (100,200) N：t=(100,200)（×1）→ pos=(100,200)
     // R7 ㊱：实例名经双向 instance hasher 查回
     const DSInstance& i1 = *block_data.instances_.at(CMInstanceId{1});
-    EXPECT_EQ(block_data.instance_names_->get_name(1), "inst1");
-    EXPECT_EQ(block_data.instance_names_->get_id("inst1"), 1u);
+    EXPECT_EQ(block_data.instance_names_->get_name(CMInstanceId{1}), "inst1");
+    EXPECT_EQ(block_data.instance_names_->get_id("inst1"), CMInstanceId{1});
     EXPECT_EQ(i1.get_cell_id(), 0u);
     EXPECT_EQ(i1.get_transform().get_offset().get_x(), 100);
     EXPECT_EQ(i1.get_transform().get_offset().get_y(), 200);
@@ -584,7 +584,7 @@ TEST(DsDefComponentsTest, ParsesComponentsAndNetNamesOnePass) {
     // inst2 DFF_X1 + PLACED (300,400) FS：未定义 → fake；t=(300,400)，
     // fake 1×1 box 经 R_FS ll=(0,−1) → pos=(300,401)
     const DSInstance& i2 = *block_data.instances_.at(CMInstanceId{2});
-    EXPECT_EQ(block_data.instance_names_->get_name(2), "inst2");
+    EXPECT_EQ(block_data.instance_names_->get_name(CMInstanceId{2}), "inst2");
     ASSERT_EQ(fake_cells.size(), 1u);
     EXPECT_EQ(fake_cells[0].get_name(), "block_a::DFF_X1");
     EXPECT_EQ(i2.get_cell_id(), block_data.fake_name_to_id_.at(

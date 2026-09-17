@@ -407,13 +407,24 @@ m.def("tm_merge_summary",
 
 // T4 ②：时钟表跨文件合并（file_clocks = [(kind, EXTMClockTable)] 列表；
 // 返回 (时钟表, 冲突数, EXTMClockRemap) 三元组——remap 为 T3 时钟归属
-// 重写的桥，评审 P1-1）
+// 重写的桥，评审 P1-1）。Python 边界 kind 保持 int（终审 #1：C++ 入参
+// 改 TMFileBindingKind 枚举定型存储后，桥经 set_kind 同款值域校验
+// 0/1/2 转换，值域外显式报错）
 m.def("tm_merge_clocks",
       [](nb::list file_clocks) {
-          fly::CMVector<std::pair<int, fly::TMClockTable>> clocks;
+          fly::CMVector<std::pair<fly::TMFileBindingKind, fly::TMClockTable>>
+              clocks;
           for (nb::handle item : file_clocks) {
-              const auto pair = nb::cast<std::pair<int, fly::TMClockTable>>(item);
-              clocks.emplace_back(pair.first, std::move(pair.second));
+              const int kind = nb::cast<int>(item[0]);
+              if (kind < 0 || kind > static_cast<int>(
+                                  fly::TMFileBindingKind::BLOCK_CELL)) {
+                  throw nb::value_error(
+                      "tm_merge_clocks: kind must be 0 (path) / 1 "
+                      "(block_inst) / 2 (block_cell)");
+              }
+              clocks.emplace_back(
+                  static_cast<fly::TMFileBindingKind>(kind),
+                  nb::cast<fly::TMClockTable>(item[1]));
           }
           fly::TMClockRemap remap;
           uint64_t conflicts = 0;
