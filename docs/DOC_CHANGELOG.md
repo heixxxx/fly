@@ -2,6 +2,60 @@
 
 ---
 
+## 2026-09-17: lib flow 三段式收编 + 架构评审 P3 两项顺带
+
+**背景**：三段式批次（timing/design）的同款遗留收编——`build_lib_db`
+预处理段 master 循环嗅探读文件内容（DEVELOPMENT_GUIDELINES §20 判据①
+违例）、`run_lib_flow` 在 master 提交面提交任务族（非「唯一根任务 +
+freeze」形态）。**MapReduce 机制保留**（用户既定裁定先例）。
+
+- **lib 三段化**（`lib_db.py` / `lib_flow.py` / `lib_utils.py`）：
+  `run_lib_flow` 层删除，MapReduce 四阶段装配收编进唯一根任务
+  `_lib_flow_task`（体内提交：每文件一分区 map 解析 → full 单级全量
+  合并 → finalizer 汇总透出 + LIBLibrary 写定 → 框架中间键清理）；
+  freeze 提升为 `build_lib_db` 第③段顶层任务 `_freeze_lib_task`
+  （依赖固定标记 LIBLibrary——finalizer 唯一写定者）。master 提交
+  O(1) 个任务（§20 编排判据）。
+- **嗅探下放**：liberty 形态嗅探从入口预处理（master 循环读内容）移到
+  map 解析任务首个读取点（`lib_parse_one` 头部，worker 侧）——文件
+  形态错任务失败透出、库不冻结；入口只查存在性
+  （`ensure_readable_file`）。文件形态错不在语法错误兜底范围（区别于
+  LIBR::0003/0004 处置链，参照 timing 文件入口任务先例）。
+- **清理责任核实**：lib flow 无自有临时键——全部中间键为 MapReduce
+  框架键 `__mr__{job_id}__*`（键集运行时才知），清理责任单点 = 框架
+  `_mr_cleanup_task`（随 job 提交、依赖 library 写定后调度）；freeze
+  清理清单为空。
+- **QA 随动**（`qa/emir/test_flow_error_handling.py` 场景 4——行为
+  等价红线的唯一声明例外）：.lef 误传从「入口同步 raise、子 fly 非零
+  退出」改为「提交成功 + map 任务嗅探失败 + 库不冻结（wait_frozen
+  快速 False + db_failure_reason 指名嗅探文案）」，断言在子 fly 脚本
+  内（rc=0 门控），外层保留无悬挂上界；单测 `test_lib_flow_error.py`
+  随动补 `lib_parse_one` 形态错 raise 锚定。
+- **新增结构单测**：`test_lib_flow_structure.py`——master 提交面断言
+  （提交任务数恰 2、freeze 依赖恰为固定标记 LIBLibrary 且不含 __mr__
+  运行时键、根任务零数据锚、预处理不读文件内容〔垃圾内容 .lib 不阻止
+  提交〕）。
+- **P3-1 锚写序调整**（design 两处，一行级调换使蕴含链严格成立）：
+  `_merge_lib_task` 调换为 DSPinTables 正式对象先写、s3 锚最后写；
+  `_build_hier_tree_task` 调换为 build_meta 先写、hier 锚最后写（对照
+  `_merge_def_headers_task` / `_decide_partitions_task` 正确序先例）；
+  freeze 蕴含链 docstring 随实（s3/hier 锚在即 DSPinTables/build_meta
+  已先写定——锚后写红线）。
+- **P3-2 统计口径注明**：上批「注释瘦身」条目补口径定义（# 注释行 +
+  docstring 行数 / 其余行数〔含空行〕）；四数字（0.42→0.26、
+  0.45→0.24）按此口径复核成立，无修正。
+- **P3-3 记录不修**：无效绑定文件不切块（timing 条目级兜底跳过文件后
+  不进切块链）的行为变化为正确方向，仅记录。
+- **文档同步**：dev-rules §3 入口校验范式「保留既有格式嗅探」句随
+  三段式裁定修订（嗅探执行点在文件首个解析任务）；emir/module.md
+  lib 行补三段式与嗅探位置；lib-enhancement-plan 实施记录补后继
+  演进条目。
+
+**验证**：单测 120/120（119+新增 1）+ qa/emir 9/9 全绿；分提交推送
+（pre-push 全量校验）。
+
+---
+
 ## 2026-09-17: 建库 API 三段式架构重构（timing/design 两 flow）
 
 **背景**：2026-09-17 用户裁定链——`build_*_db` 恒为三段式（轻量参数
@@ -47,9 +101,11 @@ QA 断言数字不变（qa/emir 9/9）。
   `_partition_task`→`_decide_partitions_task`、`_partition_product_task`
   →`_merge_partition_task`、`_design_verify_task`→`_verify_design_task`
   等（与根任务目录逐行对应）。
-- **注释瘦身**（§2.10，重构优先于删注释）：tm_flow.py 注释/代码行比
-  0.42→0.26、ds_flow.py 0.45→0.24（段落注释叙事压缩为「为什么」一两
-  句 + 文档指针；tm_db/ds_db 持平——主体为 schema/UserDoc 产品契约面）。
+- **注释瘦身**（§2.10，重构优先于删注释；口径 = # 注释行 + docstring
+  行数 / 其余行数〔含空行〕——2026-09-17 补注口径定义，四数字按此口径
+  复核成立）：tm_flow.py 注释/代码行比 0.42→0.26、ds_flow.py
+  0.45→0.24（段落注释叙事压缩为「为什么」一两句 + 文档指针；tm_db/
+  ds_db 持平——主体为 schema/UserDoc 产品契约面）。
 - **新增结构单测**：`test_tm_flow_structure.py` /
   `test_ds_flow_structure.py`——master 提交面断言（提交任务数恰 2、
   freeze 依赖恰为固定标记集且不含运行时临时键、根任务依赖锚、预处理
