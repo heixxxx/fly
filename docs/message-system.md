@@ -255,7 +255,7 @@ worker 是独立子进程，用户在 master 脚本里调 `set_message_*_limit` 
 | `DSGN::0010` | WARN | 层引用未定义（条目级丢弃） | `ds_resolve_layer_id`（adapter/pipeline 各调用点） | 0 | throw 治理 2026-09-12：rect/wire 逐条、via 整条 + 计数 |
 | `DSGN::0011` | FATAL | 层级树构建失败（多根/零根/环/不对齐） | `ds_merge.cpp` `ds_build_hier_tree` | 0 | fatal（§14；D22 2026-09-12 改 fatal） |
 | `DSGN::0012` | FATAL | name hasher 权威段损坏 | `ds_name_hasher.h` 反序列化校验 | 0 | fatal（§14） |
-| `DSGN::0013` | WARN | S8 分区决策 alpha 非法值回退 | `ds_partition.cpp` / `ds_flow.py` 边界 | 0 | target_partitions 解析失败/非正目标密度等 |
+| `DSGN::0013` | WARN | S8 分区决策 alpha 非法值回退 | `ds_partition.cpp` | 0 | target_partitions 解析失败/非正目标密度等（2026-09-17 裁定后入口 alpha 校验走 header raise，本码仅剩 C++ 运行时使用） |
 | `DSGN::0014` | ERROR | 部分 cell lef 文件解析失败（兜底跳过） | `ds_flow.py` `_cell_lef_merge_task` | 0 | 范式 (b)：空产物照常汇总，cell 缺失由 fake cell 承接（DSGN::0007） |
 | `DSGN::0015` | FATAL | 全部 cell lef 文件解析失败 | `ds_flow.py` `_cell_lef_merge_task` | 0 | fatal：与 lib 全败同口径（范式 (a)） |
 | `DSGN::0016` | FATAL | DEF 文件语法/格式错误 | `ds_def_adapter.cpp` S4/S5a/S5b | 0=S4 头 / 1=S5a / 2=S5b | fatal：design db 数据不完整无意义（范式 (a)） |

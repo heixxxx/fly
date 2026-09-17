@@ -470,7 +470,7 @@ build_design_db(name, def_path, lef_paths, lib_db, settings: dict, alpha: dict)
 # alpha：未稳定配置项（首版全部配置在此，成熟后迁 settings）
 ```
 
-**design db 配置键表（首版草案，键名实施期可调；模式遵循 dev-rules.md §3。2026-09-13 起全部已实施 alpha 键经 `DSAlphaSettings` 声明式定义（五要素，[src/emir/design/py/alpha_settings.py](../src/emir/design/py/alpha_settings.py)）：validator 校验非法值回退默认、未知键忽略，DSGN::0013 一次汇总提醒；settings 对象以固定对象名 `"alpha_settings"` 随建库写入 db，消费点 `read_object` 读回 + `normalize()` 兜底）**：
+**design db 配置键表（首版草案，键名实施期可调；模式遵循 dev-rules.md §3。全部已实施 alpha 键经 `DSAlphaSettings` 声明式定义（五要素，[src/emir/design/py/alpha_settings.py](../src/emir/design/py/alpha_settings.py)）；2026-09-17 裁定后入口校验走 header Schema 直接 raise——未知键/非法值报错（validator 与 schema 同源），settings 对象以固定对象名 `"alpha_settings"` 随建库写入 db，消费点 `read_object` 读回 + `normalize()` 兜底）**：
 
 | 参数 | 键 | 语义 | 默认 | 关联裁定 |
 |------|----|------|------|---------|

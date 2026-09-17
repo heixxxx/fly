@@ -1184,7 +1184,10 @@ cell lef 语法错误 → (b) 跳过 + DSGN::0014（引用由 fake cell 承接�
 cell lef 全部失败 → (a) DSGN::0015；DEF 文件语法错误 → (a) DSGN::0016
 （design db 数据不完整无意义）；tech lef 语法错误 → (a) DSGN::0017（层表
 来源损坏）。文件不可读 / 类型不匹配仍属 dev-rules §7 第一类：入口同步抛
-异常拦截（不建库、不起任务）。
+异常拦截（不建库、不起任务）。入口参数校验范式（header Schema 直接
+raise + 白名单严格模式 + 命名 validator + 文件可读显式校验 + 描述用户
+视角，2026-09-17 裁定）见 [docs/emir/dev-rules.md](emir/dev-rules.md)
+§3「入口参数校验范式」。
 
 ### 18.2 判死闭环（安全网，非正常路径）
 
