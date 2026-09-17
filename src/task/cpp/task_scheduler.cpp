@@ -10,20 +10,12 @@ TaskScheduler::TaskScheduler(CMSharedPtr<DependencyGraph> graph,
     : graph_(std::move(graph)), manager_(std::move(manager)) {}
 
 ScheduleResult TaskScheduler::schedule_next() {
-    // 弱观察锁定：lock 失败 = 宿主已重建/释放 graph/worker_manager（start/stop
-    // 窗口）——调度无意义，返回未调度（不悬垂访问，§16）。
-    auto graph = graph_.lock();
-    auto manager = manager_.lock();
-    if (!graph || !manager) {
-        return {0, 0, false, false};
-    }
-
-    auto ready_tasks = graph->get_ready_tasks();
+    auto ready_tasks = graph_->get_ready_tasks();
     if (ready_tasks.empty()) {
         return {0, 0, false, false};
     }
 
-    auto idle_workers = manager->get_idle_workers();
+    auto idle_workers = manager_->get_idle_workers();
     if (idle_workers.empty()) {
         return {0, 0, false, false};
     }
@@ -34,7 +26,7 @@ ScheduleResult TaskScheduler::schedule_next() {
     auto now = std::chrono::steady_clock::now();
 
     for (uint64_t task_id : ready_tasks) {
-        const auto reqs = graph->get_task_requirements(task_id);
+        const auto reqs = graph_->get_task_requirements(task_id);
         float timeout = reqs.timeout_seconds_;
         bool allow_degrade = false;
 
@@ -43,7 +35,7 @@ ScheduleResult TaskScheduler::schedule_next() {
             if (timeout == 0.0f) {
                 allow_degrade = true;  // 立即降级（仅检查一次）
             } else {
-                auto ready_time = graph->get_task_ready_timestamp(task_id);
+                auto ready_time = graph_->get_task_ready_timestamp(task_id);
                 if (ready_time.has_value()) {
                     double elapsed =
                         std::chrono::duration<double>(now - ready_time.value()).count();
@@ -55,14 +47,13 @@ ScheduleResult TaskScheduler::schedule_next() {
         }
         // timeout < 0（死等）：allow_degrade 保持 false
 
-        uint64_t worker_id = select_best_worker(*graph, *manager, task_id, allow_degrade,
-                                                idle_workers, idle_set);
+        uint64_t worker_id = select_best_worker(task_id, allow_degrade, idle_workers, idle_set);
         if (worker_id == 0) continue;  // waiting，不阻塞后续 task 调度
 
         // 判断是否为降级调度：允许降级且 worker 非完整匹配
         bool degraded = false;
         if (allow_degrade && !reqs.capabilities_.empty()) {
-            auto info_opt = manager->get_worker(worker_id);
+            auto info_opt = manager_->get_worker(worker_id);
             if (info_opt.has_value()) {
                 auto& info = info_opt->get();
                 size_t match_count = 0;
@@ -75,8 +66,8 @@ ScheduleResult TaskScheduler::schedule_next() {
             }
         }
 
-        manager->assign_task(worker_id, task_id);
-        graph->remove_task(task_id);
+        manager_->assign_task(worker_id, task_id);
+        graph_->remove_task(task_id);
 
         if (degraded) {
             DBG("[SCHED] task={} degraded-scheduled to worker={} (timeout={})",
@@ -107,9 +98,9 @@ void TaskScheduler::set_locality_preference(bool enabled) {
 }
 
 // 计算 worker 对 required capabilities 的匹配数。
-static size_t capability_match_count(WorkerManager& manager, uint64_t wid,
+static size_t capability_match_count(WorkerManager* manager, uint64_t wid,
                                      const CMVector<CMString>& reqs) {
-    auto info_opt = manager.get_worker(wid);
+    auto info_opt = manager->get_worker(wid);
     if (!info_opt) return 0;
     auto& info = info_opt->get();
     size_t match_count = 0;
@@ -127,9 +118,8 @@ static size_t capability_match_count(WorkerManager& manager, uint64_t wid,
 //
 // scheduler 不接触 DataService：直接消费 master 预计算的 locality_hint_（POD）。
 // hint 每个 entry = (worker_id, 该 worker 持有的输入字节数)，master 已聚合完毕，直接赋值。
-size_t TaskScheduler::compute_scores(DependencyGraph& graph, WorkerManager& manager,
-                                     uint64_t task_id) {
-    auto all_workers = manager.get_all_workers();
+size_t TaskScheduler::compute_scores(uint64_t task_id) {
+    auto all_workers = manager_->get_all_workers();
 
     // 算出 max_worker_id，按 worker_id 直接索引（下标=worker_id）。容量只增不减。
     uint64_t max_id = 0;
@@ -145,7 +135,7 @@ size_t TaskScheduler::compute_scores(DependencyGraph& graph, WorkerManager& mana
     // 消费 master 预计算的 locality_hint_（POD）。master 是数据位置权威，
     // 在 schedule_tasks() 入口按 task 依赖查 DataService 预聚合后注入。
     // hint 为空（无输入对象 / 未注入）→ 所有 score 保持 0，退原行为（按 worker_id 升序选）。
-    const TaskRequirements reqs = graph.get_task_requirements(task_id);
+    const TaskRequirements reqs = graph_->get_task_requirements(task_id);
     for (const auto& [wid, score] : reqs.locality_hint_) {
         if (wid < score_buf_.size()) {
             score_buf_[wid].score = score;  // master 已聚合，直接赋值
@@ -154,21 +144,20 @@ size_t TaskScheduler::compute_scores(DependencyGraph& graph, WorkerManager& mana
     return score_buf_.size();
 }
 
-uint64_t TaskScheduler::select_best_worker(DependencyGraph& graph, WorkerManager& manager,
-                                             uint64_t task_id, bool allow_degrade,
+uint64_t TaskScheduler::select_best_worker(uint64_t task_id, bool allow_degrade,
                                              const CMVector<uint64_t>& idle_workers,
                                              const CMUnorderedSet<uint64_t>& idle_set) {
     if (idle_workers.empty()) {
         return 0;
     }
 
-    const TaskRequirements reqs = graph.get_task_requirements(task_id);
+    const TaskRequirements reqs = graph_->get_task_requirements(task_id);
     const CMVector<CMString>& caps = reqs.capabilities_;
 
     // 仅在 locality 启用时算分。caps 为空时也走 locality（无 capability 约束，纯按数据亲和选 worker）。
     bool use_locality = locality_enabled_;
     if (use_locality) {
-        compute_scores(graph, manager, task_id);
+        compute_scores(task_id);
     }
 
     if (caps.empty()) {
@@ -188,7 +177,7 @@ uint64_t TaskScheduler::select_best_worker(DependencyGraph& graph, WorkerManager
     uint64_t best_partial_worker = 0;
     size_t best_partial_count = 0;
     for (uint64_t wid : idle_workers) {
-        size_t match_count = capability_match_count(manager, wid, caps);
+        size_t match_count = capability_match_count(manager_.get(), wid, caps);
         if (match_count == caps.size()) {
             return wid;  // 完整匹配，强约束优先
         }
@@ -207,7 +196,7 @@ uint64_t TaskScheduler::select_best_worker(DependencyGraph& graph, WorkerManager
         std::sort(score_buf_.begin(), score_buf_.end(), score_desc_compare);
         for (const auto& entry : score_buf_) {
             if (!idle_set.count(entry.worker_id)) continue;
-            size_t match_count = capability_match_count(manager, entry.worker_id, caps);
+            size_t match_count = capability_match_count(manager_.get(), entry.worker_id, caps);
             if (match_count >= best_partial_count) {
                 return entry.worker_id;
             }

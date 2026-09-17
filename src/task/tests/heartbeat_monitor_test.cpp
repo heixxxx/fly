@@ -9,7 +9,6 @@ CMSharedPtr<T> as_shared(T& obj) {
 }
 }  // namespace
 
-
 namespace fly {
 
 TEST(HeartbeatMonitorTest, NoDeadWorkers) {
@@ -17,9 +16,7 @@ TEST(HeartbeatMonitorTest, NoDeadWorkers) {
     manager.register_worker(1, "127.0.0.1", 8080, {});
     manager.set_heartbeat(1, 80);
     
-    auto manager_obs = as_shared(manager);  // 观察句柄存活至测试末尾（同
-                                            // task_scheduler_test 注释）
-    HeartbeatMonitor monitor(manager_obs, 30);
+    HeartbeatMonitor monitor(as_shared(manager), 30);
     monitor.check_all_workers(100);
     
     auto dead = monitor.get_dead_workers();
@@ -30,9 +27,7 @@ TEST(HeartbeatMonitorTest, DetectDeadWorker) {
     WorkerManager manager;
     manager.register_worker(1, "127.0.0.1", 8080, {});
     
-    auto manager_obs = as_shared(manager);  // 观察句柄存活至测试末尾（同
-                                            // task_scheduler_test 注释）
-    HeartbeatMonitor monitor(manager_obs, 30);
+    HeartbeatMonitor monitor(as_shared(manager), 30);
     monitor.check_all_workers(100);
     
     auto dead = monitor.get_dead_workers();
@@ -46,9 +41,7 @@ TEST(HeartbeatMonitorTest, AliveWorkerNotMarkedDead) {
     manager.register_worker(1, "127.0.0.1", 8080, {});
     manager.set_heartbeat(1, 30);
     
-    auto manager_obs = as_shared(manager);  // 观察句柄存活至测试末尾（同
-                                            // task_scheduler_test 注释）
-    HeartbeatMonitor monitor(manager_obs, 30);
+    HeartbeatMonitor monitor(as_shared(manager), 30);
     monitor.check_all_workers(50);
     
     auto dead = monitor.get_dead_workers();
@@ -65,9 +58,7 @@ TEST(HeartbeatMonitorTest, MultipleWorkersMixedStatus) {
     manager.set_heartbeat(1, 80);
     manager.set_heartbeat(3, 80);
     
-    auto manager_obs = as_shared(manager);  // 观察句柄存活至测试末尾（同
-                                            // task_scheduler_test 注释）
-    HeartbeatMonitor monitor(manager_obs, 30);
+    HeartbeatMonitor monitor(as_shared(manager), 30);
     monitor.check_all_workers(100);
     
     auto dead = monitor.get_dead_workers();
@@ -79,9 +70,7 @@ TEST(HeartbeatMonitorTest, TimeoutConfiguration) {
     WorkerManager manager;
     manager.register_worker(1, "127.0.0.1", 8080, {});
     
-    auto manager_obs = as_shared(manager);  // 观察句柄存活至测试末尾（同
-                                            // task_scheduler_test 注释）
-    HeartbeatMonitor monitor(manager_obs, 30);
+    HeartbeatMonitor monitor(as_shared(manager), 30);
     EXPECT_EQ(monitor.get_timeout(), 30);
     
     monitor.set_timeout(60);
@@ -92,8 +81,7 @@ TEST(HeartbeatMonitorTest, CustomTimeout) {
     WorkerManager manager;
     manager.register_worker(1, "127.0.0.1", 8080, {});
     
-    auto manager_obs = as_shared(manager);  // 观察句柄存活至测试末尾
-    HeartbeatMonitor monitor(manager_obs, 10);
+    HeartbeatMonitor monitor(as_shared(manager), 10);
     monitor.check_all_workers(15);
     
     auto dead = monitor.get_dead_workers();
@@ -105,22 +93,25 @@ TEST(HeartbeatMonitorTest, AlreadyDeadNotReprocessed) {
     manager.register_worker(1, "127.0.0.1", 8080, {});
     manager.update_worker_status(1, WorkerStatus::DEAD);
     
-    auto manager_obs = as_shared(manager);  // 观察句柄存活至测试末尾（同
-                                            // task_scheduler_test 注释）
-    HeartbeatMonitor monitor(manager_obs, 30);
+    HeartbeatMonitor monitor(as_shared(manager), 30);
     monitor.check_all_workers(100);
     
     auto dead = monitor.get_dead_workers();
     EXPECT_EQ(dead.size(), 1);
 }
 
-// 弱观察失效（§16 判据）：宿主释放 manager 后检查必须安全跳过（不悬垂）。
-TEST(HeartbeatMonitorTest, ExpiredManagerSkipsCheck) {
+// §16 悬垂防护回归：宿主释放句柄后，观察者强持延寿——检查安全继续（不悬垂）。
+TEST(HeartbeatMonitorTest, OutlivesHostResetSafely) {
     auto manager = CMMakeShared<WorkerManager>();
+    manager->register_worker(1, "127.0.0.1", 8080, {});
+    manager->set_heartbeat(1, 0);
     HeartbeatMonitor monitor(manager, 30);
-    manager.reset();
+
+    manager.reset();   // 模拟宿主重建
     monitor.check_all_workers(1000);
-    EXPECT_TRUE(monitor.get_dead_workers().empty());
+    auto dead = monitor.get_dead_workers();
+    EXPECT_EQ(dead.size(), 1);   // 延寿的旧对象上正常判死
+    EXPECT_EQ(dead[0], 1u);
 }
 
 }  // namespace fly

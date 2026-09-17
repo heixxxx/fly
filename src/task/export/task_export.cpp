@@ -91,9 +91,9 @@ FLY_EXPORT_CLASS(fly::WorkerManager, "EXTaskWorkerManager")
     FLY_EXPORT_METHOD("get_idle_worker_count", &fly::WorkerManager::get_idle_worker_count);
 
 FLY_EXPORT_CLASS(fly::TaskScheduler, "EXTaskTaskScheduler")
-    // 构造参数为 CMSharedPtr 弱观察化配套（§16）：Python 面传 WorkerManager/
-    // DependencyGraph 对象时 nanobind 取实例指针构造 shared（所有权交接语义
-    // 由 nanobind keep_alive/引用管理不变——绑定面无 Python 级变化）。
+    // 共享持有观察（§16）：Python 侧传入的 WorkerManager/DependencyGraph 由
+    // scheduler 以 CMSharedPtr 强持保活（nanobind shared_ptr caster 的引用
+    // 语义随成员延寿），Python 侧用法与所有权语义不变。
     FLY_EXPORT_INIT(fly::CMSharedPtr<fly::DependencyGraph>,
                     fly::CMSharedPtr<fly::WorkerManager>)
     FLY_EXPORT_METHOD("schedule_next", &fly::TaskScheduler::schedule_next)

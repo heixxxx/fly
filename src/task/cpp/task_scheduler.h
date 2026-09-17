@@ -15,11 +15,10 @@ struct ScheduleResult {
     bool degraded_ = false;  // 本次调度是否为降级调度（超时到期或 timeout==0）
 };
 
-// TaskScheduler —— 调度纯函数层：对 DependencyGraph / WorkerManager 是**弱
-// 观察**（CMWeakPtr，§16 判据：宿主 MasterAgent start() 会整体重建 graph/
-// worker_manager，裸指针/裸引用观察在重建窗口悬垂——曾按 solver restart
-// 类场景收敛）。宿主以 CMSharedPtr 持有两对象；本类每次调度入口 lock，
-// lock 失败（宿主已释放/重建中）= 关停窗口，直接返回未调度。
+// TaskScheduler —— 调度纯函数层，对 DependencyGraph / WorkerManager 做
+// **共享持有观察**（CMSharedPtr，§16 悬垂防护）：宿主 MasterAgent::start()
+// 每次整体重建 graph/worker_manager，裸指针观察在重建窗口悬垂；共享持有使
+// 旧观察者延寿至自身销毁（绝不悬垂），重建路径由宿主同步重建 scheduler。
 class TaskScheduler {
 public:
     TaskScheduler(CMSharedPtr<DependencyGraph> graph, CMSharedPtr<WorkerManager> manager);
@@ -34,17 +33,15 @@ private:
     // 则返回匹配属性最多的 worker，否则返回 0（task 继续 waiting，不阻塞其他调度）。
     // idle_workers / idle_set 由调用方（schedule_next）一次性获取后传入复用，
     // 避免 select_best_worker 内部对每个 ready task 重复 get_idle_workers + 重建 set。
-    // graph/manager 为调用方 lock 后的共享句柄（本类不持裸观察）。
-    uint64_t select_best_worker(DependencyGraph& graph, WorkerManager& manager,
-                                uint64_t task_id, bool allow_degrade,
-                                const CMVector<uint64_t>& idle_workers,
-                                const CMUnorderedSet<uint64_t>& idle_set);
+    uint64_t select_best_worker(uint64_t task_id, bool allow_degrade,
+                                 const CMVector<uint64_t>& idle_workers,
+                                 const CMUnorderedSet<uint64_t>& idle_set);
     // 为 task 计算各 worker 的 locality 分数，写入持久缓冲区 score_buf_（复用，无 per-task 分配）。
     // 返回填充的 entry 数（= 注册 worker 数）。
-    size_t compute_scores(DependencyGraph& graph, WorkerManager& manager, uint64_t task_id);
+    size_t compute_scores(uint64_t task_id);
 
-    CMWeakPtr<DependencyGraph> graph_;
-    CMWeakPtr<WorkerManager> manager_;
+    CMSharedPtr<DependencyGraph> graph_;
+    CMSharedPtr<WorkerManager> manager_;
     bool locality_enabled_ = false;
 
     // 持久复用的分数缓冲区：按 worker_id 直接索引（score_buf_[worker_id].score）。
