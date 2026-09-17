@@ -177,7 +177,8 @@ def load_block_names(db, index: int):
 
 
 @wait_obj(inputs=lambda db, kind=0, name_indexes=None: (
-    [db.get_full_name(DesignDb.DESIGN_OBJ)]
+    [db.get_full_name(DesignDb.DESIGN_OBJ),
+     db.get_full_name(DesignDb.BUILD_META_OBJ)]
     + ([] if name_indexes is None else
        [db.get_full_name(DesignDb.names_obj_name(i)) for i in name_indexes])
 ))
@@ -189,30 +190,22 @@ def load_name_mapper(db, kind: int = 0, name_indexes: list = None):
     ㊻）。
 
     kind: 0 = instance 维度（层级实例路径 ↔ global instance id）、
-    1 = net 维度（网名路径 ↔ global net id）。name_indexes 缺省 = 自
-    0 起逐个读取伴生对象直到缺失（per-DEF 伴生对象按 def_paths 序连续
-    落盘）。返回 (design, mapper)——mapper 持 design 内层级树的观察引
-    用，两者须同生命周期。
+    1 = net 维度（网名路径 ↔ global net id）。name_indexes 缺省 = 按
+    build_meta.def_count 确定性读取全量伴生对象（§19 批次 2026-09-17：
+    禁试探循环——锚 build_meta 即锚全集；旧格式缺 build_meta →
+    ValueError 指引重建）。返回 (design, mapper)——mapper 持 design 内
+    层级树的观察引用，两者须同生命周期。
 
-    依赖声明边界：deps 解析 DESIGN_OBJ + 显式 name_indexes 对应的
-    DSBlockNames_<i>；name_indexes 缺省（全量读取）时数量仅调用方可知，
-    deps 无法静态枚举——上层 task 的 inputs 须自行列全部
-    DSBlockNames_<i>（编排侧持有 def_paths 数量）再叠加
-    `load_name_mapper.deps(db, kind, name_indexes)`。其余调用规范见模
+    依赖声明边界：deps 解析 DESIGN_OBJ + BUILD_META_OBJ（全量分支——
+    build_meta 由层级树任务在全部伴生对象写定后单点写，锚它即锚全集）；
+    显式 name_indexes 分支叠加对应 DSBlockNames_<i>。其余调用规范见模
     块 docstring。
     """
     design = db.read_object(DesignDb.DESIGN_OBJ)
     if name_indexes is None:
-        names_list = []
-        i = 0
-        while True:
-            try:
-                names_list.append(
-                    db.read_object(DesignDb.names_obj_name(i)))
-            except KeyError:
-                break  # 连续段结束（read_object 未命中抛 KeyError——宽
-                       # catch 会吞真异常，终审 #2 收窄）
-            i += 1
+        meta = db.load_build_meta()
+        names_list = [db.read_object(DesignDb.names_obj_name(i))
+                      for i in range(meta["def_count"])]
     else:
         names_list = [db.read_object(DesignDb.names_obj_name(i))
                       for i in name_indexes]

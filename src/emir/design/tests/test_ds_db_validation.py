@@ -1,6 +1,9 @@
 """build_design_db 入口参数校验负例单测（2026-09-17 裁定：header Schema
 直接校验、错误直接 raise 终止、白名单严格模式——alpha 八键逐键类型/值域、
-未知键一律报错，不再提醒忽略/回退默认继续）。"""
+未知键一律报错，不再提醒忽略/回退默认继续）+ build_meta 旧格式读侧负例
+（§19 批次：确定性读取，缺失 ValueError 指引重建）。"""
+
+from emir.design import DesignDb
 
 
 class _FakeProject:
@@ -160,6 +163,59 @@ def test_file_not_found():
         assert "/nonexistent/tech.lef" in str(e), str(e)
 
 
+# ── build_meta 旧格式负例（2026-09-17 §19 批次：读侧确定性消费——缺
+#    build_meta 的旧格式 db 不做试探回退，ValueError 指引重建）─────────
+
+class _OldFormatDesignDb(DesignDb):
+    """旧格式 design db 桩：正式对象可读、无 build_meta 对象。
+
+    role=None——测试桩不接管 _ROLE_REGISTRY 的 design 注册。"""
+
+    role = None
+
+    def read_object(self, name, *args, **kwargs):
+        if name in (DesignDb.DESIGN_OBJ, DesignDb.names_obj_name(0)):
+            return object()  # 正式对象在——仅缺元数据
+        raise KeyError(name)
+
+    def get_db_path(self):
+        return "/old/format/design"
+
+
+def test_old_format_load_build_meta_raises():
+    db = _OldFormatDesignDb.__new__(_OldFormatDesignDb)
+    try:
+        db.load_build_meta()
+        raise AssertionError("old-format db must raise ValueError")
+    except ValueError as e:
+        assert "build_meta" in str(e) and "rebuild" in str(e), str(e)
+
+
+def test_old_format_ensure_mappers_raises():
+    # debug 读库 API 的 mapper 惰性加载：旧格式（伴生名对象在、元数据缺）
+    # → ValueError 指引重建，不退回试探循环
+    db = _OldFormatDesignDb.__new__(_OldFormatDesignDb)
+    try:
+        db._ensure_mappers()
+        raise AssertionError("old-format db must raise ValueError")
+    except ValueError as e:
+        assert "build_meta" in str(e) and "rebuild" in str(e), str(e)
+
+
+def test_old_format_load_name_mapper_full_branch_raises():
+    # 全量分支（name_indexes=None）：同样锚 build_meta 确定性读取——旧格式
+    # ValueError；run_direct 剥离 wait_obj 等待（桩无 DataService 对象）
+    from fly import run_direct
+    from emir.design import load_name_mapper
+    db = _OldFormatDesignDb.__new__(_OldFormatDesignDb)
+    db.get_full_name = lambda name: f"/old/format/design:{name}"
+    try:
+        run_direct(load_name_mapper, db, 0, None)
+        raise AssertionError("old-format db must raise ValueError")
+    except ValueError as e:
+        assert "build_meta" in str(e) and "rebuild" in str(e), str(e)
+
+
 if __name__ == "__main__":
     test_name_empty_rejected()
     test_def_paths_empty_str_rejected()
@@ -178,4 +234,7 @@ if __name__ == "__main__":
     test_alpha_def_aggregate_threshold_below_one_rejected()
     test_alpha_valid_partial_dict_passes_schema()
     test_file_not_found()
+    test_old_format_load_build_meta_raises()
+    test_old_format_ensure_mappers_raises()
+    test_old_format_load_name_mapper_full_branch_raises()
     print("[PASS] test_ds_db_validation")

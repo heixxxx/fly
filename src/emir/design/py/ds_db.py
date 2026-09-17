@@ -62,6 +62,10 @@ class DesignDb(Database):
     # 建库 alpha 设置对象（DSAlphaSettings，声明式五要素 2026-09-13 裁
     # 定；master 侧随建库写入，消费点 read_object 读回 + normalize 兜底）
     ALPHA_SETTINGS_OBJ = "alpha_settings"
+    # 建库元数据对象（pickle 友好纯 Python dict；层级树任务在全部
+    # DSBlockNames_<i> 伴生对象写定后单点写定——§19 批次 2026-09-17：消费
+    # 侧确定性读取的锚点，def_count = def 文件数；freeze final_keys 依赖）
+    BUILD_META_OBJ = "build_meta"
 
     # S9 分区六类正式对象 kind（partition_obj_name 的 kind 入参；
     # 2026-09-14 拆分裁定：原四类中 GEOMETRY/NETS 各按 pg/信号拆分——
@@ -139,6 +143,20 @@ class DesignDb(Database):
         """读取 DSStack 层堆叠（EXDSStack 对象）。"""
         return self.read_object(self.STACK_OBJ)
 
+    def load_build_meta(self):
+        """读取建库元数据（dict：def_count = def 文件数等——消费侧确定性
+        读取的规模锚点，§19 批次 2026-09-17）。
+
+        旧格式 db 缺本对象 → ValueError 指引重建（不做试探回退——「有多
+        少」是构建时已知事实，读侧不得靠异常探测重新发现）。"""
+        try:
+            return self.read_object(self.BUILD_META_OBJ)
+        except KeyError as exc:
+            raise ValueError(
+                f"design db '{self.get_db_path()}' has no "
+                f"'{self.BUILD_META_OBJ}' object (pre-build_meta format); "
+                f"rebuild the design db with the current fly version") from exc
+
     # ── debug 读库 API（2026-09-13 裁定：挂 db 句柄的交互定位面；六个
     #    方法 + 惰性缓存辅助。返回 dict 一律 id + name 成对的可读字段）──
 
@@ -202,7 +220,9 @@ class DesignDb(Database):
     def _ensure_mappers(self):
         """层级 name mapper 惰性加载（读全部 DSBlockNames_<i> 伴生对象 →
         组装 instance/net 两维度 mapper——与 load_name_mapper 同构，挂在
-        debug API 生命周期内缓存）。"""
+        debug API 生命周期内缓存）。伴生名对象数量锚 build_meta.def_count
+        确定性读取（§19 批次：禁试探循环；旧格式缺 build_meta →
+        ValueError 指引重建）。"""
         mappers = self._lru_get("_mapper_cache", "mappers")
         if mappers is not None:
             return mappers
@@ -211,15 +231,9 @@ class DesignDb(Database):
             ds_make_net_name_mapper,
         )
         design = self._cached_design()
-        names_list = []
-        i = 0
-        while True:
-            try:
-                names_list.append(self.read_object(self.names_obj_name(i)))
-            except KeyError:
-                break  # 连续段结束（read_object 未命中抛 KeyError——宽
-                       # catch 会吞真异常，终审 #2 收窄）
-            i += 1
+        meta = self.load_build_meta()
+        names_list = [self.read_object(self.names_obj_name(i))
+                      for i in range(meta["def_count"])]
         mappers = self._lru_put("_mapper_cache", 1, "mappers", (
             design,
             ds_make_instance_name_mapper(design, names_list),  # instance 维度

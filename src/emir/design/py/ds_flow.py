@@ -352,6 +352,12 @@ def _hier_task(db, snapshot_key, temp_block_keys, names_keys, formal_net_keys,
     INFO(f"hier tree: {tree.node_count} block instances, top="
          f"'{tree.design_name}'")
     db.write_object(hier_key, tree, save_to_db=False)
+    # build_meta 正式对象单点写定（§19 批次 2026-09-17）：本任务 inputs 含
+    # 全部 DSBlockNames_<i> 伴生对象 ⟹ 本对象写定即全集已写——消费侧
+    # （timing 快照任务 / debug mapper 加载 / load_name_mapper 全量分支）
+    # 以它为锚做确定性读取（for i in range(def_count)），不再试探发现段数
+    db.write_object(DesignDb.BUILD_META_OBJ, {"def_count": len(names_keys)},
+                    save_to_db=True)
 
 
 # ── 实例解析汇总：fake cell 并入全局表（id 保持 ⑳）→ 正式对象唯一写定 ─
@@ -527,12 +533,17 @@ def _partition_task(db, stack_key, hier_key, block_keys, net_keys, design_key,
     db.get_full_name(k) for k in names_keys
 ])
 def _net_union_names_task(db, names_keys, block_names_key):
-    # block 名清单（def_paths 序）：slice 任务把树上 children 的 block
-    # cell 名映射回 def 序号（定位子定义网产物）。名字伴生对象轻量，
-    # N 次读仅此一遭——slice 任务据此只读本 def 引用的子定义网产物
-    #（避免每任务全量重复读，同 S9 按定义切分的 I/O 精神）
-    db.write_object(block_names_key,
-                    [db.read_object(k).block_name for k in names_keys],
+    # block 名清单（def_paths 序）+ 首份序号表（D9，§19 批次：一遍顺带产
+    # 出 is_first——重名定义保留首份判据的 O(1) 查表，消费点不再
+    # list.index() 反推）。名字伴生对象轻量，N 次读仅此一遭——slice 任务
+    # 据清单只读本 def 引用的子定义网产物（避免每任务全量重复读，同按定
+    # 义切分的 I/O 精神）
+    block_names = [db.read_object(k).block_name for k in names_keys]
+    first_seen = {}
+    is_first = [first_seen.setdefault(name, i) == i
+                for i, name in enumerate(block_names)]
+    db.write_object(block_names_key, {"names": block_names,
+                                      "is_first": is_first},
                     save_to_db=False)
 
 
@@ -548,12 +559,14 @@ def _net_union_slice_task(db, hier_key, block_names_key, net_keys, index,
     # 名字形态：父侧 (子实例名, port 名) × 子侧 ("PIN", port 名)，两侧都
     # 是字符串）。slice 为临时对象，汇总合并后 remove
     tree = db.read_object(hier_key)
-    block_names = db.read_object(block_names_key)
-    # 重名 def（已被 S4 DSGN::0001 / S6 emplace 保留首份 + WARN）：非首份
-    # 序号不收集——review 2026-09-13：其连接表会按 block 名反查命中首份
-    # 的实例化位置，产生首份定义中不存在的边造成错误归并；空 slice 在
-    # 汇总侧天然安全跳过（无 block_name 无边无 port 网）
-    if block_names.index(block_names[index]) != index:
+    block_info = db.read_object(block_names_key)
+    block_names = block_info["names"]
+    # 重名 def（已被头扫描 DSGN::0001 / 层级树 emplace 保留首份 + WARN）：
+    # 非首份序号不收集——review 2026-09-13：其连接表会按 block 名反查命中
+    # 首份的实例化位置，产生首份定义中不存在的边造成错误归并；空 slice 在
+    # 汇总侧天然安全跳过（无 block_name 无边无 port 网）。首份判据 =
+    # is_first 查表（D9——原 list.index() 反推 O(n²)）
+    if not block_info["is_first"][index]:
         db.write_object(slice_key, EXDSNetUnionSlice(), save_to_db=False)
         return
     own = db.read_object(net_keys[index])
@@ -628,7 +641,9 @@ def _partition_plan_task(db, design_key, global_density_key, hier_key,
     import os
     design = db.read_object(design_key)
     tree = db.read_object(hier_key)
-    block_names = db.read_object(block_names_key)
+    block_info = db.read_object(block_names_key)
+    block_names = block_info["names"]
+    is_first = block_info["is_first"]
     settings = db.read_object(alpha_key)
     settings.normalize()
     threshold = settings.def_aggregate_threshold
@@ -641,12 +656,13 @@ def _partition_plan_task(db, design_key, global_density_key, hier_key,
         name = tree.node(i).block_cell_name
         inst_count[name] = inst_count.get(name, 0) + 1
 
-    # 展开分组：重名定义跳过（保留首份）；大定义独占、小定义贪心聚合
+    # 展开分组：重名定义跳过（保留首份，is_first 查表——D9 原列表
+    # list.index() 反推 O(n²)）；大定义独占、小定义贪心聚合
     groups = []
     current = []
     acc = 0
     for i, path in enumerate(def_paths):
-        if block_names.index(block_names[i]) != i:
+        if not is_first[i]:
             continue
         estimate = os.path.getsize(path) * inst_count.get(block_names[i], 0)
         if estimate >= threshold:
@@ -736,11 +752,13 @@ def _partition_expand_task(db, design_key, hier_key, block_names_key,
     引脚预展开 D18 删除——归 ④ 提取自取）。"""
     design = db.read_object(design_key)
     tree = db.read_object(hier_key)
-    block_names = db.read_object(block_names_key)
+    block_info = db.read_object(block_names_key)
+    block_names = block_info["names"]
     products = {}
     for i, block_key, net_key in zip(group, block_keys, net_keys):
-        if block_names.index(block_names[i]) != i:
-            continue  # 重名保留首份（plan 分组已排除，防御再判）
+        if not block_info["is_first"][i]:
+            continue  # 重名保留首份（plan 分组已排除，防御再判——is_first
+                       # 查表，D9）
         block = db.read_object(block_key)
         nets = db.read_object(net_key)
         for pid, product in ds_flatten_block(tree, block, nets, design):
@@ -1159,6 +1177,7 @@ def run_design_flow(db, lef_paths, def_paths, lib_db):
         DesignDb.ALPHA_SETTINGS_OBJ, formal_block_keys,
         formal_net_keys, names_keys, def_paths, slice_prefix, verify_prefix,
         stack_key, net_union_key, id_slice_prefix, pg_slice_prefix,
-        [design_key, stack_key, tables_key, geoms_key] + formal_block_keys +
+        [design_key, stack_key, tables_key, geoms_key,
+         DesignDb.BUILD_META_OBJ] + formal_block_keys +
         names_keys + formal_net_keys + [global_density_key, net_union_key],
         temp_keys)

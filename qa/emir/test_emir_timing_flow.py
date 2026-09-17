@@ -65,6 +65,11 @@ design_db = proj.build_design_db(
 )
 assert proj.wait_frozen("design", timeout=300), "design db should freeze"
 INFO("[WAIT] design db frozen")
+# build_meta 元数据正式对象（§19 批次：freeze 前单点写——def_count = def
+# 文件数；读侧确定性消费的锚点）
+from emir.design import DesignDb
+assert design_db.read_object(DesignDb.BUILD_META_OBJ) == {"def_count": 1}
+INFO("[OK] build_meta: def_count=1")
 
 # ── 场景 1：三维度 TWF（网络/引脚/混合）──────────────────────────────
 TIMING_FILES = {
@@ -149,6 +154,9 @@ design_blk = proj.build_design_db(
     lib_db=lib_db,
 )
 assert proj.wait_frozen("design_blk", timeout=300), "design_blk should freeze"
+# 两份 DEF → def_count=2（build_meta 锚伴生对象全集）
+assert design_blk.read_object(DesignDb.BUILD_META_OBJ) == {"def_count": 2}
+INFO("[OK] build_meta: def_count=2 (two DEFs)")
 
 # 全局 id（层级树 net 区间含空洞位口径）：top1=1 top3=3 u1=5；
 # 网 n_top=1 n1=3 n2=4；块端口 pin PIN_IN

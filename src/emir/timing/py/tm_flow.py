@@ -67,6 +67,7 @@ def _tmp_key(uid: str, name: str) -> str:
     design_db.get_full_name(DesignDb.GLOBAL_DENSITY_OBJ),
     design_db.get_full_name(DesignDb.PG_NETS_OBJ),
     design_db.get_full_name(DesignDb.id_map_index_obj_name("INST")),
+    design_db.get_full_name(DesignDb.BUILD_META_OBJ),
     db.get_full_name(plan_key),
 ])
 def _snapshot_design_task(db, design_db, uid, files, plan_key):
@@ -75,28 +76,24 @@ def _snapshot_design_task(db, design_db, uid, files, plan_key):
     build_timing_db 提交后立即返回，快照在 worker 上执行）。
 
     锚集证明（与 design flow 写序对照）：DESIGN_OBJ 首写于 COMPONENTS
-    解析汇总 ⟹ DSBlockNames_<i> 全集已写；GLOBAL_DENSITY_OBJ 写于全局
-    密度合并（plan S8，补分区重写后锚——同 design flow 分区编排任务
-    口径）⟹ 分区表已填；INST id map 段表写于分区链末段 ⟹ 分区六类正式
-    对象已写（段表最后写定 ⟹ 段对象已写；NET 段表不参与逐块解析路由，
-    评审 P2-2 清理其锚与注入）。任务体内直读的其余对象均在锚后。
+    解析汇总 ⟹ build_meta（层级树任务在其后单点写定）已写 ⟹
+    DSBlockNames_<i> 全集已写（锚 build_meta 即锚伴生对象全集——§19
+    批次确定性读取）；GLOBAL_DENSITY_OBJ 写于全局密度合并（plan S8，补
+    分区重写后锚——同 design flow 分区编排任务口径）⟹ 分区表已填；INST
+    id map 段表写于分区链末段 ⟹ 分区六类正式对象已写（段表最后写定 ⟹
+    段对象已写；NET 段表不参与逐块解析路由，评审 P2-2 清理其锚与注入）。
+    任务体内直读的其余对象均在锚后。
 
     绑定目标校验（plan §7.5：块实例路径 / 块 cell 名未命中 → 该文件
     ValueError——输入语义错误，可 raise 两类之一；评审 P2-3 后随快照
     任务执行，任务失败语义，不再阻塞 master 提交线程）。
     """
     design = design_db.read_object(DesignDb.DESIGN_OBJ)
-    # 名字伴生对象全集（S5a 落盘序 = def 序；逐个读到缺）
-    names_list = []
-    i = 0
-    while True:
-        try:
-            names_list.append(
-                design_db.read_object(DesignDb.names_obj_name(i)))
-        except KeyError:
-            break  # 连续段结束（read_object 未命中抛 KeyError——宽 catch
-                   # 会吞真异常，终审 #2 收窄）
-        i += 1
+    # 名字伴生对象全集（落盘序 = def 序；数量锚 build_meta.def_count——
+    # §19 批次：确定性循环读取，不试探发现段数）
+    meta = design_db.load_build_meta()
+    names_list = [design_db.read_object(DesignDb.names_obj_name(i))
+                  for i in range(meta["def_count"])]
 
     mapper = ds_make_instance_name_mapper(design, names_list)
     for f in files:
@@ -146,7 +143,9 @@ def _snapshot_design_task(db, design_db, uid, files, plan_key):
     #    动态提交先例）──
     plan = db.read_object(plan_key)
 
-    # 逐块解析每块一任务（全并行；绑定描述以散字段传参——pickle 友好）
+    # 逐块解析每块一任务（全并行；绑定描述以散字段传参——pickle 友好；
+    # names_count = 伴生名对象数——B4：任务内确定性循环注入，不试探键集。
+    # 全参数位置传递——as_task 序列化仅覆盖位置参数）
     slice_keys = []
     for fi, fp in enumerate(plan.files):
         for cj in range(len(fp.chunk_starts)):
@@ -155,7 +154,8 @@ def _snapshot_design_task(db, design_db, uid, files, plan_key):
             _chunk_parse_task(db, keys, plan_key, fi, cj,
                               files[fi]["kind"], files[fi]["block_inst"],
                               files[fi]["block_cell"],
-                              files[fi]["strip_prefix"], slice_key)
+                              files[fi]["strip_prefix"], slice_key,
+                              len(names_list))
 
     # 时钟表合并任务（独立任务，依赖全部 slices——评审 P1-1：提前至分
     # 区合并之前，产出 clocks 正式对象 + remap 桥 + 0007 冲突计数 temp）
@@ -197,12 +197,12 @@ def _snapshot_design_task(db, design_db, uid, files, plan_key):
 
 @as_task(inputs=lambda db, snapshot_keys, plan_key, file_index, chunk_index,
          binding_kind, block_inst, block_cell, strip_prefix,
-         slice_key: (
+         slice_key, names_count: (
     [db.get_full_name(k) for k in snapshot_keys.values()]
     + [db.get_full_name(plan_key)]))
 def _chunk_parse_task(db, snapshot_keys, plan_key, file_index, chunk_index,
                       binding_kind, block_inst, block_cell, strip_prefix,
-                      slice_key):
+                      slice_key, names_count):
     """单块执行：worker 端组装 EXTMDesignContext（共享注入零拷贝）→
     tm_convert_chunk（块解析 + 名字换算 + 分区路由）→ TMEntrySlice 分片。
     绑定描述以散字段传参（pickle 友好），任务内组装 EXTMFileBinding。
@@ -211,10 +211,9 @@ def _chunk_parse_task(db, snapshot_keys, plan_key, file_index, chunk_index,
     ctx.set_design(db.read_object(snapshot_keys["design"]))
     ctx.set_inst_id_map(db.read_object(snapshot_keys["inst_index"]))
     ctx.set_pg_nets(db.read_object(snapshot_keys["pg_nets"]))
-    j = 0
-    while f"names_{j}" in snapshot_keys:
+    # names_count 确定性循环（B4，§19 批次：规模随参数传递，禁键集试探）
+    for j in range(names_count):
         ctx.add_block_names(db.read_object(snapshot_keys[f"names_{j}"]))
-        j += 1
     # snapshot_keys = {对象名: 对象键}（段对象/分区 NETS 逐个注入）
     for name, key in snapshot_keys.items():
         if name.startswith("inst_seg_"):
