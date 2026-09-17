@@ -2,6 +2,68 @@
 
 ---
 
+## 2026-09-17: 建库 API 三段式架构重构（timing/design 两 flow）
+
+**背景**：2026-09-17 用户裁定链——`build_*_db` 恒为三段式（轻量参数
+预处理〔不读文件内容〕→ 唯一 flow 根任务 → 顶层 freeze 任务），master
+提交 O(1) 个任务与输入规模完全无关（DEVELOPMENT_GUIDELINES §20 输入
+规模假设的实施面）。标准入册 [emir/dev-rules.md](emir/dev-rules.md)
+§3「建库 API 流程标准」（三段式 + 根任务自包含目录 + 编排四判据 +
+task 命名模式 `<动作>_<对象>[_<粒度>]_task`）。**行为等价**：全部既有
+QA 断言数字不变（qa/emir 9/9）。
+
+- **timing 三段化**（`tm_db.py` / `tm_flow.py`）：`run_timing_flow`
+  层收编（函数删除）；`_snapshot_design_task` 改造为根任务
+  `_timing_flow_task`（体内目录：快照搬运 → 绑定校验 → 每有效文件
+  一个文件入口任务 → 合并链编排任务）；master 同步切块段彻底删除
+  ——切块扫描下放文件入口任务 `_plan_file_chunks_task`（嗅探 +
+  扫描 + 体内提交逐块解析 + 块数写清单对象）；合并链编排任务
+  `_plan_merge_chain_task` 依赖全部清单对象（清单齐 = 全部文件入口
+  完成）后动态提交时钟合并/每分区合并/汇总（切片键集运行时才知——
+  「形状运行时才知」允许场景）。freeze 提升为 `build_timing_db` 第③
+  段：inputs = [clocks, summary] 固定标记（蕴含链：summary ⟸ 各分区
+  冲突计数 ⟸ 分区合并先写正式对象）；TWF 嗅探随切块下放（文件形态
+  错由文件入口任务失败透出，入口只查存在性）。
+- **design 三段化**（`ds_db.py` / `ds_flow.py`）：`run_design_flow`
+  收编为根任务 `_design_flow_task`（全部 S1–S8 任务族体内按流程顺序
+  提交；lib 快照搬运下放任务内——master 不再读 lib db 对象）；lef/
+  def 嗅探下放文件首个解析任务；freeze 提升为第③段：inputs =
+  [verify_report] 固定标记（权威终态锚——全局校验任务 inputs 补
+  pg_nets + id 映射段表使蕴含链覆盖全链正式对象）；分区链编排
+  `_plan_partition_chain_task`（原 `_partition_plan_task`）保留动态
+  提交（分区数运行时才知）。
+- **清理责任单化**（§19 批次口径延续）：freeze 清理清单静态化——
+  timing 快照键集经快照键清单对象间接静态化（根任务写定清单，freeze
+  读清单展开清理）；design 沿用 `_flow_temp_keys` 静态枚举。运行时
+  规模临时键改链上任务自清理：timing 切片/remap/冲突计数/清单由汇总
+  任务（全链最后读者）；design 展开分片由分区合并任务（每分片唯一
+  消费者）、校验结果由全局校验任务（唯一消费者）。
+- **task 命名对齐**（§2.10 + 命名裁定）：`<动作>_<对象>[_<粒度>]_task`
+  全面动词前置——`_chunk_parse_task`→`_parse_chunk_task`、
+  `_clock_merge_task`→`_merge_clocks_task`、`_summary_task`→
+  `_merge_summary_task`、`_tech_lef_task`→`_parse_tech_lef_task`、
+  `_cell_lef_task`→`_parse_cell_lef_task`、`_def_header_task`→
+  `_scan_def_header_task`、`_hier_task`→`_build_hier_tree_task`、
+  `_partition_task`→`_decide_partitions_task`、`_partition_product_task`
+  →`_merge_partition_task`、`_design_verify_task`→`_verify_design_task`
+  等（与根任务目录逐行对应）。
+- **注释瘦身**（§2.10，重构优先于删注释）：tm_flow.py 注释/代码行比
+  0.42→0.26、ds_flow.py 0.45→0.24（段落注释叙事压缩为「为什么」一两
+  句 + 文档指针；tm_db/ds_db 持平——主体为 schema/UserDoc 产品契约面）。
+- **新增结构单测**：`test_tm_flow_structure.py` /
+  `test_ds_flow_structure.py`——master 提交面断言（提交任务数恰 2、
+  freeze 依赖恰为固定标记集且不含运行时临时键、根任务依赖锚、预处理
+  不读文件内容〔非 TWF/lef/def 内容文件不阻止提交〕）。
+- **文档同步**：timing-db-plan §3.1/§6/§9、design-db-plan §3.1 补
+  三段式编排说明；dev-rules §3「校验前置」与 §7.2 异常口径修订
+  （存在性入口拦截 / 形态错任务透出）；DEVELOPMENT_GUIDELINES §20/
+  §2.10（本批入册）。
+
+**验证**：单测 119/119（117+新增 2）+ qa/emir 9/9 全绿（断言数字与
+重构前一致）；每 flow 独立提交，最后 pre-push 全量校验推送。
+
+---
+
 ## 2026-09-17: 问题族修复批次（§19 禁止异常控制流总纲落地）
 
 **背景**：[DEVELOPMENT_GUIDELINES.md](DEVELOPMENT_GUIDELINES.md) §19

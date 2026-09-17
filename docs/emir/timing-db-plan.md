@@ -63,20 +63,20 @@ build_timing_db(name, timing_files, design_db, settings=None, alpha=None)
   §2 绑定描述符 dict；单文件亦列表；分块 TWF 传全部块文件）。每文件
   一独立解析任务组（天然分布式点）。
 - `design_db`——直接前驱显式传参（裁定 13）。
-- 返回 `TimingDb` 句柄；异步 4 步范式（检查 → 建库 → 入口任务链 →
-  freeze 任务），提交后立即返回（评审 P2-3：T1 master 侧同步毫秒级、
-  design 快照为异步任务并在其 worker 执行体上动态提交下游全链——同
-  design flow 分区编排任务先例）。
+- 返回 `TimingDb` 句柄；三段式流程（§6，2026-09-17 用户裁定：预处理 →
+  根任务 → 顶层 freeze，master 提交 O(1) 任务），提交后立即返回——
+  切块/嗅探/解析全部 IO 在 worker 任务并行。
 - **入口等待语义**（用户裁定 2026-09-15）：不等待 design db 冻结
-  （`wait_frozen`）——design 快照任务经任务依赖只等**必要数据对象**
+  （`wait_frozen`）——flow 根任务经任务依赖只等**必要数据对象**
   （层级树、各 DEF 名字伴生对象 hasher 集、id_partition_map INST 段表、
-  分区表随 DESIGN_OBJ）。入口校验（master 同步）只查：文件可读 + TWF
-  头嗅探（`TIMING_WINDOWS` 关键字，误传秒级 ValueError）+ alpha 逐键
-  校验 + 绑定描述结构；绑定**目标存在性**（块实例路径 / 块 cell 名在
-  design db 命中）随 design 快照任务异步校验——2026-09-17 条目级兜底
-  裁定：单文件未命中 → TIMG::0011 error + 跳过该文件（零条目、计数入
-  summary.invalid_binding_count）；仅全部文件被跳过才任务内 ValueError
-  （评审 P2-3 后不阻塞 master 提交线程）。
+  分区表随 DESIGN_OBJ）。入口预处理（master 同步）只查：文件存在性 +
+  alpha 逐键校验 + 绑定描述结构（**不读文件内容**——TWF 头嗅探
+  〔`TIMING_WINDOWS` 关键字〕下放文件入口任务，形态错任务失败透出）；
+  绑定**目标存在性**（块实例路径 / 块 cell 名在 design db 命中）随根
+  任务异步校验——2026-09-17 条目级兜底裁定：单文件未命中 → TIMG::0011
+  error + 跳过该文件（零条目、计数入 summary.invalid_binding_count）；
+  仅全部文件被跳过才任务内 ValueError（评审 P2-3 后不阻塞 master
+  提交线程）。
 
 ### 3.2 读库（tm_functions.py，供其他模块消费）
 
@@ -156,32 +156,39 @@ RedHawk sta.timing 方言概念）——频率经时钟表周期推导（1/perio
 - `TMEntrySlice`——逐块解析产物分区分片（块 → 各分区 (inst_id,
   TMInstanceTiming) 片段 + 统计片段）。
 
-## 6. 建库流程（直接任务链，**不用 MapReduce**——用户裁定 2026-09-15）
+## 6. 建库流程（直接任务链，**不用 MapReduce**——用户裁定 2026-09-15；
+三段式编排——2026-09-17 用户裁定，dev-rules §3「建库 API 流程标准」）
 
 ```
-入口校验（master 同步：文件可读 + 头嗅探 + alpha + 绑定描述结构）
-→ T1 切块扫描（master 侧单任务，同步执行——毫秒级 I/O；逐文件按字节
-   偏移行对齐 + 记录括号边界切块，块大小 alpha chunk_size_mb）→
-   TMChunkPlan
-→ design 快照任务（master 提交、异步执行——评审 P2-3：依赖系统等
-   design db 必要数据对象，快照组装 + 绑定目标校验 + 落临时对象；随后
-   在 worker 上动态提交下游全链——快照键集/分区清单依赖 design db 运
-   行时数据，无法静态提交，同 design flow 分区编排任务先例）
-→ T2 逐块解析任务（每块一任务，全并行；块自包含 = 头段公共前缀拼块，
-   评审 P1-1；[inputs 注入快照临时对象]）
-   每任务：tm_parse_twf_text(块)（复用已落地解析器）
-   → 名字换算（§7）→ inst_id 经 id_partition_map.INST 段表路由
-   → 本块所涉各分区的 TMEntrySlice 片段 + 统计片段
-→ T3 每分区一合并任务 → PART_{xp}_{yp}.TIMING 正式对象
-→ T4 汇总任务（时钟表跨文件合并 + summary 聚合）
-   时钟合并优先级（2026-09-16 裁定）：**顶层文件（无绑定、纯路径）定义
-   优先**，其余（块绑定文件）按文件序首份兜底；任何周期/沿时刻差异经
-   TIMG::0007 提醒（不 raise）
-→ freeze 任务（依赖全部正式对象写完；中间临时对象严格清理——键固定
-   名 __tmg__{name}〔uid 已删，2026-09-17 裁定〕，清理责任单点）
+build_timing_db（master，三段式——提交任务数 O(1)，与输入规模无关）：
+  ① 轻量参数预处理（schema 校验 + 文件存在性 + 建库 + alpha 写入；
+     不读文件内容）
+  ② 提交唯一 flow 根任务 _timing_flow_task
+  ③ 顶层提交 freeze _freeze_timing_task（依赖固定标记 clocks/summary）
+
+_timing_flow_task（根任务，体内目录；依赖系统等 design db 必要对象）：
+  快照搬运（design db 逐对象 → 临时对象 + 快照键清单对象）
+  → 绑定校验（条目级兜底 §7.5；全无效任务内 ValueError）
+  → 每有效文件一个文件入口任务 _plan_file_chunks_task（TWF 嗅探 +
+     tm_plan_file_chunks 切块扫描〔master 同步切块段已删——IO 下放
+     worker 并行〕+ 体内提交该文件逐块解析任务 + 块数写清单对象）
+  → 合并链编排任务 _plan_merge_chain_task（依赖全部清单对象，体内
+     提交——切片键集〔块数〕运行时才知：时钟表合并 → 每分区合并 →
+     汇总〔写 clocks/summary 固定标记〕）
+_freeze_timing_task：依赖固定标记 clocks/summary（蕴含全部分区正式
+  对象）；清理快照键清单展开 + 清单自身；其余运行时规模临时对象（切片/
+  remap/冲突计数/清单）由汇总任务自清理——清理责任单点
 ```
 
-- 任务依赖经 R9 `api.deps(db)` 传播 + task 内 `run_direct` 直跑。
+- T2 逐块解析任务（每块一任务，全并行；块自包含 = 头段公共前缀拼块，
+  评审 P1-1；inputs 注入快照临时对象）：解析 → 名字换算（§7）→
+  inst_id 经 id_partition_map.INST 段表路由 → 各分区 TMEntrySlice
+  片段 + 统计片段。
+- 时钟合并优先级（2026-09-16 裁定）：**顶层文件（无绑定、纯路径）定义
+  优先**，其余（块绑定文件）按文件序首份兜底；任何周期/沿时刻差异经
+  TIMG::0007 提醒（不 raise）。
+- 汇总任务对每文件块数的消费 = 读文件入口任务写的清单对象（与
+  summary.files 首现序 zip 配对，被跳过文件不进逐文件表）。
 - **单块失败兜底**（§7.2 范式 (b)）：块语法破损 → 跳过 + 计数，本块空
   分片照常产出（依赖链保持满足）；**全部文件失败** → fatal message
   码 80（范式 (a)，master 联动）。
@@ -269,8 +276,9 @@ RedHawk sta.timing 方言概念）——频率经时钟表周期推导（1/perio
 | TIMG::0010 | warn | strip_prefix 未命中条目跳过（含剥后余空；一次汇总） |
 | TIMG::0011 | error | 绑定目标未命中（block_inst/block_cell 不在 design db——2026-09-17 条目级兜底裁定：该文件跳过零条目、计数入 summary.invalid_binding_count；仅全部文件被跳过才任务失败） |
 
-- 可 raise 场景仅两类（dev-rules §7）：文件不可读、头嗅探不通过——
-  入口同步拦截（不建库、不起任务）。
+- 可 raise 场景仅两类（dev-rules §7，2026-09-17 三段式裁定修订）：
+  文件不可读——预处理段同步拦截（不建库、不起任务）；文件形态错
+  （头嗅探不通过）——文件入口任务失败透出（库不冻结）。
 - C++ 侧同族计数器经 TMSummary 落库，消息由 flow 侧读汇总一次发出。
 
 ## 10. 模块结构（dev-rules 三段式 + 六文件）
