@@ -43,7 +43,9 @@ public:
     // 盘写在任务线程同步进行（write 进 page cache 即返回——与 WBQ 后台
     // execute 的延迟特征一致；WBQ 逐块后台化留作后续优化，决策记录于
     // chunked-transfer-design.md §9 落地修订）。
-    // 返回裸指针（export 层 take_ownership 接管）。
+    // 返回裸指针（export 层 take_ownership 接管）。已验证 nanobind 的
+    // unique_ptr 返回 caster 对 FlyStream 不生效——裸指针 + 显式 rv_policy
+    // 是完整支持路径（storage_export open_write_stream 绑定注释裁定）。
     // temp=true（T2d 2026-08-31 temp 写流式化）：pickle.dump 直入
     // temp_writer_ 增量直写（内存 R+常数而非旧 write_temp_pickle 的
     // R+2C 整对象缓冲）；frozen（无 temp writer）返回 nullptr。

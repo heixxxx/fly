@@ -227,7 +227,8 @@ struct MonitorSampleMessage {
 // write=0（压缩后字节数以 TaskComplete.written_objects 为准）。
 struct MonitorObjectIoItem {
     CMString object_name_;      // 对象全名 "db_path:short_name"
-    uint8_t is_write_ = 0;
+    bool is_write_ = false;     // true = write，false = read（bitsery value1b
+                                // 编码与原 uint8_t 逐字节一致，BoolWireTest 锁定）
     uint64_t bytes_ = 0;
     uint32_t duration_ms_ = 0;
     uint64_t epoch_ms_ = 0;     // worker 侧调用时刻（unix epoch 毫秒）
@@ -364,9 +365,10 @@ struct DataLocation {
     uint64_t worker_id = 0;
     CMString host;
     int32_t port = 0;
-    // 1 = 目标 worker 为 storage_only（master registry 权威填充；读方回填本地
-    // registry 供 TIER2 排序 storage 优先）。缺省 0 与旧语义一致。
-    uint8_t storage_only = 0;
+    // true = 目标 worker 为 storage_only（master registry 权威填充；读方回填
+    // 本地 registry 供 TIER2 排序 storage 优先）。缺省 false 与旧语义一致
+    // （bitsery value1b 编码与原 uint8_t 逐字节一致，BoolWireTest 锁定）。
+    bool storage_only = false;
 
     FLY_SERIALIZE(object_name, worker_id, host, port, storage_only);
 };

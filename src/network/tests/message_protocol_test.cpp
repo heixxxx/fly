@@ -1321,4 +1321,47 @@ TEST(IdentityEnumWireTest, RegisterRoleAndWorkerExitReasonByteLayout) {
     EXPECT_TRUE(buf2.empty());
 }
 
+// ── bool 语义字段字节级对照（批次 C 第二程 P3-12 前置验证）──────────────
+// FLY_FIELD 对 fundamental/enum 均按 sizeof 分派 value1b（serialization_macros
+// fly_ser::value）——bool 与 uint8_t 同为 1 字节直通。本测试先证明编码一致
+// （改型前置验证），改型后继续作为字节锁定（true/1、false/0 逐字节相同）。
+
+namespace {
+struct BoolWireProbe {
+    bool v_ = true;
+    FLY_SERIALIZE(v_);
+};
+struct U8WireProbe {
+    uint8_t v_ = 1;
+    FLY_SERIALIZE(v_);
+};
+struct BoolWireProbeFalse {
+    bool v_ = false;
+    FLY_SERIALIZE(v_);
+};
+struct U8WireProbeZero {
+    uint8_t v_ = 0;
+    FLY_SERIALIZE(v_);
+};
+}  // namespace
+
+TEST(BoolWireTest, BoolAndUint8EncodeIdentically) {
+    // 探针结构无 msg_type_（非消息）——直接比 bitsery payload（FLY_ENCODE）。
+    CMString eb, eu, ef, ez;
+    FLY_ENCODE(BoolWireProbe{}, eb);
+    FLY_ENCODE(U8WireProbe{}, eu);
+    FLY_ENCODE(BoolWireProbeFalse{}, ef);
+    FLY_ENCODE(U8WireProbeZero{}, ez);
+    ASSERT_EQ(eb.size(), eu.size());
+    EXPECT_TRUE(eb == eu) << "true vs 1 must be byte-identical on wire";
+
+    ASSERT_EQ(ef.size(), ez.size());
+    EXPECT_TRUE(ef == ez) << "false vs 0 must be byte-identical on wire";
+
+    // round-trip：bool 字段还原语义值。
+    BoolWireProbe dec;
+    FLY_DECODE(eb, BoolWireProbe, dec);
+    EXPECT_TRUE(dec.v_);
+}
+
 }  // namespace fly

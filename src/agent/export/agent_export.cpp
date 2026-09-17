@@ -48,6 +48,9 @@ std::pair<uint8_t, fly::PeerStreamReaderPtr> peer_response_reader_gil_released(
     return result;
 }
 
+// 返回 PeerStreamWriter* = new 产物，所有权随返回值移交 Python（绑定处显式
+// rv_policy::take_ownership——消除对 nanobind infer_policy 的隐式依赖，对齐
+// storage_export open_read_stream/open_write_stream 先例）。
 fly::PeerStreamWriter* peer_stream_writer_export(fly::WorkerAgent& self,
                                                  uint64_t conn_id,
                                                  std::string compression,
@@ -622,20 +625,22 @@ FLY_EXPORT_CLASS(fly::WorkerAgent, "EXAgentWorker")
     })
     // ── 流式大 payload（流插件化 2026-08-31）── writer 构造的 lambda 参数
     // 含逗号，按仓库惯例抽独立函数（见 peer_call_gil_released 注释）。
-    FLY_EXPORT_METHOD("peer_stream_writer", [](fly::WorkerAgent& self,
-                                               uint64_t conn_id,
-                                               std::string compression,
-                                               int level) {
-        return peer_stream_writer_export(self, conn_id, compression, level);
-    })
-    FLY_EXPORT_METHOD("peer_stream_respond_writer", [](fly::WorkerAgent& self,
-                                                       uint64_t conn_id,
-                                                       uint64_t rpc_id,
-                                                       std::string compression,
-                                                       int level) {
-        return peer_stream_respond_writer_export(self, conn_id, rpc_id,
-                                                 compression, level);
-    })
+    // new 产物返回：显式 take_ownership（Python 接管析构；不依赖 infer_policy）。
+    // 原生 .def（FLY_EXPORT_METHOD 宏固定 2 参，带 policy 需绕开——同
+    // storage_export open_write_stream 先例）。
+    .def("peer_stream_writer",
+         [](fly::WorkerAgent& self, uint64_t conn_id,
+            std::string compression, int level) {
+             return peer_stream_writer_export(self, conn_id, compression, level);
+         },
+         fly_export::rv_policy::take_ownership)
+    .def("peer_stream_respond_writer",
+         [](fly::WorkerAgent& self, uint64_t conn_id, uint64_t rpc_id,
+            std::string compression, int level) {
+             return peer_stream_respond_writer_export(self, conn_id, rpc_id,
+                                                      compression, level);
+         },
+         fly_export::rv_policy::take_ownership)
     FLY_EXPORT_METHOD("peer_stream_call_wait", [](fly::WorkerAgent& self,
                                                   uint64_t rpc_id,
                                                   int timeout_ms) {

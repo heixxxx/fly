@@ -757,7 +757,7 @@ void WorkerAgent::report_task_io(const TaskExecResult& result) {
     for (const auto& it : result.io_items_) {
         MonitorObjectIoItem item;
         item.object_name_ = it.object_name_;
-        item.is_write_ = it.is_write_ ? 1 : 0;
+        item.is_write_ = it.is_write_;
         item.bytes_ = it.bytes_;
         item.duration_ms_ = static_cast<uint32_t>(it.duration_ms_);
         item.epoch_ms_ = it.epoch_ms_;
@@ -917,7 +917,7 @@ void WorkerAgent::on_task_assign(const TaskAssignMessage& msg) {
     if (!msg.dependency_locations_.empty()) {
         for (const auto& loc : msg.dependency_locations_) {
             DataService::instance()->update_remote_idx(loc.object_name, loc.worker_id, loc.host,
-                                                        loc.port, 0, loc.storage_only != 0);
+                                                        loc.port, 0, loc.storage_only);
         }
     }
 

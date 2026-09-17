@@ -144,6 +144,8 @@ FLY_EXPORT_CLASS(EXSlvSparseMatrix, "EXSlvSparseMatrix")
                                    const std::vector<int>& rows,
                                    const std::vector<int>& cols,
                                    const std::vector<double>& values) -> EXSlvSparseMatrix* {
+        // new 产物返回：显式 take_ownership（Python 接管析构；不依赖
+        // nanobind infer_policy，对齐 storage_export 先例）。
         auto* m = new EXSlvSparseMatrix();
         m->mat.resize(size, size);
         std::vector<Eigen::Triplet<double>> triplets;
@@ -154,7 +156,8 @@ FLY_EXPORT_CLASS(EXSlvSparseMatrix, "EXSlvSparseMatrix")
         m->mat.setFromTriplets(triplets.begin(), triplets.end());
         m->mat.makeCompressed();
         return m;
-    })
+    },
+    fly_export::rv_policy::take_ownership)
     FLY_EXPORT_DEF("matvec", [](const EXSlvSparseMatrix& self,
                                  const std::vector<double>& v) -> std::vector<double> {
         return vec_to_std(self.mat * std_to_vec(v));

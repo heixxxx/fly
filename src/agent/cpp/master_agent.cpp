@@ -1297,7 +1297,7 @@ void MasterAgent::assign_task_to_worker(uint64_t task_id, uint64_t worker_id) {
                 for (const auto& loc : ds->lookup_all_remote_idx(dep)) {
                     if (loc.worker_id_ == 0 || loc.host_.empty()) continue;
                     msg.dependency_locations_.push_back({dep, loc.worker_id_, loc.host_, loc.port_,
-                                                         loc.storage_only_ ? 1 : 0});
+                                                         loc.storage_only_});
                 }
             }
         }
@@ -1717,7 +1717,7 @@ void MasterAgent::on_task_io_report(const MonitorTaskIoMessage& msg) {
         r.epoch_ms_ = item.epoch_ms_;
         r.task_id_ = msg.task_id_;
         r.worker_id_ = msg.worker_id_;
-        r.is_write_ = item.is_write_ != 0;
+        r.is_write_ = item.is_write_;
         r.object_name_ = item.object_name_;
         r.bytes_ = item.bytes_;
         r.duration_ms_ = item.duration_ms_;
@@ -3106,7 +3106,7 @@ void MasterAgent::on_data_query_dispatch(uint64_t conn_id, const DataQueryMessag
             dl.worker_id = loc.worker_id_;
             dl.host = loc.host_;
             dl.port = loc.port_;
-            dl.storage_only = loc.storage_only_ ? 1 : 0;
+            dl.storage_only = loc.storage_only_;
             response.locations_.push_back(std::move(dl));
         }
 
