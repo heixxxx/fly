@@ -788,9 +788,10 @@ bool Database::is_frozen() const {
     return is_frozen_;
 }
 
-void Database::remove_object(const CMString& object_name) {
-    if (check_frozen()) return;
+bool Database::remove_object(const CMString& object_name) {
+    if (check_frozen()) return true;
 
+    bool found = false;
     CMString full;
     CMString db_path_copy;
     {
@@ -801,17 +802,24 @@ void Database::remove_object(const CMString& object_name) {
         // temp 对象路由 temp idx（2026-08-30 用户裁定：remove 时内存 idx 清理
         // + 磁盘 idx 写 REMOVE 条目）。temp idx 命中即完成（data 文件为共享
         // 滚动文件，不删文件——空间由 freeze 批量清理回收）；miss 走正式 idx。
+        // remove_entry 返回本地索引是否命中（幂等删除原语的存在性素材之一）。
+        // LocalIndex 只存 short_name（idx 文件天然属于本 db）。
         if (!temp_writer_ || !temp_writer_->remove_entry(object_name)) {
-            // LocalIndex 只存 short_name（idx 文件天然属于本 db）。
-            writer_->remove_entry(object_name);
+            found = writer_->remove_entry(object_name);
+        } else {
+            found = true;
         }
     }
 
-    fly::WorkerAgentContext::request_remove(db_path_copy, object_name);
+    // master 权威存在性判定（跨 worker 写入的对象本地索引不可见；master 自
+    // 写对象在 master 索引同样可见）——与本地命中取并。
+    const bool master_known = fly::WorkerAgentContext::request_remove(
+        db_path_copy, object_name);
     fly::DataService::instance()->remove_local_index(full);
     fly::ObjectCache::instance().remove(full);
 
-    INFO("Object removed: {}", full);
+    INFO("Object removed: {} (found={})", full, found || master_known);
+    return found || master_known;
 }
 
 void Database::remove_index_entry(const CMString& object_name) {

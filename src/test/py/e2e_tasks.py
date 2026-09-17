@@ -299,7 +299,9 @@ def remove_shared_on_beta(db, key):
 
 @as_task()
 def write_and_remove(db, key, value):
-    db.remove_object(key)
+    # 写前清理（首跑键必不存在——missing_ok 清理语义，2026-09-17 幂等
+    # 删除原语）；写后删除的键必然存在（严格模式）
+    db.remove_object(key, missing_ok=True)
     db.write_object(key, value)
     db.remove_object(key)
 

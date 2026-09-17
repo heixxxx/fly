@@ -300,8 +300,23 @@ class Database:
     def reset(self):
         self._db.reset()
 
-    def remove_object(self, name: str):
-        self._db.remove_object(name)
+    def remove_object(self, name: str, missing_ok: bool = False):
+        """Remove an object（幂等删除原语，os.remove / pathlib.unlink 的
+        missing_ok 同惯例）。
+
+        Args:
+            name: 对象短名。
+            missing_ok: False（默认，严格模式）——对象不存在时抛 ``KeyError``
+                （master 权威存在性判定）；清理清单中「必然存在」的键用它，
+                缺失即暴露流程 bug（如清理责任点错位导致的提前删除）。
+                True（清理语义）——不存在时 no-op 不抛；写前清理历史对象/
+                框架通用清理等对象可能合法不存在的场景用它。返回 None。
+        """
+        found = self._db.remove_object(name)
+        if not found and not missing_ok:
+            raise KeyError(
+                f"remove_object: object not found: {name} "
+                f"(db={self.get_db_path()})")
         # Drop any cached Python high-tier entry so a subsequent read_object
         # sees "not found" rather than the removed object's stale reference.
         self._invalidate_read_cache(name)

@@ -19,7 +19,7 @@ public:
         freeze_func_ = std::move(func);
     }
 
-    static void set_remove_request_func(std::function<void(const CMString& db_path, const CMString& object_name)> func) {
+    static void set_remove_request_func(std::function<bool(const CMString& db_path, const CMString& object_name)> func) {
         remove_request_func_ = std::move(func);
     }
 
@@ -78,10 +78,16 @@ public:
         }
     }
 
-    static void request_remove(const CMString& db_path, const CMString& object_name) {
+    // 幂等删除原语（2026-09-17 §19 批次）：返回 master 权威「对象已知存在」
+    // ——worker 路径经 RemoveAck.not_found_ 反演，master 路径由 on_master_remove
+    // 索引判定；回调未设（standalone 测试形态）返回 false（本地索引语义由
+    // Database::remove_object 自行叠加）。等待超时等「无法确证」形态返回
+    // true（宽松——不触发严格模式误报，ERR 日志已有）。
+    static bool request_remove(const CMString& db_path, const CMString& object_name) {
         if (remove_request_func_) {
-            remove_request_func_(db_path, object_name);
+            return remove_request_func_(db_path, object_name);
         }
+        return false;
     }
 
     static void set_backup_request_func(std::function<void(const CMString& db_path, const CMString& object_name)> func) {
@@ -199,7 +205,7 @@ private:
     static inline thread_local std::function<void(const CMString&, const CMString&, int64_t)> record_write_func_;
     static inline thread_local std::function<std::pair<CMString, TaskErrorType>(const CMString&, const CMString&, int64_t, bool)> register_func_;
     static inline thread_local std::function<void(const CMString&)> freeze_func_;
-    static inline thread_local std::function<void(const CMString&, const CMString&)> remove_request_func_;
+    static inline thread_local std::function<bool(const CMString&, const CMString&)> remove_request_func_;
     static inline thread_local std::function<void(const CMString&, const CMString&)> backup_request_func_;
     static inline thread_local std::function<void(const CMString&, uint64_t, uint64_t, int64_t)> suggest_backup_func_;
     static inline thread_local std::function<bool(const CMString&, FlyBufferPtr, const CMString&)> set_var_func_;

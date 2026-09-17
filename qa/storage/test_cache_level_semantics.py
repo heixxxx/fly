@@ -87,7 +87,8 @@ assert f"{DB_PATH}:lvl/warm_t" in rc._temp, "temp 写预热应入 temp 池"
 INFO("[PASS] write 预热（正式→主池 / temp→temp 池）")
 
 # ── 5. cache="none" 显式零缓存 ──
-db.remove_object("lvl/none_obj")
+# 写前清理（键首用必不存在——missing_ok 清理语义，2026-09-17 幂等删除原语）
+db.remove_object("lvl/none_obj", missing_ok=True)
 db.write_object("lvl/none_obj", "x")
 v = db.read_object("lvl/none_obj", cache="none")
 assert v == "x"

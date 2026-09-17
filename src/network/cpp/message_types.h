@@ -765,10 +765,15 @@ struct RemoveAckMessage {
     CMString db_path_;
     CMString object_name_;
     bool success_ = false;
+    // master 权威存在性判定（2026-09-17 幂等删除原语）：对象在 master 索引
+    // 不可见 = true——worker 侧 Database::remove_object 据此返回「未找到」，
+    // Python missing_ok=False 严格模式的判定源。success_ 保持 true（删除
+    // 请求本身成功——幂等 no-op）。
+    bool not_found_ = false;
 
     static constexpr MessageType msg_type_ = MessageType::REMOVE_ACK;
 
-    FLY_SERIALIZE(header_, db_path_, object_name_, success_);
+    FLY_SERIALIZE(header_, db_path_, object_name_, success_, not_found_);
 };
 
 struct RemoveCommandMessage {

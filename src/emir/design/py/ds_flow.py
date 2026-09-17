@@ -75,8 +75,9 @@
     verify_report 正式对象）
   → freeze task（依赖 DSDesign/DSStack/DSPinTables/DSPinGeometry/
     DSBlock_*/DSBlockNames_*/DSNet_*/global_density/net_union/全部分区对
-    象/pg_nets/verify_report 写完 + 中间对象清理（分片 + pg 片段 + 校验
-    结果临时对象）——由分区编排任务动态提交）
+    象/pg_nets/verify_report 写完 + 中间对象清理（分片 + 校验结果临时对
+    象；pg/id/net_union 片段由各自汇总任务自清理——清理责任单点，§19
+    批次）——由分区编排任务动态提交）
 
 流程入口 build_design_db 在 ds_db.py（UserDoc + Schema + @register_flow）。
 约定（择简，UserDoc 同步注明）：lef_paths[0] 为 tech lef（确立 DBU 基准
@@ -701,10 +702,11 @@ def _partition_plan_task(db, design_key, global_density_key, hier_key,
                         global_density_key, net_union_key, hier_key,
                         block_keys, net_keys, names_keys, report_key)
     # freeze：正式对象集（静态 + 全部分区对象 + id→partition 段表 ×2 +
-    # pg 网 id 集 + 校验报告）+ 中间对象清理（分片 + pg 片段 + 校验结果
-    # 临时对象）——verify_report 在 final_keys 中，校验未完成（或 fatal
-    # 未产出报告）不冻结。段对象与段表同任务写定（段表在即全部段对象已
-    # 在），依赖段表即足。
+    # pg 网 id 集 + 校验报告）+ 中间对象清理（分片 + 校验结果临时对象）
+    # ——verify_report 在 final_keys 中，校验未完成（或 fatal 未产出报告）
+    # 不冻结。段对象与段表同任务写定（段表在即全部段对象已在），依赖段表
+    # 即足。pg 片段由 pg 汇总任务自清理（freeze 依赖 PG_NETS_OBJ 正式对象
+    # ⟹ 自清理已完成），不进 freeze 清理清单（双清理责任单化，§19 批次）。
     partition_keys = [DesignDb.partition_obj_name(xp, yp, kind)
                       for _, xp, yp in partitions
                       for kind in DesignDb.PARTITION_KINDS]
@@ -713,10 +715,9 @@ def _partition_plan_task(db, design_key, global_density_key, hier_key,
     slice_keys = [f"{slice_prefix}{g}_{pid}"
                   for g in range(len(groups))
                   for pid, _, _ in partitions]
-    pg_slice_keys = [f"{pg_slice_prefix}{pid}" for pid, _, _ in partitions]
     _freeze_design_task(db, formal_keys + partition_keys + index_keys +
                         [DesignDb.PG_NETS_OBJ, report_key],
-                        temp_keys + slice_keys + pg_slice_keys + verify_keys)
+                        temp_keys + slice_keys + verify_keys)
 
 
 @as_task(inputs=lambda db, design_key, hier_key, block_names_key,
@@ -818,13 +819,13 @@ def _partition_product_task(db, slice_prefix, n_groups, pid, xp, yp,
 def _pg_nets_merge_task(db, pg_slice_prefix, n_parts):
     """pg 网 id 集汇总任务（单任务）：读全部分区 pg 片段 →
     ds_build_pg_net_set 两 set 去重合并（同 pg 网跨分区副本只此一条）→
-    PG_NETS_OBJ 正式对象唯一写定 → 片段清理（freeze temp_keys 兜底）。"""
+    PG_NETS_OBJ 正式对象唯一写定 → 片段清理（清理责任唯一归属本任务，
+    freeze 清单不含 pg 片段——双清理责任单化，2026-09-17 §19 批次）。"""
     slices = [db.read_object(f"{pg_slice_prefix}{pid}")
               for pid in range(n_parts)]
     pg_set = ds_build_pg_net_set(slices)
     db.write_object(DesignDb.PG_NETS_OBJ, pg_set, save_to_db=True)
-    # 片段显式清理（review 2026-09-13：与 _id_map_merge_task 同族任务
-    # 风格一致——早释放；freeze temp_keys 兜底双保险）
+    # 片段显式清理（早释放；严格 remove——片段为本任务 inputs，必然存在）
     for pid in range(n_parts):
         db.remove_object(f"{pg_slice_prefix}{pid}")
     from log import INFO
@@ -973,11 +974,14 @@ def _design_verify_task(db, verify_keys, design_key, stack_key,
     db.get_full_name(k) for k in final_keys
 ])
 def _freeze_design_task(db, final_keys, temp_keys):
+    """freeze 前中间对象清理（幂等删除原语严格模式，2026-09-17 §19 批次）：
+    temp_keys 内每个键的清理责任**唯一归属本任务**——直接 remove（缺失即
+    KeyError，暴露清理责任错位/提前删除的流程 bug）。pg 网片段（pg 全局集
+    汇总任务自清理）、id 映射片段（映射汇总任务自清理）、net_union slice
+    （归并汇总任务自清理）已由各自消费任务早释放，不在本清单（双清理责任
+    单化）。"""
     for key in temp_keys:
-        try:
-            db.remove_object(key)
-        except Exception:
-            pass
+        db.remove_object(key)
     db.freeze()
 
 

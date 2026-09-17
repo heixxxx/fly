@@ -3429,10 +3429,17 @@ void MasterAgent::broadcast_var(const CMString& full_var_name, bool is_modificat
     }
 }
 
-void MasterAgent::on_master_remove(const CMString& db_path, const CMString& object_name) {
+bool MasterAgent::on_master_remove(const CMString& db_path, const CMString& object_name) {
     // master 进程内同步 remove（db.remove_object 经 request_remove_func 触发）。
     // 清 graph/remote_idx/provenance + 通知持有对象的 worker 清 local data。
     CMString full = db_path + ":" + object_name;
+
+    // 权威存在性判定（幂等删除原语，2026-09-17）：删除动作前查 master 索引
+    // ——local_idx（master 自写）∪ remote_idx（全部 worker 写入的注册登记，
+    // master 自写经 worker_id 0 同样登记）。对不存在的条目后续清理是 no-op。
+    const bool found = DataService::instance()->has_local_object(full) ||
+                       DataService::instance()->has_remote_location(full);
+
     graph_->mark_data_removed(full);
 
     // master 自身也可能是持有者（master 自写对象，如编排层写入的中间量）：
@@ -3463,20 +3470,22 @@ void MasterAgent::on_master_remove(const CMString& db_path, const CMString& obje
     DataService::instance()->remove_remote_location(full);
     provenance_erase(db_path, object_name);
     schedule_tasks();
+    return found;
 }
 
 void MasterAgent::on_remove_request(uint64_t conn_id, const RemoveRequestMessage& msg) {
     INFO("RemoveRequest: object={}, db_path={}", msg.object_name_, msg.db_path_);
     auto [db_path, short_name] = fly::split_full_name(msg.object_name_);
-    on_master_remove(db_path, short_name);
+    const bool found = on_master_remove(db_path, short_name);
 
     RemoveAckMessage ack;
     ack.db_path_ = msg.db_path_;
     ack.object_name_ = msg.object_name_;
     ack.success_ = true;
+    ack.not_found_ = !found;
     reactor_->send(conn_id, ack);
 
-    INFO("RemoveRequest completed: object={}", msg.object_name_);
+    INFO("RemoveRequest completed: object={}, found={}", msg.object_name_, found);
 }
 
 CMString MasterAgent::get_failed_tasks_file_path(const CMString& owner_db_path) const {
@@ -3723,8 +3732,9 @@ void MasterAgent::setup_write_context() {
     });
     // master 进程内 remove_object：同步清 provenance + 通知 worker（原 request_remove no-op，
     // 导致 master remove 不清 provenance，阻塞合法的 remove+rewrite 流程）。
-    WorkerAgentContext::set_remove_request_func([this](const CMString& db_path, const CMString& object_name) {
-        on_master_remove(db_path, object_name);
+    // 返回 master 索引存在性（幂等删除原语严格模式的判定源）。
+    WorkerAgentContext::set_remove_request_func([this](const CMString& db_path, const CMString& object_name) -> bool {
+        return on_master_remove(db_path, object_name);
     });
     // Var funcs: master process operates directly on the authoritative Database
     // store (no network). The context passes FULL var names (db_path:short_name);

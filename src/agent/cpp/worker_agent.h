@@ -186,7 +186,9 @@ public:
 
     std::pair<CMString, TaskErrorType> register_write_with_master(const CMString& db_path, const CMString& object_name, int64_t compressed_size, bool preliminary = false);
     void request_database_freeze(const CMString& db_path);
-    void request_object_remove(const CMString& db_path, const CMString& object_name);
+    // 幂等删除原语（2026-09-17）：返回 master 权威「对象已知存在」（等待
+    // 超时等无法确证形态返回 true——宽松，不触发严格模式误报）。
+    bool request_object_remove(const CMString& db_path, const CMString& object_name);
     void request_backup(const CMString& db_path, const CMString& object_name);
 
     // Var service: synchronous set/get (block on master VAR_ACK) and async remove.
@@ -438,6 +440,8 @@ private:
     struct PendingRemove {
         bool completed_ = false;
         bool success_ = false;
+        // master 权威存在性判定（RemoveAck.not_found_ 反演存证）
+        bool not_found_ = false;
     };
 
     PendingRpcMap<CMString, PendingRemove> pending_removes_;

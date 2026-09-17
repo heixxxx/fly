@@ -135,12 +135,10 @@ def _mr_finalize_task(db, job_id, finalize_fn_hex, output_name, merge_output_key
     db.get_full_name(output_name)
 ])
 def _mr_cleanup_task(db, job_id, intermediate_keys, output_name):
-    """Remove all intermediate temp objects."""
+    """Remove all intermediate temp objects（框架通用清理原语——对象可能
+    已被上游早释放/从未产出，missing_ok=True 清理语义，§19 批次）。"""
     for key in intermediate_keys:
-        try:
-            db.remove_object(key)
-        except Exception:
-            pass
+        db.remove_object(key, missing_ok=True)
 
 
 @as_task(inputs=lambda db, src_key, dst_key: [db.get_full_name(src_key)])

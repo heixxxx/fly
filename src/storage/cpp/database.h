@@ -80,7 +80,12 @@ public:
     void freeze();
     bool is_frozen() const;
 
-    void remove_object(const CMString& object_name);
+    // 幂等删除原语（2026-09-17 §19 批次）：返回「对象已知存在且已处理」——
+    // 本地索引命中 ∪ master 权威判定（RemoveAck.not_found_ 反演）。Python 侧
+    // missing_ok=False 严格模式据此在缺失时抛 KeyError（os.remove 同惯例的
+    // missing_ok 语义）。frozen 拦截路径返回 true（沿用既有静默语义，不参与
+    // 缺失判定）。
+    bool remove_object(const CMString& object_name);
     void remove_index_entry(const CMString& object_name);
 
     // 写入段标记（委托 writer_）。task 写入第一个对象时打 BEGIN，成功时打 END。

@@ -202,6 +202,25 @@ TEST_F(DatabaseTest, ReadNonexistentObjectThrows) {
     EXPECT_TRUE(read_raw_string(db, "no/such/object").empty());
 }
 
+// 幂等删除原语（2026-09-17 §19 批次）：remove_object 返回「对象存在且
+// 已处理」——本进程独立形态（无 master 上下文回调）下以本地索引为权威：
+// 存在 → true；不存在 → false（Python 侧 missing_ok=False 严格模式的
+// 判定源；standalone 语义 = 本地真相）。
+TEST_F(DatabaseTest, RemoveObjectReturnsExistence) {
+    CMString db_path = test_dir_ + "/remove_existence";
+    Database db(db_path);
+
+    write_raw(db, "rm/obj", "data", false);
+    fly::DataService::instance()->drain_write_back();
+
+    // 存在 → true（本地索引命中）
+    EXPECT_TRUE(db.remove_object("rm/obj"));
+    // 再删（已不存在）→ false
+    EXPECT_FALSE(db.remove_object("rm/obj"));
+    // 从未写过的对象 → false
+    EXPECT_FALSE(db.remove_object("never/written"));
+}
+
 // ─── Typed write/read tests ───
 
 TEST_F(DatabaseTest, WriteAndReadTypedObject) {
@@ -372,8 +391,9 @@ TEST_F(DatabaseTest, RemoveObjectFailsWhenFrozen) {
 TEST_F(DatabaseTest, RemoveObjectTrampolineRequestsRemove) {
     CMVector<CMString> remove_requests;
     fly::WorkerAgentContext::set_remove_request_func(
-        [&remove_requests](const CMString& db_path, const CMString& name) {
+        [&remove_requests](const CMString& db_path, const CMString& name) -> bool {
             remove_requests.push_back(db_path + ":" + name);
+            return true;  // 「master 已知」——不影响本用例的请求转发断言
         }
     );
 

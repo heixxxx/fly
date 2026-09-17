@@ -1459,8 +1459,8 @@ void WorkerAgent::begin_task(uint64_t task_id, const CMString& write_context_has
     WorkerAgentContext::set_freeze_func([this](const CMString& db_path) {
         request_database_freeze(db_path);
     });
-    WorkerAgentContext::set_remove_request_func([this](const CMString& db_path, const CMString& object_name) {
-        request_object_remove(db_path, object_name);
+    WorkerAgentContext::set_remove_request_func([this](const CMString& db_path, const CMString& object_name) -> bool {
+        return request_object_remove(db_path, object_name);
     });
     WorkerAgentContext::set_backup_request_func([this](const CMString& db_path, const CMString& object_name) {
         request_backup(db_path, object_name);
@@ -2434,7 +2434,7 @@ void WorkerAgent::on_database_freeze_ack(uint64_t conn_id, const DatabaseFreezeA
     });
 }
 
-void WorkerAgent::request_object_remove(const CMString& db_path, const CMString& object_name) {
+bool WorkerAgent::request_object_remove(const CMString& db_path, const CMString& object_name) {
     CMString full = db_path + ":" + object_name;
 
     auto pending = CMMakeShared<PendingRemove>();
@@ -2455,10 +2455,12 @@ void WorkerAgent::request_object_remove(const CMString& db_path, const CMString&
         pending_removes_.erase(full);
         if (!result) {
             ERR("Remove pending timeout: {}", full);
-        } else if (!result->success_) {
+            return true;  // 无法确证 → 宽松（不触发严格模式误报）
+        }
+        if (!result->success_) {
             ERR("Remove request failed (after replay): {}", full);
         }
-        return;
+        return !result->not_found_;
     }
 
     reactor_->send(master_conn_, msg);
@@ -2469,18 +2471,21 @@ void WorkerAgent::request_object_remove(const CMString& db_path, const CMString&
     pending_removes_.erase(full);
     if (!result) {
         ERR("Remove request timed out: {}", full);
-        return;
+        return true;  // 无法确证 → 宽松（不触发严格模式误报）
     }
     if (!result->success_) {
         ERR("Remove request failed: {}", full);
     }
+    return !result->not_found_;
 }
 
 void WorkerAgent::on_remove_ack(uint64_t conn_id, const RemoveAckMessage& msg) {
     touch_master_contact();
-    INFO("RemoveAck received: object={}, success={}", msg.object_name_, msg.success_);
+    INFO("RemoveAck received: object={}, success={}, not_found={}", msg.object_name_,
+         msg.success_, msg.not_found_);
     pending_removes_.complete(msg.object_name_, [&](PendingRemove& p) {
         p.success_ = msg.success_;
+        p.not_found_ = msg.not_found_;
         p.completed_ = true;
     });
 }

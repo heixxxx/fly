@@ -87,13 +87,6 @@ _RPC_NOT_READY = 4  # 成员参数未就绪（可恢复——圈级收集跳过�
 _DYNAMIC_TASK_PRIORITY = 90
 
 
-def _remove_quiet(db, name):
-    try:
-        db.remove_object(name)
-    except Exception:
-        pass
-
-
 # ───────────────────────── Public API ─────────────────────────
 
 def solve_ras_graph_dynamic(db, matrix_ref, nsd, b0, update_rhs, num_steps,
@@ -154,7 +147,7 @@ def solve_ras_graph_dynamic(db, matrix_ref, nsd, b0, update_rhs, num_steps,
     INFO(f"[RASG DYN] kickoff: gen={gen} nsd={nsd} n_workers={n_workers + 1} "
          f"steps={num_steps} omega={omega} min_steps={min_steps}")
 
-    _remove_quiet(db, "__rasg__dynamic_done")
+    db.remove_object("__rasg__dynamic_done", missing_ok=True)
 
     db.write_object("__rasg__b_0", b0, save_to_db=False)
 
@@ -680,7 +673,7 @@ def check_dyn_task(db, matrix_ref, nsd, sol_prefix, num_steps, update_rhs,
         # provenance/DUPLICATE 拦截）。
         for name in [f"{sol_prefix}_{t}", f"__rasg__iters_{t}",
                      f"__rasg__converged_{t}"]:
-            _remove_quiet(db, name)
+            db.remove_object(name, missing_ok=True)
         db.write_object(f"{sol_prefix}_{t}", x_global)
         db.write_object(f"__rasg__iters_{t}", iters, save_to_db=False)
         db.write_object(f"__rasg__converged_{t}", converged, save_to_db=False)
@@ -732,13 +725,13 @@ def controller_dyn_task(db, matrix_ref, nsd, sol_prefix, num_steps, update_rhs,
             INFO(f"[RASG DYN CTRL] t={t} update_rhs returned None, stopping early")
             _teardown(db, matrix_ref, nsd, sol_prefix, num_steps, gen, last_t=t)
             return
-        _remove_quiet(db, f"__rasg__b_{t + 1}")
+        db.remove_object(f"__rasg__b_{t + 1}", missing_ok=True)
         db.write_object(f"__rasg__b_{t + 1}", b_next, save_to_db=False)
         INFO(f"[RASG DYN CTRL] t={t} → t={t + 1} rhs updated")
         _submit_solver_group(db, matrix_ref, nsd, sol_prefix, num_steps,
                              update_rhs, max_iter, tol, omega, min_steps,
                              gen, t + 1)
-        _remove_quiet(db, f"__rasg__b_{t}")
+        db.remove_object(f"__rasg__b_{t}", missing_ok=True)
         return
 
     INFO(f"[RASG DYN CTRL] t={t} final step, tearing down")
@@ -810,7 +803,7 @@ def cleanup_task(db, matrix_ref, sd, gen, final_t):
         if _has(_k):
             remove_cache(_k)
     agent.remove_worker_property(db.worker_attr(f"{gen}_{sd}"))
-    _remove_quiet(db, f"__rasg__d_addr_{gen}_{sd}")
+    db.remove_object(f"__rasg__d_addr_{gen}_{sd}", missing_ok=True)
     INFO(f"[RASG DYN CLEANUP] sd={sd} gen={gen} done")
 
 

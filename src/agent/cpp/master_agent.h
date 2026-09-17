@@ -846,7 +846,9 @@ private:
     CMString get_failed_tasks_file_path(const CMString& owner_db_path) const;
 
     void on_master_freeze(const CMString& db_path);
-    void on_master_remove(const CMString& db_path, const CMString& object_name);  // master 进程内 remove（清 provenance + 通知 worker）
+    // master 进程内 remove（清 provenance + 通知 worker）。返回删除时对象在
+    // master 索引是否可见（幂等删除原语的权威存在性判定，2026-09-17）。
+    bool on_master_remove(const CMString& db_path, const CMString& object_name);
     std::pair<CMString, TaskErrorType> on_master_register_write(const CMString& db_path, const CMString& name, int64_t compressed_size, bool preliminary = false);
 
 

@@ -74,4 +74,28 @@ try:
 except Exception:
     pass
 
+# ── 幂等删除原语（2026-09-17 §19 批次）：remove_object(missing_ok) ──
+# missing_ok=False（默认，严格模式）：对象不存在 → KeyError——清理清单
+# 中「必然存在」的键用它，缺失即暴露流程 bug；
+# missing_ok=True（清理语义）：不存在时 no-op 不抛（写前清理/框架通用
+# 清理，对象可能合法不存在）。返回 None（os.remove 同惯例）。
+try:
+    db.remove_object("d1")  # 上面已删除——严格模式必须报缺失
+    raise AssertionError("strict remove of missing object must raise KeyError")
+except KeyError as e:
+    assert "d1" in str(e), str(e)
+INFO("[PASS] remove_object strict mode: missing object raises KeyError")
+
+# 清理语义：不存在的对象 no-op 不抛；存在的对象照常删除
+assert db.remove_object("d1", missing_ok=True) is None
+assert db.remove_object("never_existed", missing_ok=True) is None
+db.write_object("d_cleanup", "Z" * 100, save_to_db=False)
+assert db.remove_object("d_cleanup", missing_ok=True) is None
+try:
+    db.read_object("d_cleanup")
+    raise AssertionError("removed object should not be readable")
+except KeyError:
+    pass
+INFO("[PASS] remove_object missing_ok=True: no-op on missing, removes existing")
+
 INFO(f"[PASS] test_save_to_db_false_remove: disk before={disk_before}, after={disk_after}")

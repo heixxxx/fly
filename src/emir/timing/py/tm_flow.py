@@ -384,11 +384,12 @@ def _summary_task(db, files, slice_keys, conflicts_keys,
 @as_task(inputs=lambda db, final_keys, temp_keys: (
     [db.get_full_name(k) for k in final_keys]))
 def _freeze_timing_task(db, final_keys, temp_keys):
+    """freeze 前中间对象清理（幂等删除原语严格模式，2026-09-17 §19 批次）：
+    temp_keys 内每个键的清理责任**唯一归属本任务**（切块计划/快照对象/分
+    片/冲突计数/remap 桥均无其他清理点）——直接 remove，缺失即 KeyError
+    暴露流程 bug。"""
     for key in temp_keys:
-        try:
-            db.remove_object(key)
-        except Exception:
-            pass
+        db.remove_object(key)
     db.freeze()
 
 
