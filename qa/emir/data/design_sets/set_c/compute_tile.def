@@ -1,0 +1,232 @@
+VERSION 5.8 ;
+DIVIDERCHAR "/" ;
+BUSBITCHARS "[]" ;
+DESIGN compute_tile ;
+UNITS DISTANCE MICRONS 2000 ;
+DIEAREA ( 0 0 ) ( 4200 7600 ) ;
+
+COMPONENTS 10 ;
+    - u_pe_0 pe_core + PLACED ( 1000 2000 ) N ;
+    - u_pe_1 pe_core + PLACED ( 1400 2000 ) N ;
+    - u_rt tile_router + PLACED ( 1800 2000 ) N ;
+    - g_dff0 DFF_X1 + PLACED ( 2200 2000 ) N ;
+    - g_dff1 DFF_X1 + PLACED ( 2600 2000 ) N ;
+    - g_mux0 MUX2_X1 + PLACED ( 3000 2000 ) N ;
+    - g_mux1 MUX2_X1 + PLACED ( 3400 2000 ) N ;
+    - g_and0 AND2_X1 + PLACED ( 3800 2000 ) N ;
+    - g_and1 AND2_X1 + PLACED ( 1000 4800 ) N ;
+    - g_buf BUF_X1 + PLACED ( 1400 4800 ) N ;
+END COMPONENTS
+
+PINS 28 ;
+    - clk_core + NET clk_core
+      + DIRECTION INPUT
+      + USE SIGNAL
+      + PORT
+        + LAYER metal2 ( -100 -100 ) ( 100 100 )
+        + FIXED ( 500 0 ) N ;
+    - clk_noc + NET clk_noc
+      + DIRECTION INPUT
+      + USE SIGNAL
+      + PORT
+        + LAYER metal2 ( -100 -100 ) ( 100 100 )
+        + FIXED ( 900 0 ) N ;
+    - a0 + NET a0
+      + DIRECTION INPUT
+      + USE SIGNAL
+      + PORT
+        + LAYER metal2 ( -100 -100 ) ( 100 100 )
+        + FIXED ( 1300 0 ) N ;
+    - a1 + NET a1
+      + DIRECTION INPUT
+      + USE SIGNAL
+      + PORT
+        + LAYER metal2 ( -100 -100 ) ( 100 100 )
+        + FIXED ( 1700 0 ) N ;
+    - a2 + NET a2
+      + DIRECTION INPUT
+      + USE SIGNAL
+      + PORT
+        + LAYER metal2 ( -100 -100 ) ( 100 100 )
+        + FIXED ( 2100 0 ) N ;
+    - a3 + NET a3
+      + DIRECTION INPUT
+      + USE SIGNAL
+      + PORT
+        + LAYER metal2 ( -100 -100 ) ( 100 100 )
+        + FIXED ( 2500 0 ) N ;
+    - a4 + NET a4
+      + DIRECTION INPUT
+      + USE SIGNAL
+      + PORT
+        + LAYER metal2 ( -100 -100 ) ( 100 100 )
+        + FIXED ( 2900 0 ) N ;
+    - a5 + NET a5
+      + DIRECTION INPUT
+      + USE SIGNAL
+      + PORT
+        + LAYER metal2 ( -100 -100 ) ( 100 100 )
+        + FIXED ( 3300 0 ) N ;
+    - a6 + NET a6
+      + DIRECTION INPUT
+      + USE SIGNAL
+      + PORT
+        + LAYER metal2 ( -100 -100 ) ( 100 100 )
+        + FIXED ( 3700 0 ) N ;
+    - a7 + NET a7
+      + DIRECTION INPUT
+      + USE SIGNAL
+      + PORT
+        + LAYER metal2 ( -100 -100 ) ( 100 100 )
+        + FIXED ( 4100 0 ) N ;
+    - y0 + NET y0
+      + DIRECTION OUTPUT
+      + USE SIGNAL
+      + PORT
+        + LAYER metal2 ( -100 -100 ) ( 100 100 )
+        + FIXED ( 4500 0 ) N ;
+    - y1 + NET y1
+      + DIRECTION OUTPUT
+      + USE SIGNAL
+      + PORT
+        + LAYER metal2 ( -100 -100 ) ( 100 100 )
+        + FIXED ( 4900 0 ) N ;
+    - noc_in_n0 + NET noc_in_n0
+      + DIRECTION INPUT
+      + USE SIGNAL
+      + PORT
+        + LAYER metal2 ( -100 -100 ) ( 100 100 )
+        + FIXED ( 5300 0 ) N ;
+    - noc_in_n1 + NET noc_in_n1
+      + DIRECTION INPUT
+      + USE SIGNAL
+      + PORT
+        + LAYER metal2 ( -100 -100 ) ( 100 100 )
+        + FIXED ( 5700 0 ) N ;
+    - noc_in_e0 + NET noc_in_e0
+      + DIRECTION INPUT
+      + USE SIGNAL
+      + PORT
+        + LAYER metal2 ( -100 -100 ) ( 100 100 )
+        + FIXED ( 6100 0 ) N ;
+    - noc_in_e1 + NET noc_in_e1
+      + DIRECTION INPUT
+      + USE SIGNAL
+      + PORT
+        + LAYER metal2 ( -100 -100 ) ( 100 100 )
+        + FIXED ( 6500 0 ) N ;
+    - noc_in_s0 + NET noc_in_s0
+      + DIRECTION INPUT
+      + USE SIGNAL
+      + PORT
+        + LAYER metal2 ( -100 -100 ) ( 100 100 )
+        + FIXED ( 6900 0 ) N ;
+    - noc_in_s1 + NET noc_in_s1
+      + DIRECTION INPUT
+      + USE SIGNAL
+      + PORT
+        + LAYER metal2 ( -100 -100 ) ( 100 100 )
+        + FIXED ( 7300 0 ) N ;
+    - noc_in_w0 + NET noc_in_w0
+      + DIRECTION INPUT
+      + USE SIGNAL
+      + PORT
+        + LAYER metal2 ( -100 -100 ) ( 100 100 )
+        + FIXED ( 7700 0 ) N ;
+    - noc_in_w1 + NET noc_in_w1
+      + DIRECTION INPUT
+      + USE SIGNAL
+      + PORT
+        + LAYER metal2 ( -100 -100 ) ( 100 100 )
+        + FIXED ( 8100 0 ) N ;
+    - noc_out_n0 + NET noc_out_n0
+      + DIRECTION OUTPUT
+      + USE SIGNAL
+      + PORT
+        + LAYER metal2 ( -100 -100 ) ( 100 100 )
+        + FIXED ( 8500 0 ) N ;
+    - noc_out_n1 + NET noc_out_n1
+      + DIRECTION OUTPUT
+      + USE SIGNAL
+      + PORT
+        + LAYER metal2 ( -100 -100 ) ( 100 100 )
+        + FIXED ( 8900 0 ) N ;
+    - noc_out_e0 + NET noc_out_e0
+      + DIRECTION OUTPUT
+      + USE SIGNAL
+      + PORT
+        + LAYER metal2 ( -100 -100 ) ( 100 100 )
+        + FIXED ( 9300 0 ) N ;
+    - noc_out_e1 + NET noc_out_e1
+      + DIRECTION OUTPUT
+      + USE SIGNAL
+      + PORT
+        + LAYER metal2 ( -100 -100 ) ( 100 100 )
+        + FIXED ( 9700 0 ) N ;
+    - noc_out_s0 + NET noc_out_s0
+      + DIRECTION OUTPUT
+      + USE SIGNAL
+      + PORT
+        + LAYER metal2 ( -100 -100 ) ( 100 100 )
+        + FIXED ( 10100 0 ) N ;
+    - noc_out_s1 + NET noc_out_s1
+      + DIRECTION OUTPUT
+      + USE SIGNAL
+      + PORT
+        + LAYER metal2 ( -100 -100 ) ( 100 100 )
+        + FIXED ( 10500 0 ) N ;
+    - noc_out_w0 + NET noc_out_w0
+      + DIRECTION OUTPUT
+      + USE SIGNAL
+      + PORT
+        + LAYER metal2 ( -100 -100 ) ( 100 100 )
+        + FIXED ( 10900 0 ) N ;
+    - noc_out_w1 + NET noc_out_w1
+      + DIRECTION OUTPUT
+      + USE SIGNAL
+      + PORT
+        + LAYER metal2 ( -100 -100 ) ( 100 100 )
+        + FIXED ( 11300 0 ) N ;
+END PINS
+
+NETS 37 ;
+    - a0 ( PIN a0 ) ( u_pe_0 a0 ) ( u_pe_1 a0 ) ;
+    - a1 ( PIN a1 ) ( u_pe_0 a1 ) ( u_pe_1 a1 ) ;
+    - a2 ( PIN a2 ) ( u_pe_0 a2 ) ( u_pe_1 a2 ) ;
+    - a3 ( PIN a3 ) ( u_pe_0 a3 ) ( u_pe_1 a3 ) ;
+    - a4 ( PIN a4 ) ( u_pe_0 a4 ) ( u_pe_1 a4 ) ;
+    - a5 ( PIN a5 ) ( u_pe_0 a5 ) ( u_pe_1 a5 ) ;
+    - a6 ( PIN a6 ) ( u_pe_0 a6 ) ( u_pe_1 a6 ) ;
+    - a7 ( PIN a7 ) ( u_pe_0 a7 ) ( u_pe_1 a7 ) ;
+    - clk_core ( PIN clk_core ) ( u_pe_0 clk_core ) ( u_pe_1 clk_core ) ( g_dff0 CK ) ( g_dff1 CK ) ;
+    - clk_noc ( PIN clk_noc ) ( u_rt clk_noc ) ;
+    - ct_and0 ( g_and0 Z ) ( g_buf A ) ;
+    - ct_mux0 ( u_rt out_l0 ) ( g_dff0 D ) ( g_mux0 Z ) ;
+    - ct_mux1 ( u_rt out_l1 ) ( g_dff1 D ) ( g_mux1 Z ) ;
+    - g_q0 ( g_dff0 Q ) ( g_mux0 B ) ( g_and0 A ) ;
+    - g_q1 ( g_dff1 Q ) ( g_mux1 B ) ( g_and1 A ) ;
+    - noc_in_e0 ( PIN noc_in_e0 ) ( u_rt in_e0 ) ;
+    - noc_in_e1 ( PIN noc_in_e1 ) ( u_rt in_e1 ) ;
+    - noc_in_n0 ( PIN noc_in_n0 ) ( u_rt in_n0 ) ;
+    - noc_in_n1 ( PIN noc_in_n1 ) ( u_rt in_n1 ) ;
+    - noc_in_s0 ( PIN noc_in_s0 ) ( u_rt in_s0 ) ;
+    - noc_in_s1 ( PIN noc_in_s1 ) ( u_rt in_s1 ) ;
+    - noc_in_w0 ( PIN noc_in_w0 ) ( u_rt in_w0 ) ;
+    - noc_in_w1 ( PIN noc_in_w1 ) ( u_rt in_w1 ) ;
+    - noc_out_e0 ( PIN noc_out_e0 ) ( u_rt out_e0 ) ;
+    - noc_out_e1 ( PIN noc_out_e1 ) ( u_rt out_e1 ) ;
+    - noc_out_n0 ( PIN noc_out_n0 ) ( u_rt out_n0 ) ;
+    - noc_out_n1 ( PIN noc_out_n1 ) ( u_rt out_n1 ) ;
+    - noc_out_s0 ( PIN noc_out_s0 ) ( u_rt out_s0 ) ;
+    - noc_out_s1 ( PIN noc_out_s1 ) ( u_rt out_s1 ) ;
+    - noc_out_w0 ( PIN noc_out_w0 ) ( u_rt out_w0 ) ;
+    - noc_out_w1 ( PIN noc_out_w1 ) ( u_rt out_w1 ) ;
+    - pe0_y0 ( u_pe_0 y0 ) ( u_rt in_l0 ) ( g_mux0 A ) ;
+    - pe0_y1 ( u_pe_0 y1 ) ( u_rt in_l1 ) ( g_mux1 S ) ( g_and1 B ) ;
+    - pe1_y0 ( u_pe_1 y0 ) ( g_mux1 A ) ( g_and0 B ) ;
+    - pe1_y1 ( u_pe_1 y1 ) ( g_mux0 S ) ;
+    - y0 ( PIN y0 ) ( g_buf Z ) ;
+    - y1 ( PIN y1 ) ( g_and1 Z ) ;
+END NETS
+
+END DESIGN

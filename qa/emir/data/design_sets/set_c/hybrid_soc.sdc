@@ -1,0 +1,5 @@
+create_clock -name clk_core -period 1.000 [get_ports clk_core]
+create_clock -name clk_noc -period 1.600 [get_ports clk_noc]
+create_clock -name clk_cfg -period 4.000 [get_ports clk_cfg]
+set_input_delay 0.050 -clock clk_core [get_ports a0]
+set_output_delay 0.050 -clock clk_core [get_ports y0]

@@ -1,0 +1,198 @@
+VERSION 5.8 ;
+DIVIDERCHAR "/" ;
+BUSBITCHARS "[]" ;
+DESIGN pe_core ;
+UNITS DISTANCE MICRONS 2000 ;
+DIEAREA ( 0 0 ) ( 4200 21600 ) ;
+
+COMPONENTS 50 ;
+    - ib_0 INV_X1 + PLACED ( 1000 2000 ) N ;
+    - ib_1 INV_X1 + PLACED ( 1400 2000 ) N ;
+    - ib_2 INV_X1 + PLACED ( 1800 2000 ) N ;
+    - ib_3 INV_X1 + PLACED ( 2200 2000 ) N ;
+    - ib_4 INV_X1 + PLACED ( 2600 2000 ) N ;
+    - ib_5 INV_X1 + PLACED ( 3000 2000 ) N ;
+    - ib_6 INV_X1 + PLACED ( 3400 2000 ) N ;
+    - ib_7 INV_X1 + PLACED ( 3800 2000 ) N ;
+    - dff0_0 DFF_X1 + PLACED ( 1000 4800 ) N ;
+    - fa0_0 FA_X1 + PLACED ( 1400 4800 ) N ;
+    - xor0_0 XOR2_X1 + PLACED ( 1800 4800 ) N ;
+    - and0_0 AND2_X1 + PLACED ( 2200 4800 ) N ;
+    - or0_0 OR2_X1 + PLACED ( 2600 4800 ) N ;
+    - nand0_0 NAND2_X1 + PLACED ( 3000 4800 ) N ;
+    - dff0_1 DFF_X1 + PLACED ( 3400 4800 ) N ;
+    - fa0_1 FA_X1 + PLACED ( 3800 4800 ) N ;
+    - xor0_1 XOR2_X1 + PLACED ( 1000 7600 ) N ;
+    - and0_1 AND2_X1 + PLACED ( 1400 7600 ) N ;
+    - or0_1 OR2_X1 + PLACED ( 1800 7600 ) N ;
+    - nand0_1 NAND2_X1 + PLACED ( 2200 7600 ) N ;
+    - sel0 MUX2_X1 + PLACED ( 2600 7600 ) N ;
+    - dff1_0 DFF_X1 + PLACED ( 3000 7600 ) N ;
+    - fa1_0 FA_X1 + PLACED ( 3400 7600 ) N ;
+    - xor1_0 XOR2_X1 + PLACED ( 3800 7600 ) N ;
+    - and1_0 AND2_X1 + PLACED ( 1000 10400 ) N ;
+    - or1_0 OR2_X1 + PLACED ( 1400 10400 ) N ;
+    - nand1_0 NAND2_X1 + PLACED ( 1800 10400 ) N ;
+    - dff1_1 DFF_X1 + PLACED ( 2200 10400 ) N ;
+    - fa1_1 FA_X1 + PLACED ( 2600 10400 ) N ;
+    - xor1_1 XOR2_X1 + PLACED ( 3000 10400 ) N ;
+    - and1_1 AND2_X1 + PLACED ( 3400 10400 ) N ;
+    - or1_1 OR2_X1 + PLACED ( 3800 10400 ) N ;
+    - nand1_1 NAND2_X1 + PLACED ( 1000 13200 ) N ;
+    - sel1 MUX2_X1 + PLACED ( 1400 13200 ) N ;
+    - dff2_0 DFF_X1 + PLACED ( 1800 13200 ) N ;
+    - fa2_0 FA_X1 + PLACED ( 2200 13200 ) N ;
+    - xor2_0 XOR2_X1 + PLACED ( 2600 13200 ) N ;
+    - and2_0 AND2_X1 + PLACED ( 3000 13200 ) N ;
+    - or2_0 OR2_X1 + PLACED ( 3400 13200 ) N ;
+    - nand2_0 NAND2_X1 + PLACED ( 3800 13200 ) N ;
+    - dff2_1 DFF_X1 + PLACED ( 1000 16000 ) N ;
+    - fa2_1 FA_X1 + PLACED ( 1400 16000 ) N ;
+    - xor2_1 XOR2_X1 + PLACED ( 1800 16000 ) N ;
+    - and2_1 AND2_X1 + PLACED ( 2200 16000 ) N ;
+    - or2_1 OR2_X1 + PLACED ( 2600 16000 ) N ;
+    - nand2_1 NAND2_X1 + PLACED ( 3000 16000 ) N ;
+    - sel2 MUX2_X1 + PLACED ( 3400 16000 ) N ;
+    - y0_reg DFF_X1 + PLACED ( 3800 16000 ) N ;
+    - y1_reg DFF_X1 + PLACED ( 1000 18800 ) N ;
+    - y1_b BUF_X1 + PLACED ( 1400 18800 ) N ;
+END COMPONENTS
+
+PINS 11 ;
+    - clk_core + NET clk_core
+      + DIRECTION INPUT
+      + USE SIGNAL
+      + PORT
+        + LAYER metal2 ( -100 -100 ) ( 100 100 )
+        + FIXED ( 500 0 ) N ;
+    - a0 + NET a0
+      + DIRECTION INPUT
+      + USE SIGNAL
+      + PORT
+        + LAYER metal2 ( -100 -100 ) ( 100 100 )
+        + FIXED ( 900 0 ) N ;
+    - a1 + NET a1
+      + DIRECTION INPUT
+      + USE SIGNAL
+      + PORT
+        + LAYER metal2 ( -100 -100 ) ( 100 100 )
+        + FIXED ( 1300 0 ) N ;
+    - a2 + NET a2
+      + DIRECTION INPUT
+      + USE SIGNAL
+      + PORT
+        + LAYER metal2 ( -100 -100 ) ( 100 100 )
+        + FIXED ( 1700 0 ) N ;
+    - a3 + NET a3
+      + DIRECTION INPUT
+      + USE SIGNAL
+      + PORT
+        + LAYER metal2 ( -100 -100 ) ( 100 100 )
+        + FIXED ( 2100 0 ) N ;
+    - a4 + NET a4
+      + DIRECTION INPUT
+      + USE SIGNAL
+      + PORT
+        + LAYER metal2 ( -100 -100 ) ( 100 100 )
+        + FIXED ( 2500 0 ) N ;
+    - a5 + NET a5
+      + DIRECTION INPUT
+      + USE SIGNAL
+      + PORT
+        + LAYER metal2 ( -100 -100 ) ( 100 100 )
+        + FIXED ( 2900 0 ) N ;
+    - a6 + NET a6
+      + DIRECTION INPUT
+      + USE SIGNAL
+      + PORT
+        + LAYER metal2 ( -100 -100 ) ( 100 100 )
+        + FIXED ( 3300 0 ) N ;
+    - a7 + NET a7
+      + DIRECTION INPUT
+      + USE SIGNAL
+      + PORT
+        + LAYER metal2 ( -100 -100 ) ( 100 100 )
+        + FIXED ( 3700 0 ) N ;
+    - y0 + NET y0
+      + DIRECTION OUTPUT
+      + USE SIGNAL
+      + PORT
+        + LAYER metal2 ( -100 -100 ) ( 100 100 )
+        + FIXED ( 4100 0 ) N ;
+    - y1 + NET y1
+      + DIRECTION OUTPUT
+      + USE SIGNAL
+      + PORT
+        + LAYER metal2 ( -100 -100 ) ( 100 100 )
+        + FIXED ( 4500 0 ) N ;
+END PINS
+
+NETS 65 ;
+    - a0 ( PIN a0 ) ( ib_0 A ) ;
+    - a1 ( PIN a1 ) ( ib_1 A ) ;
+    - a2 ( PIN a2 ) ( ib_2 A ) ;
+    - a3 ( PIN a3 ) ( ib_3 A ) ;
+    - a4 ( PIN a4 ) ( ib_4 A ) ;
+    - a5 ( PIN a5 ) ( ib_5 A ) ;
+    - a6 ( PIN a6 ) ( ib_6 A ) ;
+    - a7 ( PIN a7 ) ( ib_7 A ) ;
+    - acc0_0 ( nand0_0 Z ) ( sel0 A ) ( dff1_0 D ) ( fa1_0 CI ) ( fa1_1 B ) ;
+    - acc0_1 ( nand0_1 Z ) ( sel0 B ) ( fa1_0 B ) ( dff1_1 D ) ( fa1_1 CI ) ;
+    - acc1_0 ( nand1_0 Z ) ( sel1 A ) ( dff2_0 D ) ( fa2_0 CI ) ( fa2_1 B ) ;
+    - acc1_1 ( nand1_1 Z ) ( sel1 B ) ( fa2_0 B ) ( dff2_1 D ) ( fa2_1 CI ) ;
+    - acc2_0 ( nand2_0 Z ) ( sel2 A ) ;
+    - acc2_1 ( nand2_1 Z ) ( sel2 B ) ( y1_reg D ) ;
+    - clk_core ( PIN clk_core ) ( dff0_0 CK ) ( dff0_1 CK ) ( dff1_0 CK ) ( dff1_1 CK ) ( dff2_0 CK ) ( dff2_1 CK ) ( y0_reg CK ) ( y1_reg CK ) ;
+    - co0_0 ( fa0_0 CO ) ( or0_0 B ) ;
+    - co0_1 ( fa0_1 CO ) ( or0_1 B ) ;
+    - co1_0 ( fa1_0 CO ) ( or1_0 B ) ;
+    - co1_1 ( fa1_1 CO ) ( or1_1 B ) ;
+    - co2_0 ( fa2_0 CO ) ( or2_0 B ) ;
+    - co2_1 ( fa2_1 CO ) ( or2_1 B ) ;
+    - d0_0 ( and0_0 Z ) ( or0_0 A ) ;
+    - d0_1 ( and0_1 Z ) ( or0_1 A ) ;
+    - d1_0 ( and1_0 Z ) ( or1_0 A ) ;
+    - d1_1 ( and1_1 Z ) ( or1_1 A ) ;
+    - d2_0 ( and2_0 Z ) ( or2_0 A ) ;
+    - d2_1 ( and2_1 Z ) ( or2_1 A ) ;
+    - na0 ( ib_0 Z ) ( dff0_0 D ) ( fa0_0 CI ) ;
+    - na1 ( ib_1 Z ) ( fa0_0 B ) ;
+    - na2 ( ib_2 Z ) ( dff0_1 D ) ( fa0_1 CI ) ;
+    - na3 ( ib_3 Z ) ( fa0_1 B ) ;
+    - na4 ( ib_4 Z ) ;
+    - na5 ( ib_5 Z ) ;
+    - na6 ( ib_6 Z ) ;
+    - na7 ( ib_7 Z ) ;
+    - ny1 ( y1_reg Q ) ( y1_b A ) ;
+    - r0_0 ( dff0_0 Q ) ( fa0_0 A ) ( xor0_0 B ) ( nand0_0 B ) ;
+    - r0_1 ( dff0_1 Q ) ( fa0_1 A ) ( xor0_1 B ) ( nand0_1 B ) ;
+    - r1_0 ( dff1_0 Q ) ( fa1_0 A ) ( xor1_0 B ) ( nand1_0 B ) ;
+    - r1_1 ( dff1_1 Q ) ( fa1_1 A ) ( xor1_1 B ) ( nand1_1 B ) ;
+    - r2_0 ( dff2_0 Q ) ( fa2_0 A ) ( xor2_0 B ) ( nand2_0 B ) ;
+    - r2_1 ( dff2_1 Q ) ( fa2_1 A ) ( xor2_1 B ) ( nand2_1 B ) ;
+    - s0_0 ( fa0_0 S ) ( xor0_0 A ) ( and0_0 B ) ( sel0 S ) ;
+    - s0_1 ( fa0_1 S ) ( xor0_1 A ) ( and0_1 B ) ;
+    - s1_0 ( fa1_0 S ) ( xor1_0 A ) ( and1_0 B ) ( sel1 S ) ;
+    - s1_1 ( fa1_1 S ) ( xor1_1 A ) ( and1_1 B ) ;
+    - s2_0 ( fa2_0 S ) ( xor2_0 A ) ( and2_0 B ) ( sel2 S ) ;
+    - s2_1 ( fa2_1 S ) ( xor2_1 A ) ( and2_1 B ) ;
+    - sel0_z ( sel0 Z ) ;
+    - sel1_z ( sel1 Z ) ;
+    - sel2_z ( sel2 Z ) ( y0_reg D ) ;
+    - x0_0 ( xor0_0 Z ) ( and0_0 A ) ;
+    - x0_1 ( xor0_1 Z ) ( and0_1 A ) ;
+    - x1_0 ( xor1_0 Z ) ( and1_0 A ) ;
+    - x1_1 ( xor1_1 Z ) ( and1_1 A ) ;
+    - x2_0 ( xor2_0 Z ) ( and2_0 A ) ;
+    - x2_1 ( xor2_1 Z ) ( and2_1 A ) ;
+    - y0 ( PIN y0 ) ( y0_reg Q ) ;
+    - y1 ( PIN y1 ) ( y1_b Z ) ;
+    - z0_0 ( or0_0 Z ) ( nand0_0 A ) ;
+    - z0_1 ( or0_1 Z ) ( nand0_1 A ) ;
+    - z1_0 ( or1_0 Z ) ( nand1_0 A ) ;
+    - z1_1 ( or1_1 Z ) ( nand1_1 A ) ;
+    - z2_0 ( or2_0 Z ) ( nand2_0 A ) ;
+    - z2_1 ( or2_1 Z ) ( nand2_1 A ) ;
+END NETS
+
+END DESIGN

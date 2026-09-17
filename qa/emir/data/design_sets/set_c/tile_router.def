@@ -1,0 +1,204 @@
+VERSION 5.8 ;
+DIVIDERCHAR "/" ;
+BUSBITCHARS "[]" ;
+DESIGN tile_router ;
+UNITS DISTANCE MICRONS 2000 ;
+DIEAREA ( 0 0 ) ( 4200 13200 ) ;
+
+COMPONENTS 25 ;
+    - rr_n0 DFF_X1 + PLACED ( 1000 2000 ) N ;
+    - rr_n1 DFF_X1 + PLACED ( 1400 2000 ) N ;
+    - rr_e0 DFF_X1 + PLACED ( 1800 2000 ) N ;
+    - rr_e1 DFF_X1 + PLACED ( 2200 2000 ) N ;
+    - rr_s0 DFF_X1 + PLACED ( 2600 2000 ) N ;
+    - rr_s1 DFF_X1 + PLACED ( 3000 2000 ) N ;
+    - rr_w0 DFF_X1 + PLACED ( 3400 2000 ) N ;
+    - rr_w1 DFF_X1 + PLACED ( 3800 2000 ) N ;
+    - rr_l0 DFF_X1 + PLACED ( 1000 4800 ) N ;
+    - rr_l1 DFF_X1 + PLACED ( 1400 4800 ) N ;
+    - ra_n XOR2_X1 + PLACED ( 1800 4800 ) N ;
+    - rx_n0 MUX2_X1 + PLACED ( 2200 4800 ) N ;
+    - rx_n1 MUX2_X1 + PLACED ( 2600 4800 ) N ;
+    - ra_e XOR2_X1 + PLACED ( 3000 4800 ) N ;
+    - rx_e0 MUX2_X1 + PLACED ( 3400 4800 ) N ;
+    - rx_e1 MUX2_X1 + PLACED ( 3800 4800 ) N ;
+    - ra_s XOR2_X1 + PLACED ( 1000 7600 ) N ;
+    - rx_s0 MUX2_X1 + PLACED ( 1400 7600 ) N ;
+    - rx_s1 MUX2_X1 + PLACED ( 1800 7600 ) N ;
+    - ra_w XOR2_X1 + PLACED ( 2200 7600 ) N ;
+    - rx_w0 MUX2_X1 + PLACED ( 2600 7600 ) N ;
+    - rx_w1 MUX2_X1 + PLACED ( 3000 7600 ) N ;
+    - ra_l XOR2_X1 + PLACED ( 3400 7600 ) N ;
+    - rx_l0 MUX2_X1 + PLACED ( 3800 7600 ) N ;
+    - rx_l1 MUX2_X1 + PLACED ( 1000 10400 ) N ;
+END COMPONENTS
+
+PINS 21 ;
+    - clk_noc + NET clk_noc
+      + DIRECTION INPUT
+      + USE SIGNAL
+      + PORT
+        + LAYER metal2 ( -100 -100 ) ( 100 100 )
+        + FIXED ( 500 0 ) N ;
+    - in_n0 + NET in_n0
+      + DIRECTION INPUT
+      + USE SIGNAL
+      + PORT
+        + LAYER metal2 ( -100 -100 ) ( 100 100 )
+        + FIXED ( 900 0 ) N ;
+    - in_n1 + NET in_n1
+      + DIRECTION INPUT
+      + USE SIGNAL
+      + PORT
+        + LAYER metal2 ( -100 -100 ) ( 100 100 )
+        + FIXED ( 1300 0 ) N ;
+    - in_e0 + NET in_e0
+      + DIRECTION INPUT
+      + USE SIGNAL
+      + PORT
+        + LAYER metal2 ( -100 -100 ) ( 100 100 )
+        + FIXED ( 1700 0 ) N ;
+    - in_e1 + NET in_e1
+      + DIRECTION INPUT
+      + USE SIGNAL
+      + PORT
+        + LAYER metal2 ( -100 -100 ) ( 100 100 )
+        + FIXED ( 2100 0 ) N ;
+    - in_s0 + NET in_s0
+      + DIRECTION INPUT
+      + USE SIGNAL
+      + PORT
+        + LAYER metal2 ( -100 -100 ) ( 100 100 )
+        + FIXED ( 2500 0 ) N ;
+    - in_s1 + NET in_s1
+      + DIRECTION INPUT
+      + USE SIGNAL
+      + PORT
+        + LAYER metal2 ( -100 -100 ) ( 100 100 )
+        + FIXED ( 2900 0 ) N ;
+    - in_w0 + NET in_w0
+      + DIRECTION INPUT
+      + USE SIGNAL
+      + PORT
+        + LAYER metal2 ( -100 -100 ) ( 100 100 )
+        + FIXED ( 3300 0 ) N ;
+    - in_w1 + NET in_w1
+      + DIRECTION INPUT
+      + USE SIGNAL
+      + PORT
+        + LAYER metal2 ( -100 -100 ) ( 100 100 )
+        + FIXED ( 3700 0 ) N ;
+    - in_l0 + NET in_l0
+      + DIRECTION INPUT
+      + USE SIGNAL
+      + PORT
+        + LAYER metal2 ( -100 -100 ) ( 100 100 )
+        + FIXED ( 4100 0 ) N ;
+    - in_l1 + NET in_l1
+      + DIRECTION INPUT
+      + USE SIGNAL
+      + PORT
+        + LAYER metal2 ( -100 -100 ) ( 100 100 )
+        + FIXED ( 4500 0 ) N ;
+    - out_n0 + NET out_n0
+      + DIRECTION OUTPUT
+      + USE SIGNAL
+      + PORT
+        + LAYER metal2 ( -100 -100 ) ( 100 100 )
+        + FIXED ( 4900 0 ) N ;
+    - out_n1 + NET out_n1
+      + DIRECTION OUTPUT
+      + USE SIGNAL
+      + PORT
+        + LAYER metal2 ( -100 -100 ) ( 100 100 )
+        + FIXED ( 5300 0 ) N ;
+    - out_e0 + NET out_e0
+      + DIRECTION OUTPUT
+      + USE SIGNAL
+      + PORT
+        + LAYER metal2 ( -100 -100 ) ( 100 100 )
+        + FIXED ( 5700 0 ) N ;
+    - out_e1 + NET out_e1
+      + DIRECTION OUTPUT
+      + USE SIGNAL
+      + PORT
+        + LAYER metal2 ( -100 -100 ) ( 100 100 )
+        + FIXED ( 6100 0 ) N ;
+    - out_s0 + NET out_s0
+      + DIRECTION OUTPUT
+      + USE SIGNAL
+      + PORT
+        + LAYER metal2 ( -100 -100 ) ( 100 100 )
+        + FIXED ( 6500 0 ) N ;
+    - out_s1 + NET out_s1
+      + DIRECTION OUTPUT
+      + USE SIGNAL
+      + PORT
+        + LAYER metal2 ( -100 -100 ) ( 100 100 )
+        + FIXED ( 6900 0 ) N ;
+    - out_w0 + NET out_w0
+      + DIRECTION OUTPUT
+      + USE SIGNAL
+      + PORT
+        + LAYER metal2 ( -100 -100 ) ( 100 100 )
+        + FIXED ( 7300 0 ) N ;
+    - out_w1 + NET out_w1
+      + DIRECTION OUTPUT
+      + USE SIGNAL
+      + PORT
+        + LAYER metal2 ( -100 -100 ) ( 100 100 )
+        + FIXED ( 7700 0 ) N ;
+    - out_l0 + NET out_l0
+      + DIRECTION OUTPUT
+      + USE SIGNAL
+      + PORT
+        + LAYER metal2 ( -100 -100 ) ( 100 100 )
+        + FIXED ( 8100 0 ) N ;
+    - out_l1 + NET out_l1
+      + DIRECTION OUTPUT
+      + USE SIGNAL
+      + PORT
+        + LAYER metal2 ( -100 -100 ) ( 100 100 )
+        + FIXED ( 8500 0 ) N ;
+END PINS
+
+NETS 36 ;
+    - clk_noc ( PIN clk_noc ) ( rr_n0 CK ) ( rr_n1 CK ) ( rr_e0 CK ) ( rr_e1 CK ) ( rr_s0 CK ) ( rr_s1 CK ) ( rr_w0 CK ) ( rr_w1 CK ) ( rr_l0 CK ) ( rr_l1 CK ) ;
+    - in_e0 ( PIN in_e0 ) ( rr_e0 D ) ;
+    - in_e1 ( PIN in_e1 ) ( rr_e1 D ) ;
+    - in_l0 ( PIN in_l0 ) ( rr_l0 D ) ;
+    - in_l1 ( PIN in_l1 ) ( rr_l1 D ) ;
+    - in_n0 ( PIN in_n0 ) ( rr_n0 D ) ;
+    - in_n1 ( PIN in_n1 ) ( rr_n1 D ) ;
+    - in_s0 ( PIN in_s0 ) ( rr_s0 D ) ;
+    - in_s1 ( PIN in_s1 ) ( rr_s1 D ) ;
+    - in_w0 ( PIN in_w0 ) ( rr_w0 D ) ;
+    - in_w1 ( PIN in_w1 ) ( rr_w1 D ) ;
+    - out_e0 ( PIN out_e0 ) ( rx_e0 Z ) ;
+    - out_e1 ( PIN out_e1 ) ( rx_e1 Z ) ;
+    - out_l0 ( PIN out_l0 ) ( rx_l0 Z ) ;
+    - out_l1 ( PIN out_l1 ) ( rx_l1 Z ) ;
+    - out_n0 ( PIN out_n0 ) ( rx_n0 Z ) ;
+    - out_n1 ( PIN out_n1 ) ( rx_n1 Z ) ;
+    - out_s0 ( PIN out_s0 ) ( rx_s0 Z ) ;
+    - out_s1 ( PIN out_s1 ) ( rx_s1 Z ) ;
+    - out_w0 ( PIN out_w0 ) ( rx_w0 Z ) ;
+    - out_w1 ( PIN out_w1 ) ( rx_w1 Z ) ;
+    - rax_e ( ra_e Z ) ( rx_e0 S ) ( rx_e1 S ) ;
+    - rax_l ( ra_l Z ) ( rx_l0 S ) ( rx_l1 S ) ;
+    - rax_n ( ra_n Z ) ( rx_n0 S ) ( rx_n1 S ) ;
+    - rax_s ( ra_s Z ) ( rx_s0 S ) ( rx_s1 S ) ;
+    - rax_w ( ra_w Z ) ( rx_w0 S ) ( rx_w1 S ) ;
+    - rq_e0 ( rr_e0 Q ) ( ra_l A ) ( rx_l0 A ) ( rx_l1 A ) ;
+    - rq_e1 ( rr_e1 Q ) ( ra_s B ) ( rx_s0 B ) ( rx_s1 B ) ;
+    - rq_l0 ( rr_l0 Q ) ( ra_s A ) ( rx_s0 A ) ( rx_s1 A ) ;
+    - rq_l1 ( rr_l1 Q ) ( ra_n B ) ( rx_n0 B ) ( rx_n1 B ) ;
+    - rq_n0 ( rr_n0 Q ) ( ra_w A ) ( rx_w0 A ) ( rx_w1 A ) ;
+    - rq_n1 ( rr_n1 Q ) ( ra_e B ) ( rx_e0 B ) ( rx_e1 B ) ;
+    - rq_s0 ( rr_s0 Q ) ( ra_n A ) ( rx_n0 A ) ( rx_n1 A ) ;
+    - rq_s1 ( rr_s1 Q ) ( ra_w B ) ( rx_w0 B ) ( rx_w1 B ) ;
+    - rq_w0 ( rr_w0 Q ) ( ra_e A ) ( rx_e0 A ) ( rx_e1 A ) ;
+    - rq_w1 ( rr_w1 Q ) ( ra_l B ) ( rx_l0 B ) ( rx_l1 B ) ;
+END NETS
+
+END DESIGN

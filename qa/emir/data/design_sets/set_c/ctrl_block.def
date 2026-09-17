@@ -1,0 +1,304 @@
+VERSION 5.8 ;
+DIVIDERCHAR "/" ;
+BUSBITCHARS "[]" ;
+DESIGN ctrl_block ;
+UNITS DISTANCE MICRONS 2000 ;
+DIEAREA ( 0 0 ) ( 4200 38400 ) ;
+
+COMPONENTS 100 ;
+    - csr_0 DFF_X1 + PLACED ( 1000 2000 ) N ;
+    - csr_1 DFF_X1 + PLACED ( 1400 2000 ) N ;
+    - csr_2 DFF_X1 + PLACED ( 1800 2000 ) N ;
+    - csr_3 DFF_X1 + PLACED ( 2200 2000 ) N ;
+    - csr_4 DFF_X1 + PLACED ( 2600 2000 ) N ;
+    - csr_5 DFF_X1 + PLACED ( 3000 2000 ) N ;
+    - csr_6 DFF_X1 + PLACED ( 3400 2000 ) N ;
+    - csr_7 DFF_X1 + PLACED ( 3800 2000 ) N ;
+    - csr_8 DFF_X1 + PLACED ( 1000 4800 ) N ;
+    - csr_9 DFF_X1 + PLACED ( 1400 4800 ) N ;
+    - csr_10 DFF_X1 + PLACED ( 1800 4800 ) N ;
+    - csr_11 DFF_X1 + PLACED ( 2200 4800 ) N ;
+    - csr_12 DFF_X1 + PLACED ( 2600 4800 ) N ;
+    - csr_13 DFF_X1 + PLACED ( 3000 4800 ) N ;
+    - csr_14 DFF_X1 + PLACED ( 3400 4800 ) N ;
+    - csr_15 DFF_X1 + PLACED ( 3800 4800 ) N ;
+    - csr_16 DFF_X1 + PLACED ( 1000 7600 ) N ;
+    - csr_17 DFF_X1 + PLACED ( 1400 7600 ) N ;
+    - csr_18 DFF_X1 + PLACED ( 1800 7600 ) N ;
+    - csr_19 DFF_X1 + PLACED ( 2200 7600 ) N ;
+    - csr_20 DFF_X1 + PLACED ( 2600 7600 ) N ;
+    - csr_21 DFF_X1 + PLACED ( 3000 7600 ) N ;
+    - csr_22 DFF_X1 + PLACED ( 3400 7600 ) N ;
+    - csr_23 DFF_X1 + PLACED ( 3800 7600 ) N ;
+    - csr_24 DFF_X1 + PLACED ( 1000 10400 ) N ;
+    - csr_25 DFF_X1 + PLACED ( 1400 10400 ) N ;
+    - csr_26 DFF_X1 + PLACED ( 1800 10400 ) N ;
+    - csr_27 DFF_X1 + PLACED ( 2200 10400 ) N ;
+    - csr_28 DFF_X1 + PLACED ( 2600 10400 ) N ;
+    - csr_29 DFF_X1 + PLACED ( 3000 10400 ) N ;
+    - csr_30 DFF_X1 + PLACED ( 3400 10400 ) N ;
+    - csr_31 DFF_X1 + PLACED ( 3800 10400 ) N ;
+    - csr_32 DFF_X1 + PLACED ( 1000 13200 ) N ;
+    - csr_33 DFF_X1 + PLACED ( 1400 13200 ) N ;
+    - csr_34 DFF_X1 + PLACED ( 1800 13200 ) N ;
+    - csr_35 DFF_X1 + PLACED ( 2200 13200 ) N ;
+    - csr_36 DFF_X1 + PLACED ( 2600 13200 ) N ;
+    - csr_37 DFF_X1 + PLACED ( 3000 13200 ) N ;
+    - csr_38 DFF_X1 + PLACED ( 3400 13200 ) N ;
+    - csr_39 DFF_X1 + PLACED ( 3800 13200 ) N ;
+    - csr_40 DFF_X1 + PLACED ( 1000 16000 ) N ;
+    - csr_41 DFF_X1 + PLACED ( 1400 16000 ) N ;
+    - csr_42 DFF_X1 + PLACED ( 1800 16000 ) N ;
+    - csr_43 DFF_X1 + PLACED ( 2200 16000 ) N ;
+    - csr_44 DFF_X1 + PLACED ( 2600 16000 ) N ;
+    - csr_45 DFF_X1 + PLACED ( 3000 16000 ) N ;
+    - csr_46 DFF_X1 + PLACED ( 3400 16000 ) N ;
+    - csr_47 DFF_X1 + PLACED ( 3800 16000 ) N ;
+    - fsm_0 DFF_X1 + PLACED ( 1000 18800 ) N ;
+    - fdc_0 NAND2_X1 + PLACED ( 1400 18800 ) N ;
+    - fsm_1 DFF_X1 + PLACED ( 1800 18800 ) N ;
+    - fdc_1 NAND2_X1 + PLACED ( 2200 18800 ) N ;
+    - fsm_2 DFF_X1 + PLACED ( 2600 18800 ) N ;
+    - fdc_2 NAND2_X1 + PLACED ( 3000 18800 ) N ;
+    - fsm_3 DFF_X1 + PLACED ( 3400 18800 ) N ;
+    - fdc_3 NAND2_X1 + PLACED ( 3800 18800 ) N ;
+    - fsm_4 DFF_X1 + PLACED ( 1000 21600 ) N ;
+    - fdc_4 NAND2_X1 + PLACED ( 1400 21600 ) N ;
+    - fsm_5 DFF_X1 + PLACED ( 1800 21600 ) N ;
+    - fdc_5 NAND2_X1 + PLACED ( 2200 21600 ) N ;
+    - fsm_6 DFF_X1 + PLACED ( 2600 21600 ) N ;
+    - fdc_6 NAND2_X1 + PLACED ( 3000 21600 ) N ;
+    - fsm_7 DFF_X1 + PLACED ( 3400 21600 ) N ;
+    - fdc_7 NAND2_X1 + PLACED ( 3800 21600 ) N ;
+    - dec_a_0 AND2_X1 + PLACED ( 1000 24400 ) N ;
+    - dec_a_1 AND2_X1 + PLACED ( 1400 24400 ) N ;
+    - dec_a_2 AND2_X1 + PLACED ( 1800 24400 ) N ;
+    - dec_a_3 AND2_X1 + PLACED ( 2200 24400 ) N ;
+    - dec_a_4 AND2_X1 + PLACED ( 2600 24400 ) N ;
+    - dec_a_5 AND2_X1 + PLACED ( 3000 24400 ) N ;
+    - dec_a_6 AND2_X1 + PLACED ( 3400 24400 ) N ;
+    - dec_a_7 AND2_X1 + PLACED ( 3800 24400 ) N ;
+    - dec_a_8 AND2_X1 + PLACED ( 1000 27200 ) N ;
+    - dec_a_9 AND2_X1 + PLACED ( 1400 27200 ) N ;
+    - dec_a_10 AND2_X1 + PLACED ( 1800 27200 ) N ;
+    - dec_a_11 AND2_X1 + PLACED ( 2200 27200 ) N ;
+    - dec_o_0 OR2_X1 + PLACED ( 2600 27200 ) N ;
+    - dec_o_1 OR2_X1 + PLACED ( 3000 27200 ) N ;
+    - dec_o_2 OR2_X1 + PLACED ( 3400 27200 ) N ;
+    - dec_o_3 OR2_X1 + PLACED ( 3800 27200 ) N ;
+    - dec_o_4 OR2_X1 + PLACED ( 1000 30000 ) N ;
+    - dec_o_5 OR2_X1 + PLACED ( 1400 30000 ) N ;
+    - dec_o_6 OR2_X1 + PLACED ( 1800 30000 ) N ;
+    - dec_o_7 OR2_X1 + PLACED ( 2200 30000 ) N ;
+    - dec_m_0 MUX2_X1 + PLACED ( 2600 30000 ) N ;
+    - dec_m_1 MUX2_X1 + PLACED ( 3000 30000 ) N ;
+    - dec_m_2 MUX2_X1 + PLACED ( 3400 30000 ) N ;
+    - dec_m_3 MUX2_X1 + PLACED ( 3800 30000 ) N ;
+    - dec_m_4 MUX2_X1 + PLACED ( 1000 32800 ) N ;
+    - dec_m_5 MUX2_X1 + PLACED ( 1400 32800 ) N ;
+    - dec_m_6 MUX2_X1 + PLACED ( 1800 32800 ) N ;
+    - dec_m_7 MUX2_X1 + PLACED ( 2200 32800 ) N ;
+    - irq_0 DFF_X1 + PLACED ( 2600 32800 ) N ;
+    - irq_1 DFF_X1 + PLACED ( 3000 32800 ) N ;
+    - irq_2 DFF_X1 + PLACED ( 3400 32800 ) N ;
+    - irq_3 DFF_X1 + PLACED ( 3800 32800 ) N ;
+    - st_0 BUF_X1 + PLACED ( 1000 35600 ) N ;
+    - st_1 BUF_X1 + PLACED ( 1400 35600 ) N ;
+    - st_2 BUF_X1 + PLACED ( 1800 35600 ) N ;
+    - st_3 BUF_X1 + PLACED ( 2200 35600 ) N ;
+END COMPONENTS
+
+PINS 13 ;
+    - clk_cfg + NET clk_cfg
+      + DIRECTION INPUT
+      + USE SIGNAL
+      + PORT
+        + LAYER metal2 ( -100 -100 ) ( 100 100 )
+        + FIXED ( 500 0 ) N ;
+    - cmd0 + NET cmd0
+      + DIRECTION INPUT
+      + USE SIGNAL
+      + PORT
+        + LAYER metal2 ( -100 -100 ) ( 100 100 )
+        + FIXED ( 900 0 ) N ;
+    - cmd1 + NET cmd1
+      + DIRECTION INPUT
+      + USE SIGNAL
+      + PORT
+        + LAYER metal2 ( -100 -100 ) ( 100 100 )
+        + FIXED ( 1300 0 ) N ;
+    - cmd2 + NET cmd2
+      + DIRECTION INPUT
+      + USE SIGNAL
+      + PORT
+        + LAYER metal2 ( -100 -100 ) ( 100 100 )
+        + FIXED ( 1700 0 ) N ;
+    - cmd3 + NET cmd3
+      + DIRECTION INPUT
+      + USE SIGNAL
+      + PORT
+        + LAYER metal2 ( -100 -100 ) ( 100 100 )
+        + FIXED ( 2100 0 ) N ;
+    - tile_irq0 + NET tile_irq0
+      + DIRECTION INPUT
+      + USE SIGNAL
+      + PORT
+        + LAYER metal2 ( -100 -100 ) ( 100 100 )
+        + FIXED ( 2500 0 ) N ;
+    - tile_irq1 + NET tile_irq1
+      + DIRECTION INPUT
+      + USE SIGNAL
+      + PORT
+        + LAYER metal2 ( -100 -100 ) ( 100 100 )
+        + FIXED ( 2900 0 ) N ;
+    - tile_irq2 + NET tile_irq2
+      + DIRECTION INPUT
+      + USE SIGNAL
+      + PORT
+        + LAYER metal2 ( -100 -100 ) ( 100 100 )
+        + FIXED ( 3300 0 ) N ;
+    - tile_irq3 + NET tile_irq3
+      + DIRECTION INPUT
+      + USE SIGNAL
+      + PORT
+        + LAYER metal2 ( -100 -100 ) ( 100 100 )
+        + FIXED ( 3700 0 ) N ;
+    - status0 + NET status0
+      + DIRECTION OUTPUT
+      + USE SIGNAL
+      + PORT
+        + LAYER metal2 ( -100 -100 ) ( 100 100 )
+        + FIXED ( 4100 0 ) N ;
+    - status1 + NET status1
+      + DIRECTION OUTPUT
+      + USE SIGNAL
+      + PORT
+        + LAYER metal2 ( -100 -100 ) ( 100 100 )
+        + FIXED ( 4500 0 ) N ;
+    - status2 + NET status2
+      + DIRECTION OUTPUT
+      + USE SIGNAL
+      + PORT
+        + LAYER metal2 ( -100 -100 ) ( 100 100 )
+        + FIXED ( 4900 0 ) N ;
+    - status3 + NET status3
+      + DIRECTION OUTPUT
+      + USE SIGNAL
+      + PORT
+        + LAYER metal2 ( -100 -100 ) ( 100 100 )
+        + FIXED ( 5300 0 ) N ;
+END PINS
+
+NETS 109 ;
+    - clk_cfg ( PIN clk_cfg ) ( csr_0 CK ) ( csr_1 CK ) ( csr_2 CK ) ( csr_3 CK ) ( csr_4 CK ) ( csr_5 CK ) ( csr_6 CK ) ( csr_7 CK ) ( csr_8 CK ) ( csr_9 CK ) ( csr_10 CK ) ( csr_11 CK ) ( csr_12 CK ) ( csr_13 CK ) ( csr_14 CK ) ( csr_15 CK ) ( csr_16 CK ) ( csr_17 CK ) ( csr_18 CK ) ( csr_19 CK ) ( csr_20 CK ) ( csr_21 CK ) ( csr_22 CK ) ( csr_23 CK ) ( csr_24 CK ) ( csr_25 CK ) ( csr_26 CK ) ( csr_27 CK ) ( csr_28 CK ) ( csr_29 CK ) ( csr_30 CK ) ( csr_31 CK ) ( csr_32 CK ) ( csr_33 CK ) ( csr_34 CK ) ( csr_35 CK ) ( csr_36 CK ) ( csr_37 CK ) ( csr_38 CK ) ( csr_39 CK ) ( csr_40 CK ) ( csr_41 CK ) ( csr_42 CK ) ( csr_43 CK ) ( csr_44 CK ) ( csr_45 CK ) ( csr_46 CK ) ( csr_47 CK ) ( fsm_0 CK ) ( fsm_1 CK ) ( fsm_2 CK ) ( fsm_3 CK ) ( fsm_4 CK ) ( fsm_5 CK ) ( fsm_6 CK ) ( fsm_7 CK ) ( irq_0 CK ) ( irq_1 CK ) ( irq_2 CK ) ( irq_3 CK ) ;
+    - cmd0 ( PIN cmd0 ) ( csr_0 D ) ( csr_4 D ) ( dec_a_0 B ) ( dec_a_4 B ) ( dec_a_8 B ) ;
+    - cmd1 ( PIN cmd1 ) ( csr_1 D ) ( csr_5 D ) ( dec_a_1 B ) ( dec_a_5 B ) ( dec_a_9 B ) ;
+    - cmd2 ( PIN cmd2 ) ( csr_2 D ) ( csr_6 D ) ( dec_a_2 B ) ( dec_a_6 B ) ( dec_a_10 B ) ;
+    - cmd3 ( PIN cmd3 ) ( csr_3 D ) ( csr_7 D ) ( dec_a_3 B ) ( dec_a_7 B ) ( dec_a_11 B ) ;
+    - csr_0 ( csr_0 Q ) ( csr_8 D ) ( dec_a_0 A ) ;
+    - csr_1 ( csr_1 Q ) ( csr_9 D ) ( dec_a_1 A ) ;
+    - csr_10 ( csr_10 Q ) ( csr_18 D ) ( dec_a_10 A ) ;
+    - csr_11 ( csr_11 Q ) ( csr_19 D ) ( dec_a_11 A ) ;
+    - csr_12 ( csr_12 Q ) ( csr_20 D ) ;
+    - csr_13 ( csr_13 Q ) ( csr_21 D ) ;
+    - csr_14 ( csr_14 Q ) ( csr_22 D ) ;
+    - csr_15 ( csr_15 Q ) ( csr_23 D ) ;
+    - csr_16 ( csr_16 Q ) ( csr_24 D ) ;
+    - csr_17 ( csr_17 Q ) ( csr_25 D ) ;
+    - csr_18 ( csr_18 Q ) ( csr_26 D ) ;
+    - csr_19 ( csr_19 Q ) ( csr_27 D ) ;
+    - csr_2 ( csr_2 Q ) ( csr_10 D ) ( dec_a_2 A ) ;
+    - csr_20 ( csr_20 Q ) ( csr_28 D ) ;
+    - csr_21 ( csr_21 Q ) ( csr_29 D ) ;
+    - csr_22 ( csr_22 Q ) ( csr_30 D ) ;
+    - csr_23 ( csr_23 Q ) ( csr_31 D ) ;
+    - csr_24 ( csr_24 Q ) ( csr_32 D ) ;
+    - csr_25 ( csr_25 Q ) ( csr_33 D ) ;
+    - csr_26 ( csr_26 Q ) ( csr_34 D ) ;
+    - csr_27 ( csr_27 Q ) ( csr_35 D ) ;
+    - csr_28 ( csr_28 Q ) ( csr_36 D ) ;
+    - csr_29 ( csr_29 Q ) ( csr_37 D ) ;
+    - csr_3 ( csr_3 Q ) ( csr_11 D ) ( dec_a_3 A ) ;
+    - csr_30 ( csr_30 Q ) ( csr_38 D ) ;
+    - csr_31 ( csr_31 Q ) ( csr_39 D ) ;
+    - csr_32 ( csr_32 Q ) ( csr_40 D ) ;
+    - csr_33 ( csr_33 Q ) ( csr_41 D ) ;
+    - csr_34 ( csr_34 Q ) ( csr_42 D ) ;
+    - csr_35 ( csr_35 Q ) ( csr_43 D ) ;
+    - csr_36 ( csr_36 Q ) ( csr_44 D ) ;
+    - csr_37 ( csr_37 Q ) ( csr_45 D ) ;
+    - csr_38 ( csr_38 Q ) ( csr_46 D ) ;
+    - csr_39 ( csr_39 Q ) ( csr_47 D ) ;
+    - csr_4 ( csr_4 Q ) ( csr_12 D ) ( dec_a_4 A ) ;
+    - csr_40 ( csr_40 Q ) ( fdc_0 B ) ;
+    - csr_41 ( csr_41 Q ) ( fdc_1 B ) ;
+    - csr_42 ( csr_42 Q ) ( fdc_2 B ) ;
+    - csr_43 ( csr_43 Q ) ( fdc_3 B ) ;
+    - csr_44 ( csr_44 Q ) ( fdc_4 B ) ;
+    - csr_45 ( csr_45 Q ) ( fdc_5 B ) ;
+    - csr_46 ( csr_46 Q ) ( fdc_6 B ) ;
+    - csr_47 ( csr_47 Q ) ( fdc_7 B ) ;
+    - csr_5 ( csr_5 Q ) ( csr_13 D ) ( dec_a_5 A ) ;
+    - csr_6 ( csr_6 Q ) ( csr_14 D ) ( dec_a_6 A ) ;
+    - csr_7 ( csr_7 Q ) ( csr_15 D ) ( dec_a_7 A ) ;
+    - csr_8 ( csr_8 Q ) ( csr_16 D ) ( dec_a_8 A ) ;
+    - csr_9 ( csr_9 Q ) ( csr_17 D ) ( dec_a_9 A ) ;
+    - da_0 ( dec_a_0 Z ) ( dec_o_0 A ) ;
+    - da_1 ( dec_a_1 Z ) ( dec_o_1 A ) ;
+    - da_10 ( dec_a_10 Z ) ( dec_o_6 B ) ( dec_m_6 B ) ;
+    - da_11 ( dec_a_11 Z ) ( dec_o_7 B ) ( dec_m_7 B ) ;
+    - da_2 ( dec_a_2 Z ) ( dec_o_2 A ) ;
+    - da_3 ( dec_a_3 Z ) ( dec_o_3 A ) ;
+    - da_4 ( dec_a_4 Z ) ( dec_o_0 B ) ( dec_o_4 A ) ( dec_m_0 B ) ;
+    - da_5 ( dec_a_5 Z ) ( dec_o_1 B ) ( dec_o_5 A ) ( dec_m_1 B ) ;
+    - da_6 ( dec_a_6 Z ) ( dec_o_2 B ) ( dec_o_6 A ) ( dec_m_2 B ) ;
+    - da_7 ( dec_a_7 Z ) ( dec_o_3 B ) ( dec_o_7 A ) ( dec_m_3 B ) ;
+    - da_8 ( dec_a_8 Z ) ( dec_o_4 B ) ( dec_m_4 B ) ;
+    - da_9 ( dec_a_9 Z ) ( dec_o_5 B ) ( dec_m_5 B ) ;
+    - dm_0 ( dec_m_0 Z ) ( st_0 A ) ;
+    - dm_1 ( dec_m_1 Z ) ;
+    - dm_2 ( dec_m_2 Z ) ( st_1 A ) ;
+    - dm_3 ( dec_m_3 Z ) ;
+    - dm_4 ( dec_m_4 Z ) ( st_2 A ) ;
+    - dm_5 ( dec_m_5 Z ) ;
+    - dm_6 ( dec_m_6 Z ) ( st_3 A ) ;
+    - dm_7 ( dec_m_7 Z ) ;
+    - do_0 ( dec_o_0 Z ) ( dec_m_0 A ) ;
+    - do_1 ( dec_o_1 Z ) ( dec_m_1 A ) ;
+    - do_2 ( dec_o_2 Z ) ( dec_m_2 A ) ;
+    - do_3 ( dec_o_3 Z ) ( dec_m_3 A ) ;
+    - do_4 ( dec_o_4 Z ) ( dec_m_4 A ) ;
+    - do_5 ( dec_o_5 Z ) ( dec_m_5 A ) ;
+    - do_6 ( dec_o_6 Z ) ( dec_m_6 A ) ;
+    - do_7 ( dec_o_7 Z ) ( dec_m_7 A ) ;
+    - fsm_d0 ( fsm_0 D ) ( fdc_0 Z ) ;
+    - fsm_d1 ( fsm_1 D ) ( fdc_1 Z ) ;
+    - fsm_d2 ( fsm_2 D ) ( fdc_2 Z ) ;
+    - fsm_d3 ( fsm_3 D ) ( fdc_3 Z ) ;
+    - fsm_d4 ( fsm_4 D ) ( fdc_4 Z ) ;
+    - fsm_d5 ( fsm_5 D ) ( fdc_5 Z ) ;
+    - fsm_d6 ( fsm_6 D ) ( fdc_6 Z ) ;
+    - fsm_d7 ( fsm_7 D ) ( fdc_7 Z ) ;
+    - fsm_q0 ( fsm_0 Q ) ( fdc_0 A ) ;
+    - fsm_q1 ( fsm_1 Q ) ( fdc_1 A ) ;
+    - fsm_q2 ( fsm_2 Q ) ( fdc_2 A ) ;
+    - fsm_q3 ( fsm_3 Q ) ( fdc_3 A ) ;
+    - fsm_q4 ( fsm_4 Q ) ( fdc_4 A ) ;
+    - fsm_q5 ( fsm_5 Q ) ( fdc_5 A ) ;
+    - fsm_q6 ( fsm_6 Q ) ( fdc_6 A ) ;
+    - fsm_q7 ( fsm_7 Q ) ( fdc_7 A ) ;
+    - irqq_0 ( dec_m_0 S ) ( dec_m_4 S ) ( irq_0 Q ) ;
+    - irqq_1 ( dec_m_1 S ) ( dec_m_5 S ) ( irq_1 Q ) ;
+    - irqq_2 ( dec_m_2 S ) ( dec_m_6 S ) ( irq_2 Q ) ;
+    - irqq_3 ( dec_m_3 S ) ( dec_m_7 S ) ( irq_3 Q ) ;
+    - status0 ( PIN status0 ) ( st_0 Z ) ;
+    - status1 ( PIN status1 ) ( st_1 Z ) ;
+    - status2 ( PIN status2 ) ( st_2 Z ) ;
+    - status3 ( PIN status3 ) ( st_3 Z ) ;
+    - tile_irq0 ( PIN tile_irq0 ) ( irq_0 D ) ;
+    - tile_irq1 ( PIN tile_irq1 ) ( irq_1 D ) ;
+    - tile_irq2 ( PIN tile_irq2 ) ( irq_2 D ) ;
+    - tile_irq3 ( PIN tile_irq3 ) ( irq_3 D ) ;
+END NETS
+
+END DESIGN

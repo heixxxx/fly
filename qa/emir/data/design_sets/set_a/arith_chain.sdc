@@ -1,0 +1,5 @@
+create_clock -name clk_main -period 1.000 [get_ports clk_main]
+create_clock -name clk_aux -period 2.500 [get_ports clk_aux]
+set_input_delay 0.050 -rise -clock clk_main [get_ports d]
+set_input_delay 0.050 -fall -clock clk_main [get_ports d]
+set_output_delay 0.050 -clock clk_aux [get_ports q]

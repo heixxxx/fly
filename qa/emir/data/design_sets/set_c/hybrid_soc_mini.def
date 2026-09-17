@@ -1,0 +1,275 @@
+VERSION 5.8 ;
+DIVIDERCHAR "/" ;
+BUSBITCHARS "[]" ;
+DESIGN hybrid_soc ;
+UNITS DISTANCE MICRONS 2000 ;
+DIEAREA ( 0 0 ) ( 34000 254000 ) ;
+
+COMPONENTS 50 ;
+    - ccb_root CLKBUF_X3 + PLACED ( 2000 102800 ) N ;
+    - ccb_r_0 CLKBUF_X2 + PLACED ( 2400 102800 ) N ;
+    - ccb_r_1 CLKBUF_X2 + PLACED ( 2800 102800 ) N ;
+    - ncb_root CLKBUF_X3 + PLACED ( 3200 102800 ) N ;
+    - ncb_r_0 CLKBUF_X2 + PLACED ( 3600 102800 ) N ;
+    - ncb_r_1 CLKBUF_X2 + PLACED ( 4000 102800 ) N ;
+    - kcb_root CLKBUF_X3 + PLACED ( 4400 102800 ) N ;
+    - kcb_m_0 CLKBUF_X2 + PLACED ( 4800 102800 ) N ;
+    - kcb_m_1 CLKBUF_X2 + PLACED ( 5200 102800 ) N ;
+    - kcb_m_2 CLKBUF_X2 + PLACED ( 5600 102800 ) N ;
+    - kcb_m_3 CLKBUF_X2 + PLACED ( 6000 102800 ) N ;
+    - a_b_0_0 BUF_X2 + PLACED ( 6400 102800 ) N ;
+    - a_b_0_1 BUF_X2 + PLACED ( 6800 102800 ) N ;
+    - a_b_0_2 BUF_X2 + PLACED ( 7200 102800 ) N ;
+    - a_b_0_3 BUF_X2 + PLACED ( 7600 102800 ) N ;
+    - a_b_0_4 BUF_X2 + PLACED ( 8000 102800 ) N ;
+    - a_b_0_5 BUF_X2 + PLACED ( 8400 102800 ) N ;
+    - a_b_0_6 BUF_X2 + PLACED ( 8800 102800 ) N ;
+    - a_b_0_7 BUF_X2 + PLACED ( 9200 102800 ) N ;
+    - a_b_1_0 BUF_X2 + PLACED ( 9600 102800 ) N ;
+    - a_b_1_1 BUF_X2 + PLACED ( 10000 102800 ) N ;
+    - a_b_1_2 BUF_X2 + PLACED ( 10400 102800 ) N ;
+    - a_b_1_3 BUF_X2 + PLACED ( 10800 102800 ) N ;
+    - a_b_1_4 BUF_X2 + PLACED ( 11200 102800 ) N ;
+    - a_b_1_5 BUF_X2 + PLACED ( 11600 102800 ) N ;
+    - a_b_1_6 BUF_X2 + PLACED ( 12000 102800 ) N ;
+    - a_b_1_7 BUF_X2 + PLACED ( 12400 102800 ) N ;
+    - a_b_2_0 BUF_X2 + PLACED ( 12800 102800 ) N ;
+    - a_b_2_1 BUF_X2 + PLACED ( 13200 102800 ) N ;
+    - a_b_2_2 BUF_X2 + PLACED ( 13600 102800 ) N ;
+    - a_b_2_3 BUF_X2 + PLACED ( 14000 102800 ) N ;
+    - a_b_2_4 BUF_X2 + PLACED ( 14400 102800 ) N ;
+    - a_b_2_5 BUF_X2 + PLACED ( 14800 102800 ) N ;
+    - a_b_2_6 BUF_X2 + PLACED ( 15200 102800 ) N ;
+    - a_b_2_7 BUF_X2 + PLACED ( 15600 102800 ) N ;
+    - a_b_3_0 BUF_X2 + PLACED ( 16000 102800 ) N ;
+    - a_b_3_1 BUF_X2 + PLACED ( 16400 102800 ) N ;
+    - a_b_3_2 BUF_X2 + PLACED ( 16800 102800 ) N ;
+    - a_b_3_3 BUF_X2 + PLACED ( 17200 102800 ) N ;
+    - a_b_3_4 BUF_X2 + PLACED ( 17600 102800 ) N ;
+    - a_b_3_5 BUF_X2 + PLACED ( 18000 105600 ) N ;
+    - a_b_3_6 BUF_X2 + PLACED ( 18400 105600 ) N ;
+    - a_b_3_7 BUF_X2 + PLACED ( 18800 105600 ) N ;
+    - u_tile_0_0 compute_tile + PLACED ( 2000 2000 ) N ;
+    - u_tile_0_1 compute_tile + PLACED ( 18000 2000 ) N ;
+    - u_tile_1_0 compute_tile + PLACED ( 2000 52400 ) N ;
+    - u_tile_1_1 compute_tile + PLACED ( 18000 52400 ) N ;
+    - y_b0 BUF_X2 + PLACED ( 20800 105600 ) N ;
+    - y_b1 BUF_X2 + PLACED ( 21200 105600 ) N ;
+    - u_ctrl ctrl_block + PLACED ( 21600 105600 ) N ;
+END COMPONENTS
+
+PINS 13 ;
+    - clk_core + NET clk_core
+      + DIRECTION INPUT
+      + USE SIGNAL
+      + PORT
+        + LAYER metal2 ( -100 -100 ) ( 100 100 )
+        + FIXED ( 1000 1000 ) N ;
+    - clk_noc + NET clk_noc
+      + DIRECTION INPUT
+      + USE SIGNAL
+      + PORT
+        + LAYER metal2 ( -100 -100 ) ( 100 100 )
+        + FIXED ( 3000 1000 ) N ;
+    - clk_cfg + NET clk_cfg
+      + DIRECTION INPUT
+      + USE SIGNAL
+      + PORT
+        + LAYER metal2 ( -100 -100 ) ( 100 100 )
+        + FIXED ( 5000 1000 ) N ;
+    - a0 + NET a0
+      + DIRECTION INPUT
+      + USE SIGNAL
+      + PORT
+        + LAYER metal2 ( -100 -100 ) ( 100 100 )
+        + FIXED ( 7000 1000 ) N ;
+    - a1 + NET a1
+      + DIRECTION INPUT
+      + USE SIGNAL
+      + PORT
+        + LAYER metal2 ( -100 -100 ) ( 100 100 )
+        + FIXED ( 7400 1000 ) N ;
+    - a2 + NET a2
+      + DIRECTION INPUT
+      + USE SIGNAL
+      + PORT
+        + LAYER metal2 ( -100 -100 ) ( 100 100 )
+        + FIXED ( 7800 1000 ) N ;
+    - a3 + NET a3
+      + DIRECTION INPUT
+      + USE SIGNAL
+      + PORT
+        + LAYER metal2 ( -100 -100 ) ( 100 100 )
+        + FIXED ( 8200 1000 ) N ;
+    - a4 + NET a4
+      + DIRECTION INPUT
+      + USE SIGNAL
+      + PORT
+        + LAYER metal2 ( -100 -100 ) ( 100 100 )
+        + FIXED ( 8600 1000 ) N ;
+    - a5 + NET a5
+      + DIRECTION INPUT
+      + USE SIGNAL
+      + PORT
+        + LAYER metal2 ( -100 -100 ) ( 100 100 )
+        + FIXED ( 9000 1000 ) N ;
+    - a6 + NET a6
+      + DIRECTION INPUT
+      + USE SIGNAL
+      + PORT
+        + LAYER metal2 ( -100 -100 ) ( 100 100 )
+        + FIXED ( 9400 1000 ) N ;
+    - a7 + NET a7
+      + DIRECTION INPUT
+      + USE SIGNAL
+      + PORT
+        + LAYER metal2 ( -100 -100 ) ( 100 100 )
+        + FIXED ( 9800 1000 ) N ;
+    - y0 + NET y0
+      + DIRECTION OUTPUT
+      + USE SIGNAL
+      + PORT
+        + LAYER metal2 ( -100 -100 ) ( 100 100 )
+        + FIXED ( 1000 2000 ) N ;
+    - y1 + NET y1
+      + DIRECTION OUTPUT
+      + USE SIGNAL
+      + PORT
+        + LAYER metal2 ( -100 -100 ) ( 100 100 )
+        + FIXED ( 3000 2000 ) N ;
+END PINS
+
+NETS 130 ;
+    - a0 ( PIN a0 ) ( a_b_0_0 A ) ( a_b_1_0 A ) ( a_b_2_0 A ) ( a_b_3_0 A ) ;
+    - a1 ( PIN a1 ) ( a_b_0_1 A ) ( a_b_1_1 A ) ( a_b_2_1 A ) ( a_b_3_1 A ) ;
+    - a2 ( PIN a2 ) ( a_b_0_2 A ) ( a_b_1_2 A ) ( a_b_2_2 A ) ( a_b_3_2 A ) ;
+    - a3 ( PIN a3 ) ( a_b_0_3 A ) ( a_b_1_3 A ) ( a_b_2_3 A ) ( a_b_3_3 A ) ;
+    - a4 ( PIN a4 ) ( a_b_0_4 A ) ( a_b_1_4 A ) ( a_b_2_4 A ) ( a_b_3_4 A ) ;
+    - a5 ( PIN a5 ) ( a_b_0_5 A ) ( a_b_1_5 A ) ( a_b_2_5 A ) ( a_b_3_5 A ) ;
+    - a6 ( PIN a6 ) ( a_b_0_6 A ) ( a_b_1_6 A ) ( a_b_2_6 A ) ( a_b_3_6 A ) ;
+    - a7 ( PIN a7 ) ( a_b_0_7 A ) ( a_b_1_7 A ) ( a_b_2_7 A ) ( a_b_3_7 A ) ;
+    - clk_cfg ( PIN clk_cfg ) ( kcb_root A ) ;
+    - clk_core ( PIN clk_core ) ( ccb_root A ) ;
+    - clk_noc ( PIN clk_noc ) ( ncb_root A ) ;
+    - n_e_0_0_0  ;
+    - n_e_0_0_1  ;
+    - n_e_0_1_0  ;
+    - n_e_0_1_1  ;
+    - n_e_1_0_0  ;
+    - n_e_1_0_1  ;
+    - n_e_1_1_0  ;
+    - n_e_1_1_1  ;
+    - n_in_e_0_0_0  ;
+    - n_in_e_0_0_1  ;
+    - n_in_e_0_1_0  ;
+    - n_in_e_0_1_1  ;
+    - n_in_e_1_0_0  ;
+    - n_in_e_1_0_1  ;
+    - n_in_e_1_1_0  ;
+    - n_in_e_1_1_1  ;
+    - n_in_n_0_0_0 ( u_tile_0_0 noc_in_n0 ) ;
+    - n_in_n_0_0_1 ( u_tile_0_0 noc_in_n1 ) ;
+    - n_in_n_0_1_0 ( u_tile_0_1 noc_in_n0 ) ;
+    - n_in_n_0_1_1 ( u_tile_0_1 noc_in_n1 ) ;
+    - n_in_n_1_0_0 ( u_tile_1_0 noc_in_n0 ) ;
+    - n_in_n_1_0_1 ( u_tile_1_0 noc_in_n1 ) ;
+    - n_in_n_1_1_0 ( u_tile_1_1 noc_in_n0 ) ;
+    - n_in_n_1_1_1 ( u_tile_1_1 noc_in_n1 ) ;
+    - n_in_s_0_0_0  ;
+    - n_in_s_0_0_1  ;
+    - n_in_s_0_1_0  ;
+    - n_in_s_0_1_1  ;
+    - n_in_s_1_0_0 ( u_ctrl tile_irq0 ) ;
+    - n_in_s_1_0_1 ( u_ctrl tile_irq1 ) ;
+    - n_in_s_1_0_2 ( u_ctrl tile_irq2 ) ;
+    - n_in_s_1_0_3 ( u_ctrl tile_irq3 ) ;
+    - n_in_s_1_1_0  ;
+    - n_in_s_1_1_1  ;
+    - n_in_w_0_0_0 ( u_tile_0_0 noc_in_w0 ) ;
+    - n_in_w_0_0_1 ( u_tile_0_0 noc_in_w1 ) ;
+    - n_in_w_0_1_0 ( u_tile_0_1 noc_in_w0 ) ( u_ctrl cmd0 ) ;
+    - n_in_w_0_1_1 ( u_tile_0_1 noc_in_w1 ) ( u_ctrl cmd1 ) ;
+    - n_in_w_0_1_2 ( u_ctrl cmd2 ) ;
+    - n_in_w_0_1_3 ( u_ctrl cmd3 ) ;
+    - n_in_w_1_0_0 ( u_tile_1_0 noc_in_w0 ) ;
+    - n_in_w_1_0_1 ( u_tile_1_0 noc_in_w1 ) ;
+    - n_in_w_1_1_0 ( u_tile_1_1 noc_in_w0 ) ;
+    - n_in_w_1_1_1 ( u_tile_1_1 noc_in_w1 ) ;
+    - n_n_0_0_0  ;
+    - n_n_0_0_1  ;
+    - n_n_0_1_0  ;
+    - n_n_0_1_1  ;
+    - n_n_1_0_0  ;
+    - n_n_1_0_1  ;
+    - n_n_1_1_0  ;
+    - n_n_1_1_1  ;
+    - n_s_0_0_0  ;
+    - n_s_0_0_1  ;
+    - n_s_0_1_0  ;
+    - n_s_0_1_1  ;
+    - n_s_1_0_0  ;
+    - n_s_1_0_1  ;
+    - n_s_1_1_0  ;
+    - n_s_1_1_1  ;
+    - n_status_0 ( u_ctrl status0 ) ;
+    - n_status_1 ( u_ctrl status1 ) ;
+    - n_status_2 ( u_ctrl status2 ) ;
+    - n_status_3 ( u_ctrl status3 ) ;
+    - n_w_0_0_0  ;
+    - n_w_0_0_1  ;
+    - n_w_0_1_0  ;
+    - n_w_0_1_1  ;
+    - n_w_1_0_0  ;
+    - n_w_1_0_1  ;
+    - n_w_1_1_0  ;
+    - n_w_1_1_1  ;
+    - na_0_0 ( a_b_0_0 Z ) ( u_tile_0_0 a0 ) ( u_tile_1_0 a0 ) ;
+    - na_0_1 ( a_b_0_1 Z ) ( u_tile_0_0 a1 ) ( u_tile_1_0 a1 ) ;
+    - na_0_2 ( a_b_0_2 Z ) ( u_tile_0_0 a2 ) ( u_tile_1_0 a2 ) ;
+    - na_0_3 ( a_b_0_3 Z ) ( u_tile_0_0 a3 ) ( u_tile_1_0 a3 ) ;
+    - na_0_4 ( a_b_0_4 Z ) ( u_tile_0_0 a4 ) ( u_tile_1_0 a4 ) ;
+    - na_0_5 ( a_b_0_5 Z ) ( u_tile_0_0 a5 ) ( u_tile_1_0 a5 ) ;
+    - na_0_6 ( a_b_0_6 Z ) ( u_tile_0_0 a6 ) ( u_tile_1_0 a6 ) ;
+    - na_0_7 ( a_b_0_7 Z ) ( u_tile_0_0 a7 ) ( u_tile_1_0 a7 ) ;
+    - na_1_0 ( a_b_1_0 Z ) ;
+    - na_1_1 ( a_b_1_1 Z ) ;
+    - na_1_2 ( a_b_1_2 Z ) ;
+    - na_1_3 ( a_b_1_3 Z ) ;
+    - na_1_4 ( a_b_1_4 Z ) ;
+    - na_1_5 ( a_b_1_5 Z ) ;
+    - na_1_6 ( a_b_1_6 Z ) ;
+    - na_1_7 ( a_b_1_7 Z ) ;
+    - na_2_0 ( a_b_2_0 Z ) ( u_tile_0_1 a0 ) ( u_tile_1_1 a0 ) ;
+    - na_2_1 ( a_b_2_1 Z ) ( u_tile_0_1 a1 ) ( u_tile_1_1 a1 ) ;
+    - na_2_2 ( a_b_2_2 Z ) ( u_tile_0_1 a2 ) ( u_tile_1_1 a2 ) ;
+    - na_2_3 ( a_b_2_3 Z ) ( u_tile_0_1 a3 ) ( u_tile_1_1 a3 ) ;
+    - na_2_4 ( a_b_2_4 Z ) ( u_tile_0_1 a4 ) ( u_tile_1_1 a4 ) ;
+    - na_2_5 ( a_b_2_5 Z ) ( u_tile_0_1 a5 ) ( u_tile_1_1 a5 ) ;
+    - na_2_6 ( a_b_2_6 Z ) ( u_tile_0_1 a6 ) ( u_tile_1_1 a6 ) ;
+    - na_2_7 ( a_b_2_7 Z ) ( u_tile_0_1 a7 ) ( u_tile_1_1 a7 ) ;
+    - na_3_0 ( a_b_3_0 Z ) ;
+    - na_3_1 ( a_b_3_1 Z ) ;
+    - na_3_2 ( a_b_3_2 Z ) ;
+    - na_3_3 ( a_b_3_3 Z ) ;
+    - na_3_4 ( a_b_3_4 Z ) ;
+    - na_3_5 ( a_b_3_5 Z ) ;
+    - na_3_6 ( a_b_3_6 Z ) ;
+    - na_3_7 ( a_b_3_7 Z ) ;
+    - ncc_r_0 ( ccb_r_0 Z ) ( u_tile_0_0 clk_core ) ( u_tile_0_1 clk_core ) ;
+    - ncc_r_1 ( ccb_r_1 Z ) ( u_tile_1_0 clk_core ) ( u_tile_1_1 clk_core ) ;
+    - ncc_root ( ccb_root Z ) ( ccb_r_0 A ) ( ccb_r_1 A ) ;
+    - nck_m_0 ( kcb_m_0 Z ) ( u_ctrl clk_cfg ) ;
+    - nck_m_1 ( kcb_m_1 Z ) ;
+    - nck_m_2 ( kcb_m_2 Z ) ;
+    - nck_m_3 ( kcb_m_3 Z ) ;
+    - nck_root ( kcb_root Z ) ( kcb_m_0 A ) ( kcb_m_1 A ) ( kcb_m_2 A ) ( kcb_m_3 A ) ;
+    - ncn_r_0 ( ncb_r_0 Z ) ( u_tile_0_0 clk_noc ) ( u_tile_0_1 clk_noc ) ;
+    - ncn_r_1 ( ncb_r_1 Z ) ( u_tile_1_0 clk_noc ) ( u_tile_1_1 clk_noc ) ;
+    - ncn_root ( ncb_root Z ) ( ncb_r_0 A ) ( ncb_r_1 A ) ;
+    - pe_out_y0 ( y_b0 A ) ;
+    - pe_out_y1 ( y_b1 A ) ;
+    - y0 ( PIN y0 ) ( y_b0 Z ) ;
+    - y1 ( PIN y1 ) ( y_b1 Z ) ;
+END NETS
+
+END DESIGN

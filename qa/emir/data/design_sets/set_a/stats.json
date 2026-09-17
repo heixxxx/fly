@@ -1,0 +1,27 @@
+{
+ "set": "a",
+ "top": "arith_chain",
+ "instances": 4893,
+ "nets": 5688,
+ "clocks": [
+  "clk_main",
+  "clk_aux"
+ ],
+ "params": {
+  "W": 36,
+  "L": 22,
+  "AUX": 64
+ },
+ "cell_refs": [
+  "AND2_X1",
+  "BUF_X1",
+  "CLKBUF_X1",
+  "CLKBUF_X2",
+  "CLKBUF_X3",
+  "DFF_X1",
+  "FA_X1",
+  "INV_X1",
+  "OR2_X1",
+  "XOR2_X1"
+ ]
+}

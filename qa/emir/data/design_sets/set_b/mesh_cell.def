@@ -1,0 +1,261 @@
+VERSION 5.8 ;
+DIVIDERCHAR "/" ;
+BUSBITCHARS "[]" ;
+DESIGN mesh_cell ;
+UNITS DISTANCE MICRONS 2000 ;
+DIEAREA ( 0 0 ) ( 5000 18800 ) ;
+
+COMPONENTS 50 ;
+    - lp_n0 DFF_X1 + PLACED ( 1000 2000 ) N ;
+    - rt_n0 DFF_X1 + PLACED ( 1400 2000 ) N ;
+    - lp_n1 DFF_X1 + PLACED ( 1800 2000 ) N ;
+    - rt_n1 DFF_X1 + PLACED ( 2200 2000 ) N ;
+    - arb_x_n XOR2_X1 + PLACED ( 2600 2000 ) N ;
+    - arb_a_n AND2_X1 + PLACED ( 3000 2000 ) N ;
+    - arb_o_n OR2_X1 + PLACED ( 3400 2000 ) N ;
+    - arb_i_n INV_X1 + PLACED ( 3800 2000 ) N ;
+    - lp_e0 DFF_X1 + PLACED ( 4200 2000 ) N ;
+    - rt_e0 DFF_X1 + PLACED ( 4600 2000 ) N ;
+    - lp_e1 DFF_X1 + PLACED ( 1000 4800 ) N ;
+    - rt_e1 DFF_X1 + PLACED ( 1400 4800 ) N ;
+    - arb_x_e XOR2_X1 + PLACED ( 1800 4800 ) N ;
+    - arb_a_e AND2_X1 + PLACED ( 2200 4800 ) N ;
+    - arb_o_e OR2_X1 + PLACED ( 2600 4800 ) N ;
+    - arb_i_e INV_X1 + PLACED ( 3000 4800 ) N ;
+    - lp_s0 DFF_X1 + PLACED ( 3400 4800 ) N ;
+    - rt_s0 DFF_X1 + PLACED ( 3800 4800 ) N ;
+    - lp_s1 DFF_X1 + PLACED ( 4200 4800 ) N ;
+    - rt_s1 DFF_X1 + PLACED ( 4600 4800 ) N ;
+    - arb_x_s XOR2_X1 + PLACED ( 1000 7600 ) N ;
+    - arb_a_s AND2_X1 + PLACED ( 1400 7600 ) N ;
+    - arb_o_s OR2_X1 + PLACED ( 1800 7600 ) N ;
+    - arb_i_s INV_X1 + PLACED ( 2200 7600 ) N ;
+    - lp_w0 DFF_X1 + PLACED ( 2600 7600 ) N ;
+    - rt_w0 DFF_X1 + PLACED ( 3000 7600 ) N ;
+    - lp_w1 DFF_X1 + PLACED ( 3400 7600 ) N ;
+    - rt_w1 DFF_X1 + PLACED ( 3800 7600 ) N ;
+    - arb_x_w XOR2_X1 + PLACED ( 4200 7600 ) N ;
+    - arb_a_w AND2_X1 + PLACED ( 4600 7600 ) N ;
+    - arb_o_w OR2_X1 + PLACED ( 1000 10400 ) N ;
+    - arb_i_w INV_X1 + PLACED ( 1400 10400 ) N ;
+    - lp_loc0 DFF_X1 + PLACED ( 1800 10400 ) N ;
+    - rt_loc0 DFF_X1 + PLACED ( 2200 10400 ) N ;
+    - lp_loc1 DFF_X1 + PLACED ( 2600 10400 ) N ;
+    - rt_loc1 DFF_X1 + PLACED ( 3000 10400 ) N ;
+    - arb_x_loc XOR2_X1 + PLACED ( 3400 10400 ) N ;
+    - arb_a_loc AND2_X1 + PLACED ( 3800 10400 ) N ;
+    - arb_o_loc OR2_X1 + PLACED ( 4200 10400 ) N ;
+    - arb_i_loc INV_X1 + PLACED ( 4600 10400 ) N ;
+    - xb_n0 MUX2_X1 + PLACED ( 1000 13200 ) N ;
+    - xb_n1 MUX2_X1 + PLACED ( 1400 13200 ) N ;
+    - xb_e0 MUX2_X1 + PLACED ( 1800 13200 ) N ;
+    - xb_e1 MUX2_X1 + PLACED ( 2200 13200 ) N ;
+    - xb_s0 MUX2_X1 + PLACED ( 2600 13200 ) N ;
+    - xb_s1 MUX2_X1 + PLACED ( 3000 13200 ) N ;
+    - xb_w0 MUX2_X1 + PLACED ( 3400 13200 ) N ;
+    - xb_w1 MUX2_X1 + PLACED ( 3800 13200 ) N ;
+    - xb_loc0 MUX2_X1 + PLACED ( 4200 13200 ) N ;
+    - xb_loc1 MUX2_X1 + PLACED ( 4600 13200 ) N ;
+END COMPONENTS
+
+PINS 22 ;
+    - clk_noc + NET clk_noc
+      + DIRECTION INPUT
+      + USE SIGNAL
+      + PORT
+        + LAYER metal2 ( -100 -100 ) ( 100 100 )
+        + FIXED ( 500 0 ) N ;
+    - clk_cfg + NET clk_cfg
+      + DIRECTION INPUT
+      + USE SIGNAL
+      + PORT
+        + LAYER metal2 ( -100 -100 ) ( 100 100 )
+        + FIXED ( 900 0 ) N ;
+    - flit_in_n0 + NET flit_in_n0
+      + DIRECTION INPUT
+      + USE SIGNAL
+      + PORT
+        + LAYER metal2 ( -100 -100 ) ( 100 100 )
+        + FIXED ( 1300 0 ) N ;
+    - flit_out_n0 + NET flit_out_n0
+      + DIRECTION OUTPUT
+      + USE SIGNAL
+      + PORT
+        + LAYER metal2 ( -100 -100 ) ( 100 100 )
+        + FIXED ( 1700 0 ) N ;
+    - flit_in_n1 + NET flit_in_n1
+      + DIRECTION INPUT
+      + USE SIGNAL
+      + PORT
+        + LAYER metal2 ( -100 -100 ) ( 100 100 )
+        + FIXED ( 2100 0 ) N ;
+    - flit_out_n1 + NET flit_out_n1
+      + DIRECTION OUTPUT
+      + USE SIGNAL
+      + PORT
+        + LAYER metal2 ( -100 -100 ) ( 100 100 )
+        + FIXED ( 2500 0 ) N ;
+    - flit_in_e0 + NET flit_in_e0
+      + DIRECTION INPUT
+      + USE SIGNAL
+      + PORT
+        + LAYER metal2 ( -100 -100 ) ( 100 100 )
+        + FIXED ( 2900 0 ) N ;
+    - flit_out_e0 + NET flit_out_e0
+      + DIRECTION OUTPUT
+      + USE SIGNAL
+      + PORT
+        + LAYER metal2 ( -100 -100 ) ( 100 100 )
+        + FIXED ( 3300 0 ) N ;
+    - flit_in_e1 + NET flit_in_e1
+      + DIRECTION INPUT
+      + USE SIGNAL
+      + PORT
+        + LAYER metal2 ( -100 -100 ) ( 100 100 )
+        + FIXED ( 3700 0 ) N ;
+    - flit_out_e1 + NET flit_out_e1
+      + DIRECTION OUTPUT
+      + USE SIGNAL
+      + PORT
+        + LAYER metal2 ( -100 -100 ) ( 100 100 )
+        + FIXED ( 4100 0 ) N ;
+    - flit_in_s0 + NET flit_in_s0
+      + DIRECTION INPUT
+      + USE SIGNAL
+      + PORT
+        + LAYER metal2 ( -100 -100 ) ( 100 100 )
+        + FIXED ( 4500 0 ) N ;
+    - flit_out_s0 + NET flit_out_s0
+      + DIRECTION OUTPUT
+      + USE SIGNAL
+      + PORT
+        + LAYER metal2 ( -100 -100 ) ( 100 100 )
+        + FIXED ( 4900 0 ) N ;
+    - flit_in_s1 + NET flit_in_s1
+      + DIRECTION INPUT
+      + USE SIGNAL
+      + PORT
+        + LAYER metal2 ( -100 -100 ) ( 100 100 )
+        + FIXED ( 5300 0 ) N ;
+    - flit_out_s1 + NET flit_out_s1
+      + DIRECTION OUTPUT
+      + USE SIGNAL
+      + PORT
+        + LAYER metal2 ( -100 -100 ) ( 100 100 )
+        + FIXED ( 5700 0 ) N ;
+    - flit_in_w0 + NET flit_in_w0
+      + DIRECTION INPUT
+      + USE SIGNAL
+      + PORT
+        + LAYER metal2 ( -100 -100 ) ( 100 100 )
+        + FIXED ( 6100 0 ) N ;
+    - flit_out_w0 + NET flit_out_w0
+      + DIRECTION OUTPUT
+      + USE SIGNAL
+      + PORT
+        + LAYER metal2 ( -100 -100 ) ( 100 100 )
+        + FIXED ( 6500 0 ) N ;
+    - flit_in_w1 + NET flit_in_w1
+      + DIRECTION INPUT
+      + USE SIGNAL
+      + PORT
+        + LAYER metal2 ( -100 -100 ) ( 100 100 )
+        + FIXED ( 6900 0 ) N ;
+    - flit_out_w1 + NET flit_out_w1
+      + DIRECTION OUTPUT
+      + USE SIGNAL
+      + PORT
+        + LAYER metal2 ( -100 -100 ) ( 100 100 )
+        + FIXED ( 7300 0 ) N ;
+    - flit_in_loc0 + NET flit_in_loc0
+      + DIRECTION INPUT
+      + USE SIGNAL
+      + PORT
+        + LAYER metal2 ( -100 -100 ) ( 100 100 )
+        + FIXED ( 7700 0 ) N ;
+    - flit_out_loc0 + NET flit_out_loc0
+      + DIRECTION OUTPUT
+      + USE SIGNAL
+      + PORT
+        + LAYER metal2 ( -100 -100 ) ( 100 100 )
+        + FIXED ( 8100 0 ) N ;
+    - flit_in_loc1 + NET flit_in_loc1
+      + DIRECTION INPUT
+      + USE SIGNAL
+      + PORT
+        + LAYER metal2 ( -100 -100 ) ( 100 100 )
+        + FIXED ( 8500 0 ) N ;
+    - flit_out_loc1 + NET flit_out_loc1
+      + DIRECTION OUTPUT
+      + USE SIGNAL
+      + PORT
+        + LAYER metal2 ( -100 -100 ) ( 100 100 )
+        + FIXED ( 8900 0 ) N ;
+END PINS
+
+NETS 62 ;
+    - arb_e_a ( arb_a_e Z ) ( xb_e0 S ) ( xb_e1 S ) ;
+    - arb_e_n ( arb_i_e Z ) ;
+    - arb_e_o ( arb_o_e Z ) ( arb_i_e A ) ;
+    - arb_e_x ( arb_x_e Z ) ( arb_a_e B ) ;
+    - arb_loc_a ( arb_a_loc Z ) ( xb_loc0 S ) ( xb_loc1 S ) ;
+    - arb_loc_n ( arb_i_loc Z ) ;
+    - arb_loc_o ( arb_o_loc Z ) ( arb_i_loc A ) ;
+    - arb_loc_x ( arb_x_loc Z ) ( arb_a_loc B ) ;
+    - arb_n_a ( arb_a_n Z ) ( xb_n0 S ) ( xb_n1 S ) ;
+    - arb_n_n ( arb_i_n Z ) ;
+    - arb_n_o ( arb_o_n Z ) ( arb_i_n A ) ;
+    - arb_n_x ( arb_x_n Z ) ( arb_a_n B ) ;
+    - arb_s_a ( arb_a_s Z ) ( xb_s0 S ) ( xb_s1 S ) ;
+    - arb_s_n ( arb_i_s Z ) ;
+    - arb_s_o ( arb_o_s Z ) ( arb_i_s A ) ;
+    - arb_s_x ( arb_x_s Z ) ( arb_a_s B ) ;
+    - arb_w_a ( arb_a_w Z ) ( xb_w0 S ) ( xb_w1 S ) ;
+    - arb_w_n ( arb_i_w Z ) ;
+    - arb_w_o ( arb_o_w Z ) ( arb_i_w A ) ;
+    - arb_w_x ( arb_x_w Z ) ( arb_a_w B ) ;
+    - clk_cfg ( PIN clk_cfg ) ( rt_n0 CK ) ( rt_n1 CK ) ( rt_e0 CK ) ( rt_e1 CK ) ( rt_s0 CK ) ( rt_s1 CK ) ( rt_w0 CK ) ( rt_w1 CK ) ( rt_loc0 CK ) ( rt_loc1 CK ) ;
+    - clk_noc ( PIN clk_noc ) ( lp_n0 CK ) ( lp_n1 CK ) ( lp_e0 CK ) ( lp_e1 CK ) ( lp_s0 CK ) ( lp_s1 CK ) ( lp_w0 CK ) ( lp_w1 CK ) ( lp_loc0 CK ) ( lp_loc1 CK ) ;
+    - flit_in_e0 ( PIN flit_in_e0 ) ( lp_e0 D ) ;
+    - flit_in_e1 ( PIN flit_in_e1 ) ( lp_e1 D ) ;
+    - flit_in_loc0 ( PIN flit_in_loc0 ) ( lp_loc0 D ) ;
+    - flit_in_loc1 ( PIN flit_in_loc1 ) ( lp_loc1 D ) ;
+    - flit_in_n0 ( PIN flit_in_n0 ) ( lp_n0 D ) ;
+    - flit_in_n1 ( PIN flit_in_n1 ) ( lp_n1 D ) ;
+    - flit_in_s0 ( PIN flit_in_s0 ) ( lp_s0 D ) ;
+    - flit_in_s1 ( PIN flit_in_s1 ) ( lp_s1 D ) ;
+    - flit_in_w0 ( PIN flit_in_w0 ) ( lp_w0 D ) ;
+    - flit_in_w1 ( PIN flit_in_w1 ) ( lp_w1 D ) ;
+    - flit_out_e0 ( PIN flit_out_e0 ) ( xb_e0 Z ) ;
+    - flit_out_e1 ( PIN flit_out_e1 ) ( xb_e1 Z ) ;
+    - flit_out_loc0 ( PIN flit_out_loc0 ) ( xb_loc0 Z ) ;
+    - flit_out_loc1 ( PIN flit_out_loc1 ) ( xb_loc1 Z ) ;
+    - flit_out_n0 ( PIN flit_out_n0 ) ( xb_n0 Z ) ;
+    - flit_out_n1 ( PIN flit_out_n1 ) ( xb_n1 Z ) ;
+    - flit_out_s0 ( PIN flit_out_s0 ) ( xb_s0 Z ) ;
+    - flit_out_s1 ( PIN flit_out_s1 ) ( xb_s1 Z ) ;
+    - flit_out_w0 ( PIN flit_out_w0 ) ( xb_w0 Z ) ;
+    - flit_out_w1 ( PIN flit_out_w1 ) ( xb_w1 Z ) ;
+    - lp_e0_q ( lp_e0 Q ) ( rt_e0 D ) ;
+    - lp_e1_q ( lp_e1 Q ) ( rt_e1 D ) ;
+    - lp_loc0_q ( lp_loc0 Q ) ( rt_loc0 D ) ;
+    - lp_loc1_q ( lp_loc1 Q ) ( rt_loc1 D ) ;
+    - lp_n0_q ( lp_n0 Q ) ( rt_n0 D ) ;
+    - lp_n1_q ( lp_n1 Q ) ( rt_n1 D ) ;
+    - lp_s0_q ( lp_s0 Q ) ( rt_s0 D ) ;
+    - lp_s1_q ( lp_s1 Q ) ( rt_s1 D ) ;
+    - lp_w0_q ( lp_w0 Q ) ( rt_w0 D ) ;
+    - lp_w1_q ( lp_w1 Q ) ( rt_w1 D ) ;
+    - rt_e0_q ( rt_e0 Q ) ( arb_x_e A ) ( arb_a_e A ) ( arb_o_e A ) ( xb_n0 A ) ( xb_n1 A ) ;
+    - rt_e1_q ( rt_e1 Q ) ( arb_x_e B ) ( arb_o_e B ) ( xb_w0 B ) ( xb_w1 B ) ;
+    - rt_loc0_q ( rt_loc0 Q ) ( arb_x_loc A ) ( arb_a_loc A ) ( arb_o_loc A ) ( xb_w0 A ) ( xb_w1 A ) ;
+    - rt_loc1_q ( rt_loc1 Q ) ( arb_x_loc B ) ( arb_o_loc B ) ( xb_e0 B ) ( xb_e1 B ) ;
+    - rt_n0_q ( rt_n0 Q ) ( arb_x_n A ) ( arb_a_n A ) ( arb_o_n A ) ( xb_loc0 A ) ( xb_loc1 A ) ;
+    - rt_n1_q ( rt_n1 Q ) ( arb_x_n B ) ( arb_o_n B ) ( xb_s0 B ) ( xb_s1 B ) ;
+    - rt_s0_q ( rt_s0 Q ) ( arb_x_s A ) ( arb_a_s A ) ( arb_o_s A ) ( xb_e0 A ) ( xb_e1 A ) ;
+    - rt_s1_q ( rt_s1 Q ) ( arb_x_s B ) ( arb_o_s B ) ( xb_loc0 B ) ( xb_loc1 B ) ;
+    - rt_w0_q ( rt_w0 Q ) ( arb_x_w A ) ( arb_a_w A ) ( arb_o_w A ) ( xb_s0 A ) ( xb_s1 A ) ;
+    - rt_w1_q ( rt_w1 Q ) ( arb_x_w B ) ( arb_o_w B ) ( xb_n0 B ) ( xb_n1 B ) ;
+END NETS
+
+END DESIGN
