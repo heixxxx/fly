@@ -13,7 +13,7 @@ MapReduce——用户裁定 2026-09-15）。
     内直读。plan §3.1 入口等待语义：不等待 design db freeze，只等必要
     数据对象）：绑定目标校验（块实例路径/块 cell 名未命中 → 任务内
     ValueError，plan §7.5 可 raise 两类之一）→ 快照逐对象落 timing db
-    临时对象（全部已有序列化类型；临时对象键 uid 预生成、布局确定）→
+    临时对象（全部已有序列化类型；临时对象键固定名、布局确定）→
     worker 上动态提交下游全链（快照键集/分区清单依赖 design db 运行时
     数据，无法静态提交——同 design flow 分区编排任务先例）：
       逐块解析任务（每块一任务，全并行；块自包含 = 头段公共前缀拼
@@ -36,8 +36,6 @@ MapReduce——用户裁定 2026-09-15）。
 流程入口 build_timing_db 在 tm_db.py（UserDoc + Schema + @register_flow）。
 """
 
-from uuid import uuid4
-
 from fly import as_task, fatal_message, message
 
 from emir.design import DesignDb, ds_make_instance_name_mapper
@@ -56,13 +54,18 @@ from .tm_export import (
 )
 
 
-def _tmp_key(uid: str, name: str) -> str:
-    return f"__tmg__{uid}__{name}"
+def _tmp_key(name: str) -> str:
+    """编排临时对象键（固定名 __tmg__{name}——uid 维度已删，2026-09-17
+    用户裁定：临时对象 save_to_db=False 运行时态、一 db 一 flow（重名
+    递增新 db）、task 重放参数原样同键覆盖幂等——同 db 双 flow 场景不
+    存在，uid 不提供隔离价值）。键内的内容索引（chunk_{fi}_{cj}/
+    conflicts_{pid} 等）是业务寻址保留。"""
+    return f"__tmg__{name}"
 
 
 # ── design db 快照任务（master 提交、worker 执行；依赖系统等必要对象）──
 
-@as_task(inputs=lambda db, design_db, uid, files, plan_key: [
+@as_task(inputs=lambda db, design_db, files, plan_key: [
     design_db.get_full_name(DesignDb.DESIGN_OBJ),
     design_db.get_full_name(DesignDb.GLOBAL_DENSITY_OBJ),
     design_db.get_full_name(DesignDb.PG_NETS_OBJ),
@@ -70,7 +73,7 @@ def _tmp_key(uid: str, name: str) -> str:
     design_db.get_full_name(DesignDb.BUILD_META_OBJ),
     db.get_full_name(plan_key),
 ])
-def _snapshot_design_task(db, design_db, uid, files, plan_key):
+def _snapshot_design_task(db, design_db, files, plan_key):
     """组装 design db 快照、落 timing db 临时对象并动态提交下游全链
     （plan §3.1 入口等待语义的执行点；评审 P2-3：异步任务化——
     build_timing_db 提交后立即返回，快照在 worker 上执行）。
@@ -111,7 +114,7 @@ def _snapshot_design_task(db, design_db, uid, files, plan_key):
     keys = {}
 
     def _snap(name, obj):
-        key = _tmp_key(uid, name)
+        key = _tmp_key(name)
         db.write_object(key, obj, save_to_db=False)
         keys[name] = key
 
@@ -149,7 +152,7 @@ def _snapshot_design_task(db, design_db, uid, files, plan_key):
     slice_keys = []
     for fi, fp in enumerate(plan.files):
         for cj in range(len(fp.chunk_starts)):
-            slice_key = _tmp_key(uid, f"chunk_{fi}_{cj}")
+            slice_key = _tmp_key(f"chunk_{fi}_{cj}")
             slice_keys.append(slice_key)
             _chunk_parse_task(db, keys, plan_key, fi, cj,
                               files[fi]["kind"], files[fi]["block_inst"],
@@ -160,8 +163,8 @@ def _snapshot_design_task(db, design_db, uid, files, plan_key):
     # 时钟表合并任务（独立任务，依赖全部 slices——评审 P1-1：提前至分
     # 区合并之前，产出 clocks 正式对象 + remap 桥 + 0007 冲突计数 temp）
     clocks_key = TimingDb.CLOCKS_OBJ
-    remap_key = _tmp_key(uid, "clock_remap")
-    clock_conflicts_key = _tmp_key(uid, "clock_conflicts")
+    remap_key = _tmp_key("clock_remap")
+    clock_conflicts_key = _tmp_key("clock_conflicts")
     _clock_merge_task(db, files, slice_keys, clocks_key, remap_key,
                       clock_conflicts_key)
 
@@ -169,7 +172,7 @@ def _snapshot_design_task(db, design_db, uid, files, plan_key):
     # 对象唯一写定 + 冲突计数 temp）
     conflicts_keys = []
     for pid, xp, yp in partitions:
-        conflicts_key = _tmp_key(uid, f"conflicts_{pid}")
+        conflicts_key = _tmp_key(f"conflicts_{pid}")
         conflicts_keys.append(conflicts_key)
         _partition_merge_task(db, slice_keys, remap_key, pid, xp, yp,
                               TimingDb.partition_obj_name(xp, yp),
@@ -399,14 +402,13 @@ def run_timing_flow(db, design_db, files, settings):
     TMAlphaSettings（db 读回 normalize 兜底）。"""
     from log import INFO
     chunk_size = settings.chunk_size_mb * 1024 * 1024
-    uid = uuid4().hex[:8]
 
     # 切块扫描（master 侧单任务，同步执行——plan §6 字面形态；文件已
     # 入口校验可读，扫描为毫秒级 I/O；块数就此确定，逐块解析任务静态提交）
     plan = EXTMChunkPlan()
     for f in files:
         plan.add_file(tm_plan_file_chunks(f["file_name"], chunk_size))
-    plan_key = _tmp_key(uid, "chunk_plan")
+    plan_key = _tmp_key("chunk_plan")
     db.write_object(plan_key, plan, save_to_db=False)
     total_chunks = sum(len(fp.chunk_starts) for fp in plan.files)
     INFO(f"timing flow: {len(files)} file(s) planned into {total_chunks} "
@@ -415,4 +417,4 @@ def run_timing_flow(db, design_db, files, settings):
     # design 快照任务（依赖 design db 必要对象 + plan；快照组装 + 绑定
     # 校验 + 下游逐块解析/时钟合并/分区合并/汇总/freeze 全链动态提交
     # ——快照键集与分区清单依赖 design db 运行时数据，无法静态提交）
-    _snapshot_design_task(db, design_db, uid, files, plan_key)
+    _snapshot_design_task(db, design_db, files, plan_key)

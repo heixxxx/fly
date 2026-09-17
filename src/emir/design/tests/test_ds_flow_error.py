@@ -194,10 +194,37 @@ def test_cell_merge_all_failed_fatals_exit_80():
     print("[OK] cell merge all-failed: fatal exit 80 (subprocess)")
 
 
+def test_flow_temp_keys_static():
+    # uid 静态化（2026-09-17 §19 批次裁定）：编排临时对象键固定名
+    # __dsn__{name}——freeze 清理清单由 _flow_temp_keys 按输入规模静态构造
+    #（不再沿任务链逐层收集键集传参）。清单不含 net_union slice（归并汇总
+    # 任务自清理）与 pg/id 片段（各自汇总任务自清理）——清理责任单点。
+    keys = ds_flow._flow_temp_keys(2, 3)
+    assert keys[:3] == ["__dsn__tech_vias", "__dsn__macro_geoms",
+                        "__dsn__lib_library"], keys[:3]
+    assert "__dsn__cell_lef_0_design" in keys
+    assert "__dsn__cell_lef_1_failed" in keys
+    assert "__dsn__cell_lef_2_design" not in keys       # n_cell_lefs=2 封顶
+    assert "__dsn__header_2_obs" in keys
+    assert "__dsn__header_3_cells" not in keys          # n_defs=3 封顶
+    assert "__dsn__components_2_block" in keys
+    assert "__dsn__fake_cells_2" in keys
+    assert "__dsn__nets_2_stats" in keys
+    assert "__dsn__nets_3_stats" not in keys
+    assert "__dsn__merged" in keys and "__dsn__lib_merged_design" in keys
+    assert "__dsn__snapshot" in keys and "__dsn__hier" in keys
+    assert "__dsn__block_names" in keys
+    assert not any("net_union_slice" in k for k in keys), \
+        "net_union slice 由归并汇总任务自清理，不得入 freeze 清单"
+    assert len(keys) == len(set(keys)), "temp key 清单不得有重复"
+    print("[OK] flow temp keys: static naming + freeze list ownership")
+
+
 test_sniff_lef_header()
 test_sniff_def_header()
 test_parse_cell_one_returns_stats_channel()
 test_cell_merge_partial_failure_falls_back_with_message()
 test_cell_merge_all_good_sends_no_message()
 test_cell_merge_all_failed_fatals_exit_80()
+test_flow_temp_keys_static()
 print("[PASS] test_ds_flow_error")

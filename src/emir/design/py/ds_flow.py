@@ -84,8 +84,6 @@
 与层堆叠），其余为 cell lef。
 """
 
-from uuid import uuid4
-
 from fly import as_task
 
 from .ds_db import DesignDb
@@ -126,8 +124,43 @@ from .ds_utils import (
 )
 
 
-def _tmp_key(uid: str, name: str) -> str:
-    return f"__dsn__{uid}__{name}"
+def _tmp_key(name: str) -> str:
+    """编排临时对象键（固定名 __dsn__{name}——uid 维度已删，2026-09-17
+    用户裁定：临时对象 save_to_db=False 运行时态、一 db 一 flow（重名
+    递增新 db）、task 重放参数原样同键覆盖幂等——同 db 双 flow 场景不
+    存在，uid 不提供隔离价值）。键内的内容索引（分组/分区等后缀）是
+    业务寻址保留。"""
+    return f"__dsn__{name}"
+
+
+def _flow_temp_keys(n_cell_lefs: int, n_defs: int) -> list:
+    """freeze 清理清单（任务内静态构造——不再沿任务链逐层收集键集传参，
+    §19 批次 2026-09-17）：建库编排临时对象全集，按输入规模枚举。
+
+    清单边界（清理责任单点）：net_union slice（归并汇总任务自清理）、
+    pg 网片段（pg 全局集汇总任务自清理）、id 映射片段（映射汇总任务自
+    清理）、展开分片与校验结果（分区编排任务本地构造）不在本函数——前
+    三者由各自消费任务清，后两者随分区链构造。"""
+    keys = [_tmp_key("tech_vias"), _tmp_key("macro_geoms"),
+            _tmp_key("lib_library")]
+    for i in range(n_cell_lefs):
+        keys += [_tmp_key(f"cell_lef_{i}_design"),
+                 _tmp_key(f"cell_lef_{i}_geoms"),
+                 _tmp_key(f"cell_lef_{i}_vias"),
+                 _tmp_key(f"cell_lef_{i}_failed")]
+    keys += [_tmp_key("merged"), _tmp_key("lib_merged_design")]
+    for i in range(n_defs):
+        keys += [_tmp_key(f"header_{i}_cells"),
+                 _tmp_key(f"header_{i}_geoms"),
+                 _tmp_key(f"header_{i}_vias"),
+                 _tmp_key(f"header_{i}_obs")]
+    keys.append(_tmp_key("snapshot"))
+    for i in range(n_defs):
+        keys += [_tmp_key(f"components_{i}_block"),
+                 _tmp_key(f"fake_cells_{i}"),
+                 _tmp_key(f"nets_{i}_stats")]
+    keys += [_tmp_key("hier"), _tmp_key("block_names")]
+    return keys
 
 
 # ── tech lef（单 task，确立 DBU 基准 + 层堆叠）──────────────────────
@@ -607,7 +640,7 @@ def _net_union_summary_task(db, hier_key, slice_keys, union_key):
          block_names_key, alpha_key, block_keys, net_keys, names_keys,
          def_paths, slice_prefix, verify_prefix, stack_key,
          net_union_key, id_slice_prefix, pg_slice_prefix, formal_keys,
-         temp_keys: [
+         n_cell_lefs: [
     db.get_full_name(design_key), db.get_full_name(global_density_key),
     db.get_full_name(hier_key), db.get_full_name(block_names_key),
     db.get_full_name(alpha_key),
@@ -617,7 +650,7 @@ def _partition_plan_task(db, design_key, global_density_key, hier_key,
                          net_keys, names_keys, def_paths, slice_prefix,
                          verify_prefix, stack_key, net_union_key,
                          id_slice_prefix, pg_slice_prefix, formal_keys,
-                         temp_keys):
+                         n_cell_lefs):
     """分区编排计划（依赖分区表（全局密度任务写定）+ 层级树 + block 名
     清单 + alpha 设置；worker 上动态提交展开/合并/freeze 链——同 solver
     kickoff 动态提交先例；分组信息依赖树运行时数据，无法静态提交）。
@@ -733,7 +766,8 @@ def _partition_plan_task(db, design_key, global_density_key, hier_key,
                   for pid, _, _ in partitions]
     _freeze_design_task(db, formal_keys + partition_keys + index_keys +
                         [DesignDb.PG_NETS_OBJ, report_key],
-                        temp_keys + slice_keys + verify_keys)
+                        n_cell_lefs, len(def_paths),
+                        slice_keys, verify_keys)
 
 
 @as_task(inputs=lambda db, design_key, hier_key, block_names_key,
@@ -988,16 +1022,20 @@ def _design_verify_task(db, verify_keys, design_key, stack_key,
 # ── freeze：依赖正式对象写完 + 中间对象清理（由分区编排任务动态提交，
 #    使 final_keys 能携带运行时确定的全部分区对象名）────────────────────
 
-@as_task(inputs=lambda db, final_keys, temp_keys: [
+@as_task(inputs=lambda db, final_keys, n_cell_lefs, n_defs, slice_keys,
+         verify_keys: [
     db.get_full_name(k) for k in final_keys
 ])
-def _freeze_design_task(db, final_keys, temp_keys):
+def _freeze_design_task(db, final_keys, n_cell_lefs, n_defs, slice_keys,
+                        verify_keys):
     """freeze 前中间对象清理（幂等删除原语严格模式，2026-09-17 §19 批次）：
-    temp_keys 内每个键的清理责任**唯一归属本任务**——直接 remove（缺失即
-    KeyError，暴露清理责任错位/提前删除的流程 bug）。pg 网片段（pg 全局集
-    汇总任务自清理）、id 映射片段（映射汇总任务自清理）、net_union slice
-    （归并汇总任务自清理）已由各自消费任务早释放，不在本清单（双清理责任
-    单化）。"""
+    清理清单任务内静态构造——建库编排临时对象按输入规模枚举
+    （_flow_temp_keys，键固定名）+ 展开分片 + 校验结果（分区编排任务本地
+    构造传入）。每个键的清理责任**唯一归属本任务**——直接 remove（缺失即
+    KeyError，暴露清理责任错位/提前删除的流程 bug）。pg 网片段（pg 全局
+    集汇总任务自清理）、id 映射片段（映射汇总任务自清理）、net_union
+    slice（归并汇总任务自清理）不在本清单（双清理责任单化）。"""
+    temp_keys = _flow_temp_keys(n_cell_lefs, n_defs) + slice_keys + verify_keys
     for key in temp_keys:
         db.remove_object(key)
     db.freeze()
@@ -1019,24 +1057,21 @@ def run_design_flow(db, lef_paths, def_paths, lib_db):
     bin_um = settings.density_bin_size
     net_batch = settings.net_batch_size
     lcp_name_arena = settings.lcp_name_arena
-    uid = uuid4().hex[:8]
     stack_key = DesignDb.STACK_OBJ
     design_key = DesignDb.DESIGN_OBJ
     geoms_key = DesignDb.PIN_GEOMETRY_OBJ
     tables_key = DesignDb.PIN_TABLES_OBJ
 
-    tech_vias_key = _tmp_key(uid, "tech_vias")
+    tech_vias_key = _tmp_key("tech_vias")
     # macro pin 几何中间产物 key（cell lef 汇总写、DEF 头汇总读后清理；
     # 正式 DSPinGeometry 由 DEF 头汇总唯一写定）
-    macro_geoms_key = _tmp_key(uid, "macro_geoms")
+    macro_geoms_key = _tmp_key("macro_geoms")
     # lib 库容器快照：master 侧读 lib db 写入 design db 临时对象——lib
     # merge task 全程在 design db 内，规避 worker 端跨 db 读取
-    lib_snapshot_key = _tmp_key(uid, "lib_library")
+    lib_snapshot_key = _tmp_key("lib_library")
     db.write_object(lib_snapshot_key,
                     lib_db.read_object(lib_db.LIBRARY_OBJ),
                     save_to_db=False)
-
-    temp_keys = [tech_vias_key, macro_geoms_key, lib_snapshot_key]
 
     # tech lef（lef_paths[0]，约定见模块 docstring）
     _tech_lef_task(db, lef_paths[0], stack_key, tech_vias_key)
@@ -1044,41 +1079,36 @@ def run_design_flow(db, lef_paths, def_paths, lib_db):
     # 每 cell lef 一 task（产物四元组：design/geoms/vias + 失败标记）
     part_tuples = []
     for i, path in enumerate(lef_paths[1:]):
-        keys = (_tmp_key(uid, f"cell_lef_{i}_design"),
-                _tmp_key(uid, f"cell_lef_{i}_geoms"),
-                _tmp_key(uid, f"cell_lef_{i}_vias"),
-                _tmp_key(uid, f"cell_lef_{i}_failed"))
-        temp_keys.extend(keys)
+        keys = (_tmp_key(f"cell_lef_{i}_design"),
+                _tmp_key(f"cell_lef_{i}_geoms"),
+                _tmp_key(f"cell_lef_{i}_vias"),
+                _tmp_key(f"cell_lef_{i}_failed"))
         part_tuples.append(keys)
         _cell_lef_task(db, path, stack_key, *keys)
 
     # cell lef 汇总 → DSDesign 中间态 + macro pin 几何临时对象（正式
     # DSPinGeometry 由 DEF 头汇总合并 port 几何后唯一写定）
-    merged_key = _tmp_key(uid, "merged")
-    temp_keys.append(merged_key)
+    merged_key = _tmp_key("merged")
     _cell_lef_merge_task(db, part_tuples, stack_key, tech_vias_key,
                          merged_key, macro_geoms_key)
 
     # lib merge（快照对象已在 design db 内）
-    s3_key = _tmp_key(uid, "lib_merged_design")
-    temp_keys.append(s3_key)
+    s3_key = _tmp_key("lib_merged_design")
     _merge_lib_task(db, merged_key, lib_snapshot_key, tables_key, s3_key)
 
     # DEF 头扫描：每 DEF 一 task
     header_part_keys = []
     for i, path in enumerate(def_paths):
-        keys = (_tmp_key(uid, f"header_{i}_cells"),
-                _tmp_key(uid, f"header_{i}_geoms"),
-                _tmp_key(uid, f"header_{i}_vias"),
-                _tmp_key(uid, f"header_{i}_obs"))
-        temp_keys.extend(keys)
+        keys = (_tmp_key(f"header_{i}_cells"),
+                _tmp_key(f"header_{i}_geoms"),
+                _tmp_key(f"header_{i}_vias"),
+                _tmp_key(f"header_{i}_obs"))
         header_part_keys.append(keys)
         _def_header_task(db, path, stack_key, *keys)
 
     # DEF 头汇总 → cell 全集快照（临时）+ 正式 DSPinGeometry；正式
     # DSDesign 由实例解析汇总写定
-    snapshot_key = _tmp_key(uid, "snapshot")
-    temp_keys.append(snapshot_key)
+    snapshot_key = _tmp_key("snapshot")
     _def_header_merge_task(db, s3_key, header_part_keys, snapshot_key,
                            geoms_key, macro_geoms_key)
 
@@ -1090,12 +1120,10 @@ def run_design_flow(db, lef_paths, def_paths, lib_db):
     names_keys = []
     fake_keys = []
     for i, path in enumerate(def_paths):
-        block_key = _tmp_key(uid, f"components_{i}_block")
+        block_key = _tmp_key(f"components_{i}_block")
         names_key = DesignDb.names_obj_name(i)
         obs_key = header_part_keys[i][3]  # S4 obstruction 临时对象
-        fake_key = _tmp_key(uid, f"fake_cells_{i}")  # fake cell 中转
-        temp_keys.append(block_key)
-        temp_keys.append(fake_key)
+        fake_key = _tmp_key(f"fake_cells_{i}")  # fake cell 中转
         temp_block_keys.append(block_key)
         names_keys.append(names_key)
         fake_keys.append(fake_key)
@@ -1112,8 +1140,7 @@ def run_design_flow(db, lef_paths, def_paths, lib_db):
     formal_net_keys = [DesignDb.net_obj_name(i) for i in range(len(def_paths))]
     nets_stats_keys = []
     for i, path in enumerate(def_paths):
-        stats_key = _tmp_key(uid, f"nets_{i}_stats")
-        temp_keys.append(stats_key)
+        stats_key = _tmp_key(f"nets_{i}_stats")
         nets_stats_keys.append(stats_key)
         _nets_def_task(db, path, stack_key, snapshot_key, temp_block_keys[i],
                        names_keys[i], formal_net_keys[i], stats_key,
@@ -1125,8 +1152,7 @@ def run_design_flow(db, lef_paths, def_paths, lib_db):
     # 层级树：构建 + 起始编号分配（消费实例解析临时产物 + 网内容正式产
     # 物的 via 计数——via 计数物理依赖已消解为串行，见 phase2 方案备注；
     # 串行便宜——元数据级操作）
-    hier_key = _tmp_key(uid, "hier")
-    temp_keys.append(hier_key)
+    hier_key = _tmp_key("hier")
     _hier_task(db, snapshot_key, temp_block_keys, names_keys,
                formal_net_keys, hier_key)
 
@@ -1151,10 +1177,9 @@ def run_design_flow(db, lef_paths, def_paths, lib_db):
     # slice 为临时对象（汇总任务合并后自行 remove）；net_union 正式对象
     # 挂 freeze final_keys
     net_union_key = DesignDb.NET_UNION_OBJ
-    union_slice_keys = [_tmp_key(uid, f"net_union_slice_{i}")
+    union_slice_keys = [_tmp_key(f"net_union_slice_{i}")
                         for i in range(len(def_paths))]
-    block_names_key = _tmp_key(uid, "block_names")
-    temp_keys.append(block_names_key)
+    block_names_key = _tmp_key("block_names")
     _net_union_names_task(db, names_keys, block_names_key)
     for i in range(len(def_paths)):
         _net_union_slice_task(db, hier_key, block_names_key,
@@ -1168,10 +1193,10 @@ def run_design_flow(db, lef_paths, def_paths, lib_db):
     # 部分区对象名，故 freeze 由 plan 动态提交而非本函数静态提交）。
     # S10 校验链同由 plan 动态提交（merge 之后、freeze 之前；freeze 依赖
     # verify_report 正式对象——校验未完成不冻结）
-    slice_prefix = _tmp_key(uid, "s9_slice_")
-    verify_prefix = _tmp_key(uid, "s10_verify_")
-    id_slice_prefix = _tmp_key(uid, "id_slice_")
-    pg_slice_prefix = _tmp_key(uid, "pg_slice_")
+    slice_prefix = _tmp_key("s9_slice_")
+    verify_prefix = _tmp_key("s10_verify_")
+    id_slice_prefix = _tmp_key("id_slice_")
+    pg_slice_prefix = _tmp_key("pg_slice_")
     _partition_plan_task(
         db, design_key, global_density_key, hier_key, block_names_key,
         DesignDb.ALPHA_SETTINGS_OBJ, formal_block_keys,
@@ -1180,4 +1205,4 @@ def run_design_flow(db, lef_paths, def_paths, lib_db):
         [design_key, stack_key, tables_key, geoms_key,
          DesignDb.BUILD_META_OBJ] + formal_block_keys +
         names_keys + formal_net_keys + [global_density_key, net_union_key],
-        temp_keys)
+        len(lef_paths) - 1)
