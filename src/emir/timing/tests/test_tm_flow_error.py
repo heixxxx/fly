@@ -110,13 +110,13 @@ def test_alpha_settings():
 def test_all_files_failed_fatals_exit_80():
     # 全部文件失败（TIMG::0009 fatal → _exit(80)）：子进程隔离断言退出码。
     # 产物走真实 C++ 路径构造（EXTMFileChunkPlan 字段只读——解析面不可
-    # Python 侧拼装，真实路径同时覆盖 T1/T2 兜底行为）。
+    # Python 侧拼装，真实路径同时覆盖切块/解析兜底行为）。
     script = (
         "import os, tempfile\n"
         "from fly import run_direct\n"
         "from emir.timing.py import tm_flow\n"
-        "from emir.timing import (EXTMChunkPlan, EXTMDesignContext, "
-        "EXTMFileBinding, EXTMStatsDelta, tm_plan_file_chunks, "
+        "from emir.timing import (EXTMDesignContext, "
+        "EXTMFileBinding, tm_plan_file_chunks, "
         "tm_convert_chunk)\n"
         "d = tempfile.mkdtemp(prefix='tm_fatal_')\n"
         "path = os.path.join(d, 'bad.twf')\n"
@@ -124,8 +124,6 @@ def test_all_files_failed_fatals_exit_80():
         "\"n\"')\n"
         "ctx = EXTMDesignContext()\n"
         "fp = tm_plan_file_chunks(path, 1024 * 1024)\n"
-        "plan = EXTMChunkPlan()\n"
-        "plan.add_file(fp)\n"
         "binding = EXTMFileBinding()\n"
         "binding.set_kind(0)\n"
         "slice_obj = tm_convert_chunk(ctx, path, fp.prefix_start, "
@@ -134,21 +132,21 @@ def test_all_files_failed_fatals_exit_80():
         "assert slice_obj.stats.files[0].failed_chunk_count == 1, "
         "'fixture must be a failed chunk'\n"
         "class Db:\n"
-        "    def __init__(self):\n"
-        "        self.objs = {'clock_conflicts': 0}\n"
         "    def read_object(self, k, **kw):\n"
-        "        if k.endswith('plan'):\n"
-        "            return plan\n"
         "        if 'chunk' in k:\n"
         "            return slice_obj\n"
-        "        return self.objs.get(k.split('__')[-1], 0)\n"
+        "        if 'manifest' in k:\n"
+        "            return {'chunk_count': 1}\n"
+        "        return 0\n"
         "    def write_object(self, k, v, **kw):\n"
+        "        pass\n"
+        "    def remove_object(self, k, **kw):\n"
         "        pass\n"
         "files = [{'file_name': path, 'kind': 0, 'block_inst': '', "
         "'block_cell': '', 'strip_prefix': ''}]\n"
-        "run_direct(tm_flow._summary_task, Db(), files, "
-"['chunk_0_0'], ['conflicts_0'], 'clock_conflicts', 'plan', "
-"'summary', [])\n"
+        "run_direct(tm_flow._merge_summary_task, Db(), files, "
+        "['chunk_0_0'], ['conflicts_0'], 'clock_conflicts', "
+        "['manifest_0'], 'summary', [], 'remap')\n"
     )
     env = dict(os.environ)
     env["PYTHONPATH"] = os.pathsep.join(p for p in sys.path if p)

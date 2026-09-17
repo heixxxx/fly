@@ -16,7 +16,9 @@
                           文件统计，可追溯）
   "alpha_settings"        建库 alpha 设置（TMAlphaSettings，两键）
 
-阶段链装配在 tm_flow.run_timing_flow（流程实现与入口分离）。
+三段式流程（dev-rules §3「建库 API 流程标准」）：本文件入口函数 ①轻量
+参数预处理（schema 校验 + 文件存在性 + 建库；不读文件内容）②提交唯一
+flow 根任务 ③顶层提交 freeze——任务链目录见 tm_flow._timing_flow_task。
 
 debug 读库 API（plan §3.2，同 design debug API 先例）：get_timing 单实例
 点查——实例 id 经 design db 的 id_partition_map.INST 反向映射定位分区 →
@@ -284,7 +286,8 @@ build_timing_db_doc.add_param("timing_files",
     required=True, desc="TWF 文件输入列表（至少 1 个；元素 = 纯路径字符串"
         "或块绑定描述符 dict；单文件亦列表；分块 TWF 传全部块文件）。"
         "描述符键：file_name（必填）、block_inst / block_cell（互斥，"
-        "恰传其一）、strip_prefix（可选）。文件必须存在且可读，否则报错")
+        "恰传其一）、strip_prefix（可选）。文件必须存在且可读（否则"
+        "立即报错）；非 TWF 格式文件导致建库失败（库不冻结）")
 build_timing_db_doc.add_param("design_db",
     schema=Schema(object, check=_is_design_db_handle,
                   error="must be a DesignDb instance, got {value}"),
@@ -319,11 +322,12 @@ def build_timing_db(self, name: str, timing_files: list, design_db,
                     settings: dict = None, alpha: dict = None):
     """构建 timing db：TWF 解析 + 名字匹配归属 + 冻结。
 
-    全部文件解析完成后库冻结可读。参数不合法（空名、timing_files
-    结构错误、settings/alpha 含未知键或非法值、design_db 类型不符、
-    文件不存在/不可读/非 TWF 格式）时立即报错终止，不建库。块绑定目标
-    存在性（块实例路径/块 cell 名在 design db 命中）在解析阶段校验，
-    未命中的条目跳过并计入汇总提醒（不阻塞其他条目入库）。
+    全部文件解析完成后库冻结可读。参数不合法（空名、timing_files 结构
+    错误、settings/alpha 含未知键或非法值、design_db 类型不符、文件不
+    存在/不可读）时立即报错终止，不建库；非 TWF 格式文件在解析任务中
+    失败（库不冻结）。块绑定目标存在性（块实例路径/块 cell 名在
+    design db 命中）在解析阶段校验，未命中的条目跳过并计入汇总提醒
+    （不阻塞其他条目入库）。
 
     Args:
         self: 自动绑定的 EMIRProject 实例。
@@ -338,33 +342,27 @@ def build_timing_db(self, name: str, timing_files: list, design_db,
     Returns:
         ``TimingDb`` 句柄（解析与冻结异步进行，可用 wait_frozen 等待）。
     """
-    # ── Step 1: 检查输入（master 侧前置；结构已由 header schema 拦截，
-    #    这里做可读性显式校验 + TWF 头嗅探）──
-    from .tm_utils import normalize_timing_files, sniff_twf_header
+    # ── ① 轻量参数预处理：schema 已由 header 拦截；文件存在性（元数
+    #    据级，不读内容——形态错由文件入口任务失败透出）+ 建库 + alpha
+    #    写入（header 已拦截非法值，apply 防御性覆盖）──
+    from .tm_utils import normalize_timing_files
     files = normalize_timing_files(timing_files)
     for f in files:
-        path = f["file_name"]
-        ensure_readable_file(path, "build_timing_db", "timing_files")
-        sniff_twf_header(path)
-
-    # ── Step 2: 建库（TimingDb，role="timing"；直接前驱 design db 入
-    #    链——dev-rules §3 数据库链，debug API find_db 的依赖来源）──
+        ensure_readable_file(f["file_name"], "build_timing_db",
+                             "timing_files")
+    # 直接前驱 design db 入链（dev-rules §3 数据库链——debug API
+    # find_db 的依赖来源）
     db = self._create_db(name, db_cls=TimingDb, prev=[design_db])
-
-    # ── Step 2.5: alpha 设置：header schema 已拦截未知键/非法值（直接
-    #    raise）；此处 apply 防御性覆盖（理论不再拒绝）+ settings 对象随
-    #    建库写入 db（消费点 read_object 读回 + normalize 兜底，向前兼容
-    #    旧 db 对象）──
     from .alpha_settings import get_default_alpha_settings
     alpha_settings = get_default_alpha_settings()
     alpha_settings.apply(alpha)
     db.write_object(TimingDb.ALPHA_SETTINGS_OBJ, alpha_settings)
 
-    # ── Step 3 + 4: 阶段链提交 + freeze 提交 ──
-    settings = db.read_object(TimingDb.ALPHA_SETTINGS_OBJ)
-    settings.normalize()
-    from .tm_flow import run_timing_flow
-    run_timing_flow(db, design_db, files, settings)
+    # ── ② flow 根任务 + ③ freeze（master 提交 O(1) 个任务——§20
+    #    编排判据；freeze 依赖固定标记 clocks/summary）──
+    from .tm_flow import _freeze_timing_task, _timing_flow_task, _tmp_key
+    _timing_flow_task(db, design_db, files)
+    _freeze_timing_task(db, _tmp_key("snapshot_keys"))
 
     INFO(f"build_timing_db: '{name}' submitted ({len(files)} timing file(s))")
     return db
