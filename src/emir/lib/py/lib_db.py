@@ -5,7 +5,9 @@
 §4 裁定 10），lib 阶段以 cell name 区分 cell；cell id 由 design db 建库时
 读入 LIBLibrary 后分配（裁定 9）。
 
-MapReduce 四阶段装配在 lib_flow.run_lib_flow（流程实现与入口分离）。
+三段式流程（dev-rules §3「建库 API 流程标准」）：本文件入口函数 ①轻量
+参数预处理（schema 校验 + 文件存在性 + 建库；不读文件内容）②提交唯一
+flow 根任务 ③顶层提交 freeze——任务链目录见 lib_flow._lib_flow_task。
 """
 
 from log import INFO
@@ -56,7 +58,7 @@ build_lib_db_doc.add_param("name",
 build_lib_db_doc.add_param("lib_paths",
     schema=Schema.list(_path_schema, min_len=1),
     required=True, desc=".lib 文件路径列表（至少 1 个）。文件必须存在且"
-        "可读，否则报错；非 liberty 格式报错")
+        "可读，否则立即报错；非 liberty 格式文件导致建库失败（库不冻结）")
 build_lib_db_doc.add_param("alpha",
     schema=Schema.dict(allow_extra=False,
                        extra_error="lib alpha currently has no available "
@@ -79,8 +81,8 @@ def build_lib_db(self, name: str, lib_paths: list, alpha: dict = None):
 
     全部文件解析完成后库冻结可读。跨文件重名 cell（库版本混用迹象）
     保留首份并提醒，不报错终止。参数不合法（空名、空路径列表、alpha
-    含未知键、文件不存在/不可读/非 liberty 格式）时立即报错终止，
-    不建库。
+    含未知键、文件不存在/不可读）时立即报错终止，不建库；非 liberty
+    格式文件在解析任务中失败（库不冻结）。
 
     Args:
         self: 自动绑定的 EMIRProject 实例。
@@ -91,29 +93,24 @@ def build_lib_db(self, name: str, lib_paths: list, alpha: dict = None):
     Returns:
         ``LibDb`` 句柄（解析与冻结异步进行，可用 wait_frozen 等待）。
     """
-    # ── Step 1: 检查输入（可读性显式校验 + liberty 形态嗅探，schema
-    #    无法覆盖）──
-    from .lib_utils import sniff_liberty_header
+    # ── ① 轻量参数预处理：schema 已由 header 拦截；文件存在性（元数
+    #    据级，不读内容——形态错由 map 解析任务失败透出，库不冻结）+
+    #    建库 + alpha 写入（header 已拦截非法值，apply 防御性覆盖）──
     for p in lib_paths:
         ensure_readable_file(p, "build_lib_db", "lib_paths")
-        sniff_liberty_header(p)
 
-    # ── Step 2: 建库（LibDb，role="lib"）──
     db = self._create_db(name, db_cls=LibDb)
 
-    # ── Step 2.5: alpha 设置：header schema 已拦截未知键/非法值（直接
-    #    raise）；此处 apply 防御性覆盖（理论不再拒绝）+ settings 对象随
-    #    建库写入 db（消费点 read_object 读回 + normalize 兜底，向前兼容
-    #    旧 db 对象）──
     from .alpha_settings import get_default_alpha_settings
     alpha_settings = get_default_alpha_settings()
     alpha_settings.apply(alpha)
     db.write_object(LibDb.ALPHA_SETTINGS_OBJ, alpha_settings)
 
-    # ── Step 3 + 4: 并行解析整合 + 冻结提交 ──
-    from .lib_flow import run_lib_flow
-    run_lib_flow(db, lib_paths)
+    # ── ② flow 根任务 + ③ freeze（master 提交 O(1) 个任务——§20
+    #    编排判据；freeze 依赖固定标记 LIBLibrary）──
+    from .lib_flow import _freeze_lib_task, _lib_flow_task
+    _lib_flow_task(db, lib_paths)
+    _freeze_lib_task(db)
 
-    INFO(f"build_lib_db: '{name}' submitted ({len(lib_paths)} lib files, "
-         f"parallel per-file parse)")
+    INFO(f"build_lib_db: '{name}' submitted ({len(lib_paths)} lib file(s))")
     return db

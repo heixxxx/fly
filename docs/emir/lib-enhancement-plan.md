@@ -89,3 +89,4 @@
 - **计划外修正 1**：原 `network/py/__init__.py` 三个符号（`ex_net_create_transport` 等）在 `_fly_network.so` 中不存在（真实符号为 `ex_net_create_connection_manager`），且 network 包根此前从未被任何 Python 代码成功加载（死符号必 ImportError）——export 层按真实符号表修正。
 - **计划外既有缺陷（实锤非本次引入，待 C++ 构建层专项排查）**：fly 进程内加载 `_fly_network.so` 后，进程退出期触发 libfly_core 静态配置表（`Config::INT_DEFAULTS`/`STR_DEFAULTS`）double free。已在 HEAD 干净工作树复现（未改造代码同样崩溃）——network 包根因上述死符号从未被加载，缺陷此前不可达。处置：main.cpp 有意不预加载 `_fly_network`（注释说明），network Python 包根零消费者不受影响。
 - **计划外演进**：log 从「跳过」改为建最小 export 层——log 的 INFO/DBG 等是被六个模块直连最多的 `.so` 符号，不建导入点则 B 目标（业务文件不直连 `.so`）残缺；`log_export.py` + 包根 re-export（含 init_log/shutdown_log 等全量绑定符号）。
+- **后继演进（2026-09-17，本表 run_lib_flow 描述已被取代）**：建库 API 三段式裁定（dev-rules §3）——`run_lib_flow` 层删除，MapReduce 四阶段装配收编进唯一 flow 根任务 `_lib_flow_task`（体内提交），freeze 提升为 `build_lib_db` 第③段顶层任务 `_freeze_lib_task`（依赖固定标记 LIBLibrary）；liberty 头嗅探从入口预处理下放 map 解析任务首个读取点（`lib_parse_one` 头部，文件形态错任务失败、库不冻结）。MapReduce 机制保留（用户裁定先例）。

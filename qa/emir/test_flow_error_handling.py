@@ -9,8 +9,10 @@
      子进程隔离——先例 qa/message/test_fatal_exit.py）。
   3. DEF 文件语法错误 → fatal DSGN::0016：子 fly 退出码 80（design db 数据
      不完整无意义）。
-  4. .lef 误传 build_lib_db → 入口嗅探 ValueError 秒级拦截（不建库、不起
-     任务）：子 fly 非零退出、不悬挂。
+  4. .lef 误传 build_lib_db → 提交成功（入口只查存在性，不读内容），
+     liberty 嗅探在 map 解析任务首个读取点 raise → 任务失败 → 库不冻结
+     （wait_frozen 快速 False + failure reason 指名嗅探文案）：子 fly
+     正常退出（断言在脚本内）。
   5. 判死闭环：上游 task FAILED → 下游 freeze 判死（TASK::0002）→
      wait_frozen 立即返回 False（不等满超时）+ db_failure_reason 给出原因。
 
@@ -162,15 +164,24 @@ proj.wait_frozen("design", timeout=120)  # fatal 会在等待期杀掉进程
 
 
 def scenario4_lef_mistyped_as_lib_sniffed():
-    """.lef 误传 build_lib_db → 入口嗅探 ValueError 秒级失败（不悬挂）。"""
+    """.lef 误传 build_lib_db → map 解析任务嗅探失败 → 库不冻结（三段式
+    语义：提交成功 + 文件形态错任务失败透出，2026-09-17 嗅探下放）。"""
     script = _write_script("flow_err_mistyped.py", '''\
 from fly.runtime import get_agent
 from emir import EMIRProject
 
-master = get_agent()  # master-only 脚本：无需 worker（入口即拦截）
+master = get_agent()
+master.launch_local_workers([{{}}])
+assert master.wait_workers_registered(timeout=60), "worker not registered"
 
 proj = EMIRProject(r"{proj}")
-proj.build_lib_db(name="lib", lib_paths=[r"{lef}"])  # .lef 误传 → ValueError
+proj.build_lib_db(name="lib", lib_paths=[r"{lef}"])  # 提交成功（入口只查存在性）
+ok = proj.wait_frozen("lib", timeout=120)  # map 任务失败 → 判死快速返回
+assert not ok, "mistyped file must fail the map parse task, db must not freeze"
+reason = proj.db_failure_reason("lib")
+assert reason is not None, "failure signal must be registered"
+error = reason[1]
+assert "does not look like a liberty" in error, error
 '''.format(proj=PROJ_PATH + "_mistyped", lef=GOOD_LEF))
     _fresh(PROJ_PATH + "_mistyped")
     log_dir = os.path.join(CASE_TMP, "mistyped_log")
@@ -179,15 +190,15 @@ proj.build_lib_db(name="lib", lib_paths=[r"{lef}"])  # .lef 误传 → ValueErro
     rc = _wait_exit(p)
     elapsed = time.time() - t0
     p.stderr_file.close()
-    assert rc != 0, f"mistyped input must fail the run, got rc={rc}"
-    assert elapsed < 30, \
-        f"sniff must reject in seconds (no tasks, no hang), took {elapsed:.1f}s"
-    err_path = os.path.join(CASE_TMP, "mistyped_log.stderr")
-    with open(err_path, errors="replace") as f:
-        err = f.read()
-    assert "does not look like a liberty" in err, \
-        f"ValueError must name the sniff reason: {err[-2000:]}"
-    INFO(f"[PASS] scenario4: .lef mistyped as lib -> ValueError in {elapsed:.1f}s")
+    assert rc == 0, \
+        f"scenario script must pass (submit + task-fail + no-freeze), rc={rc}"
+    # 无悬挂：worker 注册 + 单 map 任务失败 + 判死感知，与场景 2/3 同量级。
+    # 嗅探文案断言在脚本内（db_failure_reason 的 error 含
+    # "does not look like a liberty"）——rc=0 即已通过
+    assert elapsed < 60, \
+        f"task-fail path must close promptly (no hang), took {elapsed:.1f}s"
+    INFO(f"[PASS] scenario4: .lef mistyped as lib -> map task failed, "
+         f"db not frozen ({elapsed:.1f}s)")
 
 
 def scenario5_judged_death_signal_closes_the_loop():

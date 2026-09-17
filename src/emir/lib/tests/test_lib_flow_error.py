@@ -1,10 +1,12 @@
 """lib flow 错误处理兜底单测（流程错误处理范式 2026-09-13，dev-rules §7.2）。
 
 覆盖：
-  - lib_parse_one：语法错误兜底（空产物 + 失败清单，不 raise）、
-    文件缺失仍 FileNotFoundError（dev-rules §7 第一类）
+  - lib_parse_one：liberty 形态嗅探在首个读取点 raise（非 liberty 文件
+    ValueError——map 任务失败透出，库不冻结）、语法错误兜底（空产物 +
+    失败清单，不 raise）、文件缺失仍 FileNotFoundError（dev-rules §7
+    第一类）
   - sniff_liberty_header：liberty 形态判定（library 关键字 + '('），
-    非 liberty 文件（如 .lef 误传）ValueError 秒级拦截
+    非 liberty 文件（如 .lef 误传）ValueError 拦截
   - _lib_merge_two / _make_finalize：失败清单随合并树汇聚、部分失败
     message 透出（返回纯 LIBLibrary）、全败 fatal（子进程断言 rc=80）
 
@@ -64,6 +66,16 @@ def test_parse_one_fallback():
     lib, failures = lib_utils.lib_parse_one(good)
     assert not failures, failures
     assert len(lib.cells) == 1, f"cells={len(lib.cells)}"
+
+    # 非 liberty 文件（.lef 误传）：首个读取点嗅探 raise ValueError——
+    # 文件形态错不在语法兜底范围（map 任务失败透出，库不冻结）
+    lef = _write("fake.lef", "VERSION 5.8 ;\nLAYER M1\n TYPE ROUTING\n"
+                             "END M1\n")
+    try:
+        lib_utils.lib_parse_one(lef)
+        raise AssertionError("lef file must raise in lib_parse_one sniff")
+    except ValueError as e:
+        assert "does not look like a liberty" in str(e), str(e)
 
     # 语法错误（缺右括号）：兜底——空产物 + 失败清单（含路径与原因），不 raise
     bad = _write("bad.lib", "library (broken) { cell (C) { pin (P) "
