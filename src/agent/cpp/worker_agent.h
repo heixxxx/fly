@@ -17,7 +17,8 @@
 #include <common/concurrent/cpp/concurrent_map.h>
 #include <monitor/cpp/monitor_sampler.h>
 #include <monitor/cpp/task_resource_tracker.h>
-#include <task/cpp/worker_manager.h>   // WorkerRole（worker role 静态身份枚举）
+#include <common/runtime/cpp/worker_role.h>    // WorkerRole（静态身份枚举，common/runtime 下沉）
+#include <common/runtime/cpp/exit_reason.h>    // ExitReason（退出性质枚举，common/runtime 下沉）
 #include <cstdint>
 #include <thread>
 #include <atomic>
@@ -29,16 +30,6 @@
 #include <filesystem>
 
 namespace fly {
-
-// worker 退出性质（用户裁定：master/worker 双侧显式区分正常退出与异常退出，
-// 不靠 reason 字符串猜测）。枚举值仅内部与 WorkerExitMessage 诊断字段使用，
-// 外部观测方看进程退出码（exit_code：graceful=0 / abnormal=3）。
-enum class ExitReason : uint8_t {
-    MASTER_SHUTDOWN = 0,       // master ShutdownMessage 优雅关停 → graceful
-    LOCAL_STOP = 1,            // stop() API 本地显式停止 → graceful
-    MASTER_LOST = 2,           // 心跳超时/连接丢失/重连宽限耗尽 → abnormal
-    REGISTRATION_REJECTED = 3, // 重复 worker id 被 master 拒绝 → abnormal
-};
 
 struct PendingTask {
     uint64_t task_id_;
@@ -315,9 +306,8 @@ private:
     uint16_t master_port_;
     CMVector<CMString> attributes_;
     mutable std::mutex attributes_mutex_;
-    // 静态身份（构造时由 role 字符串解析，注册上报，不可变更）：
-    // 0=hybrid，1=storage_only（WorkerRole）。
-    uint8_t role_ = 0;
+    // 静态身份（构造时由 role 字符串解析，注册上报，不可变更）。
+    WorkerRole role_ = WorkerRole::HYBRID;
     std::atomic<bool> running_{false};
     std::atomic<bool> registered_{false};
     // ── 断连/未注册窗口的统一重放队列（用户确认语义）──────────────────

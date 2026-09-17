@@ -2,6 +2,8 @@
 
 #include <container/cpp/container_aliases.h>
 #include <common/runtime/cpp/error_types.h>
+#include <common/runtime/cpp/exit_reason.h>   // ExitReason（WorkerExitMessage.exit_reason_ 用）
+#include <common/runtime/cpp/worker_role.h>   // WorkerRole（RegisterMessage.role_ 用）
 #include <common/types/cpp/compression_type.h>
 #include <log/cpp/logger.h>  // LogLevel（LogMessage.level_ 用）
 #include <common/serialization/cpp/serialization_macros.h>
@@ -125,9 +127,10 @@ struct RegisterMessage {
     CMVector<CMString> attributes_;
     CMString data_server_host_;
     int32_t data_server_port_ = 0;
-    // worker role（静态身份，注册时设定不可变更）：0=hybrid（默认），1=storage_only。
-    // 独立于 attributes（可变、参与调度匹配）。
-    uint8_t role_ = 0;
+    // worker role（静态身份，注册时设定不可变更）。独立于 attributes（可变、
+    // 参与调度匹配）。common/runtime 下沉枚举（uint8 同宽，wire 编码不变）；
+    // 越界值由 master 注册处理路径显式拒绝。
+    WorkerRole role_ = WorkerRole::HYBRID;
 
     static constexpr MessageType msg_type_ = MessageType::REGISTER;
 
@@ -576,7 +579,9 @@ struct StopNowMessage {
 struct WorkerExitMessage {
     MessageHeader header_;
     uint64_t worker_id_ = 0;
-    uint8_t exit_reason_ = 0;  // worker ExitReason 值（诊断用，master 归类不依赖）
+    // worker ExitReason 值（common/runtime 下沉枚举，uint8 同宽 wire 编码
+    // 不变；诊断用，master 归类不依赖）。
+    ExitReason exit_reason_ = ExitReason::MASTER_SHUTDOWN;
 
     static constexpr MessageType msg_type_ = MessageType::WORKER_EXIT;
 

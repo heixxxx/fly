@@ -50,13 +50,13 @@ WorkerAgent::WorkerAgent(uint64_t worker_id, const CMString& master_host, uint16
     // role 静态身份（注册时设定，不可变更）：仅 hybrid / storage_only；
     // 非法值 WARN 回退 hybrid。
     if (role == "storage_only") {
-        role_ = static_cast<uint8_t>(WorkerRole::STORAGE_ONLY);
+        role_ = WorkerRole::STORAGE_ONLY;
     } else {
         if (!role.empty() && role != "hybrid") {
             WARN("Unknown worker role '{}' (expected hybrid|storage_only), "
                  "falling back to hybrid", role);
         }
-        role_ = static_cast<uint8_t>(WorkerRole::HYBRID);
+        role_ = WorkerRole::HYBRID;
     }
 }
 
@@ -597,7 +597,7 @@ void WorkerAgent::send_register_message() {
     auto dsp = data_server_port_;
     auto attr_count = attributes_.size();
     INFO("RegisterMessage sent with data_server_port={}, attributes={}, role={}",
-         dsp, attr_count, role_ == static_cast<uint8_t>(WorkerRole::STORAGE_ONLY)
+         dsp, attr_count, role_ == WorkerRole::STORAGE_ONLY
                                ? "storage_only" : "hybrid");
 }
 
@@ -1332,7 +1332,7 @@ void WorkerAgent::initiate_shutdown(ExitReason reason, const CMString& detail) {
         if (conn != 0 && reactor_) {
             WorkerExitMessage msg;
             msg.worker_id_ = worker_id_;
-            msg.exit_reason_ = static_cast<uint8_t>(reason);
+            msg.exit_reason_ = reason;
             reactor_->send(conn, msg);
         }
     }

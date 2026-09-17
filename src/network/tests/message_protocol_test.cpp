@@ -1289,4 +1289,36 @@ TEST(CompressionTypeWireTest, DecodeRejectsOutOfRangeMetaCompression) {
     EXPECT_FALSE(MessageProtocol::decode(buffer, decoded));
 }
 
+// ── WorkerRole / ExitReason 下沉定型（批次 C 第二程 P2-3/4）──────────────
+// RegisterMessage.role_ / WorkerExitMessage.exit_reason_ 自裸 uint8_t 定型为
+// common/runtime 枚举（uint8 同宽）：bitsery value1b 编码逐字节不变。
+
+TEST(IdentityEnumWireTest, RegisterRoleAndWorkerExitReasonByteLayout) {
+    RegisterMessage reg;
+    reg.worker_id_ = 9;
+    reg.role_ = WorkerRole::STORAGE_ONLY;
+    CMString reg_frame = MessageProtocol::encode(reg);
+    // 变长域（hostname/ip/attributes 等）全空时 role_ 是 payload 末字节。
+    ASSERT_GE(reg_frame.size(), 10u);
+    EXPECT_EQ(static_cast<uint8_t>(reg_frame[reg_frame.size() - 1]), 1);  // STORAGE_ONLY 直通
+    CMString buf = reg_frame;
+    RegisterMessage reg_dec;
+    ASSERT_TRUE(MessageProtocol::decode(buf, reg_dec));
+    EXPECT_EQ(reg_dec.role_, WorkerRole::STORAGE_ONLY);
+    EXPECT_TRUE(buf.empty());
+
+    WorkerExitMessage exit_msg;
+    exit_msg.worker_id_ = 9;
+    exit_msg.exit_reason_ = ExitReason::MASTER_LOST;
+    CMString exit_frame = MessageProtocol::encode(exit_msg);
+    ASSERT_GE(exit_frame.size(), 10u);
+    EXPECT_EQ(static_cast<uint8_t>(exit_frame[exit_frame.size() - 1]), 2);  // MASTER_LOST 直通
+    CMString buf2 = exit_frame;
+    WorkerExitMessage exit_dec;
+    ASSERT_TRUE(MessageProtocol::decode(buf2, exit_dec));
+    EXPECT_EQ(exit_dec.exit_reason_, ExitReason::MASTER_LOST);
+    EXPECT_EQ(exit_dec.worker_id_, 9u);
+    EXPECT_TRUE(buf2.empty());
+}
+
 }  // namespace fly

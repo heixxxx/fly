@@ -1,5 +1,6 @@
 #pragma once
 
+#include <common/runtime/cpp/worker_role.h>
 #include <container/cpp/container_aliases.h>
 #include <cstdint>
 #include <mutex>
@@ -22,15 +23,6 @@ enum class WorkerStatus : uint8_t {
 inline bool worker_status_alive(WorkerStatus s) {
     return s == WorkerStatus::IDLE || s == WorkerStatus::BUSY;
 }
-
-// worker role——独立于 attributes（可随时增减、参与调度匹配）的**静态身份**：
-// 注册时设定、不可变更（无修改途径）。hybrid=普通 worker（默认）；
-// storage_only=存储 worker——调度决策不感知（get_idle_workers 层过滤，scheduler
-// 零 role 概念），但仍参与心跳判死/数据面/internal 数据 task（merge/backup）。
-enum class WorkerRole : uint8_t {
-    HYBRID = 0,
-    STORAGE_ONLY = 1,
-};
 
 struct WorkerInfo {
     uint64_t worker_id_;

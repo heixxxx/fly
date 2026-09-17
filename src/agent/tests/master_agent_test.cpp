@@ -3891,7 +3891,7 @@ TEST(MasterAgentTest, UnknownRoleFallsBackToHybrid) {
     RegisterMessage reg;
     reg.worker_id_ = 6;
     reg.data_server_port_ = 0;
-    reg.role_ = 200;   // 非法值（合法：0=hybrid, 1=storage_only）
+    reg.role_ = static_cast<WorkerRole>(200);   // 非法值（合法：0=hybrid, 1=storage_only）——定型后经 wire 边界 cast 注入，master 显式校验拒绝
     master.inject_worker_register_for_testing(/*conn_id=*/2003, reg);
 
     bool idle = false;

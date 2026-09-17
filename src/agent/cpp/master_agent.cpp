@@ -1573,7 +1573,7 @@ void MasterAgent::on_worker_register(uint64_t conn_id, const RegisterMessage& ms
     // 抢跑）；锁序恒为 expected → workers_mutex_/manager，无反向获取路径，
     // 无死锁环。锁外仅保留纯日志/monitor 落盘。
     // role 静态身份透传（storage_only 在 get_idle_workers 层退出调度候选）。
-    WorkerRole role = static_cast<WorkerRole>(msg.role_);
+    WorkerRole role = msg.role_;   // wire 字节直定型（越界值由下方显式校验拒绝）
     if (role != WorkerRole::HYBRID && role != WorkerRole::STORAGE_ONLY) {
         WARN("Worker {} reported unknown role {} — treating as hybrid", worker_id,
              static_cast<int>(msg.role_));

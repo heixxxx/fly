@@ -11,6 +11,7 @@ cc_library(
     copts = ["-std=c++20"],
     linkstatic = False,
     deps = [
+        "//src/common/runtime:fly_common_runtime",
         "//src/container/cpp:fly_container_aliases",
         "//src/log/cpp:fly_log",
         "//src/common/serialization:fly_serialization",
