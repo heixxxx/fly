@@ -232,6 +232,13 @@ using FlyInputStreamAdapter = bitsery::InputStreamAdapter;
         auto& fly_v_ = o.field; \
         using fly_T_ = std::decay_t<decltype(fly_v_)>; \
         if constexpr (fly_ser::is_shared_ptr_v<fly_T_>) { \
+            /* 字段级 shared_ptr = StdSmartPtr tracking 编码（所指对象 id */ \
+            /* + 空指针位 + s.object 常规编码）——与元素级（容器内 */     \
+            /* shared_ptr 经 fly_ser::elem 直通，无 tracking 头）编码不同。*/ \
+            /* 提示（终审 D-5 前置）：将来新增字段级 CMSharedPtr 成员时，  */ \
+            /* tracking 头是额外字节——凡依赖「字节级与裸值/值形态一致」  */ \
+            /* 的落盘面（如 StrongIdT 直通约定）应改走容器值形态或        */ \
+            /* static_assert 锁定布局，勿静默引入本分支。                 */ \
             s.ext(fly_v_, bitsery::ext::StdSmartPtr{}); \
         } else if constexpr (fly_ser::is_map_v<fly_T_>) { \
             s.ext(fly_v_, bitsery::ext::StdMap{FLY_MAX_SIZE}, [](auto& s, auto& key, auto& val) { \
