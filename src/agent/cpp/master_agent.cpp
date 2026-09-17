@@ -2078,6 +2078,14 @@ void MasterAgent::on_task_failed(uint64_t conn_id, const TaskFailedMessage& msg)
     if (metadata_->get_task(msg.task_id_)) {
         FailedTaskRecord record = make_failed_record(msg.task_id_, msg.error_message_);
         persist_failed_task(record);
+        // worker 执行失败 → 归属 db 失败信号登记（wait_frozen 失败感知
+        // 的判定源——此前仅 master 侧判死两路径登记信号，worker 上异常
+        // 失败的 db 永不冻结也不可观察，wait_frozen 傻等满 timeout——
+        // P2-3 异步失败语义的闭环缺口）。信号只影响未冻结等待（frozen
+        // 优先），不影响任务重启/同 db 后续成功提交。
+        register_db_failure(record.submission_.owner_db_path_,
+                            msg.task_id_, msg.error_message_,
+                            "Worker task execution failed");
     }
 
     // 清理失败 task 已写出的脏对象：worker 已本地撤销（idx ABORT + data truncate），

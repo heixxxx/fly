@@ -223,7 +223,11 @@ def scenario5_judged_death_signal_closes_the_loop():
     reason = proj.db_failure_reason("sig")
     assert reason is not None, "db_failure_reason must surface the signal"
     task_id, error = reason
-    assert "Unresolvable data dependencies" in error, error
+    # 首信号 = 根因事件（2026-09-17 起 worker 上任务执行失败即登记归属
+    # db 失败信号——先于下游「Unresolvable data dependencies」判死；
+    # 首个信号保留语义下诊断代表 = 根因原始 error。旧断言锁文案来源
+    # 系实现细节，随根因登记语义更新）
+    assert "simulated producer failure" in error, error
     INFO(f"[PASS] scenario5: judged-death signal closes the loop "
          f"(wait {elapsed:.1f}s, task={task_id})")
 
