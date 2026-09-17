@@ -937,6 +937,7 @@ workers_mutex_ 下的 send 同样禁止（reactor send 非阻塞，但含 encode
 - 2026-09-11: 新增 Section 2.7 业务代码命名禁用计划阶段编号（S/R 编号只存在于设计文档与 commit 说明，代码符号与用户文案一律业务语义命名——如 ds_parse_def_s5a → ds_parse_def_components；**适用面含 alpha/settings 配置键名**——如 s5b_batch_threshold → net_batch_size、s9_def_aggregate_threshold → def_aggregate_threshold））；同日记录：WSL 内存约束下后台子 agent 同一时间仅允许一个（会话工作规则）
 - 2026-09-11: 新增 Section 2.8 导出函数参数形态（nanobind caster 兼容性源码核验：const T& 与 CMSharedPtr[const T] 参数对任何持有形态实例全兼容且零拷贝——py_deleter 别名构造；默认 const T&、共享所有权才 CMSharedPtr）
 - 2026-09-12: Section 4.2 补第三方类型外接序列化规则（FLY_SERIALIZE_EXTERNAL 宏字段版/自定义体版，禁裸 ADL serialize 函数——bitsery SelectSerializeFnc ADL 路由的宏包装，随 R8b htrie 桥接落地）
+- 2026-09-17: 新增 Section 19 禁止异常控制流（正常业务状态不得试探探测；写入侧必须落规模元数据〔build_meta〕、读侧确定性读取；except 仅限真异常路径；配套 remove_object(missing_ok) 幂等删除原语）——问题族修复批次（§2.7 存量清退 + 宽 except 清理点清退 + 绑定目标条目级兜底 + E10 描述符显式判定）总纲入册
 
 ## 14. 数据规模相关等待禁设超时
 
@@ -1202,3 +1203,30 @@ raise + 白名单严格模式 + 命名 validator + 文件可读显式校验 + �
 代表流程实现违反范式（某个本应兜底的任务抛了异常，或依赖对象永不产出）。
 信号不主动清除——`wait_frozen` 检查顺序 frozen 优先，信号仅影响未冻结
 等待（frozen 成功的 db 请忽略可能的历史残留信号）。
+
+## 19. 禁止异常控制流（正常业务状态不得试探探测）
+
+（2026-09-17 用户裁定）
+
+**禁令**：正常业务流程中的**预期内状态**——序列/段列表结束、集合边界、
+可选数据的存在性——一律不得用异常探测实现（`while True: try read except
+KeyError: break` 类试探循环）。异常是异常路径的信号，不是控制流；把正常
+状态当异常探测既丑陋又不稳定（真实故障与正常结束混在同一异常通道，宽收
+窄都是错——收窄掩盖真异常以外的形态，放宽吞掉真异常）。
+
+**义务**：写入侧必须把消费侧所需的规模信息（段数/清单/计数）作为元数据
+随产物落库（如 design db 的 `build_meta`）；消费侧以元数据/索引驱动确定性
+读取（`for i in range(count)`）。「有多少」是构建时已知的事实，不允许读侧
+靠试探重新发现。
+
+**except 的合法用途**：仅限真正的异常路径——文件不可读、数据损坏防御、
+正常流程不可达的防御性兜底（如映射与产物失配时返回 None 并注明「正常建库
+不触发」）。防御性 except 不得承载任何正常业务分支。
+
+**案例（已清）**：DSBlockNames 段对象的消费侧曾以试探循环发现段数
+（tm_flow.py / ds_db.py / ds_functions.py 三处）——而段数就是入口参数
+def 文件数，写入侧已知却未落库。修复已落地（2026-09-17 批次）：层级
+树任务在伴生名对象全集写定后单点落 `build_meta` 元数据对象（记录
+def_count，freeze final_keys 依赖），读侧确定性循环；旧格式 db 不做
+试探回退，报错指引重建。同批落地配套原语：`remove_object(missing_ok)`
+幂等删除（宽 except 清理点清退——正常清理不得以异常探测实现）。

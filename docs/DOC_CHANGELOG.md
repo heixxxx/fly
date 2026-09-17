@@ -2,6 +2,47 @@
 
 ---
 
+## 2026-09-17: 问题族修复批次（§19 禁止异常控制流总纲落地）
+
+**背景**：[DEVELOPMENT_GUIDELINES.md](DEVELOPMENT_GUIDELINES.md) §19
+「禁止异常控制流（正常业务状态不得试探探测）」入册；本批七项为其落地
+与配套清退（多条用户裁定 + 全仓调研报告）。各项一行（问题形态 → 修复
+落点）：
+
+- **§2.7 存量清退**：8 个编排函数名带计划阶段编号（T2/T3/T4、S9/S10
+  plan/expand/merge/verify）→ 业务语义命名（_chunk_parse_task/
+  _partition_merge_task/_summary_task、_partition_plan_task/
+  _partition_expand_task/_partition_product_task/_partition_verify_task/
+  _design_verify_task）+ docstring/INFO 文案同步（tm_flow.py / ds_flow.py）。
+- **幂等删除原语（C 组根因）**：宽 except 清理点（try: remove except
+  Exception: pass 形态）→ `remove_object(name, missing_ok=False)` 原语
+  （C++ RemoveAck.not_found_ master 权威存在性判定 + Python KeyError
+  严格模式）；四处迁移——design/timing freeze 清理责任单化（pg 片段
+  移出 freeze 清单）、mapreduce cleanup 与 solver 写前清理改
+  missing_ok=True（storage/ + fly/mapreduce.py + solver/ras_graph_dynamic.py）。
+- **build_meta 元数据族（A+B+D）**：三处试探循环发现 DSBlockNames 段数
+  （tm_flow 快照 / ds_db._ensure_mappers / ds_functions.load_name_mapper）
+  → 层级树任务单点落 `build_meta`（def_count）+ 读侧 `range` 确定性循环
+  （旧格式 db ValueError 指引重建）；快照任务传 names_count 消键集试探；
+  block 名清单一遍产出 is_first 首份序号表（三处 list.index() 反推改
+  O(1) 查表）。
+- **uid 静态化**：编排临时对象键 __tmg__{uid}__{name} / __dsn__{uid}__
+  {name} → 固定名（uid 维度删除；一 db 一 flow + 重放同键覆盖幂等——
+  uid 无隔离价值）；design freeze 清理清单改任务内静态构造
+  （_flow_temp_keys，不再沿任务链逐层收集键集传参）。
+- **绑定目标条目级兜底**：timing_files 绑定目标未命中「单文件无效 →
+  整库失败」→ 单文件 TIMG::0011 error + 跳过零条目 +
+  summary.invalid_binding_count（TMSummary 新字段）；仅全部文件被跳过
+  才任务失败（tm_flow.py + timing-db-plan §3.1/§7.5/§9）。
+- **E10 描述符显式判定**：AlphaSetting.__get__ 的 try/except Exception
+  兜底 → 显式 `in` 检查（查找表故障透传不吞；缺键 deepcopy 默认不变）
+  （emir/common/alpha_settings.py）。
+
+**验证**：每项独立提交（49a6148 / 97781d8 / 6220916 / 4cca50a /
+0e71da3 / c78dce1 / 本笔），单测 117/117 + QA 193/193 全绿。
+
+---
+
 ## 2026-09-17: timing db（⑦ 时序数据库）全量实施
 
 **立项落地**（方案 [emir/timing-db-plan.md](emir/timing-db-plan.md) §1-13 全
