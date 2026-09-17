@@ -904,10 +904,12 @@ TMPartitionTiming tm_merge_partition(
 // T4 ①：统计聚合——全部块统计片段直和 + 按文件名归并逐文件表
 TMSummary tm_merge_summary(const CMVector<const TMStatsDelta*>& deltas,
                            uint64_t cross_file_conflict_count,
-                           uint64_t clock_conflict_count) {
+                           uint64_t clock_conflict_count,
+                           uint64_t invalid_binding_count) {
     TMSummary s;
     s.cross_file_conflict_count_ = cross_file_conflict_count;
     s.clock_conflict_count_ = clock_conflict_count;
+    s.invalid_binding_count_ = invalid_binding_count;
     // 按文件名归并逐文件表（同文件多块：计数累加、首块定名/单位）
     CMUnorderedMap<CMString, size_t> file_index;
     for (const TMStatsDelta* delta : deltas) {

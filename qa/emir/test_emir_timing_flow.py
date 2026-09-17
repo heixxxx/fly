@@ -184,25 +184,52 @@ assert abs(s.files[0].time_scale_sec - 1e-9) < 1e-12
 INFO("[OK] block_inst binding: entry=5 hit=3 dangling=2 (port entry on "
      "block instance itself)")
 
-# 2a-miss. 绑定目标未命中负例（终审 #3：P2-3 异步语义的对外行为锁定）：
-# build_timing_db 提交立即成功（master 提交线程不阻塞——快照任务在
-# worker 上执行），block_inst 未命中 → 快照任务失败 → freeze 永不调度
-# → wait_frozen 经失败信号立即 False，原因经 db_failure_reason 可查
+# 2a-miss. 绑定目标未命中条目级兜底（2026-09-17 裁定：单文件绑定无效 →
+# TIMG::0011 error 消息 + 跳过该文件〔零条目、不进切块链〕+ 计数入
+# summary.invalid_binding_count；仅当全部文件被跳过才任务失败）：
+#   混合场景（1 无效 + 1 有效）→ 建库成功、无效文件零条目、message 与
+#   summary 计数可查；全无效场景 → 快照任务 ValueError → freeze 永不
+#   调度 → wait_frozen 经失败信号立即 False，原因经 db_failure_reason 可查
 _t0 = time.time()
 tdb_miss = proj.build_timing_db(
     name="t_blk_inst_miss",
     timing_files=[{"file_name": os.path.join(DATA, "tm_blk_inst.twf"),
-                   "block_inst": "no_such_inst"}],
+                   "block_inst": "no_such_inst"},
+                  {"file_name": os.path.join(DATA, "tm_blk_inst.twf"),
+                   "block_inst": "top3"}],
     design_db=design_blk)
 _submit_secs = time.time() - _t0
 assert _submit_secs < 30, f"submit must return immediately, took {_submit_secs}s"
 INFO("[OK] submit returned immediately (P2-3 async semantics)")
-assert not proj.wait_frozen("t_blk_inst_miss", timeout=60), \
-    "unresolvable block_inst must not freeze (failure signal expected)"
-_miss_reason = proj.db_failure_reason("t_blk_inst_miss")
+assert proj.wait_frozen("t_blk_inst_miss", timeout=300), \
+    "mixed valid+invalid binding must freeze (entry-level fallback)"
+s_mixed = tdb_miss.load_timing_summary_obj()
+assert s_mixed.invalid_binding_count == 1, s_mixed.invalid_binding_count
+# 无效文件零条目：不进逐文件统计表，条目全部来自有效绑定（同 2a 口径）
+assert len(s_mixed.files) == 1, \
+    f"invalid file must contribute zero files entries: {s_mixed.files}"
+assert (s_mixed.total_entry_count, s_mixed.total_hit_count) == (5, 3), \
+    (s_mixed.total_entry_count, s_mixed.total_hit_count)
+# TIMG::0011 error 消息可查（master message.log）
+with open(os.path.join(LOG_DIR, "message.log"), errors="replace") as f:
+    _messages = f.read()
+assert "TIMG::0011" in _messages and "no_such_inst" in _messages, \
+    "message.log must carry TIMG::0011 for the skipped binding"
+INFO("[OK] mixed binding: frozen, invalid file skipped, "
+     "invalid_binding_count=1, TIMG::0011 observable")
+
+# 全无效：唯一文件的绑定未命中 → 任务失败语义（输入整体无意义）
+tdb_all_miss = proj.build_timing_db(
+    name="t_blk_inst_all_miss",
+    timing_files=[{"file_name": os.path.join(DATA, "tm_blk_inst.twf"),
+                   "block_inst": "no_such_inst"}],
+    design_db=design_blk)
+assert not proj.wait_frozen("t_blk_inst_all_miss", timeout=60), \
+    "all-invalid bindings must not freeze (failure signal expected)"
+_miss_reason = proj.db_failure_reason("t_blk_inst_all_miss")
 assert _miss_reason is not None, "failure reason must be observable"
 assert "no_such_inst" in str(_miss_reason), _miss_reason
-INFO("[OK] block_inst miss: wait_frozen False + failure reason observable")
+INFO("[OK] all-invalid binding: wait_frozen False + failure reason observable")
 
 # 端口语义点查：top3 自身携带 PIN_IN 时序（归属键 = 块实例自身全局 id）
 info_top3 = tdb_inst.get_timing(gid_top3)

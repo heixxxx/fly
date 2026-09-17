@@ -688,7 +688,7 @@ TEST_F(TmPartitionTest, MergeSummaryAggregatesPerFile) {
     const TMStatsDelta db =
         convert_whole(*ctx, file_path("b.twf"), TMFileBinding{}, 1).stats_;
     CMVector<const TMStatsDelta*> deltas = {&da, &db};
-    const TMSummary summary = tm_merge_summary(deltas, 7, 0);
+    const TMSummary summary = tm_merge_summary(deltas, 7, 0, 0);
     ASSERT_EQ(summary.files_.size(), 2u);
     EXPECT_EQ(summary.total_entry_count_, 2u);
     EXPECT_EQ(summary.total_hit_count_, 1u);
@@ -697,6 +697,32 @@ TEST_F(TmPartitionTest, MergeSummaryAggregatesPerFile) {
     // 逐文件字段可追溯（来源文件名清单）
     EXPECT_EQ(summary.files_[0].source_file_, file_path("a.twf"));
     EXPECT_EQ(summary.files_[1].source_file_, file_path("b.twf"));
+}
+
+// 绑定目标未命中条目级兜底计数（2026-09-17 裁定：单文件绑定无效 →
+// TIMG::0011 + 跳过该文件零条目，计数入 summary；仅全部文件被跳过才
+// 任务失败）。计数由 flow 侧快照任务判定传入，merge 侧原样落字段。
+TEST_F(TmPartitionTest, MergeSummaryCarriesInvalidBindingCount) {
+    const SynthEnv env;
+    const auto ctx = make_context(env, make_partition_nets());
+    write_file("a.twf",
+               "(TIMING_WINDOWS (CAUSED_BY NULL (PIN \"top1/Z\" 0.1:0.2 "
+               "0.01 * * 0.3:0.4 0.02 * *)) )\n");
+    const TMStatsDelta da =
+        convert_whole(*ctx, file_path("a.twf"), TMFileBinding{}, 0).stats_;
+    CMVector<const TMStatsDelta*> deltas = {&da};
+    // 2 个输入文件、1 个绑定无效被跳过：deltas 只含有效文件的统计片段，
+    // invalid_binding_count = 1 由 flow 侧传入
+    const TMSummary summary = tm_merge_summary(deltas, 0, 0, 1);
+    EXPECT_EQ(summary.invalid_binding_count_, 1u);
+    EXPECT_EQ(summary.files_.size(), 1u);   // 被跳过文件零条目（不进逐文件表）
+    EXPECT_EQ(summary.total_entry_count_, 1u);
+    // 序列化 round-trip 保持（正式对象落库面）
+    CMString summary_blob;
+    FLY_ENCODE(summary, summary_blob);
+    TMSummary summary_back;
+    FLY_DECODE(summary_blob, TMSummary, summary_back);
+    EXPECT_EQ(summary_back.invalid_binding_count_, 1u);
 }
 
 TEST_F(TmPartitionTest, MergeClocksTopLevelPriority) {
@@ -856,7 +882,7 @@ TEST_F(TmPartitionTest, ChunkedConversionKeepsClockOwnership) {
     for (const TMEntrySlice& s : slices) {
         deltas.push_back(&s.stats_);
     }
-    const TMSummary summary = tm_merge_summary(deltas, 0, 0);
+    const TMSummary summary = tm_merge_summary(deltas, 0, 0, 0);
     EXPECT_EQ(summary.missing_clock_count_, 0u);
 }
 
@@ -943,7 +969,7 @@ TEST_F(TmPartitionTest, MissingClockCountAggregatesToSummary) {
     EXPECT_EQ(slice.stats_.missing_clock_count_, 1u);
     const TMStatsDelta delta = slice.stats_;
     CMVector<const TMStatsDelta*> deltas = {&delta};
-    const TMSummary summary = tm_merge_summary(deltas, 0, 0);
+    const TMSummary summary = tm_merge_summary(deltas, 0, 0, 0);
     EXPECT_EQ(summary.missing_clock_count_, 1u);
 }
 

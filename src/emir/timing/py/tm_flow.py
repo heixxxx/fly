@@ -87,9 +87,10 @@ def _snapshot_design_task(db, design_db, files, plan_key):
     段对象已写；NET 段表不参与逐块解析路由，评审 P2-2 清理其锚与注入）。
     任务体内直读的其余对象均在锚后。
 
-    绑定目标校验（plan §7.5：块实例路径 / 块 cell 名未命中 → 该文件
-    ValueError——输入语义错误，可 raise 两类之一；评审 P2-3 后随快照
-    任务执行，任务失败语义，不再阻塞 master 提交线程）。
+    绑定目标校验（plan §7.5 + 2026-09-17 条目级兜底裁定：块实例路径 /
+    块 cell 名未命中 → TIMG::0011 error + 跳过该文件零条目 + 计数入
+    summary.invalid_binding_count；仅全部文件被跳过才任务内 ValueError
+    ——评审 P2-3 后随快照任务执行，不再阻塞 master 提交线程）。
     """
     design = design_db.read_object(DesignDb.DESIGN_OBJ)
     # 名字伴生对象全集（落盘序 = def 序；数量锚 build_meta.def_count——
@@ -99,15 +100,30 @@ def _snapshot_design_task(db, design_db, files, plan_key):
                   for i in range(meta["def_count"])]
 
     mapper = ds_make_instance_name_mapper(design, names_list)
-    for f in files:
+    # 绑定目标校验（2026-09-17 条目级兜底裁定：单文件绑定无效 →
+    # TIMG::0011 error + 跳过该文件〔不进切块链、零条目入库〕+ 计数入
+    # summary.invalid_binding_count——输入语义错误的条目级兜底，不阻塞
+    # 其他文件；仅当全部文件被跳过才任务失败 ValueError。结构错/
+    # 文件不可读仍在入口同步 raise——此处只做目标存在性）
+    invalid = []  # (文件序, 字段名, 目标值)
+    for fi, f in enumerate(files):
         if f["kind"] == 1 and mapper.get_global_id(f["block_inst"]) is None:
-            raise ValueError(
-                f"timing_files: block_inst '{f['block_inst']}' not found "
-                f"in design db (file '{f['file_name']}')")
-        if f["kind"] == 2 and design.find_cell(f["block_cell"]) is None:
-            raise ValueError(
-                f"timing_files: block_cell '{f['block_cell']}' not found "
-                f"in design db (file '{f['file_name']}')")
+            invalid.append((fi, "block_inst", f["block_inst"]))
+        elif f["kind"] == 2 and design.find_cell(f["block_cell"]) is None:
+            invalid.append((fi, "block_cell", f["block_cell"]))
+    if len(invalid) == len(files):
+        listing = "; ".join(
+            f"{field} '{value}' (file '{files[fi]['file_name']}')"
+            for fi, field, value in invalid)
+        raise ValueError(
+            f"timing_files: no binding target resolved in design db — "
+            f"all {len(files)} file(s) skipped: {listing}")
+    invalid_indexes = sorted(fi for fi, _, _ in invalid)
+    for fi, field, value in invalid:
+        message("TIMG::0011", 0,
+                f"binding target {field} '{value}' not found in design db "
+                f"(file '{files[fi]['file_name']}') — file skipped, "
+                f"0 entries stored")
 
     # 快照逐对象落临时对象（全部已有序列化类型；逐块解析任务在 worker 端
     # 组装 EXTMDesignContext）
@@ -147,10 +163,14 @@ def _snapshot_design_task(db, design_db, files, plan_key):
     plan = db.read_object(plan_key)
 
     # 逐块解析每块一任务（全并行；绑定描述以散字段传参——pickle 友好；
-    # names_count = 伴生名对象数——B4：任务内确定性循环注入，不试探键集。
-    # 全参数位置传递——as_task 序列化仅覆盖位置参数）
+    # names_count = 伴生名对象数——B4：任务内确定性循环注入，不试探键集；
+    # 绑定无效文件跳过——不进切块链〔条目级兜底〕。全参数位置传递——
+    # as_task 序列化仅覆盖位置参数）
+    invalid_set = set(invalid_indexes)
     slice_keys = []
     for fi, fp in enumerate(plan.files):
+        if fi in invalid_set:
+            continue
         for cj in range(len(fp.chunk_starts)):
             slice_key = _tmp_key(f"chunk_{fi}_{cj}")
             slice_keys.append(slice_key)
@@ -178,10 +198,13 @@ def _snapshot_design_task(db, design_db, files, plan_key):
                               TimingDb.partition_obj_name(xp, yp),
                               conflicts_key)
 
-    # 汇总（summary 正式对象唯一写定 + 消息族 + fatal 判定）
+    # 汇总（summary 正式对象唯一写定 + 消息族 + fatal 判定；无效绑定文
+    # 件序表传入——invalid_binding_count 入 summary + fatal 判定按有效
+    # 文件口径）
     summary_key = TimingDb.SUMMARY_OBJ
     _summary_task(db, files, slice_keys, conflicts_keys,
-                  clock_conflicts_key, plan_key, summary_key)
+                  clock_conflicts_key, plan_key, summary_key,
+                  invalid_indexes)
 
     # freeze：正式对象集 + 中间对象清理（alpha_settings 入口已写定）
     final_keys = [TimingDb.partition_obj_name(xp, yp)
@@ -306,39 +329,49 @@ def _partition_merge_task(db, slice_keys, remap_key, pid, xp, yp, part_key,
 # ── 汇总任务（summary + 消息族 + fatal 判定）────────────────────────
 
 @as_task(inputs=lambda db, files, slice_keys, conflicts_keys,
-         clock_conflicts_key, plan_key, summary_key: (
+         clock_conflicts_key, plan_key, summary_key, invalid_file_indexes: (
     [db.get_full_name(k) for k in slice_keys + conflicts_keys]
     + [db.get_full_name(clock_conflicts_key), db.get_full_name(plan_key)]))
 def _summary_task(db, files, slice_keys, conflicts_keys,
-                  clock_conflicts_key, plan_key, summary_key):
+                  clock_conflicts_key, plan_key, summary_key,
+                  invalid_file_indexes):
     """汇总：summary 聚合（时钟表与冲突计数由时钟表合并任务产出，本任务
-    读入 clock_conflicts）+ TIMG 消息族一次汇总透出 + 全部文件失败 fatal
-    （TIMG::0009，范式 (a)）。summary 正式对象唯一写定。"""
+    读入 clock_conflicts；invalid_file_indexes = 绑定无效被跳过的文件序
+    表——计数入 summary.invalid_binding_count〔条目级兜底 2026-09-17〕，
+    fatal 判定按有效文件口径对齐逐文件表）+ TIMG 消息族一次汇总透出 +
+    全部文件失败 fatal（TIMG::0009，范式 (a)）。summary 正式对象唯一
+    写定。"""
     from log import INFO
+    invalid_set = set(invalid_file_indexes)
     slices = [db.read_object(k) for k in slice_keys]
     cross_conflicts = sum(db.read_object(k) for k in conflicts_keys)
     clock_conflicts = db.read_object(clock_conflicts_key)
     plan = db.read_object(plan_key)
-    file_chunk_counts = [len(fp.chunk_starts) for fp in plan.files]
+    # 逐文件块数表按有效文件序（与 summary.files 的首现序一致——被跳过
+    # 文件无统计片段不进逐文件表，对齐 zip 配对口径）
+    file_chunk_counts = [len(fp.chunk_starts)
+                         for i, fp in enumerate(plan.files)
+                         if i not in invalid_set]
+    valid_count = len(files) - len(invalid_set)
 
     summary = tm_merge_summary([s.stats for s in slices], cross_conflicts,
-                               clock_conflicts)
+                               clock_conflicts, len(invalid_set))
 
     # ── fatal 判定（plan §6 范式 (a)）：全部文件全部块失败 ──
     failed = [(f, n) for f, n in zip(summary.files, file_chunk_counts)
               if f.failed_chunk_count >= n]
-    if failed and len(failed) == len(files):
+    if failed and len(failed) == valid_count:
         listing = ", ".join(f.source_file for f, _ in failed)
         fatal_message(
             "TIMG::0009", 0,
-            f"all {len(files)} timing file(s) failed to parse, downstream "
+            f"all {valid_count} timing file(s) failed to parse, downstream "
             f"data cannot be produced: {listing}")
         # fatal_message 不返回（_exit(80) + master 联动）
 
     # ── TIMG 消息族一次汇总透出（C++ 计数器 → flow 侧一次发送）──
     if summary.total_hit_count == 0:
         message("TIMG::0004", 0,
-                f"all {len(files)} timing file(s) parsed but 0 valid "
+                f"all {valid_count} timing file(s) parsed but 0 valid "
                 f"entries matched the design db (empty result)")
     if summary.skipped_instance_count or summary.net_name_miss_count:
         message("TIMG::0001", 0,
@@ -369,16 +402,17 @@ def _summary_task(db, files, slice_keys, conflicts_keys,
         message("TIMG::0010", 0,
                 f"{summary.strip_miss_count} entr(y/ies) skipped: "
                 f"strip_prefix not matched (including fully-stripped names)")
-    if failed and len(failed) < len(files):
+    if failed and len(failed) < valid_count:
         # 部分文件失败：空分片已照常产出（依赖链满足），失败清单可追溯
         listing = ", ".join(f.source_file for f, _ in failed)
-        INFO(f"timing flow: {len(failed)}/{len(files)} file(s) fully failed "
-             f"to parse: {listing}")
+        INFO(f"timing flow: {len(failed)}/{valid_count} file(s) fully "
+             f"failed to parse: {listing}")
 
     db.write_object(summary_key, summary, save_to_db=True)
     INFO(f"timing summary: {summary.total_hit_count}/"
-         f"{summary.total_entry_count} entries matched, {len(files)} "
-         f"file(s), {summary.missing_clock_count} missing clock group(s)")
+         f"{summary.total_entry_count} entries matched, {valid_count} "
+         f"file(s) ({len(invalid_set)} skipped for invalid binding), "
+         f"{summary.missing_clock_count} missing clock group(s)")
 
 
 # ── freeze：依赖正式对象写完 + 中间对象清理 ──────────────────────────

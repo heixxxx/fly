@@ -222,6 +222,10 @@ public:
     uint64_t cd_flag_d_count_ = 0;
     // 块语法破损总数（全部文件全块失败 → flow 侧 TIMG::0009 fatal）
     uint64_t failed_chunk_count_ = 0;
+    // 绑定目标未命中被跳过的文件数（2026-09-17 条目级兜底裁定：单文件
+    // 绑定无效 → TIMG::0011 error + 跳过该文件零条目；仅全部文件被跳过
+    // 才任务失败。flow 侧快照任务判定传入，merge 侧原样落字段）
+    uint64_t invalid_binding_count_ = 0;
 
     FLY_SERIALIZE(files_, total_entry_count_, total_hit_count_,
                   skipped_instance_count_, net_name_miss_count_,
@@ -232,7 +236,7 @@ public:
                   const_entry_count_, no_window_count_,
                   dropped_source_res_count_, dropped_slack_count_,
                   missing_clock_count_, cd_flag_c_count_, cd_flag_d_count_,
-                  failed_chunk_count_)
+                  failed_chunk_count_, invalid_binding_count_)
 };
 
 // ── 中间形态（plan §5.3 temp 对象，freeze 清理）─────────────────────
@@ -433,10 +437,12 @@ TMPartitionTiming tm_merge_partition(
 
 // 汇总任务（T4）①：统计聚合——全部块统计片段直和 + 按文件归并逐文件表
 // （同文件多块：条目/计数累加、文件名取首块）+ T3 分区侧跨文件冲突与
-// 时钟表侧差异计数入表（TIMG::0006 / 0007）。
+// 时钟表侧差异计数入表（TIMG::0006 / 0007）+ 绑定目标未命中被跳过的
+// 文件数（2026-09-17 条目级兜底裁定，flow 侧判定传入）。
 TMSummary tm_merge_summary(const CMVector<const TMStatsDelta*>& deltas,
                            uint64_t cross_file_conflict_count,
-                           uint64_t clock_conflict_count);
+                           uint64_t clock_conflict_count,
+                           uint64_t invalid_binding_count);
 
 // 时钟表跨文件合并（独立任务——评审 P1-1：提前至 T3 之前执行，产出最
 // 终 clocks 表 + per-file remap 桥）：同文件跨块先归并（同名保留首份），

@@ -168,6 +168,9 @@ FLY_EXPORT_CLASS(fly::TMSummary, "EXTMSummary")
                              &fly::TMSummary::cd_flag_d_count_)
     FLY_EXPORT_READONLY_ATTR("failed_chunk_count",
                              &fly::TMSummary::failed_chunk_count_)
+    // 绑定目标未命中被跳过的文件数（2026-09-17 条目级兜底裁定）
+    FLY_EXPORT_READONLY_ATTR("invalid_binding_count",
+                             &fly::TMSummary::invalid_binding_count_)
     FLY_EXPORT_SERIALIZE_PICKLE(fly::TMSummary);
 
 // ── 落库形态（正式对象）──
@@ -393,16 +396,18 @@ m.def("tm_merge_partition",
           return nb::make_tuple(nb::cast(std::move(part)), conflicts);
       });
 
-// T4 ①：summary 聚合（deltas = EXTMStatsDelta 列表）
+// T4 ①：summary 聚合（deltas = EXTMStatsDelta 列表；invalid_binding_
+// count = 绑定目标未命中被跳过的文件数——flow 侧快照任务判定传入）
 m.def("tm_merge_summary",
       [](nb::list deltas, uint64_t cross_file_conflict_count,
-         uint64_t clock_conflict_count) {
+         uint64_t clock_conflict_count, uint64_t invalid_binding_count) {
           fly::CMVector<const fly::TMStatsDelta*> ptrs;
           for (nb::handle item : deltas) {
               ptrs.push_back(&nb::cast<const fly::TMStatsDelta&>(item));
           }
           return fly::tm_merge_summary(ptrs, cross_file_conflict_count,
-                                       clock_conflict_count);
+                                       clock_conflict_count,
+                                       invalid_binding_count);
       });
 
 // T4 ②：时钟表跨文件合并（file_clocks = [(kind, EXTMClockTable)] 列表；

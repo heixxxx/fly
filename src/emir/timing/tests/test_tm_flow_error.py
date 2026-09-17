@@ -147,8 +147,8 @@ def test_all_files_failed_fatals_exit_80():
         "files = [{'file_name': path, 'kind': 0, 'block_inst': '', "
         "'block_cell': '', 'strip_prefix': ''}]\n"
         "run_direct(tm_flow._summary_task, Db(), files, "
-        "['chunk_0_0'], ['conflicts_0'], 'clock_conflicts', 'plan', "
-        "'summary')\n"
+"['chunk_0_0'], ['conflicts_0'], 'clock_conflicts', 'plan', "
+"'summary', [])\n"
     )
     env = dict(os.environ)
     env["PYTHONPATH"] = os.pathsep.join(p for p in sys.path if p)

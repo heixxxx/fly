@@ -16,6 +16,10 @@ import 本模块完成注册。仅注册过的 id 才会被 MSG 打印/发送，
 - TIMG::0009: 全部文件解析失败（流程级范式 (a)：fatal message 码 80 退出
   + master 联动——下游数据无法产出）
 - TIMG::0010: strip_prefix 未命中条目跳过（含剥后余空；一次汇总）
+- TIMG::0011: 绑定目标未命中（block_inst 块实例路径 / block_cell 块
+  cell 名不在 design db——2026-09-17 条目级兜底裁定：该文件跳过不进
+  切块链、零条目入库，计数入 summary.invalid_binding_count；仅全部
+  文件被跳过才任务失败）
 
 （历史：TIMG::0005 曾用于 timing alpha 设置问题的一次汇总提醒；2026-09-17
 裁定入口参数校验改为 header schema 直接 raise 后，该码再无使用点，
@@ -33,3 +37,4 @@ register_message_id("TIMG::0007", "WARN")
 register_message_id("TIMG::0008", "WARN")
 register_message_id("TIMG::0009", "FATAL")
 register_message_id("TIMG::0010", "WARN")
+register_message_id("TIMG::0011", "ERROR")

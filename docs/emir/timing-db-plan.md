@@ -66,15 +66,17 @@ build_timing_db(name, timing_files, design_db, settings=None, alpha=None)
 - 返回 `TimingDb` 句柄；异步 4 步范式（检查 → 建库 → 入口任务链 →
   freeze 任务），提交后立即返回（评审 P2-3：T1 master 侧同步毫秒级、
   design 快照为异步任务并在其 worker 执行体上动态提交下游全链——同
-  design flow S9 plan 任务先例）。
+  design flow 分区编排任务先例）。
 - **入口等待语义**（用户裁定 2026-09-15）：不等待 design db 冻结
   （`wait_frozen`）——design 快照任务经任务依赖只等**必要数据对象**
   （层级树、各 DEF 名字伴生对象 hasher 集、id_partition_map INST 段表、
   分区表随 DESIGN_OBJ）。入口校验（master 同步）只查：文件可读 + TWF
   头嗅探（`TIMING_WINDOWS` 关键字，误传秒级 ValueError）+ alpha 逐键
   校验 + 绑定描述结构；绑定**目标存在性**（块实例路径 / 块 cell 名在
-  design db 命中）随 design 快照任务异步校验（未命中任务内 ValueError
-  ——评审 P2-3 后不再阻塞 master 提交线程，任务失败语义）。
+  design db 命中）随 design 快照任务异步校验——2026-09-17 条目级兜底
+  裁定：单文件未命中 → TIMG::0011 error + 跳过该文件（零条目、计数入
+  summary.invalid_binding_count）；仅全部文件被跳过才任务内 ValueError
+  （评审 P2-3 后不阻塞 master 提交线程）。
 
 ### 3.2 读库（tm_functions.py，供其他模块消费）
 
@@ -235,9 +237,11 @@ RedHawk sta.timing 方言概念）——频率经时钟表周期推导（1/perio
   批量前缀换算，预留接口）。
 - pg 网条目（VDD/VSS，若上游未滤）→ 跳过 + 计数（时序无 pg 语义）。
 - 未放置实例（design db 不入分区）→ 跳过 + 计数（与 D14 口径一致）。
-- 绑定目标不存在（块实例路径未命中 / cell 名未命中）→ 该文件 ValueError
-  （输入语义错误，属可 raise 两类之一；评审 P2-3 后随 design 快照任务
-  异步执行——任务失败语义，不阻塞 master 提交线程）。
+- 绑定目标不存在（块实例路径未命中 / cell 名未命中）→ 条目级兜底
+  （2026-09-17 裁定）：该文件 TIMG::0011 error + 跳过（零条目入库、
+  计数入 summary.invalid_binding_count）；仅全部文件被跳过才任务内
+  ValueError（输入整体无意义；评审 P2-3 后随 design 快照任务异步执行
+  ——不阻塞 master 提交线程）。
 
 ## 8. 分区路由与对象布局
 
@@ -262,6 +266,7 @@ RedHawk sta.timing 方言概念）——频率经时钟表周期推导（1/perio
 | TIMG::0008 | warn | 未放置实例跳过（无分区归属） |
 | TIMG::0009 | fatal(80) | 全部文件解析失败（流程级范式 (a)） |
 | TIMG::0010 | warn | strip_prefix 未命中条目跳过（含剥后余空；一次汇总） |
+| TIMG::0011 | error | 绑定目标未命中（block_inst/block_cell 不在 design db——2026-09-17 条目级兜底裁定：该文件跳过零条目、计数入 summary.invalid_binding_count；仅全部文件被跳过才任务失败） |
 
 - 可 raise 场景仅两类（dev-rules §7）：文件不可读、头嗅探不通过——
   入口同步拦截（不建库、不起任务）。
