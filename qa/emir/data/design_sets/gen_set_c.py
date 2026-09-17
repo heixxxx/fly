@@ -35,6 +35,10 @@ OUT_DIR = Path(__file__).resolve().parent / "set_c"
 LIBERTY = Path(__file__).resolve().parent.parent / "timing" / \
     "NangateOpenCellLibrary_typical.lib"
 BLOCK_CELLS = {"pe_core", "tile_router", "ctrl_block", "compute_tile"}
+# 阵列规模单一来源（全量/mini 共用；stats.json 的 GX/GY 口径自此取——
+# 终审 #5：原 stats 硬编码 40×26 与实际阵列 30×25 失实）
+FULL_GRID = (30, 25)
+MINI_GRID = (2, 2)
 
 # ── pe_core（叶）：3 级 ALU 流水 ─────────────────────────────────────
 pe = Module("pe_core", [("clk_core", "input")]
@@ -194,11 +198,15 @@ def build_top(gx, gy):
     for i in range(4):
         conns[f"cmd{i}"] = f"n_in_w_0_{min(1, gx - 1)}_{i}"
     for i in range(4):
-        conns[f"tile_irq{i}"] = f"n_in_s_{r}_0_{i}" if gy > 1 else "n_irq0"
+        # 末行 tile 的 s 向链路（r 循环已出作用域——取 gy-1 显式表达，
+        # 终审 #6；gy == 1 时无 s 向链路，接独立悬空网）
+        conns[f"tile_irq{i}"] = (f"n_in_s_{gy - 1}_0_{i}" if gy > 1
+                                 else "n_irq0")
     for i in range(4):
         conns[f"status{i}"] = f"n_status_{i}"
     top.add_inst("u_ctrl", "ctrl_block", **conns)
-    # pe_out_*：tile(0,0) 的 y0/y1 经顶层网接输出缓冲
+    # pe_out_*：仅接输出缓冲输入的无驱动网（tile y0/y1 引脚悬空形态
+    # ——真实设计的悬空网语义，终审 #7 注释如实化）
     top.nets.update({"pe_out_y0", "pe_out_y1"})
     return top
 
@@ -290,7 +298,7 @@ stats = {"set": "c", "top": "hybrid_soc",
 #   compute_tile 展开数 = 胶合 7 + 3 块实例 + 2×pe_core 展开 + router 展开
 CT_EXPANDED = 7 + 3 + 2 * pe.inst_count + rt.inst_count
 variants = {}
-for tag, (gx, gy) in (("full", (30, 25)), ("mini", (2, 2))):
+for tag, (gx, gy) in (("full", FULL_GRID), ("mini", MINI_GRID)):
     top = build_top(gx, gy)
     total_leaf = CT_EXPANDED * gx * gy + cb.inst_count
     suffix = "" if tag == "full" else "_mini"
@@ -308,5 +316,6 @@ for tag, (gx, gy) in (("full", (30, 25)), ("mini", (2, 2))):
     print(f"set_c[{tag}]: top_instances={top.inst_count} "
           f"total={top.inst_count + total_leaf} (tile "
           f"{ct.inst_count}x{gx * gy}) nets={len(top.nets)}")
-stats["params"].update({"GX": 40, "GY": 26, "GX_MINI": 2, "GY_MINI": 2})
+stats["params"].update({"GX": FULL_GRID[0], "GY": FULL_GRID[1],
+                        "GX_MINI": MINI_GRID[0], "GY_MINI": MINI_GRID[1]})
 (OUT_DIR / "stats.json").write_text(json.dumps(stats, indent=1) + "\n")

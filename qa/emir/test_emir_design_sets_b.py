@@ -135,7 +135,7 @@ for i in range(clks.size):
 INFO("[OK] strip_prefix + block_inst: hit=175 strip_miss=0, clocks "
      "clk_noc=1.2 clk_cfg=3.0")
 
-# ── 顶层纯路径形态（noc_mesh.twf：顶层网维度，38 条目，入库）─────────
+# ── 顶层纯路径形态（noc_mesh.twf：顶层网维度，28 条目，入库）─────────
 tdb3 = proj.build_timing_db(name="timing_b_top",
                             timing_files=[os.path.join(DATA,
                                                        "noc_mesh.twf")],

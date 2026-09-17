@@ -27,8 +27,8 @@
  ],
  "params": {
   "FLIT": 2,
-  "GX": 40,
-  "GY": 26,
+  "GX": 30,
+  "GY": 25,
   "GX_MINI": 2,
   "GY_MINI": 2
  },
