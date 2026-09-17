@@ -5,13 +5,16 @@
 // 索引的 CMVector<uint32_t>，值 = partition id（复用 DSSubPartition
 // .partition_id_），按 id 区间分段落盘按需加载）。
 //
-// 数据组织（inst/net 各一张全空间映射）：
-//   DSIdPartitionSlice    分区片段（S9 每分区合并任务写本区片段的临时对
-//                         象）：本区 primary inst id 集 / net 副本 id 集
-//                         + 本区 pid（平行数组，merge 前无序）。
+// 数据组织（inst/net 各一张全空间映射；评审 B-6：片段 id 强类型化 +
+// INST/NET 分表——原裸 uint64 单容器混流 + bool instance_kind 分型废除）：
+//   DSIdPartitionSliceT   分区片段模板（S9 每分区合并任务写本区片段的
+//                         临时对象）：本区 primary inst id 集 / net 副本
+//                         id 集（CMInstanceId/CMNetId 各一实例化）+ 本
+//                         区 pid（平行数组，merge 前无序）。
 //   DSIdPartitionSegment  段正式对象（id_partition_map.{INST,NET}.S{k}）：
 //                         段起始 id + 定长 pids 数组（下标 = id − 段起始，
-//                         值 = partition id；kNoPartition = 空洞）。
+//                         值 = partition id；kNoPartition = 空洞；段对
+//                         象不存 id、两维度共用）。
 //   DSIdPartitionIndex    段表轻对象（id_partition_map.{INST,NET}）：非
 //                         空段起始 id 升序表——查询先读段表（轻），命中
 //                         再按需加载段对象（段粒度 2^20 id ≈ 4 MiB/段，
@@ -44,17 +47,18 @@ inline constexpr uint64_t kIdMapSegmentSize = uint64_t{1} << kIdMapSegmentBits;
 // CMPartitionId 默认哨兵同值口径）
 inline constexpr uint32_t kIdMapNoPartition = CMPartitionId::kInvalid;
 
-// 分区片段（S9 每分区合并任务的临时产物；freeze 前由映射汇总任务合并
-// 后清理）——本区 (id, partition id) 对的平行数组
-class DSIdPartitionSlice {
+// 分区片段模板（S9 每分区合并任务的临时产物；freeze 前由映射汇总任务
+// 合并后清理）——本区 (id, partition id) 对的平行数组
+template <typename IdT>
+class DSIdPartitionSliceT {
 public:
-    // 本区收录的 id 集（inst 片段 = primary 副本 global id；net 片段 =
-    // net 副本 global id）+ 对齐的 partition id（= 本区 pid，恒同值——
+    // 本区收录的 id 集（INST 片段 = primary 副本 global id；NET 片段 =
+    // 网副本 global id）+ 对齐的 partition id（= 本区 pid，恒同值——
     // 平行数组形态保持与 merge 输入契约显式可见）
-    CMVector<uint64_t> ids_;
+    CMVector<IdT> ids_;
     CMVector<CMPartitionId> pids_;
 
-    void add(uint64_t id, CMPartitionId pid) {
+    void add(IdT id, CMPartitionId pid) {
         ids_.push_back(id);
         pids_.push_back(pid);
     }
@@ -62,6 +66,11 @@ public:
 
     FLY_SERIALIZE(ids_, pids_)
 };
+
+// 实体别名（INST/NET 分表；id 强类型——评审 B-6。序列化直通同宽，临
+// 时对象单次 flow 内写读配对，无跨版本兼容面）
+using DSInstIdPartitionSlice = DSIdPartitionSliceT<CMInstanceId>;
+using DSNetIdPartitionSlice = DSIdPartitionSliceT<CMNetId>;
 
 // 段正式对象（id_partition_map.{INST,NET}.S{k}，k = id_start >> 20）：
 // 按段 id 直接索引的 partition id 数组
@@ -123,18 +132,28 @@ struct DSIdPartitionMapResult {
     CMVector<DSIdPartitionSegment> segments;
 };
 
-// merge：多分区片段 → 全空间分段（空洞段跳过）。slices 为观察指针集
-// （借引用不拷贝；同 ds_build_hier_tree 入参约定）。
+// merge：多分区片段 → 全空间分段（空洞段跳过）。slices 为共享集（§16
+// 业务层零裸指针——评审 B-12）。显式实例化 = INST/NET 两维度别名。
+template <typename IdT>
 DSIdPartitionMapResult ds_merge_id_partition_slices(
-    const CMVector<const DSIdPartitionSlice*>& slices);
+    const CMVector<CMSharedPtr<const DSIdPartitionSliceT<IdT>>>& slices);
+extern template DSIdPartitionMapResult
+ds_merge_id_partition_slices<CMInstanceId>(
+    const CMVector<CMSharedPtr<const DSIdPartitionSliceT<CMInstanceId>>>&);
+extern template DSIdPartitionMapResult
+ds_merge_id_partition_slices<CMNetId>(
+    const CMVector<CMSharedPtr<const DSIdPartitionSliceT<CMNetId>>>&);
 
-// 提取：分区产物 → 本区片段（instance_kind = true 取 primary instance
-// 副本 id 集；false 取 net 副本 id 集——GEOMETRY + GEOMETRY_PG 两对象键
-// 集并集，2026-09-14 拆分裁定：网副本落点分侧两对象，切片结构不变）。
-// partition_id = 本区 pid。
-DSIdPartitionSlice ds_collect_partition_id_slice(
-    const DSPartInstances& instances, const DSPartitionGeometry& geometry,
-    const DSPartitionGeometry& geometry_pg, bool instance_kind,
-    CMPartitionId partition_id);
+// 提取（INST 表）：分区产物 → 本区片段 = primary 实例副本 global id 集
+//（每对象恰一 primary，补记①）。partition_id = 本区 pid。
+DSInstIdPartitionSlice ds_collect_inst_id_slice(
+    const DSPartInstances& instances, CMPartitionId partition_id);
+
+// 提取（NET 表）：分区产物 → 本区片段 = GEOMETRY + GEOMETRY_PG 两对象
+// 键集并集（2026-09-14 拆分裁定：网副本落点分侧两对象——跟随网副本口
+// 径不变，信号侧键 0 = OBS 桶专属位照常入片段）。
+DSNetIdPartitionSlice ds_collect_net_id_slice(
+    const DSPartitionGeometry& geometry,
+    const DSPartitionGeometry& geometry_pg, CMPartitionId partition_id);
 
 }  // namespace fly

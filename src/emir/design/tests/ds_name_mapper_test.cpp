@@ -19,6 +19,8 @@
 
 #include <gtest/gtest.h>
 
+#include "borrow_view.h"
+
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
@@ -132,11 +134,12 @@ void attach_cell_ids(MapperEnv& env) {
 // 全量注入的 instance mapper
 DSInstanceNameMapper make_full_instance_mapper(MapperEnv& env) {
     attach_cell_ids(env);
-    DSInstanceNameMapper mapper(&env.tree, DSNameMapperKind::INSTANCE);
+    DSInstanceNameMapper mapper(test::borrow(env.tree),
+                                DSNameMapperKind::INSTANCE);
     // hasher 级共享注入：CMSharedPtr const 化（零拷贝零 move）
-    mapper.set_block_hasher(0, env.top.names->instance_names_);
-    mapper.set_block_hasher(1, env.mid.names->instance_names_);
-    mapper.set_block_hasher(2, env.bottom.names->instance_names_);
+    mapper.set_block_hasher(CMCellId{0}, env.top.names->instance_names_);
+    mapper.set_block_hasher(CMCellId{1}, env.mid.names->instance_names_);
+    mapper.set_block_hasher(CMCellId{2}, env.bottom.names->instance_names_);
     return mapper;
 }
 
@@ -216,8 +219,9 @@ TEST(DSNameMapperTest, GlobalIdAndFullNameRoundTrip) {
 TEST(DSNameMapperTest, PartialInjectionQueries) {
     MapperEnv env;
     attach_cell_ids(env);
-    DSInstanceNameMapper mapper(&env.tree, DSNameMapperKind::INSTANCE);
-    mapper.set_block_hasher(0, env.top.names->instance_names_);  // 仅注入 top
+    DSInstanceNameMapper mapper(test::borrow(env.tree),
+                                DSNameMapperKind::INSTANCE);
+    mapper.set_block_hasher(CMCellId{0}, env.top.names->instance_names_);  // 仅注入 top
 
     // top 域内可查
     EXPECT_EQ(mapper.get_global_id("i1"), 1u);
@@ -236,7 +240,8 @@ TEST(DSNameMapperTest, SetBlockHasherByCellName) {
     // 便利口：cell name 经树解析（block_cell_name_ → block_cell_id_）
     MapperEnv env;
     attach_cell_ids(env);
-    DSInstanceNameMapper mapper(&env.tree, DSNameMapperKind::INSTANCE);
+    DSInstanceNameMapper mapper(test::borrow(env.tree),
+                                DSNameMapperKind::INSTANCE);
     mapper.set_block_hasher("top", env.top.names->instance_names_);
     mapper.set_block_hasher("bottom", env.bottom.names->instance_names_);
 
@@ -259,10 +264,11 @@ TEST(DSNameMapperTest, SetBlockHasherByCellName) {
 TEST(DSNameMapperTest, NetDimensionMapping) {
     MapperEnv env;
     attach_cell_ids(env);
-    DSNetNameMapper mapper(&env.tree, DSNameMapperKind::NET);
-    mapper.set_block_hasher(0, env.top.names->net_names_);
-    mapper.set_block_hasher(1, env.mid.names->net_names_);
-    mapper.set_block_hasher(2, env.bottom.names->net_names_);
+    DSNetNameMapper mapper(test::borrow(env.tree),
+                            DSNameMapperKind::NET);
+    mapper.set_block_hasher(CMCellId{0}, env.top.names->net_names_);
+    mapper.set_block_hasher(CMCellId{1}, env.mid.names->net_names_);
+    mapper.set_block_hasher(CMCellId{2}, env.bottom.names->net_names_);
 
     // top net [0,3)：n0 → local 1 → 0 + 1 = 1；n1 → 2（裁定 1：顶层网
     // = 单段名）
@@ -308,12 +314,13 @@ TEST(DSNameMapperTest, MapperIsLightweightShell) {
     // FLY_SERIALIZE 缺席——运行时构造、不落盘（static_assert 见文件头）。
     MapperEnv env;
     attach_cell_ids(env);
-    DSInstanceNameMapper mapper(&env.tree, DSNameMapperKind::INSTANCE);
-    mapper.set_block_hasher(0, env.top.names->instance_names_);
+    DSInstanceNameMapper mapper(test::borrow(env.tree),
+                                DSNameMapperKind::INSTANCE);
+    mapper.set_block_hasher(CMCellId{0}, env.top.names->instance_names_);
     EXPECT_EQ(mapper.injected_count(), 1u);
     // 重复注入同键覆盖（指向更新）：cell id 0 的 hasher 换成 mid 定义
     // 的——mid.inst 无 "i3"，覆盖后原先可查的 top 域 leaf 失效
-    mapper.set_block_hasher(0, env.mid.names->instance_names_);
+    mapper.set_block_hasher(CMCellId{0}, env.mid.names->instance_names_);
     EXPECT_EQ(mapper.injected_count(), 1u);
     EXPECT_EQ(mapper.get_global_id("i3"),
               DSInstanceNameMapper::kInvalidId);
@@ -330,7 +337,8 @@ TEST(DSNameMapperTest, EmptyTreeAndDefaults) {
     // 有树未注入：一切查询未命中（任务书裁定：叶层只走注入 hasher，
     // 树仅提供层级结构——树自身无 leaf 名空间；local 0 的路径反查除外，
     // ⑧ 结构性占位）
-    DSInstanceNameMapper mapper(&env.tree, DSNameMapperKind::INSTANCE);
+    DSInstanceNameMapper mapper(test::borrow(env.tree),
+                                DSNameMapperKind::INSTANCE);
     EXPECT_EQ(mapper.get_global_id("i1"),
               DSInstanceNameMapper::kInvalidId);
     EXPECT_EQ(mapper.get_full_name(2), "");
@@ -411,8 +419,9 @@ struct DispatchEnv {
 
 TEST(DSNameMapperDispatchTest, MultiLayerMultiFanoutMatchesExpectation) {
     DispatchEnv env;
-    DSInstanceNameMapper mapper(&env.tree, DSNameMapperKind::INSTANCE);
-    mapper.set_block_hasher(DispatchEnv::kLeafCellId, env.leaf_names->instance_names_);
+    DSInstanceNameMapper mapper(test::borrow(env.tree),
+                                DSNameMapperKind::INSTANCE);
+    mapper.set_block_hasher(CMCellId{DispatchEnv::kLeafCellId}, env.leaf_names->instance_names_);
 
     // 全叶节点 × 全叶名逐条对齐独立计算的期望 id（50 × 4 = 200 条全量）
     for (int k = 0; k < 50; ++k) {
@@ -460,8 +469,9 @@ TEST(DSNameMapperDispatchTest, SameNameSiblingsResolveToFirstNode) {
     env.tree.nodes_.push_back(std::move(dup));
     env.tree.nodes_[1].get_ref_children_ids().push_back(52);
 
-    DSInstanceNameMapper mapper(&env.tree, DSNameMapperKind::INSTANCE);
-    mapper.set_block_hasher(DispatchEnv::kLeafCellId,
+    DSInstanceNameMapper mapper(test::borrow(env.tree),
+                                DSNameMapperKind::INSTANCE);
+    mapper.set_block_hasher(CMCellId{DispatchEnv::kLeafCellId},
                             env.leaf_names->instance_names_);
     // 分派命中首个（node 2，区间起点 2 的后继）而非后登记者（node 52）
     EXPECT_EQ(mapper.get_global_id("m1/leaf_0/f0"),
@@ -470,8 +480,9 @@ TEST(DSNameMapperDispatchTest, SameNameSiblingsResolveToFirstNode) {
 
 TEST(DSNameMapperDispatchTest, IllegalPathsStayInvalid) {
     DispatchEnv env;
-    DSInstanceNameMapper mapper(&env.tree, DSNameMapperKind::INSTANCE);
-    mapper.set_block_hasher(DispatchEnv::kLeafCellId,
+    DSInstanceNameMapper mapper(test::borrow(env.tree),
+                                DSNameMapperKind::INSTANCE);
+    mapper.set_block_hasher(CMCellId{DispatchEnv::kLeafCellId},
                             env.leaf_names->instance_names_);
 
     // 首段不匹配（索引键皆以顶层实例名开头）
@@ -510,15 +521,15 @@ TEST(DSNameMapperDispatchTest, SetTreeRebuildsDispatchIndex) {
     EXPECT_EQ(mapper.get_global_id("top/m1/leaf_0/f0"),
               DSInstanceNameMapper::kInvalidId);
     // set_tree 挂第一棵树 → 分派索引自动生效
-    mapper.set_tree(&env.tree);
-    mapper.set_block_hasher(DispatchEnv::kLeafCellId,
+    mapper.set_tree(test::borrow(env.tree));
+    mapper.set_block_hasher(CMCellId{DispatchEnv::kLeafCellId},
                             env.leaf_names->instance_names_);
     EXPECT_EQ(mapper.get_global_id("m1/leaf_0/f0"),
               env.expect_id(0, 1));
     // 换树 → 旧键失效、新树键生效（自动重建，无忘重建静默错）
     attach_cell_ids(other_env);
-    mapper.set_tree(&other_env.tree);
-    mapper.set_block_hasher(2, other_env.bottom.names->instance_names_);
+    mapper.set_tree(test::borrow(other_env.tree));
+    mapper.set_block_hasher(CMCellId{2}, other_env.bottom.names->instance_names_);
     EXPECT_EQ(mapper.get_global_id("m1/leaf_0/f0"),
               DSInstanceNameMapper::kInvalidId);
     EXPECT_EQ(mapper.get_global_id("i2/i1/i1"), 8u);
@@ -534,7 +545,8 @@ TEST(DSNameMapperDispatchTest, IndexBuildCostObservable) {
     // 索引构建开销观测（非断言——基准报告引用；万级节点毫秒量级）
     DispatchEnv env;
     const auto t0 = std::chrono::steady_clock::now();
-    DSInstanceNameMapper mapper(&env.tree, DSNameMapperKind::INSTANCE);
+    DSInstanceNameMapper mapper(test::borrow(env.tree),
+                                DSNameMapperKind::INSTANCE);
     const auto t1 = std::chrono::steady_clock::now();
     const double ms =
         static_cast<double>(

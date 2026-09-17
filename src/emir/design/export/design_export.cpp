@@ -44,6 +44,27 @@
 
 namespace nb = nanobind;
 
+// merge 桥公共体（模板——须在 FLY_EXPORT_MODULE 函数体外的命名空间
+// 作用域；评审 B-6：INST/NET 两维度分表，Python 面拆两桥）
+namespace fly_export_detail {
+template <typename SliceT>
+nb::object merge_id_partition_slices_impl(nb::list slices) {
+    fly::CMVector<fly::CMSharedPtr<const SliceT>> slice_shares;
+    for (nb::handle item : slices) {
+        slice_shares.push_back(nb::cast<fly::CMSharedPtr<const SliceT>>(item));
+    }
+    fly::DSIdPartitionMapResult result =
+        fly::ds_merge_id_partition_slices(slice_shares);
+    nb::list segs;
+    for (auto& seg : result.segments) {
+        const uint64_t start = seg.get_id_start();
+        segs.append(nb::make_tuple(start, nb::cast(std::move(seg))));
+    }
+    return nb::make_tuple(nb::cast(std::move(result.index)),
+                          nb::cast(std::move(segs)));
+}
+}  // namespace fly_export_detail
+
 namespace {
 
 // GEORectT<T> 以四元组透出（骨架期约定：x_low/y_low/x_high/y_high）
@@ -121,7 +142,8 @@ FLY_EXPORT_CLASS(fly::DSPin, "EXDSPin")
     FLY_EXPORT_READONLY_PROPERTY("direction", [](const fly::DSPin& p) {
         return static_cast<int>(p.get_direction());
     })
-    // R4：全局平铺 pin id + 放置状态（P3：仅 port 场景有效）
+    // R4：全局 pin id（2026-09-16 裁定 3 全局 pin 名字空间）+ 放置状态
+    //（P3：仅 port 场景有效）
     FLY_EXPORT_READONLY_PROPERTY("pin_id", [](const fly::DSPin& p) { return p.get_pin_id().value(); })
     FLY_EXPORT_READONLY_PROPERTY("placement_status",
                                  [](const fly::DSPin& p) {
@@ -658,7 +680,8 @@ FLY_EXPORT_CLASS(fly::DSBlockBuildData, "EXDSBlockBuildData")
 
 // ㊵② per-DEF local 名空间伴生对象（DSBlockNames_<i> 独立落盘的 Python
 // 面）：instance/net 两 hasher（R7 双向）+ block 名冗余。hasher 本体
-//（DSNameHasherT）不上 Python 面——查询经本对象的组合键接口；业务
+//（DSNameHasherT）不上 Python 面——查询经本对象的局部名接口（pin 已
+// 归全局 pin 名字空间，2026-09-16 裁定 3——D1 组合键口径作废）；业务
 //「不拿 name」的场景不加载本对象（⑰/⑱ 按需加载）。
 FLY_EXPORT_CLASS(fly::DSBlockNames, "EXDSBlockNames")
     FLY_EXPORT_INIT()
@@ -1096,28 +1119,34 @@ FLY_EXPORT_FUNCTION("ds_merge_def_header",
 // 数据经独立临时对象传出（2026-09-13 裁定：产物本体不含副本，S5a 汇总
 // 并入全局表）
 FLY_EXPORT_FUNCTION("ds_parse_def_components",
-                    [](const CMString& path, const fly::DSStack& stack,
-                       const fly::DSDesign& design,
-                       fly::DSBlockBuildData& block_data,
+                    [](const CMString& path,
+                       std::shared_ptr<const fly::DSStack> stack,
+                       std::shared_ptr<const fly::DSDesign> design,
+                       std::shared_ptr<fly::DSBlockBuildData> block_data,
                        int32_t density_bin_dbu) {
-    CMVector<fly::DSCell> fake_cells;
+    // fake cell 独立容器经共享注入（评审 B-10），产出后值拷出——注入
+    // 侧拷贝 shared（不 move，出参仍经本句柄读取）
+    auto fake_cells = std::make_shared<CMVector<fly::DSCell>>();
     fly::DSDefComponentsStats stats;
-    fly::ds_parse_def_components(path, stack, design, block_data, stats,
+    fly::ds_parse_def_components(path, std::move(stack), std::move(design),
+                                 std::move(block_data), stats,
                                  density_bin_dbu, fake_cells);
     return nb::make_tuple(nb::cast(stats),
-                          nb::cast(std::move(fake_cells)));
+                          nb::cast(std::move(*fake_cells)));
 });
 
 // S5b：网内容责任链 ∥ 分批多阶段（③ 批界 net_batch_size；⑨ local net
 // id 对齐 block_data 的网名空间）→ stats；net_data 就地填充
 FLY_EXPORT_FUNCTION("ds_parse_def_nets",
-                    [](const CMString& path, const fly::DSStack& stack,
-                       const fly::DSDesign& design,
-                       const fly::DSBlockBuildData& block_data,
-                       fly::DSNetBuildData& net_data, int32_t density_bin_dbu,
-                       int net_batch_size) {
+                    [](const CMString& path,
+                       std::shared_ptr<const fly::DSStack> stack,
+                       std::shared_ptr<const fly::DSDesign> design,
+                       std::shared_ptr<const fly::DSBlockBuildData> block_data,
+                       std::shared_ptr<fly::DSNetBuildData> net_data,
+                       int32_t density_bin_dbu, int net_batch_size) {
     fly::DSDefNetsStats stats;
-    fly::ds_parse_def_nets(path, stack, design, block_data, net_data, stats,
+    fly::ds_parse_def_nets(path, std::move(stack), std::move(design),
+                           std::move(block_data), std::move(net_data), stats,
                            density_bin_dbu, net_batch_size);
     return nb::cast(stats);
 });
@@ -1128,15 +1157,18 @@ FLY_EXPORT_FUNCTION("ds_parse_def_nets",
 FLY_EXPORT_FUNCTION("ds_build_hier_tree",
                     [](nb::list blocks, nb::list nets,
                        const fly::DSDesign& design) {
-    fly::CMVector<const fly::DSBlockBuildData*> block_ptrs;
+    fly::CMVector<fly::CMSharedPtr<const fly::DSBlockBuildData>> block_shares;
     for (nb::handle item : blocks) {
-        block_ptrs.push_back(&nb::cast<const fly::DSBlockBuildData&>(item));
+        block_shares.push_back(
+            nb::cast<fly::CMSharedPtr<const fly::DSBlockBuildData>>(item));
     }
-    fly::CMVector<const fly::DSNetBuildData*> net_ptrs;
+    fly::CMVector<fly::CMSharedPtr<const fly::DSNetBuildData>> net_shares;
     for (nb::handle item : nets) {
-        net_ptrs.push_back(&nb::cast<const fly::DSNetBuildData&>(item));
+        net_shares.push_back(
+            nb::cast<fly::CMSharedPtr<const fly::DSNetBuildData>>(item));
     }
-    return nb::cast(fly::ds_build_hier_tree(block_ptrs, net_ptrs, design));
+    return nb::cast(fly::ds_build_hier_tree(block_shares, net_shares,
+                                            design));
 });
 
 // S5a 汇总：fake cell 并入（返回并入数；fake cell 数据经独立临时对象
@@ -1153,15 +1185,18 @@ FLY_EXPORT_FUNCTION("ds_merge_block_build",
 FLY_EXPORT_FUNCTION("ds_merge_global_density",
                     [](const fly::DSHierTree& tree, nb::list blocks,
                        nb::list nets) {
-    fly::CMVector<const fly::DSBlockBuildData*> block_ptrs;
+    fly::CMVector<fly::CMSharedPtr<const fly::DSBlockBuildData>> block_shares;
     for (nb::handle item : blocks) {
-        block_ptrs.push_back(&nb::cast<const fly::DSBlockBuildData&>(item));
+        block_shares.push_back(
+            nb::cast<fly::CMSharedPtr<const fly::DSBlockBuildData>>(item));
     }
-    fly::CMVector<const fly::DSNetBuildData*> net_ptrs;
+    fly::CMVector<fly::CMSharedPtr<const fly::DSNetBuildData>> net_shares;
     for (nb::handle item : nets) {
-        net_ptrs.push_back(&nb::cast<const fly::DSNetBuildData&>(item));
+        net_shares.push_back(
+            nb::cast<fly::CMSharedPtr<const fly::DSNetBuildData>>(item));
     }
-    return nb::cast(fly::ds_merge_global_density(tree, block_ptrs, net_ptrs));
+    return nb::cast(fly::ds_merge_global_density(tree, block_shares,
+                                                 net_shares));
 });
 
 // S8 分区决策：合成负载（通道比重散参构造 DSDensityWeights，逐层系数
@@ -1229,22 +1264,24 @@ FLY_EXPORT_FUNCTION("ds_collect_net_union_slice",
                     [](const fly::DSHierTree& tree,
                        const fly::DSNetBuildData& parent_nets,
                        nb::list child_nets) {
-    fly::CMVector<const fly::DSNetBuildData*> child_ptrs;
+    fly::CMVector<fly::CMSharedPtr<const fly::DSNetBuildData>> child_shares;
     for (nb::handle item : child_nets) {
-        child_ptrs.push_back(&nb::cast<const fly::DSNetBuildData&>(item));
+        child_shares.push_back(
+            nb::cast<fly::CMSharedPtr<const fly::DSNetBuildData>>(item));
     }
     return nb::cast(
-        fly::ds_collect_net_union_slice(tree, parent_nets, child_ptrs));
+        fly::ds_collect_net_union_slice(tree, parent_nets, child_shares));
 });
 
 // S7 全局汇总：合并全部局部边集 → 两层化 + root 规范化 + 悬空计数
 FLY_EXPORT_FUNCTION("ds_build_net_union",
                     [](const fly::DSHierTree& tree, nb::list slices) {
-    fly::CMVector<const fly::DSNetUnionSlice*> slice_ptrs;
+    fly::CMVector<fly::CMSharedPtr<const fly::DSNetUnionSlice>> slice_shares;
     for (nb::handle item : slices) {
-        slice_ptrs.push_back(&nb::cast<const fly::DSNetUnionSlice&>(item));
+        slice_shares.push_back(
+            nb::cast<fly::CMSharedPtr<const fly::DSNetUnionSlice>>(item));
     }
-    return nb::cast(fly::ds_build_net_union(tree, slice_ptrs));
+    return nb::cast(fly::ds_build_net_union(tree, slice_shares));
 });
 
 // S7 编排辅助：def 序号 → 其引用的子定义序号集（block_names = def_paths
@@ -1509,12 +1546,13 @@ FLY_EXPORT_FUNCTION("ds_collect_pg_net_slice",
 
 // pg 全局汇总：合并全部分区片段 → 两 set（跨分区副本 set 去重）
 FLY_EXPORT_FUNCTION("ds_build_pg_net_set", [](nb::list slices) {
-    fly::CMVector<const fly::DSPgNetSlice*> slice_ptrs;
+    fly::CMVector<fly::CMSharedPtr<const fly::DSPgNetSlice>> slice_shares;
     for (nb::handle item : slices) {
-        slice_ptrs.push_back(&nb::cast<const fly::DSPgNetSlice&>(item));
+        slice_shares.push_back(
+            nb::cast<fly::CMSharedPtr<const fly::DSPgNetSlice>>(item));
     }
     fly::DSPgNetSet pg_set;
-    pg_set.finalize_from_flatten(slice_ptrs);
+    pg_set.finalize_from_flatten(slice_shares);
     return nb::cast(std::move(pg_set));
 });
 
@@ -1581,17 +1619,32 @@ FLY_EXPORT_FUNCTION("ds_flatten_block",
 // ── id → partition 反向映射（2026-09-13 debug 定位裁定：分段落盘按需
 // 加载——片段临时对象 / 段正式对象 / 段表轻对象 + merge 与提取）────────
 
-// 分区片段（S9 每分区合并任务写本区片段的临时对象；merge 后清理）
-FLY_EXPORT_CLASS(fly::DSIdPartitionSlice, "EXDSIdPartitionSlice")
+// 分区片段（S9 每分区合并任务写本区片段的临时对象；merge 后清理）。
+// INST/NET 两维度分表（评审 B-6：id 强类型化消混流）——模板双实例化各
+// 绑一名
+FLY_EXPORT_CLASS(fly::DSInstIdPartitionSlice, "EXDSInstIdPartitionSlice")
     FLY_EXPORT_INIT()
-    FLY_EXPORT_READONLY_PROPERTY("size", [](const fly::DSIdPartitionSlice& s) {
-        return static_cast<int>(s.size());
+    FLY_EXPORT_READONLY_PROPERTY(
+        "size", [](const fly::DSInstIdPartitionSlice& s) {
+            return static_cast<int>(s.size());
+        })
+    FLY_EXPORT_DEF("at", [](const fly::DSInstIdPartitionSlice& s, size_t i) {
+        // 强类型边界 int：inst id uint64 + partition id uint32
+        return nb::make_tuple(s.ids_.at(i).value(), s.pids_.at(i).value());
     })
-    FLY_EXPORT_DEF("at", [](const fly::DSIdPartitionSlice& s, size_t i) {
-        // pids_ 为 CMSharedPtr 持有的 CMPartitionId——强类型边界 int
-        return nb::make_tuple(s.ids_.at(i), s.pids_.at(i).value());
+    FLY_EXPORT_SERIALIZE_PICKLE(fly::DSInstIdPartitionSlice);
+
+FLY_EXPORT_CLASS(fly::DSNetIdPartitionSlice, "EXDSNetIdPartitionSlice")
+    FLY_EXPORT_INIT()
+    FLY_EXPORT_READONLY_PROPERTY(
+        "size", [](const fly::DSNetIdPartitionSlice& s) {
+            return static_cast<int>(s.size());
+        })
+    FLY_EXPORT_DEF("at", [](const fly::DSNetIdPartitionSlice& s, size_t i) {
+        // 强类型边界 int：net id uint64 + partition id uint32
+        return nb::make_tuple(s.ids_.at(i).value(), s.pids_.at(i).value());
     })
-    FLY_EXPORT_SERIALIZE_PICKLE(fly::DSIdPartitionSlice);
+    FLY_EXPORT_SERIALIZE_PICKLE(fly::DSNetIdPartitionSlice);
 
 // 段正式对象（id_partition_map.{kind}.S{k}：定长 pids 数组，kNoPartition
 // = 空洞；查询未命中返回 None——不透出哨兵）
@@ -1639,35 +1692,34 @@ FLY_EXPORT_CLASS(fly::DSIdPartitionIndex, "EXDSIdPartitionIndex")
     })
     FLY_EXPORT_SERIALIZE_PICKLE(fly::DSIdPartitionIndex);
 
-// 提取：分区产物 → 本区片段（instance_kind = true 取 primary 副本 id 集
-// / false 取 GEOMETRY + GEOMETRY_PG 两对象键集并集；partition_id = 本区
-// pid——2026-09-14 拆分裁定）
-FLY_EXPORT_FUNCTION("ds_collect_partition_id_slice",
+// 提取（INST 表）：分区产物 → 本区片段 = primary 实例副本 id 集
+FLY_EXPORT_FUNCTION("ds_collect_inst_id_slice",
                     [](const fly::DSPartInstances& instances,
-                       const fly::DSPartitionGeometry& geometry,
-                       const fly::DSPartitionGeometry& geometry_pg,
-                       bool instance_kind, uint32_t partition_id) {
-    return nb::cast(fly::ds_collect_partition_id_slice(
-        instances, geometry, geometry_pg, instance_kind,
-        fly::CMPartitionId{partition_id}));
+                       uint32_t partition_id) {
+    return nb::cast(fly::ds_collect_inst_id_slice(
+        instances, fly::CMPartitionId{partition_id}));
 });
 
-// merge：多分区片段 → (段表, 段集)——段集按 id_start 升序的
-// (id_start, segment) 列表透出（流程侧逐段写正式对象）
-FLY_EXPORT_FUNCTION("ds_merge_id_partition_slices", [](nb::list slices) {
-    fly::CMVector<const fly::DSIdPartitionSlice*> slice_ptrs;
-    for (nb::handle item : slices) {
-        slice_ptrs.push_back(&nb::cast<const fly::DSIdPartitionSlice&>(item));
-    }
-    fly::DSIdPartitionMapResult result =
-        fly::ds_merge_id_partition_slices(slice_ptrs);
-    nb::list segs;
-    for (auto& seg : result.segments) {
-        const uint64_t start = seg.get_id_start();
-        segs.append(nb::make_tuple(start, nb::cast(std::move(seg))));
-    }
-    return nb::make_tuple(nb::cast(std::move(result.index)),
-                          nb::cast(std::move(segs)));
+// 提取（NET 表）：分区产物 → 本区片段 = GEOMETRY + GEOMETRY_PG 两对象
+// 键集并集（2026-09-14 拆分裁定）
+FLY_EXPORT_FUNCTION("ds_collect_net_id_slice",
+                    [](const fly::DSPartitionGeometry& geometry,
+                       const fly::DSPartitionGeometry& geometry_pg,
+                       uint32_t partition_id) {
+    return nb::cast(fly::ds_collect_net_id_slice(
+        geometry, geometry_pg, fly::CMPartitionId{partition_id}));
+});
+
+FLY_EXPORT_FUNCTION("ds_merge_inst_id_partition_slices",
+                    [](nb::list slices) {
+    return fly_export_detail::merge_id_partition_slices_impl<
+        fly::DSIdPartitionSliceT<fly::CMInstanceId>>(std::move(slices));
+});
+
+FLY_EXPORT_FUNCTION("ds_merge_net_id_partition_slices",
+                    [](nb::list slices) {
+    return fly_export_detail::merge_id_partition_slices_impl<
+        fly::DSIdPartitionSliceT<fly::CMNetId>>(std::move(slices));
 });
 
 // ── S10 汇总校验 + 冻结（2026-09-13 校验分级裁定：损坏类 fatal / 观测
@@ -1760,8 +1812,8 @@ FLY_EXPORT_FUNCTION("ds_verify_partition",
                        const fly::DSPartitionNets& nets,
                        const fly::DSPartitionNets& nets_pg) {
     return nb::cast(fly::ds_verify_partition(
-        partition_id, xp, yp, geometry, geometry_pg, instances,
-        inst_connections, nets, nets_pg));
+        fly::CMPartitionId{partition_id}, xp, yp, geometry, geometry_pg,
+        instances, inst_connections, nets, nets_pg));
 });
 
 // S10 全局校验（单任务）：损坏类写报告字段，不在此处 fatal——纯函数可
@@ -1773,26 +1825,31 @@ FLY_EXPORT_FUNCTION("ds_verify_design",
                        const fly::DSDensityGrid& global_density,
                        const fly::DSNetUnion& net_union, nb::list blocks,
                        nb::list nets, nb::list names, nb::list checks) {
-    fly::CMVector<const fly::DSBlockBuildData*> block_ptrs;
+    fly::CMVector<fly::CMSharedPtr<const fly::DSBlockBuildData>> block_shares;
     for (nb::handle item : blocks) {
-        block_ptrs.push_back(&nb::cast<const fly::DSBlockBuildData&>(item));
+        block_shares.push_back(
+            nb::cast<fly::CMSharedPtr<const fly::DSBlockBuildData>>(item));
     }
-    fly::CMVector<const fly::DSNetBuildData*> net_ptrs;
+    fly::CMVector<fly::CMSharedPtr<const fly::DSNetBuildData>> net_shares;
     for (nb::handle item : nets) {
-        net_ptrs.push_back(&nb::cast<const fly::DSNetBuildData&>(item));
+        net_shares.push_back(
+            nb::cast<fly::CMSharedPtr<const fly::DSNetBuildData>>(item));
     }
-    fly::CMVector<const fly::DSBlockNames*> name_ptrs;
+    fly::CMVector<fly::CMSharedPtr<const fly::DSBlockNames>> name_shares;
     for (nb::handle item : names) {
-        name_ptrs.push_back(&nb::cast<const fly::DSBlockNames&>(item));
+        name_shares.push_back(
+            nb::cast<fly::CMSharedPtr<const fly::DSBlockNames>>(item));
     }
-    fly::CMVector<const fly::DSPartitionCheckResult*> check_ptrs;
+    fly::CMVector<fly::CMSharedPtr<const fly::DSPartitionCheckResult>>
+        check_shares;
     for (nb::handle item : checks) {
-        check_ptrs.push_back(
-            &nb::cast<const fly::DSPartitionCheckResult&>(item));
+        check_shares.push_back(
+            nb::cast<fly::CMSharedPtr<const fly::DSPartitionCheckResult>>(
+                item));
     }
     return nb::cast(fly::ds_verify_design(
-        tree, design, stack, global_density, net_union, block_ptrs, net_ptrs,
-        name_ptrs, check_ptrs));
+        tree, design, stack, global_density, net_union, block_shares,
+        net_shares, name_shares, check_shares));
 });
 
 // 损坏类处置：报告损坏类字段非空即 MSG_FATAL_EXIT（码 80 退出 + master
@@ -1817,14 +1874,17 @@ FLY_EXPORT_CLASS(fly::DSInstanceNameMapper, "EXDSNameMapper")
     FLY_EXPORT_DEF("set_block_hasher_by_cell_id",
                    [](fly::DSInstanceNameMapper& m, uint32_t cell_id,
                       const fly::DSBlockNames* names, int kind) {
+        // hasher 底座裸值域豁免边界：cell id 注入侧 CMCellId{} 显式构造
+        //（评审 B-5b——注入主口键强类型化）
+        const fly::CMCellId block_cell_id{cell_id};
         if (names == nullptr) {
             m.set_block_hasher(
-                cell_id,
+                block_cell_id,
                 CMSharedPtr<const fly::DSNameHasherT<uint64_t>>());
             return;
         }
         m.set_block_hasher(
-            cell_id,
+            block_cell_id,
             kind == 0 ? fly::CMSharedPtr<const fly::DSInstanceNameHasher>(
                             names->instance_names_)
                       : fly::CMSharedPtr<const fly::DSNetNameHasher>(
@@ -1870,17 +1930,19 @@ FLY_EXPORT_CLASS(fly::DSInstanceNameMapper, "EXDSNameMapper")
 
 // ㊵②+㊻ 统一组装工厂（Python 统一加载 API 的 C++ 底座）：遍历
 // DSBlockNames 集，block 名经容器 cell hasher 解析 cell id 注入。kind：
-// 0 = INSTANCE、1 = NET。返回的 mapper 持 design 内树的观察指针（design
-// 生命周期覆盖之——Python 侧同时持有 design 与 mapper 引用）。
+// 0 = INSTANCE、1 = NET。返回的 mapper 经 aliasing shared_ptr 持 design
+// 内树（评审 B-5a：生命周期自持，Python 侧不必再同时持有 design）。
+// names 为共享集（评审 B-12——§16 业务层零裸指针）。
 FLY_EXPORT_FUNCTION("ds_make_name_mapper",
-                    [](const fly::DSDesign& design, nb::list names,
-                       int kind) {
-    fly::CMVector<const fly::DSBlockNames*> name_ptrs;
+                    [](std::shared_ptr<const fly::DSDesign> design,
+                       nb::list names, int kind) {
+    fly::CMVector<fly::CMSharedPtr<const fly::DSBlockNames>> name_shares;
     for (nb::handle item : names) {
-        name_ptrs.push_back(&nb::cast<const fly::DSBlockNames&>(item));
+        name_shares.push_back(
+            nb::cast<fly::CMSharedPtr<const fly::DSBlockNames>>(item));
     }
     return nb::cast(fly::ds_make_name_mapper(
-        design, name_ptrs,
+        std::move(design), name_shares,
         kind == 0 ? fly::DSNameMapperKind::INSTANCE
                   : fly::DSNameMapperKind::NET));
 });

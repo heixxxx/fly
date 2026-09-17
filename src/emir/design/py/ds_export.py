@@ -44,12 +44,14 @@ S10 汇总校验：EXDSIdDomain（id 连续性观测域）/ EXDSPartitionCheckRe
 ds_verify_design（全局汇总校验）/ ds_verify_report_or_fatal（损坏类处置：
 非空即 fatal 退出码 80——阻断损坏库冻结）。
 id → partition 反向映射（2026-09-13 debug 定位裁定；2026-09-14 拆分裁
-定 NET 片段源 = 两几何对象键集并集）：EXDSIdPartitionSlice
-（S9 每分区合并任务的临时片段）/ EXDSIdPartitionSegment（段正式对象，
+定 NET 片段源 = 两几何对象键集并集）：EXDSInstIdPartitionSlice /
+EXDSNetIdPartitionSlice（S9 每分区合并任务的临时片段，INST/NET 分表——
+评审 B-6）/ EXDSIdPartitionSegment（段正式对象，
 定长 pids 数组 + 空洞哨兵）/ EXDSIdPartitionIndex（段表轻对象）+
-ds_collect_partition_id_slice（分区产物 → 本区片段：primary inst id 集 /
-两几何对象键集并集）+ ds_merge_id_partition_slices（多片段 → (段表, 段
-集)）。
+ds_collect_inst_id_slice（分区产物 → 本区 INST 片段：primary 实例 id
+集）/ ds_collect_net_id_slice（分区产物 → 本区 NET 片段：两几何对象键
+集并集）+ ds_merge_inst_id_partition_slices / ds_merge_net_id_partition_slices
+（多片段 → (段表, 段集)；评审 B-6：INST/NET 分表 id 强类型化）。
 """
 
 from _fly_emir_design import (
@@ -68,7 +70,8 @@ from _fly_emir_design import (
     EXDSIdDomain,
     EXDSIdPartitionIndex,
     EXDSIdPartitionSegment,
-    EXDSIdPartitionSlice,
+    EXDSInstIdPartitionSlice,
+    EXDSNetIdPartitionSlice,
     EXDSInstance,
     EXDSInstanceStats,
     EXDSLayer,
@@ -100,7 +103,8 @@ from _fly_emir_design import (
     ds_build_net_union,
     ds_build_pg_net_set,
     ds_collect_net_union_slice,
-    ds_collect_partition_id_slice,
+    ds_collect_inst_id_slice,
+    ds_collect_net_id_slice,
     ds_collect_pg_net_slice,
     ds_decide_partitions,
     ds_flatten_block,
@@ -109,7 +113,8 @@ from _fly_emir_design import (
     ds_merge_cell_lef,
     ds_merge_def_header,
     ds_merge_global_density,
-    ds_merge_id_partition_slices,
+    ds_merge_inst_id_partition_slices,
+    ds_merge_net_id_partition_slices,
     ds_net_union_child_indexes,
     ds_parse_cell_lef,
     ds_parse_def_components,

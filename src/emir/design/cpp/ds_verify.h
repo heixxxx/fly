@@ -158,7 +158,7 @@ public:
 // 拆分裁定：对象按类拆写六对象，签名对齐产物形态；geometry 与 nets 两
 // 侧（信号/pg）计数与素材合并口径不变——各对象单侧各自计数后合计）。
 DSPartitionCheckResult ds_verify_partition(
-    uint32_t partition_id, uint32_t xp, uint32_t yp,
+    CMPartitionId partition_id, uint32_t xp, uint32_t yp,
     const DSPartitionGeometry& geometry,
     const DSPartitionGeometry& geometry_pg,
     const DSPartInstances& instances,
@@ -184,10 +184,10 @@ CMString ds_check_partition_coverage(
 DSDesignCheckReport ds_verify_design(
     const DSHierTree& tree, const DSDesign& design, const DSStack& stack,
     const DSDensityGrid& global_density, const DSNetUnion& net_union,
-    const CMVector<const DSBlockBuildData*>& blocks,
-    const CMVector<const DSNetBuildData*>& nets,
-    const CMVector<const DSBlockNames*>& names,
-    const CMVector<const DSPartitionCheckResult*>& checks);
+    const CMVector<CMSharedPtr<const DSBlockBuildData>>& blocks,
+    const CMVector<CMSharedPtr<const DSNetBuildData>>& nets,
+    const CMVector<CMSharedPtr<const DSBlockNames>>& names,
+    const CMVector<CMSharedPtr<const DSPartitionCheckResult>>& checks);
 
 // 损坏类处置（S10 全局校验任务调用）：报告损坏类字段非空即 MSG_FATAL_EXIT
 //（码 80 退出 + master 联动）——逐项顺序判定，首个损坏项触发退出；干净

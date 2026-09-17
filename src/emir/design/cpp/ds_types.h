@@ -615,7 +615,8 @@ public:
     // 端点实例 local id（⑧：0 = block 自身——port 引用条目的占位；
     // 默认 0 与占位语义对齐）
     CMInstanceId instance_local_id_ = CMInstanceId{0};
-    // 端点 pin 全局平铺 id（port 引用 = block cell 的 port pin 全局 id）
+    // 端点 pin id（2026-09-16 裁定 3：全局 pin 名字空间，同名 pin 跨
+    // cell 共享 id；port 引用 = block cell 的 port pin 全局 id）
     CMPinId pin_id_;
     // port / driver / receiver / power / ground / clock 位；driver+
     // receiver 同置 = hybrid（见类注释）

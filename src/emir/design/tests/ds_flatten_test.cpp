@@ -22,6 +22,8 @@
 
 #include <gtest/gtest.h>
 
+#include "borrow_view.h"
+
 #include <cstdint>
 #include <limits>
 
@@ -865,9 +867,9 @@ TEST(DSFlattenTest, PgNetSliceCollectAndFinalize) {
     EXPECT_EQ(top_slice.power_ids_[0], 2u);  // n_pg global 2
 
     DSPgNetSet pg_set;
-    const DSPgNetSlice* slice_ptr = &top_slice;
     // 同片段重复提交（同 pg 网跨分区副本形态）→ set 去重
-    CMVector<const DSPgNetSlice*> slices = {slice_ptr, slice_ptr};
+    CMVector<CMSharedPtr<const DSPgNetSlice>> slices = {test::borrow(top_slice),
+                                                        test::borrow(top_slice)};
     pg_set.finalize_from_flatten(slices);
     EXPECT_EQ(pg_set.power_count(), 1u);
     EXPECT_EQ(pg_set.ground_count(), 0u);
@@ -887,7 +889,7 @@ TEST(DSFlattenTest, PgNetSliceGroundBranchAndRoundTrip) {
     slice.ground_ids_ = CMVector<CMNetId>{CMNetId{7}};
 
     DSPgNetSet pg_set;
-    CMVector<const DSPgNetSlice*> slices = {&slice};
+    CMVector<CMSharedPtr<const DSPgNetSlice>> slices = {test::borrow(slice)};
     pg_set.finalize_from_flatten(slices);
 
     CMString blob;

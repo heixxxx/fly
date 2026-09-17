@@ -121,7 +121,7 @@ EMIR（Electro-Migration 与 IR-Drop 分析）工具链的输入是芯片版图�
 ## 5. id 体系与层级树
 
 - **pin id（2026-09-16 裁定 3，推翻 D1 组合键）**：按唯一 pin 名分配——全局 pin 名字空间键 = 裸 pin 名（原 D1「跨 cell 全局单调分配 + `cell_name/pin_name` 组合键」表述作废），同名 pin 跨 cell 共享同一 id，id 空间 = 库级唯一 pin 名数（几十量级）；per-cell pin 属性（方向/类型随 DSPin、几何/表挂 (cell id, pin id) 双键）；
-- **层级路径（2026-09-16 裁定 1/2）**：实例/网层级路径**不含设计名前缀**——从顶层内容起（`u_core0/u_child`），顶层平铺实例/网 = 单段名，root 段不入路径；root 顶层实例名恒**空串**（`get_full_name(0)` = 空串、`get_global_id("")` = 0，对称语义；树打印 root 行以 `(top)` 占位显示）。依据：外部工具名字（TWF/网表）从不含设计名；
+- **层级路径（2026-09-16 裁定 1/2）**：实例/网层级路径**不含设计名前缀**——从顶层内容起（`u_core0/u_child`），顶层平铺实例/网 = 单段名，root 段不入路径；root 顶层实例名恒**空串**（`get_full_name(0)` = 空串、`get_global_id("")` = 0，对称语义；树打印 root 行以 `(top)` 占位显示；Python 面 `get_full_name` 空名以 **None** 透出——EXDSNameMapper 桥对空串统一返回 None，与未命中不可区分）。依据：外部工具名字（TWF/网表）从不含设计名；
 - **cell id**：block cell 与 macro cell 同一编号空间（S4 头扫描合成 block cell）；fake cell id = max_cell_id + 唯一值（⑳）；
 - **via cell**：独立编号空间、集中权威表；DEF 来源 via 登记名 = `design_name::via_name`（⑫）；
 - **instance id**：local id 从 1 起，local 0 = 当前 block 自身占位；global id 0 = top block instance（⑧）；

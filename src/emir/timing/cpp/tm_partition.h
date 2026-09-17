@@ -313,8 +313,8 @@ TMFileChunkPlan tm_plan_file_chunks(const CMString& path,
 
 // design db 快照共享注入上下文（Python 编排侧快照对象逐个注入；全部
 // CMSharedPtr 持有——生命周期由本类计数管理，业务层零裸指针）。两维度
-// name mapper 于 set_design 时构造（持 design 内层级树观察指针——
-// ds_make_name_mapper 既有先例形态；design_ 共享计数保生命周期）。
+// name mapper 于 set_design 时构造（经 aliasing shared_ptr 持 design
+// 内层级树——评审 B-5a，生命周期自持）。
 // 组装发生在 worker 任务内（master 把 design db 快照对象逐个写入本 db
 // 临时对象——全部已有序列化类型；T2 任务 read_object 后经 export 绑定
 // 的 setter 组装 ctx，mapper 构建为纯内存毫秒级操作）。
@@ -366,8 +366,8 @@ private:
     //    组装；hasher map 存非 const 形态——bitsery 序列化 shared 分支
     //    不支持 const 元素，对外观察口返回 const 化）——
     CMSharedPtr<DSDesign> design_;
-    CMUnorderedMap<uint32_t, CMSharedPtr<DSInstanceNameHasher>> inst_hashers_;
-    CMUnorderedMap<uint32_t, CMSharedPtr<DSNetNameHasher>> net_hashers_;
+    CMUnorderedMap<CMCellId, CMSharedPtr<DSInstanceNameHasher>> inst_hashers_;
+    CMUnorderedMap<CMCellId, CMSharedPtr<DSNetNameHasher>> net_hashers_;
     CMSharedPtr<DSIdPartitionIndex> inst_index_;
     CMUnorderedMap<uint64_t, CMSharedPtr<DSIdPartitionSegment>> inst_segments_;
     CMSharedPtr<DSPgNetSet> pg_nets_;

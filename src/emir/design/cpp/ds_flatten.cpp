@@ -142,8 +142,8 @@ CMWeakPtr<DSNet> DSPartitionNets::net_of(CMNetId net_id) {
 // —— DSPgNetSet ——（全局汇总：各分区片段键集并集——set 天然去重，
 // 同 pg 网跨分区副本只此一条）
 void DSPgNetSet::finalize_from_flatten(
-    const CMVector<const DSPgNetSlice*>& slices) {
-    for (const DSPgNetSlice* slice : slices) {
+    const CMVector<CMSharedPtr<const DSPgNetSlice>>& slices) {
+    for (const CMSharedPtr<const DSPgNetSlice>& slice : slices) {
         if (slice == nullptr) {
             continue;
         }

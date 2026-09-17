@@ -23,6 +23,8 @@
 
 #include <gtest/gtest.h>
 
+#include "borrow_view.h"
+
 #include <cstdint>
 #include <filesystem>
 #include <set>
@@ -61,9 +63,9 @@ DSInstanceContext make_ctx(DSDesign& design, DSBlockBuildData& block_data,
                            CMVector<DSCell>& fake_cells,
                            const char* block_name) {
     DSInstanceContext ctx;
-    ctx.design = &design;
-    ctx.block_data = &block_data;
-    ctx.fake_cells = &fake_cells;
+    ctx.design = test::borrow(design);
+    ctx.block_data = test::borrow(block_data);
+    ctx.fake_cells = test::borrow(fake_cells);
     ctx.block_name = block_name;
     block_data.init_placeholder(block_name, CMCellId{});  // ⑧ local 0 占位
     return ctx;
@@ -310,8 +312,8 @@ TEST(DSDensityNodeTest, SkipsBlockInstanceFootprint) {
 
     // block instance（sub_blk）照常入表/统计，但不入密度通道
     DSInstanceContext ctx;
-    ctx.design = &design;
-    ctx.block_data = &block_data;
+    ctx.design = test::borrow(design);
+    ctx.block_data = test::borrow(block_data);
     ctx.block_name = "blk";
     ctx.instance_name = "b1";
     ctx.master_name = "sub_blk";
@@ -349,8 +351,8 @@ TEST(DSDensityNodeTest, CountsPlacedFootprintSkipsUnplaced) {
     // i1：INV @N t=(2000,2000) → footprint (2000,2000)-(3400,3400)
     // → 跨格 col 2..3 row 2..3 → 4 格各 +1
     DSInstanceContext ctx;
-    ctx.design = &design;
-    ctx.block_data = &block_data;
+    ctx.design = test::borrow(design);
+    ctx.block_data = test::borrow(block_data);
     ctx.block_name = "blk";
     ctx.instance_name = "i1";
     ctx.master_name = "INV_X1";
@@ -385,9 +387,9 @@ TEST(DSStatsNodeTest, CountsPerCellFakeAndUnplaced) {
     const auto run_one = [&](const char* name, const char* master,
                              DSPlacementStatus status) {
         DSInstanceContext ctx;
-        ctx.design = &design;
-        ctx.block_data = &block_data;
-        ctx.fake_cells = &fake_cells;
+        ctx.design = test::borrow(design);
+        ctx.block_data = test::borrow(block_data);
+        ctx.fake_cells = test::borrow(fake_cells);
         ctx.block_name = "blk";
         ctx.instance_name = name;
         ctx.master_name = master;
@@ -420,8 +422,8 @@ TEST(DSBlockBuildDataTest, SerializeRoundTrip) {
     pipeline.add(std::make_unique<DSStatsNode>());
 
     DSInstanceContext ctx;
-    ctx.design = &design;
-    ctx.block_data = &block_data;
+    ctx.design = test::borrow(design);
+    ctx.block_data = test::borrow(block_data);
     ctx.block_name = "blk";
     ctx.instance_name = "i1";
     ctx.master_name = "INV_X1";
@@ -555,8 +557,10 @@ TEST(DsDefComponentsTest, ParsesComponentsAndNetNamesOnePass) {
     DSBlockBuildData block_data;
     CMVector<DSCell> fake_cells;
     DSDefComponentsStats stats;
-    ds_parse_def_components(test_data("block_synth.def").string(), stack, design,
-                     block_data, stats, 1000, fake_cells);
+    ds_parse_def_components(test_data("block_synth.def").string(),
+                            test::borrow(stack), test::borrow(design),
+                            test::borrow(block_data), stats, 1000,
+                            test::borrow(fake_cells));
 
     EXPECT_EQ(stats.component_count, 2);
     EXPECT_EQ(stats.net_count, 2);
@@ -615,8 +619,10 @@ TEST(DsDefComponentsTest, HandlesUnplacedAndDuplicateNets) {
     DSBlockBuildData block_data;
     CMVector<DSCell> fake_cells;
     DSDefComponentsStats stats;
-    ds_parse_def_components(test_data("components_synth.def").string(), stack, design,
-                     block_data, stats, 1000, fake_cells);
+    ds_parse_def_components(test_data("components_synth.def").string(),
+                            test::borrow(stack), test::borrow(design),
+                            test::borrow(block_data), stats, 1000,
+                            test::borrow(fake_cells));
 
     EXPECT_EQ(stats.component_count, 4);
     EXPECT_EQ(block_data.stats_.instance_count, 4u);
@@ -673,8 +679,10 @@ TEST(DsDefComponentsTest, UnreadableFileRaises) {
     DSBlockBuildData block_data;
     CMVector<DSCell> fake_cells;
     DSDefComponentsStats stats;
-    EXPECT_THROW(ds_parse_def_components("/nonexistent/no.def", stack, design,
-                                  block_data, stats, 1000, fake_cells),
+    EXPECT_THROW(ds_parse_def_components("/nonexistent/no.def",
+                                  test::borrow(stack), test::borrow(design),
+                                  test::borrow(block_data), stats, 1000,
+                                  test::borrow(fake_cells)),
                  std::runtime_error);
 }
 

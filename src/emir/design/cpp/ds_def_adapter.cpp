@@ -433,14 +433,16 @@ namespace {
 
 // S5a 回调上下文（经 defrRead userData 传递，无全局状态）
 struct DefComponentsContext {
-    const DSStack* stack;
-    const DSDesign* design;
+    // 环境共享注入（§16 业务层零裸指针——评审 B-10；pipeline 为本入口
+    // 栈对象的同步期观察）
+    CMSharedPtr<const DSStack> stack;
+    CMSharedPtr<const DSDesign> design;
     const DSInstancePipeline* pipeline;
-    DSBlockBuildData* block_data;
+    CMSharedPtr<DSBlockBuildData> block_data;
     DSDefComponentsStats* stats;
     // fake cell 独立容器（⑳：2026-09-13 裁定不入产物本体——解析任务经
     // 临时对象传出、S5a 汇总并入全局表）
-    CMVector<DSCell>* fake_cells;
+    CMSharedPtr<CMVector<DSCell>> fake_cells;
     // UNITS 缺省 100（防无 UNITS 语句文件除零，同 S4）
     int64_t def_units = 100;
     // 密度采样格边长（全局 DBU）；<= 0 = 不配置格网
@@ -564,21 +566,22 @@ int def_components_net_name_cbk(defrCallbackType_e, const char* name,
 
 }  // namespace
 
-void ds_parse_def_components(const CMString& path, const DSStack& stack,
-                             const DSDesign& design,
-                             DSBlockBuildData& block_data,
+void ds_parse_def_components(const CMString& path,
+                             CMSharedPtr<const DSStack> stack,
+                             CMSharedPtr<const DSDesign> design,
+                             CMSharedPtr<DSBlockBuildData> block_data,
                              DSDefComponentsStats& stats,
                              int32_t density_bin_dbu,
-                             CMVector<DSCell>& fake_cells_out) {
+                             CMSharedPtr<CMVector<DSCell>> fake_cells_out) {
     const DSInstancePipeline pipeline = ds_make_components_pipeline();
 
     DefComponentsContext ctx;
-    ctx.stack = &stack;
-    ctx.design = &design;
+    ctx.stack = std::move(stack);
+    ctx.design = std::move(design);
     ctx.pipeline = &pipeline;
-    ctx.block_data = &block_data;
+    ctx.block_data = std::move(block_data);
     ctx.stats = &stats;
-    ctx.fake_cells = &fake_cells_out;
+    ctx.fake_cells = std::move(fake_cells_out);
     ctx.bin_dbu = density_bin_dbu;
 
     FILE* f = std::fopen(path.c_str(), "r");
@@ -627,11 +630,12 @@ namespace {
 
 // S5b 回调上下文（经 defrRead userData 传递，无全局状态）
 struct DefNetsContext {
-    const DSStack* stack;
-    const DSDesign* design;
-    const DSBlockBuildData* block_data;
+    // 环境共享注入（§16 业务层零裸指针——评审 B-10）
+    CMSharedPtr<const DSStack> stack;
+    CMSharedPtr<const DSDesign> design;
+    CMSharedPtr<const DSBlockBuildData> block_data;
     const DSNetPipeline* pipeline;
-    DSNetBuildData* net_data;
+    CMSharedPtr<DSNetBuildData> net_data;
     DSDefNetsStats* stats;
     // UNITS 缺省 100（防无 UNITS 语句文件除零，同 S4/S5a）
     int64_t def_units = 100;
@@ -879,19 +883,21 @@ int def_nets_snet_cbk(defrCallbackType_e, defiNet* net, defiUserData ud) {
 
 }  // namespace
 
-void ds_parse_def_nets(const CMString& path, const DSStack& stack,
-                       const DSDesign& design,
-                       const DSBlockBuildData& block_data,
-                       DSNetBuildData& net_data, DSDefNetsStats& stats,
-                       int32_t density_bin_dbu, int net_batch_size) {
+void ds_parse_def_nets(const CMString& path,
+                       CMSharedPtr<const DSStack> stack,
+                       CMSharedPtr<const DSDesign> design,
+                       CMSharedPtr<const DSBlockBuildData> block_data,
+                       CMSharedPtr<DSNetBuildData> net_data,
+                       DSDefNetsStats& stats, int32_t density_bin_dbu,
+                       int net_batch_size) {
     const DSNetPipeline pipeline = ds_make_nets_pipeline();
 
     DefNetsContext ctx;
-    ctx.stack = &stack;
-    ctx.design = &design;
-    ctx.block_data = &block_data;
+    ctx.stack = std::move(stack);
+    ctx.design = std::move(design);
+    ctx.block_data = std::move(block_data);
     ctx.pipeline = &pipeline;
-    ctx.net_data = &net_data;
+    ctx.net_data = std::move(net_data);
     ctx.stats = &stats;
     ctx.bin_dbu = density_bin_dbu;
     ctx.net_batch_size = net_batch_size > 0 ? net_batch_size : 1;
@@ -939,20 +945,22 @@ void ds_parse_def_nets(const CMString& path, const DSStack& stack,
 
     // 尾批冲刷 + 统计镜像（DSDefNetsStats = 产物内 DSNetStats + 批次数）
     flush_nets_batch(&ctx);
-    stats.net_count = static_cast<int>(net_data.stats_.net_count);
-    stats.connection_count = static_cast<int>(net_data.stats_.connection_count);
-    stats.wire_count = static_cast<int>(net_data.stats_.wire_count);
-    stats.rect_count = static_cast<int>(net_data.stats_.rect_count);
+    const DSNetBuildData& net_data_ref = *ctx.net_data;
+    stats.net_count = static_cast<int>(net_data_ref.stats_.net_count);
+    stats.connection_count =
+        static_cast<int>(net_data_ref.stats_.connection_count);
+    stats.wire_count = static_cast<int>(net_data_ref.stats_.wire_count);
+    stats.rect_count = static_cast<int>(net_data_ref.stats_.rect_count);
     stats.via_instance_count =
-        static_cast<int>(net_data.stats_.via_instance_count);
+        static_cast<int>(net_data_ref.stats_.via_instance_count);
     stats.skipped_via_count =
-        static_cast<int>(net_data.stats_.skipped_via_count);
+        static_cast<int>(net_data_ref.stats_.skipped_via_count);
     stats.skipped_layer_ref_count =
-        static_cast<int>(net_data.stats_.skipped_layer_ref_count);
+        static_cast<int>(net_data_ref.stats_.skipped_layer_ref_count);
     stats.skipped_net_count =
-        static_cast<int>(net_data.stats_.skipped_net_count);
+        static_cast<int>(net_data_ref.stats_.skipped_net_count);
     stats.skipped_invalid_connection_count =
-        static_cast<int>(net_data.stats_.skipped_invalid_connection_count);
+        static_cast<int>(net_data_ref.stats_.skipped_invalid_connection_count);
 }
 
 // ── S4+S4b：DEF 头部一遍读取（原有入口）─────────────────────────────

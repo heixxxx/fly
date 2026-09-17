@@ -53,9 +53,9 @@
 
 namespace fly {
 
-// 链上传递的可变上下文：一行 COMPONENTS 数据 + 环境观察引用 + 节点产出。
-// 环境引用为非拥有观察（裸指针仅限非拥有观察，见 docs/
-// DEVELOPMENT_GUIDELINES.md §16）；生命周期由调用方保证覆盖 run。
+// 链上传递的可变上下文：一行 COMPONENTS 数据 + 环境共享引用 + 节点产出。
+// 环境引用为 CMSharedPtr 共享注入（§16 业务层零裸指针——评审 B-10；
+// 生命周期由共享计数保证，覆盖 run 使用期）。
 struct DSInstanceContext {
     // —— 输入（COMPONENTS 一行，坐标已换算全局 DBU；适配层填充）——
     // 实例名（DEF instName）
@@ -72,16 +72,17 @@ struct DSInstanceContext {
     // 放置状态（DSPlacementStatus 枚举定型存储，2026-09-16 裁定）
     DSPlacementStatus placement_status = DSPlacementStatus::UNPLACED;
 
-    // —— 环境（非拥有观察；调用方保证覆盖 pipeline.run 生命周期）——
+    // —— 环境（CMSharedPtr 共享注入；调用方保证覆盖 pipeline.run 生
+    // 命周期——共享计数自保证）——
     // 全局容器（cell namemap 查询；fake cell 不直接写入——入独立容器，
     // 汇总任务并入）
-    const DSDesign* design = nullptr;
+    CMSharedPtr<const DSDesign> design;
     // per-DEF 产物容器（实例表 / 密度 / 统计 / fake 登记）
-    DSBlockBuildData* block_data = nullptr;
+    CMSharedPtr<DSBlockBuildData> block_data;
     // fake cell 独立容器（⑳：2026-09-13 裁定——产物本体不含 fake cell
     // 副本，解析任务经临时对象传出、S5a 汇总并入全局表；序号 = 容器
     // 尾部下标，与 fake 登记表同步增长）
-    CMVector<DSCell>* fake_cells = nullptr;
+    CMSharedPtr<CMVector<DSCell>> fake_cells;
 
     // —— 节点产出 ——
     // DSCellResolveNode：解析到的 cell id（fake 为任务内分配 id；默认

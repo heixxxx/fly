@@ -62,7 +62,7 @@ uint64_t DSNetUnion::class_count() const { return members_of_.size(); }
 DSNetUnionSlice ds_collect_net_union_slice(
     const DSHierTree& tree,
     const DSNetBuildData& parent_nets,
-    const CMVector<const DSNetBuildData*>& child_defs) {
+    const CMVector<CMSharedPtr<const DSNetBuildData>>& child_defs) {
     DSNetUnionSlice slice;
     slice.block_name_ = parent_nets.get_block_name();
 
@@ -75,13 +75,18 @@ DSNetUnionSlice ds_collect_net_union_slice(
     // block 保留首份，与 S6/S7 既有语义一致）。
     CMUnorderedMap<CMString, CMCellId> cell_id_of_block;
     for (const DSHierNode& node : tree.nodes_) {
+        // 哨兵防御（评审 S7）：无 block cell id 的节点（root 占位/占位
+        // 节点）不入索引——防子定义按 block 名误命中无效键
+        if (!node.get_block_cell_id().is_valid()) {
+            continue;
+        }
         cell_id_of_block.emplace(node.get_block_cell_name(),
                                  node.get_block_cell_id());
     }
     // 两层索引：pin id → (子 block cell id → 子网 local id 集)
     CMUnorderedMap<CMPinId, CMUnorderedMap<CMCellId, CMVector<CMNetId>>>
         port_pin_nets;
-    for (const DSNetBuildData* child : child_defs) {
+    for (const CMSharedPtr<const DSNetBuildData>& child : child_defs) {
         if (child == nullptr) {
             continue;  // 防御（编排侧空条目）
         }
@@ -191,7 +196,7 @@ DSNetUnionSlice ds_collect_net_union_slice(
 // —— 全局汇总 ——
 
 DSNetUnion ds_build_net_union(const DSHierTree& tree,
-                              const CMVector<const DSNetUnionSlice*>& slices) {
+                              const CMVector<CMSharedPtr<const DSNetUnionSlice>>& slices) {
     DSNetUnion out;
 
     // 1) 小规模并查集（port 级规模，路径压缩）
@@ -210,7 +215,7 @@ DSNetUnion ds_build_net_union(const DSHierTree& tree,
         }
         return root;
     };
-    for (const DSNetUnionSlice* slice : slices) {
+    for (const CMSharedPtr<const DSNetUnionSlice>& slice : slices) {
         if (slice == nullptr) {
             continue;
         }
@@ -238,7 +243,7 @@ DSNetUnion ds_build_net_union(const DSHierTree& tree,
     }
     const CMString root_block_name =
         tree.node_count() > 0 ? tree.node(0).get_block_cell_name() : CMString();
-    for (const DSNetUnionSlice* slice : slices) {
+    for (const CMSharedPtr<const DSNetUnionSlice>& slice : slices) {
         if (slice == nullptr || slice->block_name_ == root_block_name) {
             continue;
         }

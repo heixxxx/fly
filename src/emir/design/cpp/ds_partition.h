@@ -78,14 +78,14 @@ struct DSDensityWeights {
     double instance_ = 6.0;
     double metal_ = 2.0;
     double via_ = 2.0;
-    // 逐层密度系数（键 = layer id；裁定 ⑥：低层电阻高/图形多、系数自高
-    // 层向低层递增；首版全 1、接口保留输入，本期不暴露 alpha 键——未登
-    // 记层按 1.0 计）
-    std::unordered_map<CMLayerId::int_type, double> layer_factors_;
+    // 逐层密度系数（键 = CMLayerId 强类型——评审 B-7；裁定 ⑥：低层电
+    // 阻高/图形多、系数自高层向低层递增；首版全 1、接口保留输入，本期
+    // 不暴露 alpha 键——未登记层按 1.0 计）
+    CMUnorderedMap<CMLayerId, double> layer_factors_;
 
     // 层系数读取（未登记 = 1.0）
     double layer_factor(CMLayerId layer_id) const {
-        const auto it = layer_factors_.find(layer_id.value());
+        const auto it = layer_factors_.find(layer_id);
         return it == layer_factors_.end() ? 1.0 : it->second;
     }
 };
@@ -98,8 +98,8 @@ struct DSDensityWeights {
 // 置）→ 返回未配置空图（空结果放行，dev-rules §7）。
 DSDensityGrid ds_merge_global_density(
     const DSHierTree& tree,
-    const CMVector<const DSBlockBuildData*>& blocks,
-    const CMVector<const DSNetBuildData*>& nets);
+    const CMVector<CMSharedPtr<const DSBlockBuildData>>& blocks,
+    const CMVector<CMSharedPtr<const DSNetBuildData>>& nets);
 
 // S8 分区决策 → 分区表（行主序产出；跳过空段——切线数超过格数时段长可
 // 为 0，零格段不产出分区）。global 未配置 → 空表。alpha 键语义：

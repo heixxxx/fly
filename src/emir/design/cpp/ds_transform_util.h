@@ -32,13 +32,14 @@
 namespace fly {
 
 // t → pos 换算的几何核心（bbox/origin 直取版本）：供责任链在 cell 数据
-// 不经 DSCell 承载时复用（fake cell 占位 1×1 的等价输入）。
-inline GEOTransform place_from_def(GEOPoint t, int orient_int,
+// 不经 DSCell 承载时复用（fake cell 占位 1×1 的等价输入）。orient 以
+// GEOOrientation 直传（评审 B-10：消 typed→int→typed 往返——defin 回
+// 调整型与枚举值同源零映射（P5 裁定），整型转枚举收拢在 Si2 回调边界
+//（ds_def_adapter）一次完成）。
+inline GEOTransform place_from_def(GEOPoint t, GEOOrientation orient,
                                             const GEORect& bbox,
                                             int32_t origin_x, int32_t origin_y) {
-    // defin 回调 orient 整型与 GEOOrientation 值同源（N=0..FE=7，
-    // Si2 DEF_ORIENT_*），直转零映射（P5 裁定）
-    const GEOOrientation o = static_cast<GEOOrientation>(orient_int);
+    const GEOOrientation o = orient;
     // 放置边界 box = [−origin_, −origin_+(W,H)]（宽高由 bbox 派生）
     const GEORect box(-origin_x, -origin_y,
                                -origin_x + bbox.width(),
@@ -52,9 +53,9 @@ inline GEOTransform place_from_def(GEOPoint t, int orient_int,
 }
 
 // DEF placement → instance transform（R6 业务接入主入口）
-inline GEOTransform place_from_def(GEOPoint t, int orient_int,
+inline GEOTransform place_from_def(GEOPoint t, GEOOrientation orient,
                                             const DSCell& cell) {
-    return place_from_def(t, orient_int, cell.get_bbox(), cell.get_origin_x(),
+    return place_from_def(t, orient, cell.get_bbox(), cell.get_origin_x(),
                           cell.get_origin_y());
 }
 

@@ -86,9 +86,9 @@ struct DSNetRawVia {
     int32_t step_y = 0;
 };
 
-// 链上传递的可变上下文：一个网 + 环境观察引用 + 节点产出。环境引用为
-// 非拥有观察（裸指针仅限非拥有观察，DEVELOPMENT_GUIDELINES §16）；
-// 生命周期由调用方保证覆盖 run。
+// 链上传递的可变上下文：一个网 + 环境共享引用 + 节点产出。环境引用为
+// CMSharedPtr 共享注入（§16 业务层零裸指针——评审 B-10）；生命周期由
+// 共享计数保证，覆盖 run 使用期。
 struct DSNetContext {
     // —— 输入（单网原解析数据）——
     CMString net_name;
@@ -105,11 +105,11 @@ struct DSNetContext {
     CMVector<DSNetRawRect> rects;
     CMVector<DSNetRawVia> vias;
 
-    // —— 环境（非拥有观察）——
-    const DSStack* stack = nullptr;                  // 层名解析 + 缺省宽
-    const DSDesign* design = nullptr;                // via cell 权威表（⑪）
-    const DSBlockBuildData* block_data = nullptr;    // local net namemap（⑨）
-    DSNetBuildData* net_data = nullptr;              // 产物容器（落批追加）
+    // —— 环境（CMSharedPtr 共享注入）——
+    CMSharedPtr<const DSStack> stack;                // 层名解析 + 缺省宽
+    CMSharedPtr<const DSDesign> design;              // via cell 权威表（⑪）
+    CMSharedPtr<const DSBlockBuildData> block_data;  // local net namemap（⑨）
+    CMSharedPtr<DSNetBuildData> net_data;            // 产物容器（落批追加）
     // DEF DESIGN 名（⑫ 前缀 via 解析回退用）
     CMString design_name;
 

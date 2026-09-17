@@ -23,6 +23,8 @@
 #include <common/testing/cpp/test_helpers.h>
 #include <gtest/gtest.h>
 
+#include "borrow_view.h"
+
 #include <chrono>
 #include <cstdint>
 #include <functional>
@@ -107,13 +109,13 @@ struct HierEnv {
     }
 };
 
-// blocks/nets 借指针（与生产接口同形态）
+// blocks/nets 借用观察集（与生产接口同形态——评审 B-12 共享集）
 struct HierPtrs {
-    CMVector<const DSBlockBuildData*> blocks;
-    CMVector<const DSNetBuildData*> nets;
+    CMVector<CMSharedPtr<const DSBlockBuildData>> blocks;
+    CMVector<CMSharedPtr<const DSNetBuildData>> nets;
     explicit HierPtrs(HierEnv& env) {
-        for (auto& b : env.blocks) blocks.push_back(&b);
-        for (auto& n : env.nets) nets.push_back(&n);
+        for (auto& b : env.blocks) blocks.push_back(test::borrow(b));
+        for (auto& n : env.nets) nets.push_back(test::borrow(n));
     }
 };
 
@@ -420,8 +422,8 @@ TEST(DSHierTreeTest, MismatchedNetCountsFatalsWithCode80) {
 
 TEST(DSHierTreeTest, EmptyDefsYieldEmptyTree) {
     HierEnv env;
-    CMVector<const DSBlockBuildData*> empty_blocks;
-    CMVector<const DSNetBuildData*> empty_nets;
+    CMVector<CMSharedPtr<const DSBlockBuildData>> empty_blocks;
+    CMVector<CMSharedPtr<const DSNetBuildData>> empty_nets;
     const DSHierTree tree =
         ds_build_hier_tree(empty_blocks, empty_nets, env.design);
     EXPECT_EQ(tree.node_count(), 0u);

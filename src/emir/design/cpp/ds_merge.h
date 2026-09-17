@@ -67,8 +67,9 @@ int ds_merge_block_build(DSDesign& dst, DSBlockBuildData& block_data,
 // 裁定，原 raise 改 fatal message；见 docs/message-system.md fatal 章节）。
 // block 定义的 local 0（自身占位）→ 该 block instance 的 global id
 //（⑧，存节点 self_global_id_）。
-DSHierTree ds_build_hier_tree(const CMVector<const DSBlockBuildData*>& blocks,
-                              const CMVector<const DSNetBuildData*>& nets,
-                              const DSDesign& design);
+DSHierTree ds_build_hier_tree(
+    const CMVector<CMSharedPtr<const DSBlockBuildData>>& blocks,
+    const CMVector<CMSharedPtr<const DSNetBuildData>>& nets,
+    const DSDesign& design);
 
 }  // namespace fly

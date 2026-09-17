@@ -193,8 +193,10 @@ void run_grid(int depth, int fanout, uint64_t names_count,
               const CMSharedPtr<DSInstanceNameHasher>& leaf_hasher) {
     // 装置：树 + mapper（叶 cell 注入共享 hasher）
     BenchTree bt = make_bench_tree(depth, fanout, names_count);
-    DSInstanceNameMapper mapper(&bt.tree, DSNameMapperKind::INSTANCE);
-    mapper.set_block_hasher(kLeafCellId, leaf_hasher);
+    DSInstanceNameMapper mapper(
+        CMSharedPtr<const DSHierTree>{CMSharedPtr<DSHierTree>(), &bt.tree},
+        DSNameMapperKind::INSTANCE);
+    mapper.set_block_hasher(CMCellId{kLeafCellId}, leaf_hasher);
 
     // 查询样本：随机叶节点 × 随机叶名（固定 seed 可复现）
     // 路径 = "m1/.../leaf_<k>/n%07d"（裁定 1：不含设计名前缀）；期望

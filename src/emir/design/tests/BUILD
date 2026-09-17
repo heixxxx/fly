@@ -57,7 +57,7 @@ cc_test(
 
 cc_test(
     name = "ds_instance_pipeline_test",
-    srcs = ["ds_instance_pipeline_test.cpp"],
+    srcs = ["ds_instance_pipeline_test.cpp", "borrow_view.h"],
     data = [
         "data/block_synth.def",
         "data/components_synth.def",
@@ -73,7 +73,7 @@ cc_test(
 
 cc_test(
     name = "ds_net_pipeline_test",
-    srcs = ["ds_net_pipeline_test.cpp"],
+    srcs = ["ds_net_pipeline_test.cpp", "borrow_view.h"],
     data = [
         "data/nets_synth.def",
         "data/tech_synth.lef",
@@ -88,7 +88,7 @@ cc_test(
 
 cc_test(
     name = "ds_hier_test",
-    srcs = ["ds_hier_test.cpp"],
+    srcs = ["ds_hier_test.cpp", "borrow_view.h"],
     deps = [
         "@googletest//:gtest_main",
         "//src/common/testing:fly_common_testing",
@@ -100,7 +100,7 @@ cc_test(
 
 cc_test(
     name = "ds_name_mapper_test",
-    srcs = ["ds_name_mapper_test.cpp"],
+    srcs = ["ds_name_mapper_test.cpp", "borrow_view.h"],
     deps = [
         "@googletest//:gtest_main",
         "//src/emir/design/cpp:fly_emir_design_ds_types",
@@ -135,7 +135,7 @@ cc_test(
 
 cc_test(
     name = "ds_partition_test",
-    srcs = ["ds_partition_test.cpp"],
+    srcs = ["ds_partition_test.cpp", "borrow_view.h"],
     deps = [
         "@googletest//:gtest_main",
         "//src/emir/design/cpp:fly_emir_design_ds_types",
@@ -147,7 +147,7 @@ cc_test(
 # S7 跨块连接归并（并查集；合成树 + 连接数据，同 ds_hier_test 模式）
 cc_test(
     name = "ds_union_test",
-    srcs = ["ds_union_test.cpp"],
+    srcs = ["ds_union_test.cpp", "borrow_view.h"],
     deps = [
         "@googletest//:gtest_main",
         "//src/emir/design/cpp:fly_emir_design_ds_types",
@@ -177,7 +177,7 @@ cc_test(
 # S9 flatten 展平 + 分区保存（合成树 + 分区表，同 ds_partition_test 模式）
 cc_test(
     name = "ds_flatten_test",
-    srcs = ["ds_flatten_test.cpp"],
+    srcs = ["ds_flatten_test.cpp", "borrow_view.h"],
     deps = [
         "@googletest//:gtest_main",
         "//src/emir/design/cpp:fly_emir_design_ds_types",
@@ -190,7 +190,7 @@ cc_test(
 # 空洞段跳过/段表二分/序列化往返）
 cc_test(
     name = "ds_id_map_test",
-    srcs = ["ds_id_map_test.cpp"],
+    srcs = ["ds_id_map_test.cpp", "borrow_view.h"],
     deps = [
         "@googletest//:gtest_main",
         "//src/emir/design/cpp:fly_emir_design_ds_types",
@@ -203,7 +203,7 @@ cc_test(
 # 路径 fork 断言需要共享断言设施）
 cc_test(
     name = "ds_verify_test",
-    srcs = ["ds_verify_test.cpp"],
+    srcs = ["ds_verify_test.cpp", "borrow_view.h"],
     deps = [
         "@googletest//:gtest_main",
         "//src/common/testing:fly_common_testing",

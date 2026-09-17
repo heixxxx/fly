@@ -15,6 +15,8 @@
 
 #include <gtest/gtest.h>
 
+#include "borrow_view.h"
+
 #include <cstdint>
 #include <limits>
 #include <utility>
@@ -43,17 +45,19 @@ DSBlockBuildData make_block_data(const char* name) {
     return b;
 }
 
-// 生产接口借指针（CMVector<T> → CMVector<const T*>，同 ds_hier_test 先例）
-CMVector<const DSBlockBuildData*> block_ptrs(
+// 生产接口借用观察集（CMVector<T> → 共享集，同 ds_hier_test 先例——
+// 评审 B-12）
+CMVector<CMSharedPtr<const DSBlockBuildData>> block_ptrs(
     const CMVector<DSBlockBuildData>& v) {
-    CMVector<const DSBlockBuildData*> out;
-    for (const auto& b : v) out.push_back(&b);
+    CMVector<CMSharedPtr<const DSBlockBuildData>> out;
+    for (const auto& b : v) out.push_back(test::borrow(b));
     return out;
 }
 
-CMVector<const DSNetBuildData*> net_ptrs(const CMVector<DSNetBuildData>& v) {
-    CMVector<const DSNetBuildData*> out;
-    for (const auto& n : v) out.push_back(&n);
+CMVector<CMSharedPtr<const DSNetBuildData>> net_ptrs(
+    const CMVector<DSNetBuildData>& v) {
+    CMVector<CMSharedPtr<const DSNetBuildData>> out;
+    for (const auto& n : v) out.push_back(test::borrow(n));
     return out;
 }
 
@@ -315,7 +319,8 @@ TEST(DSMergeGlobalDensityTest, SizeMismatchReturnsUnconfigured) {
     TwoNodeEnv env(GEOTransform(GEOPoint(0, 0), GEOOrientation::N));
     env.blocks[0].density_ = make_grid(0, 0, 2, 1, 3);
     env.blocks[1].density_ = make_grid(0, 0, 1, 1, 0);
-    CMVector<const DSNetBuildData*> nets_only_one = {&env.nets[0]};
+    CMVector<CMSharedPtr<const DSNetBuildData>> nets_only_one = {
+        test::borrow(env.nets[0])};
     const DSDensityGrid global =
         ds_merge_global_density(env.tree, block_ptrs(env.blocks),
                                 nets_only_one);

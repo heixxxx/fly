@@ -97,7 +97,8 @@ from .ds_export import (
     ds_build_net_union,
     ds_build_pg_net_set,
     ds_collect_net_union_slice,
-    ds_collect_partition_id_slice,
+    ds_collect_inst_id_slice,
+    ds_collect_net_id_slice,
     ds_collect_pg_net_slice,
     ds_decide_partitions,
     ds_flatten_block,
@@ -105,7 +106,8 @@ from .ds_export import (
     ds_merge_cell_lef,
     ds_merge_def_header,
     ds_merge_global_density,
-    ds_merge_id_partition_slices,
+    ds_merge_inst_id_partition_slices,
+    ds_merge_net_id_partition_slices,
     ds_net_union_child_indexes,
     ds_verify_design,
     ds_verify_partition,
@@ -779,16 +781,16 @@ def _s9_partition_merge_task(db, slice_prefix, n_groups, pid, xp, yp,
     db.write_object(DesignDb.partition_obj_name(xp, yp, "NETS_PG"),
                     product.nets_pg(), save_to_db=True)
     # 本区映射片段（临时对象；merge 幂等键覆盖后提取——恰一 primary /
-    # net 副本口径见 ds_collect_partition_id_slice，NET = 两几何键集并集）
+    # net 副本口径见 ds_collect_inst_id_slice / ds_collect_net_id_slice，
+    # NET = 两几何键集并集）
     db.write_object(
         DesignDb.id_slice_obj_name(id_slice_prefix, pid, "INST"),
-        ds_collect_partition_id_slice(product.instances(), product.geometry(),
-                                      product.geometry_pg(), True, pid),
+        ds_collect_inst_id_slice(product.instances(), pid),
         save_to_db=False)
     db.write_object(
         DesignDb.id_slice_obj_name(id_slice_prefix, pid, "NET"),
-        ds_collect_partition_id_slice(product.instances(), product.geometry(),
-                                      product.geometry_pg(), False, pid),
+        ds_collect_net_id_slice(product.geometry(), product.geometry_pg(),
+                                pid),
         save_to_db=False)
     # 本区 pg 网片段（临时对象：NETS_PG 侧表键按 use 分流）
     db.write_object(f"{pg_slice_prefix}{pid}",
@@ -840,7 +842,9 @@ def _id_map_merge_task(db, id_slice_prefix, n_parts, kind):
     slices = [db.read_object(DesignDb.id_slice_obj_name(id_slice_prefix,
                                                         pid, kind))
               for pid in range(n_parts)]
-    index, segments = ds_merge_id_partition_slices(slices)
+    merge = (ds_merge_inst_id_partition_slices if kind == "INST"
+             else ds_merge_net_id_partition_slices)
+    index, segments = merge(slices)
     for seg_start, segment in segments:
         db.write_object(
             DesignDb.id_map_segment_obj_name(

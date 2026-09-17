@@ -100,12 +100,13 @@ struct DSDefComponentsStats {
 // 行列数向上取整覆盖 diearea）；DIEAREA 缺失（非法 DEF）时格网不配置，
 // 密度通道空转。block_data 需为空产物（占位由本入口经 DESIGN 回调
 // init_placeholder 建立）。
-void ds_parse_def_components(const CMString& path, const DSStack& stack,
-                             const DSDesign& design,
-                             DSBlockBuildData& block_data,
+void ds_parse_def_components(const CMString& path,
+                             CMSharedPtr<const DSStack> stack,
+                             CMSharedPtr<const DSDesign> design,
+                             CMSharedPtr<DSBlockBuildData> block_data,
                              DSDefComponentsStats& stats,
                              int32_t density_bin_dbu,
-                             CMVector<DSCell>& fake_cells_out);
+                             CMSharedPtr<CMVector<DSCell>> fake_cells_out);
 
 // S5b 统计（批处理侧；实例/网名在 S5a 侧。几何/via instance 计数镜像
 // 产物内 DSNetStats，另加批次观测）
@@ -135,10 +136,12 @@ struct DSDefNetsStats {
 //（plain → ⑫ design:: 前缀回退，未定义跳过 + DSGN::0008）。
 // density_bin_dbu 同 S5a（DIEAREA 配置网侧密度格网）。net_data 需为空
 // 产物。
-void ds_parse_def_nets(const CMString& path, const DSStack& stack,
-                       const DSDesign& design,
-                       const DSBlockBuildData& block_data,
-                       DSNetBuildData& net_data, DSDefNetsStats& stats,
-                       int32_t density_bin_dbu, int net_batch_size);
+void ds_parse_def_nets(const CMString& path,
+                       CMSharedPtr<const DSStack> stack,
+                       CMSharedPtr<const DSDesign> design,
+                       CMSharedPtr<const DSBlockBuildData> block_data,
+                       CMSharedPtr<DSNetBuildData> net_data,
+                       DSDefNetsStats& stats, int32_t density_bin_dbu,
+                       int net_batch_size);
 
 }  // namespace fly

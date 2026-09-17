@@ -51,7 +51,7 @@ TEST(PlaceFromDefTest, NestedDefBlockCellAllOrients) {
     };
     for (const Case& c : cases) {
         const GEOTransform inst =
-            place_from_def(t, c.orient_int, blk);
+            place_from_def(t, static_cast<GEOOrientation>(c.orient_int), blk);
         EXPECT_EQ(inst.get_offset().get_x(), c.px)
             << "orient_int=" << c.orient_int;
         EXPECT_EQ(inst.get_offset().get_y(), c.py)
@@ -97,7 +97,7 @@ TEST(PlaceFromDefTest, LefOriginCellAllOrients) {
     };
     for (const Case& c : cases) {
         const GEOTransform inst =
-            place_from_def(t, c.orient_int, inv);
+            place_from_def(t, static_cast<GEOOrientation>(c.orient_int), inv);
         EXPECT_EQ(inst.get_offset().get_x(), c.px)
             << "orient_int=" << c.orient_int;
         EXPECT_EQ(inst.get_offset().get_y(), c.py)
@@ -123,7 +123,7 @@ TEST(PlaceFromDefTest, DocExampleStdCellWithPin) {
 
     // DEF：- inst1 INV + (100, 200) W —— t = (100000, 200000) @1000 DBU
     const GEOTransform inst =
-        place_from_def(GEOPoint(100000, 200000), 1, inv);
+        place_from_def(GEOPoint(100000, 200000), GEOOrientation::W, inv);
     // pos = (100.4, 200.1) µm —— LEF 宏 (0,0) 点全局位
     EXPECT_EQ(inst.get_offset().get_x(), 100400);
     EXPECT_EQ(inst.get_offset().get_y(), 200100);
@@ -147,7 +147,8 @@ TEST(PlaceFromDefTest, OrientIntDirectCastZeroMapping) {
     cell.set_bbox(GEORect(0, 0, 10, 20));
     for (int oi : kAllOrientInts) {
         const GEOTransform inst =
-            place_from_def(GEOPoint(0, 0), oi, cell);
+            place_from_def(GEOPoint(0, 0), static_cast<GEOOrientation>(oi),
+                           cell);
         EXPECT_EQ(static_cast<int>(inst.get_orient()), oi) << "oi=" << oi;
     }
 }

@@ -67,18 +67,19 @@ public:
     }
 
     DSNameMapperT() = default;
-    // tree 为非拥有观察（不拥有层级树；生命周期由调用方保证覆盖本
-    // mapper 的使用期——树挂 DSDesign 容器持久化）。构造即建分派索引
-    //（R8c 裁定 53，见文件头——索引只依赖树，与 hasher 注入无关）
-    DSNameMapperT(const DSHierTree* tree, DSNameMapperKind kind)
-        : tree_(tree), kind_(kind) {
+    // tree 为共享观察（§16 业务层零裸指针——评审 B-5a：aliasing
+    // shared_ptr 持宿主 DSDesign 计数、指向其内联层级树成员，mapper 生
+    // 命期自保证树存活）。构造即建分派索引（R8c 裁定 53，见文件头——
+    // 索引只依赖树，与 hasher 注入无关）
+    DSNameMapperT(CMSharedPtr<const DSHierTree> tree, DSNameMapperKind kind)
+        : tree_(std::move(tree)), kind_(kind) {
         rebuild_dispatch_index();
     }
 
     // 换树即重建分派索引（R8c 裁定 53：索引与树一一对应，换树后旧键
     // 全部失效——自动重建避免「忘重建查错树」的静默错误）
-    void set_tree(const DSHierTree* tree) {
-        tree_ = tree;
+    void set_tree(CMSharedPtr<const DSHierTree> tree) {
+        tree_ = std::move(tree);
         rebuild_dispatch_index();
     }
     void set_kind(DSNameMapperKind kind) { kind_ = kind; }
@@ -95,8 +96,10 @@ public:
     // CMSharedPtr<const T>，计数管理生命周期），查询全程只读（get_id/
     // get_name 均 const；emplace/assign 仅建库期使用、不经 mapper）。
     // 主口：block 标识 = cell id（block 与 DSCell 同构，㉙；树节点经
-    // block_cell_id_ 关联）。重复注入同键覆盖指向；空指针撤销注入。
-    void set_block_hasher(uint32_t cell_id,
+    // block_cell_id_ 关联；CMCellId 强类型——评审 B-5b，hasher 底座裸
+    // 值域边界 CMCellId{} 显式构造）。重复注入同键覆盖指向；空指针撤
+    // 销注入。
+    void set_block_hasher(CMCellId cell_id,
                           CMSharedPtr<const DSNameHasherT<IdT>> hasher) {
         if (hasher == nullptr) {
             injected_.erase(cell_id);
@@ -122,11 +125,13 @@ public:
     CMString get_full_name(IdT global_id) const;
 
 private:
-    const DSHierTree* tree_ = nullptr;
+    // 层级树共享观察（aliasing shared_ptr 持宿主 design 计数——§16 业
+    // 务层零裸指针，评审 B-5a）
+    CMSharedPtr<const DSHierTree> tree_;
     DSNameMapperKind kind_ = DSNameMapperKind::INSTANCE;
     // 注入表：block cell id → hasher 只读视图（CMSharedPtr 共享计数，㊻
     // 不序列化不落盘；维度语义由 kind 定——instance/net hasher 同型）
-    CMUnorderedMap<uint32_t, CMSharedPtr<const DSNameHasherT<IdT>>> injected_;
+    CMUnorderedMap<CMCellId, CMSharedPtr<const DSNameHasherT<IdT>>> injected_;
     // 分派索引（R8c 裁定 53 方案 B）：block 层次全路径 → 树节点 id 的
     // 纯 name→id 视图（DSHasherBackendHatrie<uint32_t> 直接实例，复用
     // R8b backend 封装；万级条目，运行时从 DSHierTree 遍历重建、不
@@ -143,9 +148,12 @@ using DSNetNameMapper = DSNameMapperT<uint64_t>;
 // 的 C++ 侧；Python 统一加载 API 同构）：遍历 per-DEF 伴生对象集，按
 // block 名（= block cell 名）经容器 cell hasher 解析 cell id 注入。
 // 同名 block 保留首份（与 ds_build_hier_tree 的 def_by_cell_name 一致）。
-// 返回的 mapper 持 design 内树的观察指针（design 生命周期覆盖之）。
-DSInstanceNameMapper ds_make_name_mapper(const DSDesign& design,
-                                         const CMVector<const DSBlockNames*>& names,
-                                         DSNameMapperKind kind);
+// 返回的 mapper 经 aliasing shared_ptr 持 design 内树（评审 B-5a：生命
+// 周期自持——调用侧不必再保证 design 存活期覆盖 mapper）。names 为共
+// 享集（§16 业务层零裸指针——评审 B-12）。
+DSInstanceNameMapper ds_make_name_mapper(
+    CMSharedPtr<const DSDesign> design,
+    const CMVector<CMSharedPtr<const DSBlockNames>>& names,
+    DSNameMapperKind kind);
 
 }  // namespace fly

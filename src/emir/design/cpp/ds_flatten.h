@@ -7,7 +7,7 @@
 //
 // 数据结构（分区产物六类 + 分片中间形态）：
 //   DSNetConnEntry          NETS 侧连接条目 = (端点实例 global id, 端点
-//                           pin 全局平铺 id, flags 六位)——沿用原
+//                           pin 全局名字空间 id, flags 六位)——沿用原
 //                           DSPartConnection 的 NET 维度语义（网 id 由所
 //                           在 DSNet 的键承载，条目不再冗余），2026-09-13
 //                           重组裁定更名。
@@ -109,7 +109,8 @@ class DSNetConnEntry {
 public:
     // 端点实例 global id（⑧ local 0 映射目标；port 位条目 = 块实例自身）
     CMInstanceId inst_id_ = CMInstanceId{0};
-    // 端点 pin 全局平铺 id（S5b 解析边界换算完成，直存）
+    // 端点 pin id（2026-09-16 裁定 3 全局 pin 名字空间；S5b 解析边界
+    // 换算完成，直存）
     CMPinId pin_id_;
     // port / driver / receiver / power / ground / clock 位（S5b 直存；
     // hybrid = driver+receiver 同置）
@@ -128,7 +129,8 @@ public:
     CMInstanceId inst_id_ = CMInstanceId{0};
     // 端点网 global id（local + offset，不换算 root）
     CMNetId net_global_id_;
-    // 端点 pin 全局平铺 id（S5b 解析边界换算完成，直存）
+    // 端点 pin id（2026-09-16 裁定 3 全局 pin 名字空间；S5b 解析边界
+    // 换算完成，直存）
     CMPinId pin_id_;
     // port / driver / receiver / power / ground / clock 位（S5b 直存；
     // hybrid = driver+receiver 同置）
@@ -327,7 +329,8 @@ public:
 
     // 全局汇总（独立轻任务）：全部分区片段键集按 use 分流合并（set 去
     // 重——同 pg 网跨分区副本只此一条）
-    void finalize_from_flatten(const CMVector<const DSPgNetSlice*>& slices);
+    void finalize_from_flatten(
+        const CMVector<CMSharedPtr<const DSPgNetSlice>>& slices);
 
     bool is_power(CMNetId net_id) const { return power_.contains(net_id); }
     bool is_ground(CMNetId net_id) const { return ground_.contains(net_id); }

@@ -327,9 +327,10 @@ int DSDesign::merge_lib(const LIBLibrary& lib) {
 
 // —— S6：层级树构建 + 起始编号分配（⑧⑨⑮）——
 
-DSHierTree ds_build_hier_tree(const CMVector<const DSBlockBuildData*>& blocks,
-                              const CMVector<const DSNetBuildData*>& nets,
-                              const DSDesign& design) {
+DSHierTree ds_build_hier_tree(
+    const CMVector<CMSharedPtr<const DSBlockBuildData>>& blocks,
+    const CMVector<CMSharedPtr<const DSNetBuildData>>& nets,
+    const DSDesign& design) {
     DSHierTree tree;
     if (blocks.empty()) {
         if (!nets.empty()) {

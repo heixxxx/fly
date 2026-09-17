@@ -580,12 +580,12 @@ void TMDesignContext::rebuild_mappers() {
     if (!design_) {
         return;
     }
-    // 两维度 mapper（持 design 内层级树观察指针——ds_make_name_mapper
-    // 先例形态；design_ 共享计数保生命周期）。构造即建分派索引。
-    inst_mapper_ = DSInstanceNameMapper(&design_->get_hier_tree(),
-                                        DSNameMapperKind::INSTANCE);
-    net_mapper_ = DSNetNameMapper(&design_->get_hier_tree(),
-                                  DSNameMapperKind::NET);
+    // 两维度 mapper（树观察 = aliasing shared_ptr 持 design_ 计数——
+    // §16 业务层零裸指针，评审 B-5a；构造即建分派索引）。
+    const CMSharedPtr<const DSHierTree> tree{design_,
+                                             &design_->get_hier_tree()};
+    inst_mapper_ = DSInstanceNameMapper(tree, DSNameMapperKind::INSTANCE);
+    net_mapper_ = DSNetNameMapper(tree, DSNameMapperKind::NET);
     // hasher 注入关系重挂（mapper 为运行时构件，重组装后由此恢复）
     for (const auto& entry : inst_hashers_) {
         inst_mapper_.set_block_hasher(entry.first, entry.second);
@@ -605,13 +605,16 @@ void TMDesignContext::add_block_names(
     if (!DSCellNameHasher::is_valid_id(cell_id)) {
         return;  // block cell 未入全局表（防御跳过，同 ds_make_name_mapper）
     }
+    const CMCellId block_cell_id{cell_id};
     // map 存非 const（序列化约束）、mapper 注入 const 化只读视图
-    inst_hashers_[cell_id] = names->instance_names_;
-    net_hashers_[cell_id] = names->net_names_;
+    inst_hashers_[block_cell_id] = names->instance_names_;
+    net_hashers_[block_cell_id] = names->net_names_;
     inst_mapper_.set_block_hasher(
-        cell_id, CMSharedPtr<const DSInstanceNameHasher>(inst_hashers_[cell_id]));
+        block_cell_id,
+        CMSharedPtr<const DSInstanceNameHasher>(inst_hashers_[block_cell_id]));
     net_mapper_.set_block_hasher(
-        cell_id, CMSharedPtr<const DSNetNameHasher>(net_hashers_[cell_id]));
+        block_cell_id,
+        CMSharedPtr<const DSNetNameHasher>(net_hashers_[block_cell_id]));
 }
 
 void TMDesignContext::set_inst_id_map(
@@ -664,14 +667,14 @@ CMSharedPtr<DSPartitionNets> TMDesignContext::partition_nets(
 
 CMSharedPtr<const DSInstanceNameHasher> TMDesignContext::inst_hasher_of(
     CMCellId block_cell_id) const {
-    const auto it = inst_hashers_.find(block_cell_id.value());
+    const auto it = inst_hashers_.find(block_cell_id);
     return it == inst_hashers_.end() ? CMSharedPtr<const DSInstanceNameHasher>{}
                                      : it->second;
 }
 
 CMSharedPtr<const DSNetNameHasher> TMDesignContext::net_hasher_of(
     CMCellId block_cell_id) const {
-    const auto it = net_hashers_.find(block_cell_id.value());
+    const auto it = net_hashers_.find(block_cell_id);
     return it == net_hashers_.end() ? CMSharedPtr<const DSNetNameHasher>{}
                                     : it->second;
 }

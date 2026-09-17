@@ -100,7 +100,7 @@ public:
 DSNetUnionSlice ds_collect_net_union_slice(
     const DSHierTree& tree,
     const DSNetBuildData& parent_nets,
-    const CMVector<const DSNetBuildData*>& child_defs);
+    const CMVector<CMSharedPtr<const DSNetBuildData>>& child_defs);
 
 // 全局汇总（单任务）：合并全部局部边集 → 小规模并查集（路径压缩）→
 // 逐类 root 规范化（树深度最小者优先、同级最小 global id——树深度经
@@ -110,8 +110,9 @@ DSNetUnionSlice ds_collect_net_union_slice(
 // 的 port 网（顶层引脚连接）不入表不入悬空口径。无树 → 空结果放行
 //（dev-rules §7）；**无边仍有悬空**（全 port 未连父网的输入形态——
 // 悬空判定不依赖边存在，review 2026-09-13 修正）。
-DSNetUnion ds_build_net_union(const DSHierTree& tree,
-                              const CMVector<const DSNetUnionSlice*>& slices);
+DSNetUnion ds_build_net_union(
+    const DSHierTree& tree,
+    const CMVector<CMSharedPtr<const DSNetUnionSlice>>& slices);
 
 // S7 编排辅助（flow slice 任务定位子定义网产物）：返回 def 序号 index
 // 在树上引用的子定义序号集（block_names = def_paths 序的 block 名清单；

@@ -113,15 +113,19 @@ struct SynthEnv {
             {{"top1", CMCellId{0}}, {"c1", CMCellId{2}}, {"c2", CMCellId{2}}},
             2));
         CMVector<DSNetBuildData> nets(2);
-        CMVector<const DSBlockBuildData*> block_ptrs;
-        CMVector<const DSNetBuildData*> net_ptrs;
+        CMVector<CMSharedPtr<const DSBlockBuildData>> block_shares;
+        CMVector<CMSharedPtr<const DSNetBuildData>> net_shares;
         for (const auto& b : blocks) {
-            block_ptrs.push_back(&b);
+            block_shares.push_back(
+                CMSharedPtr<const DSBlockBuildData>{CMSharedPtr<
+                    DSBlockBuildData>(), &b});
         }
         for (const auto& n : nets) {
-            net_ptrs.push_back(&n);
+            net_shares.push_back(
+                CMSharedPtr<const DSNetBuildData>{CMSharedPtr<
+                    DSNetBuildData>(), &n});
         }
-        d->set_hier_tree(ds_build_hier_tree(block_ptrs, net_ptrs, *d));
+        d->set_hier_tree(ds_build_hier_tree(block_shares, net_shares, *d));
 
         // 块 local 名空间伴生对象（与 per-DEF 产物同名对齐）
         auto names = [](const char* block,

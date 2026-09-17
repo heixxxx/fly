@@ -24,6 +24,8 @@
 
 #include <gtest/gtest.h>
 
+#include "borrow_view.h"
+
 #include <cstdint>
 #include <filesystem>
 #include <string>
@@ -143,10 +145,10 @@ DSNetContext make_ctx(const TestEnv& env, const DSBlockBuildData& block_data,
                       DSNetBuildData& net_data, const char* net_name) {
     DSNetContext ctx;
     ctx.net_name = net_name;
-    ctx.stack = &env.stack;
-    ctx.design = &env.design;
-    ctx.block_data = &block_data;
-    ctx.net_data = &net_data;
+    ctx.stack = test::borrow(env.stack);
+    ctx.design = test::borrow(env.design);
+    ctx.block_data = test::borrow(block_data);
+    ctx.net_data = test::borrow(net_data);
     ctx.design_name = "nets_blk";
     return ctx;
 }
@@ -604,8 +606,10 @@ TEST(DsDefNetsTest, ParsesNetContentInBatches) {
 
     DSNetBuildData net_data;
     DSDefNetsStats stats;
-    ds_parse_def_nets(test_data("nets_synth.def").string(), env.stack,
-                     env.design, block_data, net_data, stats, 1000, 2);
+    ds_parse_def_nets(test_data("nets_synth.def").string(),
+                      test::borrow(env.stack), test::borrow(env.design),
+                      test::borrow(block_data), test::borrow(net_data), stats,
+                      1000, 2);
 
     // 分批：4 网 / 批大小 2 → 2 批（③ 分批落批，产物与单批一致）
     EXPECT_EQ(stats.batch_count, 2);
@@ -674,9 +678,11 @@ TEST(DsDefNetsTest, UnreadableFileRaises) {
     DSBlockBuildData block_data = env.make_block_data();
     DSNetBuildData net_data;
     DSDefNetsStats stats;
-    EXPECT_THROW(ds_parse_def_nets("/nonexistent/no.def", env.stack,
-                                  env.design, block_data, net_data, stats,
-                                  1000, 1000),
+    EXPECT_THROW(ds_parse_def_nets("/nonexistent/no.def",
+                                  test::borrow(env.stack),
+                                  test::borrow(env.design),
+                                  test::borrow(block_data),
+                                  test::borrow(net_data), stats, 1000, 1000),
                  std::runtime_error);
 }
 

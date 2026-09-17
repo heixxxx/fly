@@ -21,7 +21,7 @@ void DSNameMapperT<IdT>::set_block_hasher(
     for (size_t i = 0; i < tree_->node_count(); ++i) {
         const DSHierNode& n = tree_->node(static_cast<uint32_t>(i));
         if (n.get_block_cell_name() == cell_name) {
-            set_block_hasher(n.get_block_cell_id().value(), std::move(hasher));
+            set_block_hasher(n.get_block_cell_id(), std::move(hasher));
             return;  // 取首个同名 block 定义（与 def_by_cell_name 一致）
         }
     }
@@ -120,7 +120,7 @@ IdT DSNameMapperT<IdT>::get_global_id(const CMString& full_hier_name) const {
     const DSHierNode& cur = tree_->node(node_id);
 
     // 叶段：当前节点的注入 hasher 查 local id（㊻ 未注入 → 哨兵）
-    const auto it = injected_.find(cur.get_block_cell_id().value());
+    const auto it = injected_.find(cur.get_block_cell_id());
     if (it == injected_.end()) {
         return kInvalidId;
     }
@@ -170,7 +170,7 @@ CMString DSNameMapperT<IdT>::get_full_name(IdT global_id) const {
         if (local == 0) {
             return prefix;  // block instance 自身路径（⑧ local 0 占位）
         }
-        const auto it = injected_.find(n.get_block_cell_id().value());
+        const auto it = injected_.find(n.get_block_cell_id());
         if (it == injected_.end()) {
             return {};  // ㊻ 局部注入 = 局部可查
         }
@@ -187,7 +187,7 @@ CMString DSNameMapperT<IdT>::get_full_name(IdT global_id) const {
         return {};
     }
     const DSHierNode& n = tree_->node(node_id);
-    const auto it = injected_.find(n.get_block_cell_id().value());
+    const auto it = injected_.find(n.get_block_cell_id());
     if (it == injected_.end()) {
         return {};
     }
@@ -207,14 +207,21 @@ template class DSNameMapperT<uint64_t>;
 // —— 统一组装工厂（㊵②+㊻：读 DSBlockNames + 构造 mapper + 注入）——
 
 DSInstanceNameMapper ds_make_name_mapper(
-    const DSDesign& design, const CMVector<const DSBlockNames*>& names,
+    CMSharedPtr<const DSDesign> design,
+    const CMVector<CMSharedPtr<const DSBlockNames>>& names,
     DSNameMapperKind kind) {
-    DSInstanceNameMapper mapper(&design.get_hier_tree(), kind);
-    for (const DSBlockNames* bn : names) {
+    // 树观察 = aliasing shared_ptr（持 design 计数、指向其内联树成员
+    // ——评审 B-5a：mapper 生命周期自保证树存活，调用侧不再背
+    // 「design 存活期覆盖 mapper」的契约）
+    DSInstanceNameMapper mapper(
+        CMSharedPtr<const DSHierTree>(design, &design->get_hier_tree()),
+        kind);
+    for (const CMSharedPtr<const DSBlockNames>& bn : names) {
         if (bn == nullptr) {
             continue;
         }
-        const uint32_t cell_id = design.cell_names_.get_id(bn->block_name_);
+        // hasher 底座裸值域豁免边界：cell id 查询/注入两侧显式互转
+        const uint32_t cell_id = design->cell_names_.get_id(bn->block_name_);
         if (!DSCellNameHasher::is_valid_id(cell_id)) {
             continue;  // block cell 未入全局表（防御跳过）
         }
@@ -224,7 +231,7 @@ DSInstanceNameMapper ds_make_name_mapper(
             kind == DSNameMapperKind::INSTANCE
                 ? CMSharedPtr<const DSInstanceNameHasher>(bn->instance_names_)
                 : CMSharedPtr<const DSNetNameHasher>(bn->net_names_);
-        mapper.set_block_hasher(cell_id, view);
+        mapper.set_block_hasher(CMCellId{cell_id}, view);
     }
     return mapper;
 }

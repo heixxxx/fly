@@ -106,9 +106,9 @@ void DSInstanceBuildNode::handle(DSInstanceContext& ctx) {
     }
     DSInstance inst;
     inst.set_cell_id(ctx.cell_id);
-    // R6：t → pos 放置边界换算（orient 直转已在适配层完成）
-    inst.set_transform(place_from_def(ctx.placement,
-                                      static_cast<int>(ctx.orient),
+    // R6：t → pos 放置边界换算（GEOOrientation 直传——评审 B-10，消
+    // typed→int→typed 往返）
+    inst.set_transform(place_from_def(ctx.placement, ctx.orient,
                                       ctx.cell_bbox, ctx.cell_origin_x,
                                       ctx.cell_origin_y));
     inst.set_placement_status(ctx.placement_status);

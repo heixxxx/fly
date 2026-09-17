@@ -77,15 +77,16 @@ void check_hasher_closure(const Hasher& hasher, const CMString& label,
 
 // namemap 双向一致校验（损坏类）：cell/pin/via cell/layer 四全局 hasher
 // 全查（量小）+ 每伴生 instance/net hasher 全查（per-DEF 名字表）。
-CMString ds_check_name_maps(const DSDesign& design, const DSStack& stack,
-                            const CMVector<const DSBlockNames*>& names) {
+CMString ds_check_name_maps(
+    const DSDesign& design, const DSStack& stack,
+    const CMVector<CMSharedPtr<const DSBlockNames>>& names) {
     size_t bad = 0;
     CMString first;
     check_hasher_closure(design.cell_names_, "cell", bad, first);
     check_hasher_closure(design.pin_names_, "pin", bad, first);
     check_hasher_closure(design.via_cell_names_, "via_cell", bad, first);
     check_hasher_closure(stack.layer_names_, "layer", bad, first);
-    for (const DSBlockNames* n : names) {
+    for (const CMSharedPtr<const DSBlockNames>& n : names) {
         const CMString at = "@" + n->block_name_;
         check_hasher_closure(*n->instance_names_, "instance" + at, bad, first);
         check_hasher_closure(*n->net_names_, "net" + at, bad, first);
@@ -199,14 +200,14 @@ CMString ds_check_partition_coverage(
 // —— 分区级校验（每分区一任务；只读本分区六类产物）────────────────────
 
 DSPartitionCheckResult ds_verify_partition(
-    uint32_t partition_id, uint32_t xp, uint32_t yp,
+    CMPartitionId partition_id, uint32_t xp, uint32_t yp,
     const DSPartitionGeometry& geometry,
     const DSPartitionGeometry& geometry_pg,
     const DSPartInstances& instances,
     const DSPartInstConnections& inst_connections,
     const DSPartitionNets& nets, const DSPartitionNets& nets_pg) {
     DSPartitionCheckResult r;
-    r.partition_id_ = CMPartitionId{partition_id};
+    r.partition_id_ = partition_id;
     r.xp_ = xp;
     r.yp_ = yp;
 
@@ -273,10 +274,10 @@ DSPartitionCheckResult ds_verify_partition(
 DSDesignCheckReport ds_verify_design(
     const DSHierTree& tree, const DSDesign& design, const DSStack& stack,
     const DSDensityGrid& global_density, const DSNetUnion& net_union,
-    const CMVector<const DSBlockBuildData*>& blocks,
-    const CMVector<const DSNetBuildData*>& nets,
-    const CMVector<const DSBlockNames*>& names,
-    const CMVector<const DSPartitionCheckResult*>& checks) {
+    const CMVector<CMSharedPtr<const DSBlockBuildData>>& blocks,
+    const CMVector<CMSharedPtr<const DSNetBuildData>>& nets,
+    const CMVector<CMSharedPtr<const DSBlockNames>>& names,
+    const CMVector<CMSharedPtr<const DSPartitionCheckResult>>& checks) {
     DSDesignCheckReport r;
 
     // 树区间推导期望域（口径见 ds_verify.h 文件头注释）。net 域：
@@ -304,7 +305,7 @@ DSDesignCheckReport ds_verify_design(
     std::unordered_set<CMNetId> net_set;
     std::unordered_set<CMNetId> crossing_set;
     r.partition_count_ = static_cast<uint32_t>(checks.size());
-    for (const DSPartitionCheckResult* c : checks) {
+    for (const CMSharedPtr<const DSPartitionCheckResult>& c : checks) {
         r.total_primary_ += c->primary_instance_count_;
         r.total_instances_ += c->instance_count_;
         r.total_connections_ += c->connection_count_;

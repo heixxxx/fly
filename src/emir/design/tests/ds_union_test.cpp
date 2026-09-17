@@ -19,6 +19,8 @@
 
 #include <gtest/gtest.h>
 
+#include "borrow_view.h"
+
 #include <algorithm>
 #include <cstdint>
 #include <utility>
@@ -133,9 +135,11 @@ struct UnionEnv {
             {3, {{0, 102, true}}},   // (PIN PD)
         });
 
-        CMVector<const DSBlockBuildData*> blocks = {&top, &mid, &bottom};
-        CMVector<const DSNetBuildData*> nets = {&top_nets, &mid_nets,
-                                                &bottom_nets};
+        CMVector<CMSharedPtr<const DSBlockBuildData>> blocks = {
+            test::borrow(top), test::borrow(mid), test::borrow(bottom)};
+        CMVector<CMSharedPtr<const DSNetBuildData>> nets = {
+            test::borrow(top_nets), test::borrow(mid_nets),
+            test::borrow(bottom_nets)};
         tree = ds_build_hier_tree(blocks, nets, design);
     }
 
@@ -146,13 +150,15 @@ struct UnionEnv {
 
     DSNetUnion build_union() const {
         DSNetUnionSlice top_slice =
-            ds_collect_net_union_slice(tree, top_nets, {&mid_nets});
+            ds_collect_net_union_slice(tree, top_nets, {test::borrow(mid_nets)});
         DSNetUnionSlice mid_slice =
-            ds_collect_net_union_slice(tree, mid_nets, {&bottom_nets});
+            ds_collect_net_union_slice(tree, mid_nets,
+                                       {test::borrow(bottom_nets)});
         DSNetUnionSlice bottom_slice =
             ds_collect_net_union_slice(tree, bottom_nets, {});
-        CMVector<const DSNetUnionSlice*> slices = {&top_slice, &mid_slice,
-                                                   &bottom_slice};
+        CMVector<CMSharedPtr<const DSNetUnionSlice>> slices = {
+            test::borrow(top_slice), test::borrow(mid_slice),
+            test::borrow(bottom_slice)};
         return ds_build_net_union(tree, slices);
     }
 };
@@ -164,7 +170,7 @@ TEST(DSNetUnionTest, CollectsSliceEdgesAndPortNets) {
 
     // top（两实例化位置一次收集）：nt↔nm@mid#1、nx↔nm@mid#2
     const DSNetUnionSlice top_slice =
-        ds_collect_net_union_slice(env.tree, env.top_nets, {&env.mid_nets});
+        ds_collect_net_union_slice(env.tree, env.top_nets, {test::borrow(env.mid_nets)});
     ASSERT_EQ(top_slice.edges_.size(), 2u);
     EXPECT_EQ(top_slice.edges_[0].net_a_,
               std::min(env.g(0, 1), env.g(1, 1)));  // 规范化 (min, max)
@@ -180,7 +186,7 @@ TEST(DSNetUnionTest, CollectsSliceEdgesAndPortNets) {
 
     // mid：nm@mid#1↔nb@bottom#1、nm@mid#2↔nb@bottom#2
     const DSNetUnionSlice mid_slice = ds_collect_net_union_slice(
-        env.tree, env.mid_nets, {&env.bottom_nets});
+        env.tree, env.mid_nets, {test::borrow(env.bottom_nets)});
     ASSERT_EQ(mid_slice.edges_.size(), 2u);
     EXPECT_EQ(mid_slice.edges_[0].net_a_,
               std::min(env.g(1, 1), env.g(2, 1)));
@@ -223,16 +229,19 @@ TEST(DSNetUnionTest, MergesEquivalentParentNetsWithCanonicalRoot) {
     DSNetBuildData cb_nets = make_nets("cb", {
         {1, {{0, 105, true}, {0, 106, true}}},
     });
-    CMVector<const DSBlockBuildData*> blocks = {&t2, &cbd};
-    CMVector<const DSNetBuildData*> nets = {&t2_nets, &cb_nets};
+    CMVector<CMSharedPtr<const DSBlockBuildData>> blocks = {test::borrow(t2),
+                                                            test::borrow(cbd)};
+    CMVector<CMSharedPtr<const DSNetBuildData>> nets = {test::borrow(t2_nets),
+                                                        test::borrow(cb_nets)};
     const DSHierTree tree = ds_build_hier_tree(blocks, nets, design);
 
     DSNetUnionSlice t2_slice =
-        ds_collect_net_union_slice(tree, t2_nets, {&cb_nets});
+        ds_collect_net_union_slice(tree, t2_nets, {test::borrow(cb_nets)});
     DSNetUnionSlice cb_slice = ds_collect_net_union_slice(tree, cb_nets, {});
     // cb（子侧视角）无块实例连接 → 无边
     EXPECT_TRUE(cb_slice.edges_.empty());
-    CMVector<const DSNetUnionSlice*> slices = {&t2_slice, &cb_slice};
+    CMVector<CMSharedPtr<const DSNetUnionSlice>> slices = {
+        test::borrow(t2_slice), test::borrow(cb_slice)};
     const DSNetUnion u = ds_build_net_union(tree, slices);
 
     // net 区间（长度含空洞位）：t2 [0,3)、cb [3,5) → na=1、nb=2、nc=4
@@ -354,7 +363,7 @@ TEST(DSNetUnionTest, TwoLayerInvariantHoldsAndRoundTrips) {
 
 TEST(DSNetUnionTest, EmptyInputsYieldEmptyUnion) {
     DSHierTree empty_tree;
-    CMVector<const DSNetUnionSlice*> no_slices;
+    CMVector<CMSharedPtr<const DSNetUnionSlice>> no_slices;
     const DSNetUnion u = ds_build_net_union(empty_tree, no_slices);
     EXPECT_EQ(u.class_count(), 0u);
     EXPECT_EQ(u.dangling_count_, 0u);
@@ -365,7 +374,8 @@ TEST(DSNetUnionTest, EmptyInputsYieldEmptyUnion) {
     UnionEnv env;
     DSNetUnionSlice top_slice =
         ds_collect_net_union_slice(env.tree, env.top_nets, {});
-    CMVector<const DSNetUnionSlice*> slices = {&top_slice};
+    CMVector<CMSharedPtr<const DSNetUnionSlice>> slices = {
+        test::borrow(top_slice)};
     const DSNetUnion u2 = ds_build_net_union(env.tree, slices);
     // top 的边全部需要 mid 网产物对接——未提供子定义 → 无边；port 网
     //（nt/niso 均为 root 块 port 网）不入悬空口径 → 空结果
@@ -383,7 +393,8 @@ TEST(DSNetUnionTest, NoEdgesStillCountsDanglingPorts) {
         ds_collect_net_union_slice(env.tree, env.mid_nets, {});
     DSNetUnionSlice bottom_slice =
         ds_collect_net_union_slice(env.tree, env.bottom_nets, {});
-    CMVector<const DSNetUnionSlice*> slices = {&mid_slice, &bottom_slice};
+    CMVector<CMSharedPtr<const DSNetUnionSlice>> slices = {
+        test::borrow(mid_slice), test::borrow(bottom_slice)};
     const DSNetUnion u = ds_build_net_union(env.tree, slices);
     // 无边（mid 的边需 top 侧、bottom 的边需 mid 侧——均未提供）；树形态
     // = top→m1/m2（mid ×2 实例化）→ 每mid 实例化 bottom ×1（bottom ×2

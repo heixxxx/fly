@@ -409,7 +409,8 @@ public:
     }
 
     // 指定 id 双写（id 由外部编号体系分配：instance/net local id 从 1
-    // 起、fake cell 稀疏 id、pin 全局平铺 id——均非「当前规模」序）。
+    // 起、fake cell 稀疏 id、pin 全局名字空间 id（2026-09-16 裁定 3，键
+    // = 裸 pin 名）——均非「当前规模」序）。
     // resize 容忍空洞（未落位下标为空洞占位）；同名重挂覆盖指向新 id
     // （register_pin 重挂语义）并清空旧 id 槽位——偏移表与 backend 保持
     // 一致（名字至多出现在权威槽位），序列化读回重建才能无损还原

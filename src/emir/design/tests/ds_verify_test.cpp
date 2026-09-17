@@ -21,6 +21,8 @@
 #include <common/testing/cpp/test_helpers.h>
 #include <gtest/gtest.h>
 
+#include "borrow_view.h"
+
 #include <csignal>
 #include <cstdint>
 #include <sys/wait.h>
@@ -275,19 +277,19 @@ PartitionPair make_products() {
 CMVector<DSPartitionCheckResult> check_products(const PartitionPair& pp) {
     CMVector<DSPartitionCheckResult> checks;
     checks.push_back(ds_verify_partition(
-        0, 0, 0, pp.p0.geometry_, pp.p0.geometry_pg_, pp.p0.instances_,
+    CMPartitionId{0}, 0, 0, pp.p0.geometry_, pp.p0.geometry_pg_, pp.p0.instances_,
         pp.p0.inst_connections_, pp.p0.nets_, pp.p0.nets_pg_));
     checks.push_back(ds_verify_partition(
-        1, 1, 0, pp.p1.geometry_, pp.p1.geometry_pg_, pp.p1.instances_,
+    CMPartitionId{1}, 1, 0, pp.p1.geometry_, pp.p1.geometry_pg_, pp.p1.instances_,
         pp.p1.inst_connections_, pp.p1.nets_, pp.p1.nets_pg_));
     return checks;
 }
 
-CMVector<const DSPartitionCheckResult*> check_ptrs(
+CMVector<CMSharedPtr<const DSPartitionCheckResult>> check_ptrs(
     const CMVector<DSPartitionCheckResult>& checks) {
-    CMVector<const DSPartitionCheckResult*> ptrs;
+    CMVector<CMSharedPtr<const DSPartitionCheckResult>> ptrs;
     for (const DSPartitionCheckResult& c : checks) {
-        ptrs.push_back(&c);
+        ptrs.push_back(test::borrow(c));
     }
     return ptrs;
 }
@@ -295,9 +297,12 @@ CMVector<const DSPartitionCheckResult*> check_ptrs(
 // 全局校验入参打包（环境 + 校验结果 → 报告）
 DSDesignCheckReport verify_env_design(
     const VerifyEnv& env, const CMVector<DSPartitionCheckResult>& checks) {
-    CMVector<const DSBlockBuildData*> blocks = {&env.top, &env.sub};
-    CMVector<const DSNetBuildData*> nets = {&env.top_nets, &env.sub_nets};
-    CMVector<const DSBlockNames*> names = {&env.top_names, &env.sub_names};
+    CMVector<CMSharedPtr<const DSBlockBuildData>> blocks = {
+        test::borrow(env.top), test::borrow(env.sub)};
+    CMVector<CMSharedPtr<const DSNetBuildData>> nets = {
+        test::borrow(env.top_nets), test::borrow(env.sub_nets)};
+    CMVector<CMSharedPtr<const DSBlockNames>> names = {
+        test::borrow(env.top_names), test::borrow(env.sub_names)};
     return ds_verify_design(env.tree, env.design, env.stack, env.density,
                             env.net_union, blocks, nets, names,
                             check_ptrs(checks));
@@ -309,7 +314,7 @@ TEST(DSVerifyTest, PartitionCheckCountsAndIdSets) {
     VerifyEnv env;
     PartitionPair pp = make_products();
     DSPartitionCheckResult r0 = ds_verify_partition(
-        0, 0, 0, pp.p0.geometry_, pp.p0.geometry_pg_, pp.p0.instances_,
+    CMPartitionId{0}, 0, 0, pp.p0.geometry_, pp.p0.geometry_pg_, pp.p0.instances_,
         pp.p0.inst_connections_, pp.p0.nets_, pp.p0.nets_pg_);
     EXPECT_EQ(r0.partition_id_, 0u);
     EXPECT_EQ(r0.primary_instance_count_, 2u);          // 1/2 primary
@@ -329,7 +334,7 @@ TEST(DSVerifyTest, PartitionCheckCountsAndIdSets) {
     EXPECT_EQ(r0.primary_instance_ids_[1], 2u);
 
     DSPartitionCheckResult r1 = ds_verify_partition(
-        1, 1, 0, pp.p1.geometry_, pp.p1.geometry_pg_, pp.p1.instances_,
+    CMPartitionId{1}, 1, 0, pp.p1.geometry_, pp.p1.geometry_pg_, pp.p1.instances_,
         pp.p1.inst_connections_, pp.p1.nets_, pp.p1.nets_pg_);
     EXPECT_EQ(r1.primary_instance_count_, 2u);          // 3/5 primary
     EXPECT_EQ(r1.instance_count_, 2u);
@@ -355,7 +360,7 @@ TEST(DSVerifyTest, ObsOnlyNetZeroBucketNotCountedAsCoverage) {
     DSPartitionNets nconns;
     DSPartitionNets nconns_pg;
     const DSPartitionCheckResult r = ds_verify_partition(
-        0, 0, 0, geometry, DSPartitionGeometry(), instances, iconns, nconns,
+    CMPartitionId{0}, 0, 0, geometry, DSPartitionGeometry(), instances, iconns, nconns,
         nconns_pg);
     EXPECT_EQ(r.geometry_entry_count_, 1u);
     EXPECT_TRUE(r.net_ids_.empty());
@@ -427,9 +432,12 @@ TEST(DSVerifyTest, CoverageEmptyDesignPasses) {
     env.design.partitions_ = env.parts;
     DSDensityGrid unconfigured;
     PartitionPair pp = make_products();
-    CMVector<const DSBlockBuildData*> blocks = {&env.top, &env.sub};
-    CMVector<const DSNetBuildData*> nets = {&env.top_nets, &env.sub_nets};
-    CMVector<const DSBlockNames*> names = {&env.top_names, &env.sub_names};
+    CMVector<CMSharedPtr<const DSBlockBuildData>> blocks = {
+        test::borrow(env.top), test::borrow(env.sub)};
+    CMVector<CMSharedPtr<const DSNetBuildData>> nets = {
+        test::borrow(env.top_nets), test::borrow(env.sub_nets)};
+    CMVector<CMSharedPtr<const DSBlockNames>> names = {
+        test::borrow(env.top_names), test::borrow(env.sub_names)};
     const DSDesignCheckReport report = ds_verify_design(
         env.tree, env.design, env.stack, unconfigured, env.net_union, blocks,
         nets, names, check_ptrs(check_products(pp)));

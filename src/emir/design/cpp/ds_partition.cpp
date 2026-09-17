@@ -170,8 +170,9 @@ void scatter_density_channel(const DSDensityGrid& local,
 // 线性实现省去全部中间图构建，内存峰值 = 全局图单份（§4.1 尺度估算：
 // 900 万格级可控）。
 DSDensityGrid ds_merge_global_density(
-    const DSHierTree& tree, const CMVector<const DSBlockBuildData*>& blocks,
-    const CMVector<const DSNetBuildData*>& nets) {
+    const DSHierTree& tree,
+    const CMVector<CMSharedPtr<const DSBlockBuildData>>& blocks,
+    const CMVector<CMSharedPtr<const DSNetBuildData>>& nets) {
     DSDensityGrid global;
     if (tree.node_count() == 0 || blocks.empty()) {
         return global;  // 无 DEF 建库：空图（空结果放行，dev-rules §7）
