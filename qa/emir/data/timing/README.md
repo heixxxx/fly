@@ -61,6 +61,17 @@ Liberty/LEF 工艺库 + 小型确定性设计 + 真实静态时序引擎计算�
 - 混合维度两版条目并存于同一 CAUSED_BY 分组，条目名（网名 vs 实例/引脚
   名）天然不冲突——解析器按 NET/PIN 关键字分派维度标记（pin_kind 位）。
 
+## 建库消费语义：design db NETS 只收有布线几何的网
+
+`tm_design.def` 无布线几何（只有放置 + 网连接）→ design db 的 NETS 分区
+对象不含任何网（连接条目在 INST_CONNECTIONS，跟随实例副本）——
+`build_timing_db` 的网络维度条目全部网名换算命中但无 driver 位可锚定，
+**全部计 TIMG::0003 悬空（合法兜底口径，非数据缺陷）**：`tm_design.twf`
+7 条 / 混合维度 7 条网络条目悬空即此形态（QA 断言 `EXPECT` 的 dangling
+计数来源）；`pg_grid.def` 有真实布线 → pg_grid 网络条目正常锚定
+driver 位。语义权威说明见 `docs/emir/timing-db-plan.md` §7 网行与 §9
+0003 行。
+
 ## pg_grid 放大设计族（tm_design 放大版：64×64 阵列 + 时钟缓冲树）
 
 | 文件 | 角色 |

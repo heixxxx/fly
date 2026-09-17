@@ -20,7 +20,7 @@
 //
 // 名字换算（§7，解析边界一次完成，T2 任务内 C++）：消费 design db 快照
 // （DSDesign 层级树 + cell/pin hasher、DSBlockNames_<i> 块 local 名空间、
-// id_partition_map 段表与段对象、pg_nets 全局集、分区 NETS 对象）——
+// id_partition_map INST 段表与段对象、pg_nets 全局集、分区 NETS 对象）——
 // 上下文 TMDesignContext 以 CMSharedPtr 共享注入（§16 业务层全禁裸指针；
 // mapper 持树观察指针为 ds_make_name_mapper 既有先例形态，生命周期由
 // design 共享计数保证）。
@@ -237,9 +237,11 @@ public:
 
 // ── 中间形态（plan §5.3 temp 对象，freeze 清理）─────────────────────
 
-// 单文件切块表（§2 绑定描述符随计划传递；块区间 = [chunk_starts_[i],
+// 单文件切块表（块区间 = [chunk_starts_[i],
 // i+1 < n ? chunk_starts_[i+1] : file_size_)——文件去掉 (TIMING_WINDOWS
-// 外皮后的顶层子构造序列，T2 解析时重包外皮，块自包含）
+// 外皮后的顶层子构造序列，T2 解析时重包外皮，块自包含）。绑定描述不经
+// 本表传递（评审 P3-5：绑定信息以 flow 参数直达 T2——T1 只做字节切块，
+// 四个 binding 字段从不填充，已删）。
 //
 // 头段公共前缀（评审 P1-1 修复，2026-09-17）：首个 CAUSED_BY（数据构
 // 造）之前的全部顶层构造 = 文件头（HEADER + WAVEFORM 段），单独切为
@@ -250,14 +252,6 @@ public:
 // prefix 置空、块包全文本交解析器判破损兜底。
 struct TMFileChunkPlan {
     CMString file_name_;
-    // 绑定形态（§2）：0 = 纯路径（条目名 = 全层级路径）；1 = block_inst
-    //（条目名 = 该块实例内局部名）；2 = block_cell（条目名 = 该 cell 定
-    // 义内局部名，定义级时序对全部实例成立——建库期复制）
-    int binding_kind_ = 0;
-    CMString block_inst_;
-    CMString block_cell_;
-    // 段级前缀剥离（§7.4；仅绑定形态可附加，空 = 不剥离）
-    CMString strip_prefix_;
     uint64_t file_size_ = 0;
     // 头段公共前缀字节区间（[prefix_start_, prefix_end_)；空表 = 无头段）
     uint64_t prefix_start_ = 0;
@@ -269,8 +263,7 @@ struct TMFileChunkPlan {
     CMVector<uint64_t> chunk_starts_;
     CMVector<uint64_t> chunk_ends_;
 
-    FLY_SERIALIZE(file_name_, binding_kind_, block_inst_, block_cell_,
-                  strip_prefix_, file_size_, prefix_start_, prefix_end_,
+    FLY_SERIALIZE(file_name_, file_size_, prefix_start_, prefix_end_,
                   chunk_starts_, chunk_ends_)
 };
 
@@ -335,11 +328,10 @@ public:
     void rebuild_mappers();
     // 块 local 名空间伴生对象（def 序逐个注入两 mapper + 块 hasher 索引）
     void add_block_names(CMSharedPtr<const DSBlockNames> names);
-    // id → partition 反向映射（INST / NET 各一套：段表 + 全部非空段对象）
+    // id → partition 反向映射（INST 段表 + 全部非空段对象——分区路由唯
+    // 一依赖；NET 维度不参与 T2 路由，评审 P2-2 清理不注入）
     void set_inst_id_map(CMSharedPtr<DSIdPartitionIndex> index);
     void add_inst_segment(CMSharedPtr<DSIdPartitionSegment> segment);
-    void set_net_id_map(CMSharedPtr<DSIdPartitionIndex> index);
-    void add_net_segment(CMSharedPtr<DSIdPartitionSegment> segment);
     // 全局 pg 网 id 集（§7.5 pg 条目跳过判定）
     void set_pg_nets(CMSharedPtr<DSPgNetSet> pg_nets);
     // 分区 NETS 对象（网条目 driver 位定位；键取对象 part_id_）
@@ -352,8 +344,6 @@ public:
     // 实例全局 id → 分区 id（INST 段表 → 段对象；未命中/空洞返回默认
     // 哨兵——调用方按未放置计数）
     CMPartitionId locate_instance_partition(CMInstanceId inst_id) const;
-    // 网全局 id → 分区 id（NET 段表 → 段对象；未命中返回默认哨兵）
-    CMPartitionId locate_net_partition(CMNetId net_id) const;
     // 分区 NETS 对象观察（未快照该分区返回空 shared——调用方按悬空计数）
     CMSharedPtr<DSPartitionNets> partition_nets(CMPartitionId pid) const;
     // 全部快照分区 NETS 对象（网条目遍历口——信号网 NETS 全量补全，任一
@@ -380,8 +370,6 @@ private:
     CMUnorderedMap<uint32_t, CMSharedPtr<DSNetNameHasher>> net_hashers_;
     CMSharedPtr<DSIdPartitionIndex> inst_index_;
     CMUnorderedMap<uint64_t, CMSharedPtr<DSIdPartitionSegment>> inst_segments_;
-    CMSharedPtr<DSIdPartitionIndex> net_index_;
-    CMUnorderedMap<uint64_t, CMSharedPtr<DSIdPartitionSegment>> net_segments_;
     CMSharedPtr<DSPgNetSet> pg_nets_;
     CMUnorderedMap<uint32_t, CMSharedPtr<DSPartitionNets>> part_nets_;
 
@@ -390,10 +378,19 @@ private:
     DSNetNameMapper net_mapper_;
 };
 
+// 绑定形态（§2 三形态；TMFileBinding::kind 的类型——枚举定型存储，
+// 评审 P3-5。对象本身不序列化——worker 端 Python 侧构建后直传 C++）
+enum class TMFileBindingKind : uint8_t {
+    PATH = 0,        // 纯路径（条目名 = 全层级路径）
+    BLOCK_INST = 1,  // block_inst（条目名 = 该块实例内局部名）
+    BLOCK_CELL = 2,  // block_cell（条目名 = 该 cell 定义内局部名，定义级
+                     // 时序对全部实例成立——建库期复制）
+};
+
 // 绑定描述（§2/plan §7；export 面 EXTMFileBinding 的 C++ 侧。worker 端
 // Python 侧构建后直传 C++，不经任务参数传输——无序列化需求）
 struct TMFileBinding {
-    int kind = 0;  // 0 全路径 / 1 block_inst / 2 block_cell
+    TMFileBindingKind kind = TMFileBindingKind::PATH;
     CMString block_inst;
     CMString block_cell;
     CMString strip_prefix;
@@ -446,7 +443,8 @@ TMSummary tm_merge_summary(const CMVector<const TMStatsDelta*>& deltas,
 // 再按文件优先级合并：顶层文件（无绑定、纯路径 kind 0）定义优先，其余
 // （块绑定文件）按文件序首份兜底（2026-09-16 裁定 5）。任何周期/沿时刻
 // 差异计数出参累加（TIMG::0007，保留首份不 raise）。入参 = 每文件
-// (binding_kind, 时钟表)（clocks 已按文件归并的块序表）；remap 出参按
+// (绑定形态 int 0/1/2——flow 归一化文件的 kind, 时钟表)（clocks 已按
+// 文件归并的块序表）；remap 出参按
 // 文件序给出 [file_index][块内 id] → 最终表下标。
 TMClockTable tm_merge_clocks(
     const CMVector<std::pair<int, TMClockTable>>& file_clocks,

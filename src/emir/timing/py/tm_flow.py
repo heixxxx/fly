@@ -2,33 +2,36 @@
 MapReduce——用户裁定 2026-09-15）。
 
 阶段链（plan §6；design db 为直接前驱，快照消费形态同 lib merge 先例
-——跨 db 读取在 master 侧完成，worker 只读本 db）：
-  design 快照组装（master 侧 @wait_obj 阻塞等 design db 必要数据对象——
-    层级树随 DSDesign、DSBlockNames_<i> 伴生对象全集、id_partition_map
-    段表、pg_nets、global_density[S8 分区表锚]；名字伴生对象/段对象/
-    分区 NETS 对象均在锚后写定，函数体内直读。plan §3.1 入口等待语义：
-    不等待 design db freeze，只等必要数据对象）→ 绑定目标校验（块实例
-    路径/块 cell 名未命中 → 入口 ValueError，plan §7.5 可 raise）→ 快照
-    逐对象落 timing db 临时对象（全部已有序列化类型）
-  → T1 切块扫描（master 侧单任务，同步执行——文件已入口校验可读，字节
-    流扫顶层构造边界为毫秒级 I/O；块大小 = alpha chunk_size_mb）→
-    TMChunkPlan 临时对象（块数就此确定，T2 静态提交）
-  → T2 逐块解析任务（每块一任务，全并行；块自包含 = 头段公共前缀拼块，
-    评审 P1-1）：
-    [inputs 注入快照临时对象] → worker 端组装 EXTMDesignContext（共享
-    注入零拷贝）→ tm_convert_chunk（块解析 + §7 名字换算 + 分区路由）→
-    TMEntrySlice 分片临时对象（单块语法破损 → 空分片照常产出，依赖链
-    保持满足——plan §6 范式 (b)）
-  → 时钟表合并任务（独立任务，依赖全部 slices——评审 P1-1：提前至 T3
-    之前，产出 clocks 正式对象 + EXTMClockRemap 重映射桥 + TIMG::0007
-    冲突计数 temp）
-  → T3 每分区一合并任务（依赖 slices + remap——时钟归属经 remap 重写
-    为最终表 id）→ PART_{xp}_{yp}.TIMING 正式对象唯一写定 + 跨文件冲突
-    数临时对象
-  → T4 汇总任务（summary 聚合 + TIMG 消息族一次汇总透出 + 全部文件失
-    败 → TIMG::0009 fatal 码 80，范式 (a)）→ summary 正式对象唯一写定
-  → freeze 任务（依赖全部分区对象 + clocks + summary 写完 + 中间对象
-    清理）
+——跨 db 读取在任务侧完成，worker 只读本 db）：
+  T1 切块扫描（master 侧同步执行——文件已入口校验可读，字节流扫顶层
+    构造边界为毫秒级 I/O，评审 P2-3 判定成立；块大小 = alpha
+    chunk_size_mb）→ TMChunkPlan 临时对象（块数就此确定）
+  → design 快照任务（master 提交后立即返回——评审 P2-3；依赖系统等
+    design db 必要数据对象：层级树随 DSDesign、DSBlockNames_<i> 伴生
+    对象全集、id_partition_map INST 段表、pg_nets、global_density[S8
+    分区表锚]；名字伴生对象/段对象/分区 NETS 对象均在锚后写定，任务体
+    内直读。plan §3.1 入口等待语义：不等待 design db freeze，只等必要
+    数据对象）：绑定目标校验（块实例路径/块 cell 名未命中 → 任务内
+    ValueError，plan §7.5 可 raise 两类之一）→ 快照逐对象落 timing db
+    临时对象（全部已有序列化类型；临时对象键 uid 预生成、布局确定）→
+    worker 上动态提交下游全链（快照键集/分区清单依赖 design db 运行时
+    数据，无法静态提交——同 design flow S9 plan 任务先例）：
+      T2 逐块解析任务（每块一任务，全并行；块自包含 = 头段公共前缀拼
+      块，评审 P1-1）：[inputs 注入快照临时对象] → worker 端组装
+      EXTMDesignContext（共享注入零拷贝）→ tm_convert_chunk（块解析 +
+      §7 名字换算 + 分区路由）→ TMEntrySlice 分片临时对象（单块语法破
+      损 → 空分片照常产出，依赖链保持满足——plan §6 范式 (b)）
+      → 时钟表合并任务（独立任务，依赖全部 slices——评审 P1-1：提前
+        至 T3 之前，产出 clocks 正式对象 + EXTMClockRemap 重映射桥 +
+        TIMG::0007 冲突计数 temp）
+      → T3 每分区一合并任务（依赖 slices + remap——时钟归属经 remap
+        重写为最终表 id）→ PART_{xp}_{yp}.TIMING 正式对象唯一写定 +
+        跨文件冲突数临时对象
+      → T4 汇总任务（summary 聚合 + TIMG 消息族一次汇总透出 + 全部文
+        件失败 → TIMG::0009 fatal 码 80，范式 (a)）→ summary 正式对象
+        唯一写定
+      → freeze 任务（依赖全部分区对象 + clocks + summary 写完 + 中间
+        对象清理）
 
 流程入口 build_timing_db 在 tm_db.py（UserDoc + Schema + @register_flow）。
 """
@@ -36,7 +39,6 @@ MapReduce——用户裁定 2026-09-15）。
 from uuid import uuid4
 
 from fly import as_task, fatal_message, message
-from task import wait_obj
 
 from emir.design import DesignDb, ds_make_name_mapper
 
@@ -58,24 +60,30 @@ def _tmp_key(uid: str, name: str) -> str:
     return f"__tmg__{uid}__{name}"
 
 
-# ── design db 快照组装（master 侧同步；wait_obj 阻塞等必要对象）──────
+# ── design db 快照任务（master 提交、worker 执行；依赖系统等必要对象）──
 
-@wait_obj(inputs=lambda db, design_db, files: [
+@as_task(inputs=lambda db, design_db, uid, files, plan_key: [
     design_db.get_full_name(DesignDb.DESIGN_OBJ),
     design_db.get_full_name(DesignDb.GLOBAL_DENSITY_OBJ),
     design_db.get_full_name(DesignDb.PG_NETS_OBJ),
     design_db.get_full_name(DesignDb.id_map_index_obj_name("INST")),
-    design_db.get_full_name(DesignDb.id_map_index_obj_name("NET")),
+    db.get_full_name(plan_key),
 ])
-def snapshot_design_context(db, design_db, files):
-    """组装 design db 快照并落 timing db 临时对象（plan §3.1 入口等待
-    语义的执行点；返回 (分区清单 [(pid, xp, yp)], 快照键表)。
+def _snapshot_design_task(db, design_db, uid, files, plan_key):
+    """组装 design db 快照、落 timing db 临时对象并动态提交下游全链
+    （plan §3.1 入口等待语义的执行点；评审 P2-3：异步任务化——
+    build_timing_db 提交后立即返回，快照在 worker 上执行）。
 
     锚集证明（与 design flow 写序对照）：DESIGN_OBJ 首写于 S5a 汇总 ⟹
     DSBlockNames_<i> 全集已写；GLOBAL_DENSITY_OBJ 写于 S8 ⟹ 分区表已填
-    （S8 补分区重写后锚——同 _s9_plan_task 口径）；id map 段表写于 S9
-    末段 ⟹ 分区六类正式对象已写（段表最后写定 ⟹ 段对象已写）；pg_nets
-    同为 S9 产物。函数体内直读的其余对象均在锚后。
+    （S8 补分区重写后锚——同 _s9_plan_task 口径）；INST id map 段表写于
+    S9 末段 ⟹ 分区六类正式对象已写（段表最后写定 ⟹ 段对象已写；
+    NET 段表不参与 T2 路由，评审 P2-2 清理其锚与注入）。任务体内直读的
+    其余对象均在锚后。
+
+    绑定目标校验（plan §7.5：块实例路径 / 块 cell 名未命中 → 该文件
+    ValueError——输入语义错误，可 raise 两类之一；评审 P2-3 后随快照
+    任务执行，任务失败语义，不再阻塞 master 提交线程）。
     """
     design = design_db.read_object(DesignDb.DESIGN_OBJ)
     # 名字伴生对象全集（S5a 落盘序 = def 序；逐个读到缺）
@@ -89,8 +97,6 @@ def snapshot_design_context(db, design_db, files):
             break
         i += 1
 
-    # 绑定目标校验（plan §7.5：块实例路径 / 块 cell 名未命中 → 该文件
-    # 入口 ValueError——输入语义错误，可 raise 两类之一）
     mapper = ds_make_name_mapper(design, names_list, 0)  # instance 维度
     for f in files:
         if f["kind"] == 1 and mapper.get_global_id(f["block_inst"]) is None:
@@ -103,8 +109,7 @@ def snapshot_design_context(db, design_db, files):
                 f"in design db (file '{f['file_name']}')")
 
     # 快照逐对象落临时对象（全部已有序列化类型；T2 任务在 worker 端
-    # read_object 后组装 EXTMDesignContext）
-    uid = uuid4().hex[:8]
+    # 组装 EXTMDesignContext）
     keys = {}
 
     def _snap(name, obj):
@@ -115,19 +120,17 @@ def snapshot_design_context(db, design_db, files):
     _snap("design", design)
     _snap("inst_index",
           design_db.read_object(DesignDb.id_map_index_obj_name("INST")))
-    _snap("net_index",
-          design_db.read_object(DesignDb.id_map_index_obj_name("NET")))
     _snap("pg_nets", design_db.read_object(DesignDb.PG_NETS_OBJ))
     for j, names in enumerate(names_list):
         _snap(f"names_{j}", names)
-    # id map 段对象（段表 id_starts 升序；段粒度与 design db 同值口径）
-    for map_kind, seg_prefix in (("INST", "inst_seg"), ("NET", "net_seg")):
-        index = design_db.read_object(DesignDb.id_map_index_obj_name(map_kind))
-        for seg_start in index.id_starts:
-            seg_index = seg_start >> DesignDb.ID_MAP_SEGMENT_BITS
-            _snap(f"{seg_prefix}_{seg_index}",
-                  design_db.read_object(
-                      DesignDb.id_map_segment_obj_name(map_kind, seg_index)))
+    # id map INST 段对象（段表 id_starts 升序；段粒度与 design db 同值
+    # 口径——分区路由唯一依赖，NET 维度不参与 T2 路由，评审 P2-2）
+    index = design_db.read_object(DesignDb.id_map_index_obj_name("INST"))
+    for seg_start in index.id_starts:
+        seg_index = seg_start >> DesignDb.ID_MAP_SEGMENT_BITS
+        _snap(f"inst_seg_{seg_index}",
+              design_db.read_object(
+                  DesignDb.id_map_segment_obj_name("INST", seg_index)))
     # 分区 NETS 对象（网条目 driver 位定位源；分区表行主序）
     partitions = []
     for p in range(design.partition_count):
@@ -137,7 +140,55 @@ def snapshot_design_context(db, design_db, files):
         _snap(f"part_nets_{pid}",
               design_db.read_object(
                   DesignDb.partition_obj_name(xp, yp, "NETS")))
-    return partitions, keys
+
+    # ── 下游全链动态提交（快照键集/分区清单就此已知——S9 plan 先例）──
+    plan = db.read_object(plan_key)
+
+    # T2 每块一任务（全并行；绑定描述以散字段传参——pickle 友好）
+    slice_keys = []
+    for fi, fp in enumerate(plan.files):
+        for cj in range(len(fp.chunk_starts)):
+            slice_key = _tmp_key(uid, f"chunk_{fi}_{cj}")
+            slice_keys.append(slice_key)
+            _t2_chunk_task(db, keys, plan_key, fi, cj,
+                           files[fi]["kind"], files[fi]["block_inst"],
+                           files[fi]["block_cell"],
+                           files[fi]["strip_prefix"], slice_key)
+
+    # 时钟表合并任务（独立任务，依赖全部 slices——评审 P1-1：提前至 T3
+    # 之前，产出 clocks 正式对象 + remap 桥 + 0007 冲突计数 temp）
+    clocks_key = TimingDb.CLOCKS_OBJ
+    remap_key = _tmp_key(uid, "clock_remap")
+    clock_conflicts_key = _tmp_key(uid, "clock_conflicts")
+    _t_clock_merge_task(db, files, slice_keys, clocks_key, remap_key,
+                        clock_conflicts_key)
+
+    # T3 每分区一合并任务（依赖 remap——时钟归属重写为最终表 id；正式
+    # 对象唯一写定 + 冲突计数 temp）
+    conflicts_keys = []
+    for pid, xp, yp in partitions:
+        conflicts_key = _tmp_key(uid, f"conflicts_{pid}")
+        conflicts_keys.append(conflicts_key)
+        _t3_partition_task(db, slice_keys, remap_key, pid, xp, yp,
+                           TimingDb.partition_obj_name(xp, yp),
+                           conflicts_key)
+
+    # T4 汇总（summary 正式对象唯一写定 + 消息族 + fatal 判定）
+    summary_key = TimingDb.SUMMARY_OBJ
+    _t4_summary_task(db, files, slice_keys, conflicts_keys,
+                     clock_conflicts_key, plan_key, summary_key)
+
+    # freeze：正式对象集 + 中间对象清理（alpha_settings 入口已写定）
+    final_keys = [TimingDb.partition_obj_name(xp, yp)
+                  for _, xp, yp in partitions] + [clocks_key, summary_key]
+    temp_keys = [plan_key] + list(keys.values()) + slice_keys \
+        + conflicts_keys + [remap_key, clock_conflicts_key]
+    _freeze_timing_task(db, final_keys, temp_keys)
+
+    from log import INFO
+    INFO(f"timing flow: design snapshot done, {len(partitions)} "
+         f"partition(s), {len(keys)} snapshot object(s), "
+         f"{len(slice_keys)} chunk task(s) submitted")
 
 
 # ── T2 逐块解析任务（每块一任务，全并行）────────────────────────────
@@ -157,7 +208,6 @@ def _t2_chunk_task(db, snapshot_keys, plan_key, file_index, chunk_index,
     ctx = EXTMDesignContext()
     ctx.set_design(db.read_object(snapshot_keys["design"]))
     ctx.set_inst_id_map(db.read_object(snapshot_keys["inst_index"]))
-    ctx.set_net_id_map(db.read_object(snapshot_keys["net_index"]))
     ctx.set_pg_nets(db.read_object(snapshot_keys["pg_nets"]))
     j = 0
     while f"names_{j}" in snapshot_keys:
@@ -167,8 +217,6 @@ def _t2_chunk_task(db, snapshot_keys, plan_key, file_index, chunk_index,
     for name, key in snapshot_keys.items():
         if name.startswith("inst_seg_"):
             ctx.add_inst_segment(db.read_object(key))
-        elif name.startswith("net_seg_"):
-            ctx.add_net_segment(db.read_object(key))
         elif name.startswith("part_nets_"):
             ctx.add_partition_nets(db.read_object(key))
 
@@ -176,7 +224,7 @@ def _t2_chunk_task(db, snapshot_keys, plan_key, file_index, chunk_index,
     file_plan = plan.files[file_index]
 
     binding = EXTMFileBinding()
-    binding.kind = binding_kind
+    binding.set_kind(binding_kind)
     binding.block_inst = block_inst
     binding.block_cell = block_cell
     binding.strip_prefix = strip_prefix
@@ -341,17 +389,13 @@ def _freeze_timing_task(db, final_keys, temp_keys):
 
 
 def run_timing_flow(db, design_db, files, settings):
-    """提交全部阶段任务（非阻塞）。files = normalize_timing_files 归一化
-    描述列表；settings = TMAlphaSettings（db 读回 normalize 兜底）。"""
+    """提交全部阶段任务（非阻塞——评审 P2-3：T1 master 侧同步毫秒级、
+    快照与下游全链由 design 快照任务在 worker 上动态提交，本函数提交完
+    即返回）。files = normalize_timing_files 归一化描述列表；settings =
+    TMAlphaSettings（db 读回 normalize 兜底）。"""
     from log import INFO
     chunk_size = settings.chunk_size_mb * 1024 * 1024
     uid = uuid4().hex[:8]
-
-    # design 快照组装（master 阻塞等 design db 必要对象 → 校验绑定 →
-    # 快照落临时对象）
-    partitions, snapshot_keys = snapshot_design_context(db, design_db, files)
-    INFO(f"timing flow: design snapshot done, {len(partitions)} "
-         f"partition(s), {len(snapshot_keys)} snapshot object(s)")
 
     # T1 切块扫描（master 侧单任务，同步执行——plan §6 字面形态；文件已
     # 入口校验可读，扫描为毫秒级 I/O；块数就此确定，T2 静态提交）
@@ -364,42 +408,7 @@ def run_timing_flow(db, design_db, files, settings):
     INFO(f"timing flow: {len(files)} file(s) planned into {total_chunks} "
          f"chunk task(s)")
 
-    # T2 每块一任务（全并行；绑定描述以散字段传参——pickle 友好）
-    slice_keys = []
-    for fi, fp in enumerate(plan.files):
-        for cj in range(len(fp.chunk_starts)):
-            slice_key = _tmp_key(uid, f"chunk_{fi}_{cj}")
-            slice_keys.append(slice_key)
-            _t2_chunk_task(db, snapshot_keys, plan_key, fi, cj,
-                           files[fi]["kind"], files[fi]["block_inst"],
-                           files[fi]["block_cell"],
-                           files[fi]["strip_prefix"], slice_key)
-
-    # 时钟表合并任务（独立任务，依赖全部 slices——评审 P1-1：提前至 T3
-    # 之前，产出 clocks 正式对象 + remap 桥 + 0007 冲突计数 temp）
-    clocks_key = TimingDb.CLOCKS_OBJ
-    remap_key = _tmp_key(uid, "clock_remap")
-    clock_conflicts_key = _tmp_key(uid, "clock_conflicts")
-    _t_clock_merge_task(db, files, slice_keys, clocks_key, remap_key,
-                        clock_conflicts_key)
-
-    # T3 每分区一合并任务（依赖 remap——时钟归属重写为最终表 id；正式对
-    # 象唯一写定 + 冲突计数 temp）
-    conflicts_keys = []
-    for pid, xp, yp in partitions:
-        conflicts_key = _tmp_key(uid, f"conflicts_{pid}")
-        conflicts_keys.append(conflicts_key)
-        _t3_partition_task(db, slice_keys, remap_key, pid, xp, yp,
-                           TimingDb.partition_obj_name(xp, yp), conflicts_key)
-
-    # T4 汇总（summary 正式对象唯一写定 + 消息族 + fatal 判定）
-    summary_key = TimingDb.SUMMARY_OBJ
-    _t4_summary_task(db, files, slice_keys, conflicts_keys,
-                     clock_conflicts_key, plan_key, summary_key)
-
-    # freeze：正式对象集 + 中间对象清理（alpha_settings 入口已写定）
-    final_keys = [TimingDb.partition_obj_name(xp, yp)
-                  for _, xp, yp in partitions] + [clocks_key, summary_key]
-    temp_keys = [plan_key] + list(snapshot_keys.values()) + slice_keys \
-        + conflicts_keys + [remap_key, clock_conflicts_key]
-    _freeze_timing_task(db, final_keys, temp_keys)
+    # design 快照任务（依赖 design db 必要对象 + plan；快照组装 + 绑定
+    # 校验 + 下游 T2/时钟合并/T3/T4/freeze 全链动态提交——快照键集与分
+    # 区清单依赖 design db 运行时数据，无法静态提交）
+    _snapshot_design_task(db, design_db, uid, files, plan_key)

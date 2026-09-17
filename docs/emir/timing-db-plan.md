@@ -64,13 +64,17 @@ build_timing_db(name, timing_files, design_db, settings=None, alpha=None)
   一独立解析任务组（天然分布式点）。
 - `design_db`——直接前驱显式传参（裁定 13）。
 - 返回 `TimingDb` 句柄；异步 4 步范式（检查 → 建库 → 入口任务链 →
-  freeze 任务），提交后立即返回。
+  freeze 任务），提交后立即返回（评审 P2-3：T1 master 侧同步毫秒级、
+  design 快照为异步任务并在其 worker 执行体上动态提交下游全链——同
+  design flow S9 plan 任务先例）。
 - **入口等待语义**（用户裁定 2026-09-15）：不等待 design db 冻结
-  （`wait_frozen`）——解析任务经 R9 wait_obj 依赖传播只等**必要数据对象**
-  （层级树、各 DEF 名字伴生对象 hasher 集、id_partition_map 段表 + 按需
-  段对象、分区表随 DESIGN_OBJ）。入口校验（master 同步）只查：文件
-  可读 + TWF 头嗅探（`TIMING_WINDOWS` 关键字，误传秒级 ValueError）+
-  alpha 逐键校验。
+  （`wait_frozen`）——design 快照任务经任务依赖只等**必要数据对象**
+  （层级树、各 DEF 名字伴生对象 hasher 集、id_partition_map INST 段表、
+  分区表随 DESIGN_OBJ）。入口校验（master 同步）只查：文件可读 + TWF
+  头嗅探（`TIMING_WINDOWS` 关键字，误传秒级 ValueError）+ alpha 逐键
+  校验 + 绑定描述结构；绑定**目标存在性**（块实例路径 / 块 cell 名在
+  design db 命中）随 design 快照任务异步校验（未命中任务内 ValueError
+  ——评审 P2-3 后不再阻塞 master 提交线程，任务失败语义）。
 
 ### 3.2 读库（tm_functions.py，供其他模块消费）
 
@@ -78,7 +82,7 @@ build_timing_db(name, timing_files, design_db, settings=None, alpha=None)
 |-----|------|------|
 | `load_timing_clocks(db)` | `clocks` | TMClockTable：时钟 id → {名, 周期, 上升/下降沿时刻}（周期 → 频率 = 1/period 由消费侧推导） |
 | `load_timing_summary(db)` | `summary` | 覆盖率/弃收/兜底计数 + 逐来源文件统计 |
-| `iter_timing_partition(db)` | DESIGN_OBJ 锚 | 枚举有时序数据的分区 (xp, yp)（行主序） |
+| `iter_timing_partition(db)` | DESIGN_OBJ 锚 | 枚举全部分区 (xp, yp)（行主序——T3 对每分区写 TIMING 对象，空分区亦产出空对象，与 design 先例同构） |
 | `load_partition_timing(db, xp, yp)` | `PART_{xp}_{yp}.TIMING` | TMPartitionTiming：本区逐实例逐引脚时序 |
 | debug：`get_timing(db, inst_id)` | 同上 + id_partition_map | 单实例点查（经 INST 反向映射定位分区 → 整区加载进程内 LRU，容量 8 同 design debug API 先例） |
 
@@ -153,12 +157,17 @@ RedHawk sta.timing 方言概念）——频率经时钟表周期推导（1/perio
 ## 6. 建库流程（直接任务链，**不用 MapReduce**——用户裁定 2026-09-15）
 
 ```
-入口校验（master 同步：文件可读 + 头嗅探 + alpha）
-→ T1 切块扫描任务（master 侧单任务；逐文件按字节偏移行对齐 + 记录
-   括号边界切块，块大小 alpha chunk_size_mb）→ TMChunkPlan
-→ T2 逐块解析任务（每块一任务，全并行；块自包含 = 后续流式增强路径）
-   每任务：[wait_obj 依赖注入 design db 必要对象]
-   → tm_parse_twf_text(块)（复用已落地解析器）
+入口校验（master 同步：文件可读 + 头嗅探 + alpha + 绑定描述结构）
+→ T1 切块扫描（master 侧单任务，同步执行——毫秒级 I/O；逐文件按字节
+   偏移行对齐 + 记录括号边界切块，块大小 alpha chunk_size_mb）→
+   TMChunkPlan
+→ design 快照任务（master 提交、异步执行——评审 P2-3：依赖系统等
+   design db 必要数据对象，快照组装 + 绑定目标校验 + 落临时对象；随后
+   在 worker 上动态提交下游全链——快照键集/分区清单依赖 design db 运
+   行时数据，无法静态提交，同 design flow S9 plan 任务先例）
+→ T2 逐块解析任务（每块一任务，全并行；块自包含 = 头段公共前缀拼块，
+   评审 P1-1；[inputs 注入快照临时对象]）
+   每任务：tm_parse_twf_text(块)（复用已落地解析器）
    → 名字换算（§7）→ inst_id 经 id_partition_map.INST 段表路由
    → 本块所涉各分区的 TMEntrySlice 片段 + 统计片段
 → T3 每分区一合并任务 → PART_{xp}_{yp}.TIMING 正式对象
@@ -178,7 +187,7 @@ RedHawk sta.timing 方言概念）——频率经时钟表周期推导（1/perio
 
 | 条目维度 | TWF 名字形态 | 换算路径 |
 |----------|-------------|----------|
-| 网络（NET，缺省风味） | 网名（层级路径，**不含设计名前缀**——2026-09-16 命名裁定） | DSNameMapperT(net) → net global id → 分区 NETS 对象该网连接条目中 **driver 位**条目 → (inst_id, pin_id)；无 driver（悬空网/仅端口）→ 端口条目 port 位 → 跳过计数；**多驱动网（2026-09-16 裁定：需处理，不取首个）→ 该网时序值挂全部 driver 位条目**——每个 (inst_id, pin_id) 各存一份、值同源该网条目（Innovus 网级窗口本就是多驱动合并值）+ summary 多驱动网计数（时钟网格即此形态） |
+| 网络（NET，缺省风味） | 网名（层级路径，**不含设计名前缀**——2026-09-16 命名裁定） | DSNameMapperT(net) → net global id → 分区 NETS 对象该网连接条目中 **driver 位**条目 → (inst_id, pin_id)；无 driver（悬空网/仅端口）→ 端口条目 port 位 → 跳过计数；**design db NETS 只收有布线几何的网（「NETS 跟随网副本」既定语义——连接在 INST_CONNECTIONS 的网不落 NETS 表）——未布线设计的网条目全部计 TIMG::0003 悬空（合法兜底口径，见 §9）**；**多驱动网（2026-09-16 裁定：需处理，不取首个）→ 该网时序值挂全部 driver 位条目**——每个 (inst_id, pin_id) 各存一份、值同源该网条目（Innovus 网级窗口本就是多驱动合并值）+ summary 多驱动网计数（时钟网格即此形态） |
 | 引脚（PIN 风味） | `实例层级路径/引脚名` | DSNameMapperT(instance) → inst global id；**pin 名 → 全局 pin 名 id（单哈希查，无 cell 组合键——2026-09-16 裁定：pin 同名同 id）** |
 | CONSTANT | 上述任一 | 同上映射；constant 位置位、无值搬运 |
 
@@ -226,8 +235,9 @@ RedHawk sta.timing 方言概念）——频率经时钟表周期推导（1/perio
   批量前缀换算，预留接口）。
 - pg 网条目（VDD/VSS，若上游未滤）→ 跳过 + 计数（时序无 pg 语义）。
 - 未放置实例（design db 不入分区）→ 跳过 + 计数（与 D14 口径一致）。
-- 绑定目标不存在（块实例路径未命中 / cell 名未命中）→ 该文件入口
-  ValueError（输入语义错误，属可 raise 两类之一）。
+- 绑定目标不存在（块实例路径未命中 / cell 名未命中）→ 该文件 ValueError
+  （输入语义错误，属可 raise 两类之一；评审 P2-3 后随 design 快照任务
+  异步执行——任务失败语义，不阻塞 master 提交线程）。
 
 ## 8. 分区路由与对象布局
 
@@ -242,10 +252,10 @@ RedHawk sta.timing 方言概念）——频率经时钟表周期推导（1/perio
 
 | 消息 | 级别 | 场景 |
 |------|------|------|
-| TIMG::0001 | warn | 实例名未匹配（跳过 + 计数，一次汇总） |
+| TIMG::0001 | warn | 实例名未匹配（跳过 + 计数，一次汇总；**网名未命中并入本族文案**——`net_name_miss_count` 字段随 0001 一并透出） |
 | TIMG::0002 | warn | 引脚名未匹配（跳过 + 计数） |
-| TIMG::0003 | warn | 网条目无驱动/悬空（跳过 + 计数） |
-| TIMG::0004 | warn | 全部输入解析成功但 0 有效条目（空结果放行） |
+| TIMG::0003 | warn | 网条目无驱动/悬空（跳过 + 计数；**成因含 design db NETS 表无此网**——NETS 只收有布线几何的网（§7），未布线设计的网条目全部计此，合法兜底） |
+| TIMG::0004 | warn | 全部输入解析成功但 0 有效条目（空结果放行；触发条件 = `total_hit == 0`，两种成因：① 全部条目名字未命中 design db（0001/0002 家族覆盖全部条目）、② 条目命中但全部被跳过计数（悬空/pg/未放置/strip 未命中）——两种均非建库失败） |
 | TIMG::0005 | warn | alpha 未知/非法键（一次汇总） |
 | TIMG::0006 | warn | 跨文件同名条目冲突（保留首份，沿用裁定 15） |
 | TIMG::0007 | warn | 时钟名跨文件周期/沿不一致（保留首份） |
@@ -289,6 +299,14 @@ src/emir/timing/
 - **单文件流式分布式解析增强**（用户裁定预留）：切块协议已按字节区间
   自包含设计（T1/T2 形态即流式任务的退化形式），增强只动切块器与任务
   派发，不动数据结构；
+- **T3 按需派发**（评审 P3-9）：当前每分区一合并任务读**全部**块分片
+  （分片含各分区片段，任务内按 pid 取本区片段）；块分片可二级索引到
+  「本块触及分区」后，T3 任务 inputs 只声明触及本分区的分片，读放大
+  降为按需；
+- **网条目定位索引**（评审 P3-9）：ctx 组装期建 net → 首个命中分区
+  NETS 对象的索引（当前 T2 逐网条目线性扫全部分区 NETS 对象，
+  O(分区数 × 网条目数)；任一分区副本都有该网完整连接表，索引取首个
+  命中即正确）；
 - 多时钟源分窗口存储（跨时钟域分析，现合并最宽窗口 + multi_source 位）；
 - 新方言接入（format alpha 键预留：RedHawk sta.timing / 新思 twf——
   待真实样例）。

@@ -57,11 +57,6 @@ FLY_EXPORT_CLASS(fly::TMClock, "EXTMClock")
 FLY_EXPORT_CLASS(fly::TMFileChunkPlan, "EXTMFileChunkPlan")
     FLY_EXPORT_INIT()
     FLY_EXPORT_READONLY_ATTR("file_name", &fly::TMFileChunkPlan::file_name_)
-    // 绑定形态 int（0 全路径 / 1 block_inst / 2 block_cell——§2 三形态）
-    FLY_EXPORT_READONLY_ATTR("binding_kind", &fly::TMFileChunkPlan::binding_kind_)
-    FLY_EXPORT_READONLY_ATTR("block_inst", &fly::TMFileChunkPlan::block_inst_)
-    FLY_EXPORT_READONLY_ATTR("block_cell", &fly::TMFileChunkPlan::block_cell_)
-    FLY_EXPORT_READONLY_ATTR("strip_prefix", &fly::TMFileChunkPlan::strip_prefix_)
     FLY_EXPORT_READONLY_ATTR("file_size", &fly::TMFileChunkPlan::file_size_)
     // 头段公共前缀字节区间（评审 P1-1：T2 每块拼 prefix——块间时钟表一致）
     FLY_EXPORT_READONLY_ATTR("prefix_start", &fly::TMFileChunkPlan::prefix_start_)
@@ -332,16 +327,6 @@ FLY_EXPORT_CLASS(fly::TMDesignContext, "EXTMDesignContext")
                       std::shared_ptr<fly::DSIdPartitionSegment> seg) {
         c.add_inst_segment(std::move(seg));
     })
-    FLY_EXPORT_DEF("set_net_id_map",
-                   [](fly::TMDesignContext& c,
-                      std::shared_ptr<fly::DSIdPartitionIndex> index) {
-        c.set_net_id_map(std::move(index));
-    })
-    FLY_EXPORT_DEF("add_net_segment",
-                   [](fly::TMDesignContext& c,
-                      std::shared_ptr<fly::DSIdPartitionSegment> seg) {
-        c.add_net_segment(std::move(seg));
-    })
     FLY_EXPORT_DEF("set_pg_nets",
                    [](fly::TMDesignContext& c,
                       std::shared_ptr<fly::DSPgNetSet> pg_nets) {
@@ -353,10 +338,23 @@ FLY_EXPORT_CLASS(fly::TMDesignContext, "EXTMDesignContext")
         c.add_partition_nets(std::move(nets));
     });
 
-// 绑定描述（§2 形态描述符的 C++ 侧；字段可写 + 随任务参数传输）
+// 绑定描述（§2 形态描述符的 C++ 侧；字段可写 + 随任务参数传输）。kind
+// = TMFileBindingKind 枚举定型存储（评审 P3-5）——枚举成员禁直绑（§16
+// 类型纪律），property 桥 Python 边界保持 int（0/1/2，值域校验）
 FLY_EXPORT_CLASS(fly::TMFileBinding, "EXTMFileBinding")
     FLY_EXPORT_INIT()
-    FLY_EXPORT_ATTR("kind", &fly::TMFileBinding::kind)
+    FLY_EXPORT_READONLY_PROPERTY("kind", [](const fly::TMFileBinding& b) {
+        return static_cast<int>(b.kind);
+    })
+    FLY_EXPORT_DEF("set_kind", [](fly::TMFileBinding& b, int kind) {
+        if (kind < 0 ||
+            kind > static_cast<int>(fly::TMFileBindingKind::BLOCK_CELL)) {
+            throw nb::value_error(
+                "EXTMFileBinding.kind must be 0 (path) / 1 (block_inst) / "
+                "2 (block_cell)");
+        }
+        b.kind = static_cast<fly::TMFileBindingKind>(kind);
+    })
     FLY_EXPORT_ATTR("block_inst", &fly::TMFileBinding::block_inst)
     FLY_EXPORT_ATTR("block_cell", &fly::TMFileBinding::block_cell)
     FLY_EXPORT_ATTR("strip_prefix", &fly::TMFileBinding::strip_prefix);

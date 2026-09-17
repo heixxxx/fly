@@ -155,12 +155,10 @@ std::shared_ptr<TMDesignContext> make_context(const SynthEnv& env,
     auto index = std::make_shared<DSIdPartitionIndex>();
     index->id_starts_ = {0};
     ctx->set_inst_id_map(index);
-    ctx->set_net_id_map(index);
     auto seg = std::make_shared<DSIdPartitionSegment>();
     seg->id_start_ = 0;
     seg->pids_.resize(16, kPid);
     ctx->add_inst_segment(seg);
-    ctx->add_net_segment(seg);
     auto pg = std::make_shared<DSPgNetSet>();
     pg->power_.insert(CMNetId{2});   // npg_top（顶层）
     pg->power_.insert(CMNetId{6});   // npg（B1#1）
@@ -496,7 +494,7 @@ TEST_F(TmPartitionTest, ConvertBlockInstBinding) {
     const SynthEnv env;
     const auto ctx = make_context(env, make_partition_nets());
     TMFileBinding binding;
-    binding.kind = 1;
+    binding.kind = TMFileBindingKind::BLOCK_INST;
     binding.block_inst = "c1";  // B1#1（self 2；块内 u1 → global 5）
     const TMEntrySlice slice =
         convert_whole(*ctx, file_path("b1.twf"), binding, 0);
@@ -533,7 +531,7 @@ TEST_F(TmPartitionTest, ConvertBlockCellBindingReplicatesAllInstances) {
     const SynthEnv env;
     const auto ctx = make_context(env, make_partition_nets());
     TMFileBinding binding;
-    binding.kind = 2;
+    binding.kind = TMFileBindingKind::BLOCK_CELL;
     binding.block_cell = "B1";  // 两个实例化 c1/c2 → u1#1(5) 与 u1#2(7)
     const TMEntrySlice slice =
         convert_whole(*ctx, file_path("b1cell.twf"), binding, 0);
@@ -567,7 +565,7 @@ TEST_F(TmPartitionTest, ConvertStripPrefix) {
     const SynthEnv env;
     const auto ctx = make_context(env, make_partition_nets());
     TMFileBinding binding;
-    binding.kind = 1;
+    binding.kind = TMFileBindingKind::BLOCK_INST;
     binding.block_inst = "c1";
     binding.strip_prefix = "tb_top/u_dut";  // 段级精确匹配
     const TMEntrySlice slice =
@@ -596,7 +594,7 @@ TEST_F(TmPartitionTest, StripPrefixAllMissPassesEmpty) {
     const SynthEnv env;
     const auto ctx = make_context(env, make_partition_nets());
     TMFileBinding binding;
-    binding.kind = 1;
+    binding.kind = TMFileBindingKind::BLOCK_INST;
     binding.block_inst = "c1";
     binding.strip_prefix = "tb_top/u_dut";
     const TMEntrySlice slice =
@@ -628,7 +626,7 @@ TEST_F(TmPartitionTest, MissingBindingTargetFallsBackToChunkFailure) {
     const auto ctx = make_context(env, make_partition_nets());
     write_file("ok.twf", kTopTwf);
     TMFileBinding binding;
-    binding.kind = 1;
+    binding.kind = TMFileBindingKind::BLOCK_INST;
     binding.block_inst = "no_such_inst";
     const TMEntrySlice slice =
         tm_convert_chunk(*ctx, file_path("ok.twf"), 0, 0, 0, UINT64_MAX,
@@ -995,8 +993,7 @@ TEST_F(TmPartitionTest, SerializationRoundTrip) {
     TMChunkPlan plan;
     TMFileChunkPlan fp;
     fp.file_name_ = "x.twf";
-    fp.binding_kind_ = 1;
-    fp.block_inst_ = "c1";
+    fp.file_size_ = 300;
     fp.prefix_start_ = 3;
     fp.prefix_end_ = 100;
     fp.chunk_starts_ = {100};
@@ -1007,8 +1004,8 @@ TEST_F(TmPartitionTest, SerializationRoundTrip) {
     TMChunkPlan plan_back;
     FLY_DECODE(plan_blob, TMChunkPlan, plan_back);
     ASSERT_EQ(plan_back.files_.size(), 1u);
-    EXPECT_EQ(plan_back.files_[0].binding_kind_, 1);
-    EXPECT_EQ(plan_back.files_[0].block_inst_, "c1");
+    EXPECT_EQ(plan_back.files_[0].file_name_, "x.twf");
+    EXPECT_EQ(plan_back.files_[0].file_size_, 300u);
     EXPECT_EQ(plan_back.files_[0].prefix_start_, 3u);
     EXPECT_EQ(plan_back.files_[0].prefix_end_, 100u);
     ASSERT_EQ(plan_back.files_[0].chunk_starts_.size(), 1u);

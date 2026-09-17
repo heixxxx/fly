@@ -265,11 +265,13 @@ def build_timing_db(self, name: str, timing_files: list, design_db,
     """构建 timing db：TWF 解析 + 名字换算 + 分区落库 + 冻结。
 
     异步 4 步范式：检查输入 → 建库（TimingDb，role="timing"）→ 阶段链
-    提交（design 快照 → T1 切块 → T2 逐块解析×N → T3 每分区合并 → T4
-    汇总 → freeze，语义见 tm_flow.run_timing_flow）。入口同步校验：文件
-    可读 + TWF 头嗅探 + alpha 逐键校验 + 绑定描述结构与目标存在性（不
-    合法 raise ValueError/FileNotFoundError，不建库）；兜底场景走 TIMG
-    消息族（不 raise）。
+    提交（T1 切块 → design 快照任务〔worker 上动态提交 T2 逐块解析×N →
+    T3 每分区合并 → T4 汇总 → freeze〕，语义见 tm_flow.run_timing_flow）。
+    入口同步校验：文件可读 + TWF 头嗅探 + alpha 逐键校验 + 绑定描述结构
+    （不合法 raise ValueError/FileNotFoundError，不建库）；绑定目标存在
+    性（块实例路径/块 cell 名在 design db 命中）随 design 快照任务异步
+    校验（评审 P2-3：不阻塞提交——未命中任务失败语义）；兜底场景走
+    TIMG 消息族（不 raise）。
 
     Args:
         self: 自动绑定的 EMIRProject 实例。

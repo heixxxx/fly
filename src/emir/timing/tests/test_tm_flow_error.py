@@ -146,7 +146,7 @@ def test_all_files_failed_fatals_exit_80():
         "plan = EXTMChunkPlan()\n"
         "plan.add_file(fp)\n"
         "binding = EXTMFileBinding()\n"
-        "binding.kind = 0\n"
+        "binding.set_kind(0)\n"
         "slice_obj = tm_convert_chunk(ctx, path, fp.prefix_start, "
         "fp.prefix_end, fp.chunk_starts[0], "
         "fp.chunk_ends[0], binding, 0)\n"

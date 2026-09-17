@@ -626,18 +626,6 @@ void TMDesignContext::add_inst_segment(
     }
 }
 
-void TMDesignContext::set_net_id_map(
-    CMSharedPtr<DSIdPartitionIndex> index) {
-    net_index_ = std::move(index);
-}
-
-void TMDesignContext::add_net_segment(
-    CMSharedPtr<DSIdPartitionSegment> segment) {
-    if (segment) {
-        net_segments_[segment->get_id_start()] = std::move(segment);
-    }
-}
-
 void TMDesignContext::set_pg_nets(CMSharedPtr<DSPgNetSet> pg_nets) {
     pg_nets_ = std::move(pg_nets);
 }
@@ -664,22 +652,6 @@ CMPartitionId TMDesignContext::locate_instance_partition(
         return CMPartitionId{};
     }
     const CMPartitionId pid = it->second->partition_of(inst_id.value());
-    return pid.is_valid() ? pid : CMPartitionId{};
-}
-
-CMPartitionId TMDesignContext::locate_net_partition(CMNetId net_id) const {
-    if (!net_index_) {
-        return CMPartitionId{};
-    }
-    const uint64_t seg_start = net_index_->find_segment_start(net_id.value());
-    if (seg_start == DSIdPartitionIndex::kIdMapNoSegment) {
-        return CMPartitionId{};
-    }
-    const auto it = net_segments_.find(seg_start);
-    if (it == net_segments_.end()) {
-        return CMPartitionId{};
-    }
-    const CMPartitionId pid = it->second->partition_of(net_id.value());
     return pid.is_valid() ? pid : CMPartitionId{};
 }
 
@@ -743,11 +715,11 @@ TMEntrySlice tm_convert_chunk(const TMDesignContext& ctx,
     }
     file_stats.time_scale_sec_ = file.time_scale_sec_;
 
-    // 绑定定位（一次性；kind 1 = 块实例节点、kind 2 = block cell 全部
-    // 实例化节点。定位失败 = 入口校验后环境漂移的防御场景，按块失败
-    // 兜底计数——不 raise（worker 任务第三态禁令））
+    // 绑定定位（一次性；BLOCK_INST = 块实例节点、BLOCK_CELL = block
+    // cell 全部实例化节点。定位失败 = 入口校验后环境漂移的防御场景，按
+    // 块失败兜底计数——不 raise（worker 任务第三态禁令））
     CMVector<uint32_t> block_nodes;
-    if (binding.kind == 1) {
+    if (binding.kind == TMFileBindingKind::BLOCK_INST) {
         const uint32_t node_id = find_node_by_path(
             ctx.design().get_hier_tree(), binding.block_inst);
         if (node_id == DSHierTree::kNoNode) {
@@ -756,7 +728,7 @@ TMEntrySlice tm_convert_chunk(const TMDesignContext& ctx,
             return slice;
         }
         block_nodes.push_back(node_id);
-    } else if (binding.kind == 2) {
+    } else if (binding.kind == TMFileBindingKind::BLOCK_CELL) {
         const uint32_t cell_id =
             ctx.design().cell_names_.get_id(binding.block_cell);
         if (!DSCellNameHasher::is_valid_id(cell_id)) {
