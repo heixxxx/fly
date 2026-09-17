@@ -350,14 +350,15 @@ def _merge_cell_lefs_task(db, part_tuples, stack_key, tech_vias_key,
 ])
 def _merge_lib_task(db, merged_key, lib_obj_name, tables_key, s3_key):
     """按 cell 名并入 lib 库信息（DSGN::0002/0003/0004 由 C++ 侧发送）→
-    DSPinTables 正式对象唯一写定。"""
+    DSPinTables 正式对象唯一写定（先写正式对象、s3 锚最后写——锚后写
+    红线：下游经 s3 锚依赖本任务 ⟹ DSPinTables 已先写定）。"""
     design = db.read_object(merged_key)
     lib = db.read_object(lib_obj_name)
     matched = design.merge_lib(lib)
     from log import INFO
     INFO(f"merge_lib: {matched} cells matched with lib")
-    db.write_object(s3_key, design, save_to_db=False)
     db.write_object(tables_key, design.get_pin_tables(), save_to_db=True)
+    db.write_object(s3_key, design, save_to_db=False)
 
 
 # ── DEF 头扫描（每文件一任务：嗅探 + 头扫描，大段真跳过）──────────────
@@ -454,7 +455,9 @@ def _build_hier_tree_task(db, snapshot_key, temp_block_keys, names_keys,
     """层级树构建 + 起始编号分配（一次建全三类区间——via 计数物理依赖
     网内容解析先行）；主 DEF = 唯一无父者，多根/零根/环 → raise（D22）。
     build_meta 正式对象单点写定（def_count = 伴生对象全集锚，§19 批次：
-    本任务 inputs 含全部 DSBlockNames_<i> ⟹ 写定即全集已写）。"""
+    本任务 inputs 含全部 DSBlockNames_<i> ⟹ 写定即全集已写；先写正式
+    对象、hier 锚最后写——锚后写红线：下游经 hier 锚依赖本任务 ⟹
+    build_meta 已先写定）。"""
     design = db.read_object(snapshot_key)
     blocks = [db.read_object(k) for k in temp_block_keys]
     from log import INFO
@@ -467,9 +470,9 @@ def _build_hier_tree_task(db, snapshot_key, temp_block_keys, names_keys,
     tree = ds_build_hier_tree(blocks, nets, design)
     INFO(f"hier tree: {tree.node_count} block instances, top="
          f"'{tree.design_name}'")
-    db.write_object(hier_key, tree, save_to_db=False)
     db.write_object(DesignDb.BUILD_META_OBJ, {"def_count": len(names_keys)},
                     save_to_db=True)
+    db.write_object(hier_key, tree, save_to_db=False)
 
 
 # ── 实例解析汇总（fake cell 并入全局表〔id 保持 ⑳〕→ 正式对象写定）──
@@ -1025,9 +1028,10 @@ def _freeze_design_task(db, n_cell_lefs, n_defs):
     校验任务 inputs 含各分区校验结果〔⟸ 六类分区对象〕+ DSDesign 重写
     版〔global_density 锚〕+ pg_nets + id 映射段表 + per-DEF 正式产物
     与伴生名 + stack ⟹ 全链正式对象先写定，freeze 不可能早于任一正式
-    产物）。清理清单静态构造（_flow_temp_keys 按输入规模枚举；每个键
-    清理责任唯一归属本任务——严格 remove，缺失即 KeyError 暴露清理责
-    任错位）。"""
+    产物；链上锚均后写——s3/hier 锚在即 DSPinTables/build_meta 已先
+    写定，锚后写红线）。清理清单静态构造（_flow_temp_keys 按输入规模
+    枚举；每个键清理责任唯一归属本任务——严格 remove，缺失即 KeyError
+    暴露清理责任错位）。"""
     for key in _flow_temp_keys(n_cell_lefs, n_defs):
         db.remove_object(key)
     db.freeze()
