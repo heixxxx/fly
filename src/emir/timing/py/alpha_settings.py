@@ -12,14 +12,21 @@ from emir.common import AlphaSetting, AlphaSettings
 _TWF_FORMATS = ("auto", "innovus")
 
 
-def _is_chunk_size_mb(value):
+def is_chunk_size_mb(value):
     """int 且非 bool 且 >= 16（plan §4 约束：单文件字节区间切块大小的
-    下限护栏——过小的块使任务调度开销反超 I/O 收益）。"""
+    下限护栏——过小的块使任务调度开销反超 I/O 收益）。
+
+    header schema（build_timing_db 的 alpha.chunk_size_mb）引用同一函数
+    ——值域单一来源。"""
     return (isinstance(value, int) and not isinstance(value, bool)
             and value >= 16)
 
 
-def _is_format(value):
+def is_twf_format(value):
+    """TWF 方言枚举（``auto`` / ``innovus``）。
+
+    header schema（build_timing_db 的 alpha.format）引用同一函数——
+    值域单一来源。"""
     return isinstance(value, str) and value in _TWF_FORMATS
 
 
@@ -28,13 +35,13 @@ class TMAlphaSettings(AlphaSettings):
 
     chunk_size_mb = AlphaSetting(
         default=256, value_type="int", constraint=">= 16",
-        validator=_is_chunk_size_mb,
+        validator=is_chunk_size_mb,
         description="单文件字节区间切块大小（MB；逐块解析任务粒度，顶层"
                     "构造边界对齐切分）——后续单文件流式分布式增强的调节"
                     "钮，缺省 256")
     format = AlphaSetting(
         default="auto", value_type="str", constraint="auto/innovus",
-        validator=_is_format,
+        validator=is_twf_format,
         description="TWF 方言覆盖；auto = 头嗅探（首版仅 innovus 一种，键"
                     "为后续方言扩展预留）")
 

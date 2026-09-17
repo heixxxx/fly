@@ -37,3 +37,15 @@ py_test(
         "//src/log/export:_fly_log.so",
     ],
 )
+
+# 入口参数命名 validator 库单测（2026-09-17 裁定：header Schema 结构化
+# 声明 + 白名单严格模式；纯 Python 无 .so 依赖）
+py_test(
+    name = "validators_test",
+    srcs = ["test_validators.py"],
+    main = "test_validators.py",
+    imports = ["../../.."],
+    deps = [
+        "//src/emir/common:fly_emir_common_py",
+    ],
+)

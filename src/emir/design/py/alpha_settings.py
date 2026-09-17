@@ -16,40 +16,9 @@ ds_decide_partitions 内发 DSGN::0013 回退）——Python validator 只做
 str/None 类型级（None = 未设置；C++ 消费侧 None/空串同义）。
 """
 
-import math
-
-from emir.common import AlphaSetting, AlphaSettings
-
-
-def _is_positive_int(value):
-    """int 且非 bool 且 >= 1（bool 是 int 子类——伪装值一律拒绝）。"""
-    return (isinstance(value, int) and not isinstance(value, bool)
-            and value >= 1)
-
-
-def _is_int(value):
-    """int 且非 bool（0/负数不在此拒——未设置/回退语义在消费侧/C++）。"""
-    return isinstance(value, int) and not isinstance(value, bool)
-
-
-def _is_bool(value):
-    return isinstance(value, bool)
-
-
-def _is_target_partitions(value):
-    """None（未设置）或 str；'{x}x{y}' 可解析性由 C++ S8 判别。"""
-    return value is None or isinstance(value, str)
-
-
-def _is_channel_weight(value):
-    """单通道比重：非负有限数（NaN 比较恒 False 会放行、inf 非有限——
-    一并显式拒绝；bool 伪装拒绝）。迁自 ds_flow._parse_channel_weights
-    的逐 key 规则——经 AlphaSetting.key_validator 走合并语义：缺 key
-    保留当前值、非法子键逐个回退（review 2026-09-13 修复：整键覆盖会
-    丢缺 key 致消费侧 KeyError）。"""
-    if not isinstance(value, (int, float)) or isinstance(value, bool):
-        return False
-    return not (math.isnan(value) or math.isinf(value) or value < 0)
+from emir.common import (AlphaSetting, AlphaSettings, is_bool,
+                         is_none_or_str, is_nonneg_finite_number,
+                         is_plain_int, is_positive_int)
 
 
 class DSAlphaSettings(AlphaSettings):
@@ -58,35 +27,35 @@ class DSAlphaSettings(AlphaSettings):
 
     density_bin_size = AlphaSetting(
         default=10, value_type="int", constraint=">= 1",
-        validator=_is_positive_int,
+        validator=is_positive_int,
         description="密度采样格边长（µm；提交侧 ×1000 换算 DBU——全局恒基"
                     "准 ㉝），缺省 10")
     net_batch_size = AlphaSetting(
         default=1000, value_type="int", constraint=">= 1",
-        validator=_is_positive_int,
+        validator=is_positive_int,
         description="S5b 网内容解析的批界网数（分批多阶段控内存峰值），缺"
                     "省 1000（裁定 ③）")
     lcp_name_arena = AlphaSetting(
         default=False, value_type="bool", constraint="",
-        validator=_is_bool,
+        validator=is_bool,
         description="R8d 裁定 55：名字伴生对象 DSBlockNames_<i> instance/"
                     "net 两 hasher id→name 侧 LCP 后缀压缩封口（容量换内"
                     "存），缺省 False 形态一零变化")
     target_partitions = AlphaSetting(
         default=None, value_type="None or str ('{x}x{y}')", constraint="",
-        validator=_is_target_partitions,
+        validator=is_none_or_str,
         description="S8 直切分区形态 '{x}x{y}'（如 '4x3'，x/y ≥ 1；跳过分"
                     "区数计算与行列分布推导，切线仍按前缀和）；None = 未设"
                     "置。优先级 target_partitions > partition_count > "
                     "partition_target_density（2026-09-12 裁定 4）")
     partition_count = AlphaSetting(
         default=0, value_type="int", constraint="0 = unset",
-        validator=_is_int,
+        validator=is_plain_int,
         description="S8 总分区数 N（行列分布按负载自适应）；0 = 未设置。优"
                     "先级居中（裁定 4）")
     partition_target_density = AlphaSetting(
         default=150000, value_type="int", constraint="",
-        validator=_is_int,
+        validator=is_plain_int,
         description="S8 目标每分区合成负载（N = ceil(总负载/目标)；缺省 "
                     "150000——每分区约 10-20 万 leaf instance，裁定 4）。"
                     "非正值由 C++ 回退默认并 DSGN::0013 提醒")
@@ -94,7 +63,7 @@ class DSAlphaSettings(AlphaSettings):
         default={"instance": 6.0, "metal": 2.0, "via": 2.0},
         value_type="dict", constraint="instance/metal/via -> non-negative "
                                       "finite number",
-        key_validator=_is_channel_weight,
+        key_validator=is_nonneg_finite_number,
         description="S8 密度通道比重（合成负载 = w_inst×inst + w_metal×Σ层"
                     "metal_l + w_via×Σ层 via_l）；**合并语义**——缺 key 用该"
                     "通道默认（6/2/2，2026-09-12 裁定 3），非法子键逐个回退"
@@ -102,7 +71,7 @@ class DSAlphaSettings(AlphaSettings):
                     "review 2026-09-13：恢复旧逐 key 语义）")
     def_aggregate_threshold = AlphaSetting(
         default=67108864, value_type="int", constraint=">= 1",
-        validator=_is_positive_int,
+        validator=is_positive_int,
         description="S9 小 DEF 聚合阈值（字节，D26）：预估展开数据规模 = "
                     "DEF 文件大小 × 树上实例化次数，≥ 阈值的定义独占一个展"
                     "开任务，< 阈值的多个小定义按 def_paths 序贪心聚合到同"
