@@ -44,7 +44,8 @@ def load_design_stack(db):
 
 @wait_obj(inputs=lambda db: [db.get_full_name(DesignDb.GLOBAL_DENSITY_OBJ)])
 def load_global_density(db):
-    """读取 S8 全局密度图（EXDSDensityGrid 对象：三通道 + 合并后格网）。
+    """读取全局密度图（EXDSDensityGrid 对象：三通道 + 合并后格网；全局
+    密度合并任务唯一写定）。
 
     调用规范见模块 docstring：task 内调用须 `load_global_density.deps(db)`
     传播依赖 + `run_direct(load_global_density, db)` 直跑。
@@ -54,7 +55,7 @@ def load_global_density(db):
 
 @wait_obj(inputs=lambda db: [db.get_full_name(DesignDb.NET_UNION_OBJ)])
 def load_design_net_union(db):
-    """读取 S7 跨块连接归并结果（EXDSNetUnion：find 恒一步（不在表 = 自
+    """读取跨块连接归并结果（EXDSNetUnion：find 恒一步（不在表 = 自
     身）/ root → 成员枚举 / class_count / dangling_count——仅 port 相连
     网，internal net 不在表）。
 
@@ -88,10 +89,10 @@ _PARTITION_KINDS = ("GEOMETRY", "GEOMETRY_PG", "INSTANCES",
                              db.get_full_name(DesignDb.GLOBAL_DENSITY_OBJ)])
 def iter_design_partition(db):
     """枚举全部分区的 (xp, yp) 网格坐标（读 DSDesign.partitions_ 分区表，
-    行主序产出序；S9 分区对象名/读库 API 的坐标来源）。依赖含
-    GLOBAL_DENSITY_OBJ = S8 完成锚点（design 的 partitions_ 由 S8 任务
-    重写填充——只等 DESIGN_OBJ 会在 S5a 首写后读到空分区表，review
-    2026-09-13 修正，与 _s9_plan_task 同口径）。
+    行主序产出序；分区正式对象名/读库 API 的坐标来源）。依赖含
+    GLOBAL_DENSITY_OBJ = 分区决策完成锚点（design 的 partitions_ 由全局
+    密度任务重写填充——只等 DESIGN_OBJ 会在实例解析汇总首写后读到空分区
+    表，review 2026-09-13 修正，与分区编排任务同口径）。
 
     调用规范见模块 docstring：task 内调用须
     `iter_design_partition.deps(db)` 传播依赖 +
@@ -107,7 +108,7 @@ def iter_design_partition(db):
     + [db.get_full_name(DesignDb.partition_obj_name(xp, yp, kind))
        for kind in _PARTITION_KINDS]))
 def load_partition(db, xp: int, yp: int):
-    """读取 S9 一个分区的六类正式对象（R9 wait_obj 形态），返回六元组
+    """读取一个分区的六类正式对象（R9 wait_obj 形态），返回六元组
     (geometry, geometry_pg, instances, inst_connections, nets, nets_pg)
     ——GEOMETRY（信号网几何 + OBS 桶：net global id 组织的条目集 + 跨分
     区网集合）、GEOMETRY_PG（pg 网几何，2026-09-14 拆分裁定独立对象）、
@@ -126,7 +127,7 @@ def load_partition(db, xp: int, yp: int):
 
 @wait_obj(inputs=lambda db: [db.get_full_name(DesignDb.VERIFY_REPORT_OBJ)])
 def load_design_verify_report(db):
-    """读取 S10 全局校验报告（EXDSDesignCheckReport：损坏类三字段
+    """读取全局校验报告（EXDSDesignCheckReport：损坏类三字段
     union_inconsistency/coverage_gap/namemap_inconsistency——非空即损坏
     （正常冻结的 db 恒空串）；观测类 instance_ids/net_ids/via_ids 三域
     （expected/actual/holes/duplicates）与 density_variance；全局统计

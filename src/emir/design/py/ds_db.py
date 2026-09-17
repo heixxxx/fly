@@ -17,7 +17,7 @@ get_instance/get_net/get_layer/convert_to_id/convert_to_name）：挂 db
 句柄的交互定位面——内部完成 id↔name 转换（inst/net 走层级路径 name
 mapper、其余走 hasher），映射定位分区后整分区对象按需加载 + 进程内
 LRU 缓存（容量定值防撑爆）；方向/power/ground/clock 统计直接数连接
-flags 位（S9 已存位，零推导）；pg 网（全局 pg 网 id 集 "pg_nets" 命中
+flags 位（展平分区已存位，零推导）；pg 网（全局 pg 网 id 集 "pg_nets" 命中
 ——2026-09-13 重组裁定 O(1) 判定）不返回 connections
 明细（数据量保护，只返回属性与计数概要）。
 """
@@ -89,7 +89,7 @@ class DesignDb(Database):
 
     @staticmethod
     def partition_obj_name(xp: int, yp: int, kind: str) -> str:
-        """S9 分区正式对象名（PART_{xp}_{yp}.{kind}；kind ∈
+        """分区正式对象名（PART_{xp}_{yp}.{kind}；kind ∈
         PARTITION_KINDS，每分区一合并任务唯一写定；GEOMETRY_PG/NETS_PG
         为 pg 侧独立对象——2026-09-14 拆分裁定。`.` 作层级分隔——对象名
         字符集仅允许字母/数字/`.`/`_`，2026-09-14 裁定）。"""
@@ -109,7 +109,7 @@ class DesignDb(Database):
 
     @staticmethod
     def id_slice_obj_name(id_slice_prefix: str, pid: int, kind: str) -> str:
-        """id→partition 映射分区片段临时对象名（S9 每分区合并任务写本区
+        """id→partition 映射分区片段临时对象名（分区合并任务写本区
         片段，映射汇总任务 merge 后清理；kind ∈ ID_MAP_KINDS）。"""
         return f"{id_slice_prefix}{kind}{pid}"
 
@@ -396,14 +396,14 @@ class DesignDb(Database):
         象）、id 0（OBS 桶专属位、非真网 id——2026-09-14 裁定）、
         或 special 无 USE 网（入 NETS_PG 但全局 pg 集不含——is_pg
         路由至信号侧不命中）——一律返回显式 None（2026-09-13 review 修正：旧兜底
-        曾静默降级为空概要；这些网的真实连接见 S5b 产物与
+        曾静默降级为空概要；这些网的真实连接见网内容解析产物与
         net_union）。
 
         返回 dict：net id/层级名/use 属性（DEF USE 八值字符串，缺省
         SIGNAL——2026-09-13 重组裁定随 DSNet.use_ 直取）/connections 数
         量/driver/receiver/hybrid 数（三分类互斥单列）与 power/ground/
-        clock/port 端点计数——统计直接数连接 flags 位（S9 已存位，零推
-        导）。**pg 网（全局 pg 网 id 集命中）不返回 connections 明细**
+        clock/port 端点计数——统计直接数连接 flags 位（展平分区已存
+        位，零推导）。**pg 网（全局 pg 网 id 集命中）不返回 connections 明细**
         （数据量保护——只返回属性与计数概要）；非 pg 网附 connections 列
         表：端点实例 id + 层级名 + pin id + pin 名 + flags 概要（port 条
         目如实呈现——端点实例 = 块实例层级名 + port 名）。is_pg 判定经

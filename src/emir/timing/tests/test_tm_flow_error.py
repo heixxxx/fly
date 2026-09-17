@@ -10,7 +10,8 @@
     白名单）拒绝回退不 raise；normalize 兜底
   - 全部文件失败 → TIMG::0009 fatal 子进程断言 rc=80（范式 (a)）——
     产物走真实 C++ 路径构造：破损 TWF → tm_plan_file_chunks 真实块表 →
-    tm_convert_chunk 破损兜底（空分片 + failed_chunk=1）→ T4 fatal 判定
+    tm_convert_chunk 破损兜底（空分片 + failed_chunk=1）→ 汇总任务
+    fatal 判定
 
 端到端场景在 qa/emir/test_emir_timing_flow.py。
 
@@ -145,7 +146,7 @@ def test_all_files_failed_fatals_exit_80():
         "        pass\n"
         "files = [{'file_name': path, 'kind': 0, 'block_inst': '', "
         "'block_cell': '', 'strip_prefix': ''}]\n"
-        "run_direct(tm_flow._t4_summary_task, Db(), files, "
+        "run_direct(tm_flow._summary_task, Db(), files, "
         "['chunk_0_0'], ['conflicts_0'], 'clock_conflicts', 'plan', "
         "'summary')\n"
     )
