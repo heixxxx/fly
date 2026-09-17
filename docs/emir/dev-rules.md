@@ -51,6 +51,7 @@ src/emir/<子模块>/
   - **白名单严格模式**：dict 一律 `allow_extra=False`（未知键报错）；「当前无可用键」的 settings/alpha 用 `extra_error` 定制文案。未知键不再「提醒忽略」、非法值不再「回退默认继续」。
   - **文件参数显式可读校验**：入口 Step 1 对每个路径调 `ensure_readable_file(path, api_name, param_name)`（不存在 → `FileNotFoundError`；不可读 → `PermissionError`；统一文案含 api 名/参数名/路径）+ 保留既有格式嗅探（`sniff_*_header`）。
   - **描述用户视角**：UserDoc 与 docstring 用户段只写「参数是什么/格式/约束/默认值/合法值集/报错行为」，禁止设计叙事（裁定编号引用、内部文件路径、消息码名、实现内部构件名、迁移历史）。代码内 `#` 实现注释与模块/类 docstring（开发者视角）不受此限。
+  - **参数描述禁实现手段（2026-09-17 用户裁定：参数介绍不需要实现细节）**：参数描述四要素——参数是什么（语义）/格式/约束/默认值/合法值集/传错报错行为/结果可预期行为（如冲突数据取舍）；**禁实现手段**：任务、并行、合并、分区、落库组织、快照、对象名、消息码——除非参数本身是该机制的调节钮（如 chunk_size_mb 之于切块：描述效果不描述过程）。
 - **alpha 项声明式定义（2026-09-13 裁定；接线语义 2026-09-17 裁定更新）**：每个 alpha 项包含**五要素**——setting 名 / 默认值 / 值类型及约束介绍 / 值校验器（validator）/ setting 介绍。基座在 `src/emir/common/`（`AlphaSetting` 单项描述符 + `AlphaSettings` 基类，纯 Python 包）；各子模块建自己的 `alpha_settings.py` 定义子类（如 design 的 `DSAlphaSettings` 八键）+ 模块级 `get_default_alpha_settings()` 工厂（deepcopy 语义——多次创建同种 db 互不污染默认值，dict 型默认值关键）。建库入口接线（2026-09-17）：header 的 alpha `Schema.dict` 引用各键 validator（值域单一来源）**拦截未知键/非法值直接 raise** → 默认实例 `apply(alpha)` **防御性**覆盖（纯逻辑，schema 拦截后理论不再拒绝；返回 `{"rejected", "unknown"}` 结构）→ settings 对象以固定对象名 `"alpha_settings"` 写入 db → 消费点 `read_object` 读回后 `normalize()` 兜底（旧对象缺键补默认、未知属性丢弃，向前兼容）。原「问题一次汇总 message 提醒（design 复用 DSGN::0013、lib 用 LIBR::0005）」接线已删除：LIBR::0005 / TIMG::0005 注册删除；DSGN::0013 保留注册（C++ S8 分区决策运行期回退仍使用，`ds_partition.cpp`）。
 
 ## 4. 实现语言边界

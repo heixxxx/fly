@@ -119,6 +119,30 @@ def test_alpha_partition_count_non_int_rejected():
         assert "partition_count" in str(e) and "int" in str(e), str(e)
 
 
+def test_alpha_partition_target_density_negative_rejected():
+    try:
+        _call(alpha={"partition_target_density": -100})
+        raise AssertionError("negative partition_target_density must raise")
+    except ValueError as e:
+        assert "partition_target_density" in str(e) and ">= 1" in str(e), str(e)
+
+
+def test_alpha_partition_target_density_bool_rejected():
+    try:
+        _call(alpha={"partition_target_density": True})
+        raise AssertionError("bool partition_target_density must raise")
+    except ValueError as e:
+        assert "partition_target_density" in str(e) and ">= 1" in str(e), str(e)
+
+
+def test_def_paths_non_list_rejected():
+    try:
+        _call(def_paths="a.def")
+        raise AssertionError("non-list def_paths must raise")
+    except ValueError as e:
+        assert "def_paths" in str(e) and "expected list" in str(e), str(e)
+
+
 def test_alpha_channel_weight_negative_rejected():
     try:
         _call(alpha={"density_channel_weights": {"metal": -1}})
@@ -229,6 +253,9 @@ if __name__ == "__main__":
     test_alpha_lcp_name_arena_non_bool_rejected()
     test_alpha_target_partitions_non_str_rejected()
     test_alpha_partition_count_non_int_rejected()
+    test_alpha_partition_target_density_negative_rejected()
+    test_alpha_partition_target_density_bool_rejected()
+    test_def_paths_non_list_rejected()
     test_alpha_channel_weight_negative_rejected()
     test_alpha_channel_weight_unknown_subkey_rejected()
     test_alpha_def_aggregate_threshold_below_one_rejected()

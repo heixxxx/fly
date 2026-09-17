@@ -57,11 +57,12 @@ class DSAlphaSettings(AlphaSettings):
         description="S8 总分区数 N（行列分布按负载自适应）；0 = 未设置。优"
                     "先级居中（裁定 4）")
     partition_target_density = AlphaSetting(
-        default=150000, value_type="int", constraint="",
-        validator=is_plain_int,
+        default=150000, value_type="int", constraint=">= 1",
+        validator=is_positive_int,
         description="S8 目标每分区合成负载（N = ceil(总负载/目标)；缺省 "
                     "150000——每分区约 10-20 万 leaf instance，裁定 4）。"
-                    "非正值由 C++ 回退默认并 DSGN::0013 提醒")
+                    "非正值入口直接报错（2026-09-17 翻转：非法值不再回退"
+                    "默认继续；C++ 侧非正值回退保留为旧 db 对象防御）")
     density_channel_weights = AlphaSetting(
         default={"instance": 6.0, "metal": 2.0, "via": 2.0},
         value_type="dict", constraint="instance/metal/via -> non-negative "

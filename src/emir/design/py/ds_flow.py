@@ -1044,7 +1044,9 @@ def _freeze_design_task(db, final_keys, n_cell_lefs, n_defs, slice_keys,
 def run_design_flow(db, lef_paths, def_paths, lib_db):
     """提交全部阶段任务（非阻塞）。alpha 提供建库未稳定配置（⑦）：八键
     经 DSAlphaSettings 声明式定义（2026-09-13 裁定，src/emir/design/py/
-    alpha_settings.py；校验与 DSGN::0013 汇总在 build_design_db 接线处），
+    alpha_settings.py；校验在 build_design_db 入口的 header schema 拦截
+    ——未知键/非法值直接 raise，原「问题一次汇总 message 提醒」接线已删，
+    DSGN::0013 仅剩 C++ S8 分区决策运行期回退使用），
     settings 对象以对象名 "alpha_settings" 随建库写入 db——本函数从 db
     读回（normalize 兜底：旧对象缺键补默认、未知属性丢弃）取提交侧三键：
     density_bin_size（µm，缺省 10）、net_batch_size（网内容批界网数，缺

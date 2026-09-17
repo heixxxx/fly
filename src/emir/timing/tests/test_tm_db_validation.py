@@ -87,6 +87,16 @@ def test_binding_desc_missing_binding_target_rejected():
         assert "timing_files[0]" in str(e), str(e)
 
 
+def test_binding_desc_strip_prefix_non_str_rejected():
+    try:
+        _call(timing_files=[{"file_name": "d.twf", "block_cell": "blk",
+                             "strip_prefix": 7}])
+        raise AssertionError("non-str strip_prefix must raise")
+    except ValueError as e:
+        assert "timing_files[0]" in str(e), str(e)
+        assert "expected str" in str(e) and "int" in str(e), str(e)
+
+
 def test_design_db_wrong_type_rejected():
     try:
         _call(design_db=object())
@@ -156,6 +166,7 @@ if __name__ == "__main__":
     test_binding_desc_unknown_key_rejected()
     test_binding_desc_both_block_keys_rejected()
     test_binding_desc_missing_binding_target_rejected()
+    test_binding_desc_strip_prefix_non_str_rejected()
     test_design_db_wrong_type_rejected()
     test_settings_unknown_key_rejected()
     test_alpha_unknown_key_rejected()

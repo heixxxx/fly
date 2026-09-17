@@ -47,16 +47,16 @@ _path_schema = Schema(str, check=is_nonempty_str,
 build_lib_db_doc = UserDoc(
     "构建 lib 库 db：解析一份或多份 Liberty（.lib）单元库文件，产出单一"
     "整合库容器（cell 集合 + 库头单位与默认参数 + 查找表模板集），保存引"
-    "脚电容、internal_power 功耗表、timing 时序表等全量数据表。每份文件"
-    "独立并行解析，全部解析完成后合并冻结。")
+    "脚电容、internal_power 功耗表、timing 时序表等全量数据表。全部文件"
+    "解析完成后库冻结可读。")
 build_lib_db_doc.add_param("name",
     schema=Schema(str, check=is_nonempty_str,
                   error="must be a non-empty string, got {value}"),
     required=True, desc="db 子目录名 + Project 内部 key（重名自动递增）")
 build_lib_db_doc.add_param("lib_paths",
     schema=Schema.list(_path_schema, min_len=1),
-    required=True, desc=".lib 文件路径列表（至少 1 个；每文件一独立解析"
-        "任务）。文件必须存在且可读，否则报错；非 liberty 格式报错")
+    required=True, desc=".lib 文件路径列表（至少 1 个）。文件必须存在且"
+        "可读，否则报错；非 liberty 格式报错")
 build_lib_db_doc.add_param("alpha",
     schema=Schema.dict(allow_extra=False,
                        extra_error="lib alpha currently has no available "
@@ -68,7 +68,7 @@ build_lib_db_doc.add_example("构建单元库",
     code='''lib_db = proj.build_lib_db(name="lib", lib_paths=["nangate45_typ.lib"])
 proj.wait_frozen("lib", timeout=600)
 library = lib_db.load_library()   # EXLIBLibrary 整合容器''',
-    desc="多文件解析 → LIBLibrary 汇整 → 冻结后读容器")
+    desc="多文件解析 → 冻结后读整合容器")
 build_lib_db_doc.add_keyword(["lib", "liberty", "cell", "power", "timing", "emir"])
 
 
@@ -77,10 +77,10 @@ build_lib_db_doc.add_keyword(["lib", "liberty", "cell", "power", "timing", "emir
 def build_lib_db(self, name: str, lib_paths: list, alpha: dict = None):
     """构建 lib 库 db：解析多份 .lib 并整合为单一库容器。
 
-    每份文件一个独立解析任务并行执行，全部解析完成后合并、冻结。跨文件
-    重名 cell（库版本混用迹象）保留首份并提醒，不报错终止。参数不合法
-    （空名、空路径列表、alpha 含未知键、文件不存在/不可读/非 liberty
-    格式）时立即报错终止，不建库。
+    全部文件解析完成后库冻结可读。跨文件重名 cell（库版本混用迹象）
+    保留首份并提醒，不报错终止。参数不合法（空名、空路径列表、alpha
+    含未知键、文件不存在/不可读/非 liberty 格式）时立即报错终止，
+    不建库。
 
     Args:
         self: 自动绑定的 EMIRProject 实例。

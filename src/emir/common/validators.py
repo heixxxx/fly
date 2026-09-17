@@ -57,7 +57,7 @@ def is_int_in_range(minimum=None, maximum=None):
 
 
 def is_one_of(*choices):
-    """工厂：值严格等于 choices 中之一（is 比较——适合 str 枚举集）。"""
+    """工厂：值与 choices 中之一相等（== 相等比较——适合 str 枚举集）。"""
     def _check(value):
         return any(value == choice for choice in choices)
     return _check

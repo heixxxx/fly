@@ -288,7 +288,7 @@ build_timing_db_doc.add_param("timing_files",
 build_timing_db_doc.add_param("design_db",
     schema=Schema(object, check=_is_design_db_handle,
                   error="must be a DesignDb instance, got {value}"),
-    required=True, desc="design db（DesignDb 实例）。时序条目按其实例/网/pin 名字匹配归属，并按其分区结构落库")
+    required=True, desc="design db（DesignDb 实例）。时序条目按其实例/网/pin 名字匹配归属")
 build_timing_db_doc.add_param("settings",
     schema=Schema.dict(
         allow_extra=False,
@@ -308,7 +308,7 @@ build_timing_db_doc.add_example("构建 timing db",
     name="timing", timing_files=["design.twf"], design_db=design_db)
 proj.wait_frozen("timing", timeout=600)
 clocks = timing_db.load_timing_clocks_obj()''',
-    desc="TWF 解析 + 名字匹配归属 + 分区落库 → 冻结后读时钟表")
+    desc="TWF 解析 + 名字匹配归属 → 冻结后读时钟表")
 build_timing_db_doc.add_keyword(["timing", "twf", "clock", "window",
                                  "arrival", "slew", "emir"])
 
@@ -317,10 +317,9 @@ build_timing_db_doc.add_keyword(["timing", "twf", "clock", "window",
 @document(build_timing_db_doc)
 def build_timing_db(self, name: str, timing_files: list, design_db,
                     settings: dict = None, alpha: dict = None):
-    """构建 timing db：TWF 解析 + 名字匹配归属 + 分区落库 + 冻结。
+    """构建 timing db：TWF 解析 + 名字匹配归属 + 冻结。
 
-    每份文件按切块大小分块并行解析，条目按 design db 的实例/网/pin 名字
-    匹配归属后按分区合并，全部完成后冻结。参数不合法（空名、timing_files
+    全部文件解析完成后库冻结可读。参数不合法（空名、timing_files
     结构错误、settings/alpha 含未知键或非法值、design_db 类型不符、
     文件不存在/不可读/非 TWF 格式）时立即报错终止，不建库。块绑定目标
     存在性（块实例路径/块 cell 名在 design db 命中）在解析阶段校验，
@@ -331,8 +330,7 @@ def build_timing_db(self, name: str, timing_files: list, design_db,
         name: db 子目录名 + Project 内部 key（重名自动递增）。
         timing_files: TWF 文件输入列表（至少 1 个；纯路径或块绑定描述
             符 dict，文件须存在且可读）。
-        design_db: DesignDb 实例（时序条目按其实例/网/pin 名字匹配归属，
-            并按其分区结构落库）。
+        design_db: DesignDb 实例（时序条目按其实例/网/pin 名字匹配归属）。
         settings: 配置项（当前无可用键，传任何键报错；None 合法）。
         alpha: 实验性配置（两键：chunk_size_mb、format；未知键或非法值
             报错；None 合法）。

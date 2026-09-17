@@ -637,7 +637,8 @@ _alpha_schema = Schema.dict(
         "partition_count": Schema(int, check=is_plain_int,
                                   error="must be an integer, got {value}"),
         "partition_target_density": Schema(
-            int, check=is_plain_int, error="must be an integer, got {value}"),
+            int, check=is_positive_int,
+            error="must be an integer >= 1, got {value}"),
         "density_channel_weights": Schema.dict(
             optional={"instance": _channel_weight_schema,
                       "metal": _channel_weight_schema,
@@ -654,16 +655,16 @@ _alpha_schema = Schema.dict(
 build_design_db_doc = UserDoc(
     "构建 design db：解析 tech lef（层堆叠/DBU 基准/通孔定义）+ 多份 cell "
     "lef（macro/简化 pin/禁布区/pin 几何）+ 多份 DEF（DIEAREA/port/通孔"
-    "定义），并与 lib 库 db 按 cell 名 merge（填 lib 字段与关联、提取功耗/"
-    "时序表）。lef_paths[0] 按 tech lef 解析，其余按 cell lef 解析。")
+    "定义），并按 cell 名并入 lib 库 db 的库信息（填 lib 字段与关联、提取"
+    "功耗/时序表）。lef_paths[0] 按 tech lef 解析，其余按 cell lef 解析。")
 build_design_db_doc.add_param("name",
     schema=Schema(str, check=is_nonempty_str,
                   error="must be a non-empty string, got {value}"),
     required=True, desc="db 子目录名 + Project 内部 key（重名自动递增）")
 build_design_db_doc.add_param("def_paths",
     schema=Schema.list(_path_schema),
-    required=True, desc="DEF 文件路径列表（可为空列表；每份文件独立并行"
-        "解析）。文件必须存在且可读，否则报错；非 DEF 格式报错")
+    required=True, desc="DEF 文件路径列表（可为空列表）。文件必须存在且"
+        "可读，否则报错；非 DEF 格式报错")
 build_design_db_doc.add_param("lef_paths",
     schema=Schema.list(_path_schema, min_len=1),
     required=True, desc="lef 文件路径列表（至少 1 个）；首元素为 tech lef，"
@@ -671,7 +672,7 @@ build_design_db_doc.add_param("lef_paths",
 build_design_db_doc.add_param("lib_db",
     schema=Schema(object, check=_is_lib_db_handle,
                   error="must be a LibDb instance, got {value}"),
-    required=True, desc="lib 库 db（LibDb 实例）。建库时按 cell 名与 lib 库数据合并（补全功耗/时序表等库信息）")
+    required=True, desc="lib 库 db（LibDb 实例）。建库时按 cell 名并入其库数据（补全功耗/时序表等库信息）")
 build_design_db_doc.add_param("settings",
     schema=Schema.dict(
         allow_extra=False,
@@ -690,7 +691,7 @@ build_design_db_doc.add_param("alpha",
          "target_partitions——直切分区形态 '{x}x{y}'（如 '4x3'），str 或 "
          "None（未设置），默认 None；partition_count——总分区数，整数，"
          "0=未设置，默认 0；partition_target_density——每分区目标负载，"
-         "整数，默认 150000；density_channel_weights——密度通道比重 "
+         "正整数，默认 150000；density_channel_weights——密度通道比重 "
          "（dict，键 instance/metal/via，值为非负数；缺省键用默认 "
          "6/2/2）；def_aggregate_threshold——小 DEF 聚合阈值（字节），"
          "整数 ≥1，默认 67108864（64 MiB）。分区数优先级："
@@ -702,7 +703,7 @@ build_design_db_doc.add_example("构建 design db",
     lib_db=lib_db)
 proj.wait_frozen("design", timeout=600)
 design = design_db.load_design()   # EXDSDesign 容器''',
-    desc="lef/def 解析 + lib merge → 冻结后读容器")
+    desc="lef/def 解析 + lib 库并入 → 冻结后读容器")
 build_design_db_doc.add_keyword(["design", "def", "lef", "stack", "via",
                                  "block", "port", "emir"])
 
@@ -711,14 +712,13 @@ build_design_db_doc.add_keyword(["design", "def", "lef", "stack", "via",
 @document(build_design_db_doc)
 def build_design_db(self, name: str, def_paths: list, lef_paths: list,
                     lib_db, settings: dict = None, alpha: dict = None):
-    """构建 design db：lef/def 解析 + lib 库合并 + 冻结。
+    """构建 design db：lef/def 解析 + lib 库数据并入 + 冻结。
 
-    解析流程：tech lef 先行（确立层堆叠与单位基准）→ 每份 cell lef 一
-    个独立解析任务并行执行 → 与 lib 库按 cell 名合并；每份 DEF 一个独立
-    解析任务并行执行；全部完成后合并、冻结。跨文件重名 macro/port/via
-    保留首份并提醒，不报错终止。参数不合法（空名、路径列表含非字符串
-    或空串、settings/alpha 含未知键或非法值、lib_db 类型不符、文件不
-    存在/不可读/非 LEF 或 DEF 格式）时立即报错终止，不建库。
+    tech lef 确立层堆叠与单位基准；lib 库数据按 cell 名并入（补全功耗/
+    时序表等库信息）。全部文件解析完成后库冻结可读。跨文件重名 macro/
+    port/via 保留首份并提醒，不报错终止。参数不合法（空名、路径列表含
+    非字符串或空串、settings/alpha 含未知键或非法值、lib_db 类型不符、
+    文件不存在/不可读/非 LEF 或 DEF 格式）时立即报错终止，不建库。
 
     Args:
         self: 自动绑定的 EMIRProject 实例。
@@ -726,7 +726,7 @@ def build_design_db(self, name: str, def_paths: list, lef_paths: list,
         def_paths: DEF 文件路径列表（可为空列表；文件须存在且可读）。
         lef_paths: lef 文件路径列表（至少 1 个；首元素 tech lef，其余
             cell lef，文件须存在且可读）。
-        lib_db: LibDb 实例（按 cell 名合并库数据的来源）。
+        lib_db: LibDb 实例（按 cell 名并入的库数据来源）。
         settings: 配置项（当前无可用键，传任何键报错；None 合法）。
         alpha: 实验性配置（八键，可用键与约束见 help；未知键或非法值
             报错；None 合法）。

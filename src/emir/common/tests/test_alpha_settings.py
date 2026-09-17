@@ -117,6 +117,8 @@ def test_validator_rules():
         ("partition_count", True, False),
         ("partition_count", "9", False),
         ("partition_target_density", 150000, True),
+        ("partition_target_density", -100, False),    # 负数（入口拦截口径）
+        ("partition_target_density", 0, False),       # 0 非法（无未设置语义）
         ("partition_target_density", True, False),
         ("partition_target_density", 15.0, False),
         # dict 型：NaN/inf/负数/bool/非数逐条拒绝（ds_flow NaN 恒 False
