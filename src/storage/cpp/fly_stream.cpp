@@ -59,7 +59,7 @@ FlyBufferPtr FlyStream::finish_write() {
     ObjectHeader header;
     // Small payloads skip compression inside CompressingStreamBuf; record the
     // actual on-disk format so the read-side picks the matching path.
-    header.compression_type_ = static_cast<uint8_t>(compress_sb_->effective_compression_type());
+    header.compression_type_ = compress_sb_->effective_compression_type();
     header.total_size_ = static_cast<uint64_t>(compress_sb_->total_uncompressed());
     header.chunk_count_ = static_cast<uint32_t>(compress_sb_->chunk_count());
     header.py_name_ = py_name_;
@@ -81,7 +81,7 @@ void FlyStream::finish_sink() {
     compress_os_->flush();
     // trailer 构造（total/chunks 此时自然已知）并走 sink。
     ObjectHeader header;
-    header.compression_type_ = static_cast<uint8_t>(compress_sb_->effective_compression_type());
+    header.compression_type_ = compress_sb_->effective_compression_type();
     header.total_size_ = static_cast<uint64_t>(compress_sb_->total_uncompressed());
     header.chunk_count_ = static_cast<uint32_t>(compress_sb_->chunk_count());
     header.py_name_ = py_name_;
@@ -92,7 +92,7 @@ void FlyStream::finish_sink() {
 
     sink_total_ = compress_sb_->total_uncompressed();
     sink_chunks_ = compress_sb_->chunk_count();
-    sink_comp_ = static_cast<uint8_t>(compress_sb_->effective_compression_type());
+    sink_comp_ = compress_sb_->effective_compression_type();
 }
 
 int64_t FlyStream::finish_and_commit(bool backup, bool populate_cache) {

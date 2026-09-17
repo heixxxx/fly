@@ -313,7 +313,7 @@ TEST(RecordFormatTest, LegacyPrefixHeaderRejected) {
     hdr.py_name_len_ = 6;
     hdr.total_size_ = 16;
     hdr.chunk_count_ = 1;
-    hdr.compression_type_ = static_cast<uint8_t>(CompressionType::NONE);
+    hdr.compression_type_ = CompressionType::NONE;
     CMString record = hdr.serialize();
     int32_t sz = 16;
     record.append(reinterpret_cast<const char*>(&sz), 4);
@@ -342,7 +342,7 @@ FlyBufferPtr build_v2_record(const std::string& payload, size_t chunk_size) {
     os.flush();
 
     ObjectHeader header;
-    header.compression_type_ = static_cast<uint8_t>(csbuf.effective_compression_type());
+    header.compression_type_ = csbuf.effective_compression_type();
     header.total_size_ = static_cast<uint64_t>(csbuf.total_uncompressed());
     header.chunk_count_ = static_cast<uint32_t>(csbuf.chunk_count());
     header.py_name_ = "v2obj";

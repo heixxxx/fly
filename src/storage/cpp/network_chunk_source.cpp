@@ -22,8 +22,7 @@ NetworkChunkSource::NetworkChunkSource(CMSharedPtr<Transport> transport, int fd,
     // 经 META 预解析不可得（表在 trailer 里、trailer 在流尾）——接收线程块级
     // 校验按块头自寻址（§14.1 A'：解析 16B 头取 comp 长度），表对账由消费端
     //（DecompressingStreamBuf/MemoryChunkSource 拿到全量后）执行。
-    meta_comp_type_ = meta.chunk_compression_type_ != 0
-                          ? static_cast<int>(meta.chunk_compression_type_) : -1;
+    meta_comp_type_ = meta.chunk_compression_type_;
 }
 
 NetworkChunkSource::NetworkChunkSource(CMSharedPtr<Transport> transport, FdHandlePtr handle,
@@ -38,8 +37,7 @@ NetworkChunkSource::NetworkChunkSource(CMSharedPtr<Transport> transport, FdHandl
     , meta_py_name_(meta.py_name_)
     , meta_write_hash_(meta.write_context_hash_)
     , release_fn_(std::move(release)) {
-    meta_comp_type_ = meta.chunk_compression_type_ != 0
-                          ? static_cast<int>(meta.chunk_compression_type_) : -1;
+    meta_comp_type_ = meta.chunk_compression_type_;
 }
 
 NetworkChunkSource::~NetworkChunkSource() {

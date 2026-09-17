@@ -37,7 +37,7 @@ FlyBufferPtr make_simple_record(const std::string& data, const CMString& py_name
     header.chunk_count_ = 1;
     header.py_name_ = py_name;
     header.py_name_len_ = static_cast<uint16_t>(py_name.size());
-    header.compression_type_ = 0;  // raw passthrough
+    header.compression_type_ = CompressionType::NONE;  // raw passthrough
     header.block_comp_lens_ = {static_cast<uint32_t>(data.size())};  // B' 块表
     CMString trailer = header.serialize_trailer();
     record->write(trailer.data(), trailer.size());

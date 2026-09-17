@@ -63,7 +63,7 @@ public:
     // sink 写模式元数据（finish_sink 后有效；commit_incremental 消费）。
     int64_t sink_total_uncompressed() const { return sink_total_; }
     int32_t sink_chunk_count() const { return sink_chunks_; }
-    uint8_t sink_effective_compression() const { return sink_comp_; }
+    CompressionType sink_effective_compression() const { return sink_comp_; }
 
 private:
     bool is_write_mode_;
@@ -77,7 +77,8 @@ private:
     std::function<int64_t(int64_t, int32_t, bool, bool)> commit_fn_;  // sink 完成回调
     int64_t sink_total_ = 0;
     int32_t sink_chunks_ = 0;
-    uint8_t sink_comp_ = 0;
+    // 实际生效压缩类型（threshold 直通时 NONE）——落盘 header/trailer 同源。
+    CompressionType sink_comp_ = CompressionType::NONE;
     CMString py_name_;
     FlyBufferPtr read_buf_;
     CMSharedPtr<fly::ChunkSource> chunk_source_;  // 流式读模式（L3）

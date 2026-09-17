@@ -50,7 +50,7 @@ FlyBufferPtr make_valid_record(const std::string& data, const CMString& py_name)
     header.chunk_count_ = 1;
     header.py_name_ = py_name;
     header.py_name_len_ = static_cast<uint16_t>(py_name.size());
-    header.compression_type_ = 0;
+    header.compression_type_ = CompressionType::NONE;
     header.block_comp_lens_ = {static_cast<uint32_t>(data.size())};  // B' 块表
     CMString trailer = header.serialize_trailer();
     record->write(trailer.data(), trailer.size());
@@ -192,7 +192,7 @@ TEST_F(DataCorruptionTest, RemoteChunkCorruptRetryThenFatal) {
 
 TEST_F(DataCorruptionTest, DiskSourceOpenFailureClassifiedAsIo) {
     CMString missing = test_dir_ + "/no_such_file.dat";
-    DiskChunkSource src(missing, 0, 16, "n", 16, 1, 0);
+    DiskChunkSource src(missing, 0, 16, "n", 16, 1, CompressionType::NONE);
     EXPECT_TRUE(src.failed());
     EXPECT_TRUE(src.failure_detail().rfind("io:", 0) == 0)
         << "detail=" << src.failure_detail();
@@ -205,7 +205,7 @@ TEST_F(DataCorruptionTest, DiskSourceShortReadClassifiedAsIntegrity) {
         f.write("0123456789", 10);
     }
     // 声明区间 64B > 实际 10B → pull 短读 = record 截断（完整性，非 IO）。
-    DiskChunkSource src(path, 0, 64, "n", 64, 1, 0);
+    DiskChunkSource src(path, 0, 64, "n", 64, 1, CompressionType::NONE);
     char buf[64];
     EXPECT_EQ(src.pull(buf, sizeof(buf)), -1);
     EXPECT_TRUE(src.failed());
@@ -215,7 +215,7 @@ TEST_F(DataCorruptionTest, DiskSourceShortReadClassifiedAsIntegrity) {
 
 TEST_F(DataCorruptionTest, StreamBufFailureDetailPassesThrough) {
     CMString missing = test_dir_ + "/gone.dat";
-    auto src = CMMakeShared<DiskChunkSource>(missing, 0, 16, "n", 16, 1, 0);
+    auto src = CMMakeShared<DiskChunkSource>(missing, 0, 16, "n", 16, 1, CompressionType::NONE);
     ASSERT_TRUE(src->failed());
     DecompressingStreamBuf sb(src, 16);
     char tmp[8];

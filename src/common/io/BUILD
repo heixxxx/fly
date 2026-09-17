@@ -10,6 +10,7 @@ cc_library(
     strip_include_prefix = "/src",
     copts = ["-std=c++20"],
     deps = [
+        "//src/common/types:fly_common_types",
         "//src/container/cpp:fly_container_aliases",
     ],
     visibility = ["//visibility:public"],

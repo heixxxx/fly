@@ -19,6 +19,7 @@ cc_library(
         "//src/container/cpp:fly_container_aliases",
         "//src/common/buffer:data_checksum",
         "//src/common/serialization:fly_serialization",
+        "//src/common/types:fly_common_types",
         "//src/core/cpp:fly_core",
         "//src/log/cpp:fly_log",
         "//src/message/cpp:fly_message",

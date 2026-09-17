@@ -1,5 +1,6 @@
 #pragma once
 
+#include <common/types/cpp/compression_type.h>
 #include <container/cpp/container_aliases.h>
 #include <cstdint>
 
@@ -24,9 +25,10 @@ public:
     virtual const CMString& py_name() const = 0;
     virtual uint64_t total_uncompressed() const = 0;
     virtual uint32_t chunk_count() const = 0;
-    // 压缩类型（int 为 CompressionType 值——避免 chunk_source.h 依赖
-    // compressor.h；-1 = 未知（源失败））。
-    virtual int compression_type() const = 0;
+    // 压缩类型（CompressionType，common/types 下沉定义——本头文件不允许
+    // 依赖 storage）。源侧失败（trailer/META 解析败）时返回值无意义，以
+    // failed() 为权威判定；正常路径返回值已由解析侧值域校验保证。
+    virtual CompressionType compression_type() const = 0;
 
     // 源侧校验状态（帧 CRC/DIGEST 根）：流结束后查询；true = 源已坏，
     // 消费结果不可信（零容忍 §5）。

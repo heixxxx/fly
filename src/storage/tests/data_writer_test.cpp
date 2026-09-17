@@ -36,7 +36,7 @@ protected:
         ObjectHeader header;
         header.total_size_ = 0;
         header.chunk_count_ = 0;
-        header.compression_type_ = 0;
+        header.compression_type_ = CompressionType::NONE;
         header.py_name_ = py_name;
         header.py_name_len_ = static_cast<uint16_t>(py_name.size());
         CMString header_bytes = header.serialize();

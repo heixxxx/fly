@@ -1687,7 +1687,7 @@ FlyBufferPtr make_stream_record(const std::string& data) {
     header.chunk_count_ = 1;
     header.py_name_ = "bytes";
     header.py_name_len_ = 5;
-    header.compression_type_ = 0;
+    header.compression_type_ = CompressionType::NONE;
     header.block_comp_lens_ = {static_cast<uint32_t>(data.size())};
     CMString trailer = header.serialize_trailer();
     record->write(trailer.data(), trailer.size());

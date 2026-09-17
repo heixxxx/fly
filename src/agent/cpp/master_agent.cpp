@@ -1837,12 +1837,12 @@ void MasterAgent::monitor_self_loop() {
     }
 }
 
-// master 侧事件采样：cluster 事件时刻的全维度快照（kind=1 直写；与周期采样
+// master 侧事件采样：cluster 事件时刻的全维度快照（EVENT 直写；与周期采样
 // 共用节流——高频事件（task 完成风暴）不刷爆 DB）。
 void MasterAgent::monitor_self_event() {
     if (!metrics_db_) return;
     MonitorSample sp = monitor_self_sampler_.sample_once();
-    sp.kind_ = 1;
+    sp.kind_ = MonitorSampleKind::EVENT;
     {
         std::lock_guard<std::mutex> t(self_sample_throttle_mutex_);
         if (sp.epoch_ms_ < self_last_sample_ms_ + static_cast<uint64_t>(self_sample_gap_ms_)) {

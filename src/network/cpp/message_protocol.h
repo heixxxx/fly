@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <cstring>
 #include <stdexcept>
+#include <type_traits>
 
 namespace fly {
 
@@ -122,6 +123,22 @@ public:
             FLY_DECODE(payload, T, msg);
         } catch (const std::runtime_error&) {
             return false;
+        }
+
+        // 压缩类型值域校验（对齐 is_valid_message_type 先例）：bitsery 只
+        // 保证 1 字节宽度，不校验枚举值域——越界值不得以未定义枚举值流入
+        // 解压管线，此处确定性拒绝（调用方按协议错误处理）。
+        if constexpr (std::is_same_v<T, DataResponseMessage>) {
+            if (!is_valid_compression_type(
+                    static_cast<uint8_t>(msg.chunk_compression_type_))) {
+                return false;
+            }
+        }
+        if constexpr (std::is_same_v<T, PeerStreamStartMessage>) {
+            if (!is_valid_compression_type(
+                    static_cast<uint8_t>(msg.compression_type_))) {
+                return false;
+            }
         }
 
         buffer.erase(0, 8 + total_len);

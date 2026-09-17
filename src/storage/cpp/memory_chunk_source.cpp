@@ -24,7 +24,7 @@ void MemoryChunkSource::parse_trailer(const char* data, size_t size) {
     py_name_ = header.py_name_;
     total_uncompressed_ = header.total_size_;
     chunk_count_ = header.chunk_count_;
-    compression_type_ = static_cast<int>(header.compression_type_);
+    compression_type_ = header.compression_type_;
     block_area_len_ = size - tl;
 
     // 块表对账（B'，§14.1）：逐块头↔表项对照——顺序扫块头（16B 跳跃，

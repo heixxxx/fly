@@ -730,7 +730,7 @@ void WorkerAgent::monitor_report_loop() {
 // 与周期样本共用节流——快 IO 等密集事件天然被间距挡掉，不放大开销。
 void WorkerAgent::sample_now_event() {
     MonitorSample sp = monitor_sampler_.sample_once();
-    sp.kind_ = 1;
+    sp.kind_ = MonitorSampleKind::EVENT;
     append_sample_throttled(sp);
 }
 
@@ -2921,16 +2921,16 @@ void WorkerAgent::ensure_peer_rpc_handlers() {
     // NOT_READY(可恢复未就绪)；映射为内部 PeerRpcStatus（NOT_READY 一等
     // 传递，调用方据此跳过重试）。
     peer_rpc_server_->set_response_handler(
-        [this](uint64_t conn_id, uint64_t rpc_id, uint8_t status, CMString payload,
-               const PeerStreamReaderPtr& reader) {
+        [this](uint64_t conn_id, uint64_t rpc_id, PeerRpcWireStatus status,
+               CMString payload, const PeerStreamReaderPtr& reader) {
             // e26f5d6 曾误删 INFO( 前缀留下孤立逗号表达式（响应到达日志
             // 丢失、complete 侥幸在表达式末位仍执行）——恢复完整日志语句。
             DBG("[PEER-RPC] response conn={} rpc={} status={} reader={} "
-                "payload_len={}", conn_id, rpc_id, status, reader != nullptr,
-                payload.size());
+                "payload_len={}", conn_id, rpc_id, static_cast<int>(status),
+                reader != nullptr, payload.size());
             pending_peer_rpcs_.complete(rpc_id, [&](PendingPeerRpc& p) {
                 PeerRpcStatus mapped;
-                switch (static_cast<PeerRpcWireStatus>(status)) {
+                switch (status) {
                     case PeerRpcWireStatus::OK:
                         mapped = PeerRpcStatus::OK;
                         break;
@@ -3048,7 +3048,7 @@ bool WorkerAgent::peer_rpc_respond(uint64_t conn_id, uint64_t rpc_id,
                                     const CMString& payload) {
     if (!peer_rpc_server_) return false;
     return peer_rpc_server_->send_response(conn_id, rpc_id,
-        static_cast<uint8_t>(PeerRpcWireStatus::OK), payload);
+        PeerRpcWireStatus::OK, payload);
 }
 
 bool WorkerAgent::peer_rpc_respond_failure(uint64_t conn_id, uint64_t rpc_id,
@@ -3057,7 +3057,7 @@ bool WorkerAgent::peer_rpc_respond_failure(uint64_t conn_id, uint64_t rpc_id,
     // RESPOND_FAILURE：精确匹配该 rpc_id 的 pending，只 fail 这一个请求。
     // 区别于 notify_failure（NOTIFY_FAILURE, rpc_id=0 全局通知）。
     return peer_rpc_server_->send_response(conn_id, rpc_id,
-        static_cast<uint8_t>(PeerRpcWireStatus::RESPOND_FAILURE), reason);
+        PeerRpcWireStatus::RESPOND_FAILURE, reason);
 }
 
 bool WorkerAgent::peer_rpc_respond_not_ready(uint64_t conn_id, uint64_t rpc_id,
@@ -3077,7 +3077,7 @@ fly::PeerStreamWriter* WorkerAgent::peer_stream_writer(uint64_t conn_id,
     pending->conn_id_ = conn_id;
     pending_peer_rpcs_.emplace(rpc_id, pending);
     return new fly::PeerStreamWriter(peer_rpc_server_, conn_id, rpc_id,
-                                     /*direction=*/0,
+                                     PeerStreamDirection::REQUEST,
                                      CompressorFactory::type_from_name(compression),
                                      level);
 }
@@ -3089,7 +3089,7 @@ fly::PeerStreamWriter* WorkerAgent::peer_stream_respond_writer(uint64_t conn_id,
     if (!peer_rpc_server_) return nullptr;
     // 响应流：rpc_id = 收到的请求 id（不注册 pending——响应无后续等待）。
     return new fly::PeerStreamWriter(peer_rpc_server_, conn_id, rpc_id,
-                                     /*direction=*/1,
+                                     PeerStreamDirection::RESPONSE,
                                      CompressorFactory::type_from_name(compression),
                                      level);
 }

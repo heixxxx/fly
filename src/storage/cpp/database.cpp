@@ -672,7 +672,7 @@ void Database::backup_object(const CMString& object_name) {
     ObjectHeader hdr;
     hdr.py_name_ = r.source->py_name();
     hdr.total_size_ = r.source->total_uncompressed();
-    hdr.compression_type_ = static_cast<uint8_t>(r.source->compression_type());
+    hdr.compression_type_ = r.source->compression_type();
     bool ok = true;
     uint64_t pulled = 0;
     char block_hdr[16];

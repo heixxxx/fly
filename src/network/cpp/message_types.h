@@ -2,6 +2,7 @@
 
 #include <container/cpp/container_aliases.h>
 #include <common/runtime/cpp/error_types.h>
+#include <common/types/cpp/compression_type.h>
 #include <log/cpp/logger.h>  // LogLevel（LogMessage.level_ 用）
 #include <common/serialization/cpp/serialization_macros.h>
 #include <cstdint>
@@ -167,6 +168,15 @@ struct HeartbeatAckMessage {
     FLY_SERIALIZE(header_, worker_id_);
 };
 
+// monitor 负载采样种类（MonitorSample.kind_）：周期采样走心跳解耦通道的
+// 常规节拍；事件驱动采样是 assign/执行起止/断连等 cluster 事件时刻的
+// worker 全维度快照（与周期样本共用节流与补发通道）。原先以裸 0/1 承载，
+// 定型为枚举（uint8 同宽，wire 编码不变）。
+enum class MonitorSampleKind : uint8_t {
+    PERIODIC = 0,  // 周期采样（MonitorSampler 常规节拍）
+    EVENT = 1,     // 事件驱动采样（cluster 事件时刻全维度快照）
+};
+
 // 一条进程负载采样（monitor 通道）。数值口径：
 //   · proc_cpu_bps_/host_cpu_bps_：CPU 百分比 × 100（basis points，整数定点，
 //     规避浮点序列化）。proc 口径 = 进程 jiffies 增量 / 机器总 jiffies 增量，
@@ -184,10 +194,10 @@ struct MonitorSample {
     uint32_t host_load1_x100_ = 0;        // host loadavg 1m（×100）
     uint64_t net_read_bytes_ = 0;         // 本进程网络累计读字节
     uint64_t net_write_bytes_ = 0;        // 本进程网络累计写字节
-    uint8_t kind_ = 0;                    // 0=周期采样；1=事件驱动采样（assign/
-                                         // 执行起止/断连等 cluster 事件时刻的
-                                         // worker 全维度快照，与周期样本共用
-                                         // 节流与补发通道）
+    MonitorSampleKind kind_ = MonitorSampleKind::PERIODIC;  // 采样种类
+                                                           //（事件驱动样本
+                                                           // 与周期样本共用
+                                                           // 节流与补发通道）
 
     FLY_SERIALIZE(epoch_ms_, proc_rss_bytes_, proc_cpu_bps_, host_cpu_bps_,
                   host_mem_total_bytes_, host_mem_avail_bytes_, host_load1_x100_,
@@ -279,7 +289,10 @@ struct DataResponseMessage {
     uint64_t total_compressed_len_ = 0;
     uint64_t chunk_frame_bytes_ = 0;
     uint64_t trailer_len_ = 0;
-    uint8_t chunk_compression_type_ = 0;
+    // 压缩类型（CompressionType，common/types 下沉定义——原本以裸 uint8_t
+    // 承载 storage 枚举值避免反向依赖；1 字节 wire 编码不变）。值域由
+    // MessageProtocol::decode 校验（is_valid_compression_type，越界拒绝）。
+    CompressionType chunk_compression_type_ = CompressionType::NONE;
     // temp 标记（缓存双池路由 2026-08-30）：server 本地索引判定随 META 告知
     //——master/跨进程读取方据此路由 temp 缓存池（本进程 local_idx 查不到
     // 远端 temp 属性）。
@@ -1049,14 +1062,22 @@ struct MessageLimitSyncMessage {
 //   [DATA_CHUNK 帧流：4MB 切帧，帧 payload = 块流字节（块头自描述）]
 //   [END 帧：total_uncompressed + 块数 + 消费字节数 对账 → payload 就绪]
 // 连接独占：START 至 END 之间同连接不得插入其他帧；完整性由块级 CRC
-// （写入时刻锚点）+ END 对账承担。
+//（写入时刻锚点）+ END 对账承担。
+
+// 流方向（PeerStreamStartMessage.direction_）：请求流 / 响应流。原先以裸
+// 0/1 魔法值比较，定型为枚举（uint8 同宽，wire 编码不变）。
+enum class PeerStreamDirection : uint8_t {
+    REQUEST = 0,   // worker → peer 的请求流
+    RESPONSE = 1,  // peer 回程的响应流
+};
 
 struct PeerStreamStartMessage {
     MessageHeader header_;
     uint64_t rpc_id_ = 0;
-    uint8_t direction_ = 0;         // 0=请求流, 1=响应流
-    uint8_t compression_type_ = 1;  // CompressionType::LZ4（数值——message_types
-                                    //   不依赖 storage/compressor 定义）
+    PeerStreamDirection direction_ = PeerStreamDirection::REQUEST;
+    // 压缩类型（CompressionType，common/types 下沉定义——原以数值承载规避
+    // 对 storage/compressor 的依赖；下沉后类型化，1 字节 wire 编码不变）。
+    CompressionType compression_type_ = CompressionType::LZ4;
 
     static constexpr MessageType msg_type_ = MessageType::PEER_STREAM_START;
     FLY_SERIALIZE(header_, rpc_id_, direction_, compression_type_);

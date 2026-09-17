@@ -3,6 +3,7 @@
 #include <gtest/gtest.h>
 #include <monitor/cpp/monitor_sampler.h>
 #include <core/cpp/system_info.h>
+#include <network/cpp/message_types.h>  // MonitorSampleKind
 #include <network/cpp/net_stats.h>
 
 #include <thread>
@@ -144,7 +145,7 @@ TEST(MonitorSamplerTest, ConcurrentSampleOnceIsSafeAndMonotonic) {
 TEST(MonitorSamplerTest, SampleKindFieldDefaultZero) {
     fly::MonitorSampler sampler;
     fly::MonitorSample sp = sampler.sample_once();
-    EXPECT_EQ(sp.kind_, 0u);  // 采样器产周期样本；事件标记由调用方置 1
+    EXPECT_EQ(sp.kind_, fly::MonitorSampleKind::PERIODIC);  // 采样器产周期样本；事件标记由调用方置 EVENT
 }
 
 }  // namespace

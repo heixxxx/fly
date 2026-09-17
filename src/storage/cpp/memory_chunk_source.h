@@ -18,7 +18,7 @@ public:
     const CMString& py_name() const override { return py_name_; }
     uint64_t total_uncompressed() const override { return total_uncompressed_; }
     uint32_t chunk_count() const override { return chunk_count_; }
-    int compression_type() const override { return compression_type_; }
+    CompressionType compression_type() const override { return compression_type_; }
     bool failed() const override { return failed_; }
     CMString failure_detail() const override { return failure_detail_; }
 
@@ -36,7 +36,8 @@ protected:
     CMString py_name_;
     uint64_t total_uncompressed_ = 0;
     uint32_t chunk_count_ = 0;
-    int compression_type_ = -1;
+    // trailer 解析失败时保持 NONE（值无意义，failed() 权威）。
+    CompressionType compression_type_ = CompressionType::NONE;
     bool failed_ = false;
     CMString failure_detail_;   // "integrity: ..."（解析失败时非空）
 };

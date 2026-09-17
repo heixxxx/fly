@@ -19,7 +19,7 @@ struct TestRecord {
 TestRecord make_record(const CMString& data, const CMString& py_name = "") {
     TestRecord rec;
     ObjectHeader header;
-    header.compression_type_ = 0;
+    header.compression_type_ = CompressionType::NONE;
     header.py_name_ = py_name;
     header.py_name_len_ = static_cast<uint16_t>(py_name.size());
     // 新格式（§4.4）：块流纯追加，完成后追加 trailer。
@@ -34,7 +34,7 @@ TestRecord make_record(const CMString& data, const CMString& py_name = "") {
         os.flush();
         rec.original_size_ = csbuf.total_uncompressed();
         rec.chunk_count_ = csbuf.chunk_count();
-        header.compression_type_ = static_cast<uint8_t>(csbuf.effective_compression_type());
+        header.compression_type_ = csbuf.effective_compression_type();
         header.block_comp_lens_ = csbuf.block_comp_lens();  // B' 块表
     }
     counting_stream.flush();

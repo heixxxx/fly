@@ -484,7 +484,7 @@ void DataServer::serve_chunked(const FdHandlePtr& handle, const CMString& object
     // META 元数据（尾部 trailer 预解析结果，L3 §8.1）。
     CMString meta_py_name;
     uint64_t meta_trailer_len = 0;
-    int meta_comp_type = -1;
+    CompressionType meta_comp_type = CompressionType::NONE;
     // temp 标记（缓存双池路由）：本地索引判定随 META 告知远端读取方。
     bool meta_is_temp = data_service_.is_temp_object(object_name);
 
@@ -508,7 +508,7 @@ void DataServer::serve_chunked(const FdHandlePtr& handle, const CMString& object
                     // 记住元数据供 META 使用（下面闭包外读取）。
                     meta_py_name = hdr.py_name_;
                     meta_trailer_len = tl;
-                    meta_comp_type = static_cast<int>(hdr.compression_type_);
+                    meta_comp_type = hdr.compression_type_;
                 }
             }
         }
@@ -535,9 +535,7 @@ void DataServer::serve_chunked(const FdHandlePtr& handle, const CMString& object
         meta.py_name_ = meta_py_name;
         meta.trailer_len_ = meta_trailer_len;
         meta.is_temp_ = meta_is_temp;
-        if (meta_comp_type >= 0) {
-            meta.chunk_compression_type_ = static_cast<uint8_t>(meta_comp_type);
-        }
+        meta.chunk_compression_type_ = meta_comp_type;
         CMString meta_frame = DataResponseProtocol::encode(meta, nullptr).header_segment;
         ok = transport_->send_all(fd, meta_frame.data(), meta_frame.size());
         if (!ok) {

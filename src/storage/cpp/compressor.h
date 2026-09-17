@@ -1,17 +1,15 @@
 #pragma once
 
+#include <common/types/cpp/compression_type.h>
 #include <container/cpp/container_aliases.h>
 #include <cstdint>
 #include <memory>
 #include <stdexcept>
 #include <string_view>
 
-enum class CompressionType : int8_t {
-    NONE = 0,
-    LZ4 = 1,
-    ZLIB = 2,
-    ZSTD = 3,
-};
+// CompressionType 定义在 common/types/cpp/compression_type.h（2026-09 收敛
+// 下沉：落盘对象头与线上消息共用该枚举，storage 不得作为定义点）。此处
+// 直接复用全局命名空间同名定义——本头文件既有消费者无需任何改动。
 
 // On-disk format for each stored chunk:
 // [int32_t uncompressed_size][int32_t compressed_size][compressed_bytes...]

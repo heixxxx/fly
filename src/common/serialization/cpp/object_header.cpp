@@ -79,8 +79,15 @@ bool ObjectHeader::deserialize(std::string_view data, int64_t& offset, ObjectHea
     std::memcpy(&header.chunk_count_, data.data() + offset, sizeof(header.chunk_count_));
     offset += sizeof(header.chunk_count_);
 
-    std::memcpy(&header.compression_type_, data.data() + offset, sizeof(header.compression_type_));
-    offset += sizeof(header.compression_type_);
+    // 压缩类型：1 字节直读 → 值域校验先于类型化赋值（越界 = 损坏，确定性
+    // 拒绝；与 trailer 路径同口径）。
+    uint8_t comp_raw = 0;
+    std::memcpy(&comp_raw, data.data() + offset, sizeof(comp_raw));
+    if (!is_valid_compression_type(comp_raw)) {
+        return false;
+    }
+    offset += sizeof(comp_raw);
+    header.compression_type_ = static_cast<CompressionType>(comp_raw);
 
     if (header.py_name_len_ > 0) {
         if (static_cast<int64_t>(data.size()) < offset + header.py_name_len_) {
@@ -171,7 +178,12 @@ bool ObjectHeader::deserialize_trailer(std::string_view record, ObjectHeader& ou
     std::memcpy(&header.chunk_count_, hp, sizeof(header.chunk_count_));
     hp += sizeof(header.chunk_count_);
 
-    std::memcpy(&header.compression_type_, hp, sizeof(header.compression_type_));
+    // 压缩类型：1 字节直读 → 值域校验先于类型化赋值（越界 = 损坏，确定性
+    // 拒绝——原越界值会以未定义枚举值流入解压管线）。
+    uint8_t comp_raw = 0;
+    std::memcpy(&comp_raw, hp, sizeof(comp_raw));
+    if (!is_valid_compression_type(comp_raw)) return false;
+    header.compression_type_ = static_cast<CompressionType>(comp_raw);
 
     // 双口径互验：表长 == 块数 × 4（防 chunk_count/table_len 域损坏——
     // 任一域翻转使两口径失配，确定性拒绝）。

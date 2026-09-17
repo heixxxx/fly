@@ -1,5 +1,6 @@
 #pragma once
 
+#include <common/types/cpp/compression_type.h>
 #include <container/cpp/container_aliases.h>
 #include <cstdint>
 #include <string_view>
@@ -15,7 +16,10 @@ struct ObjectHeader {
     CMString py_name_;
     uint64_t total_size_ = 0;
     uint32_t chunk_count_ = 0;
-    uint8_t compression_type_ = 0;
+    // 压缩类型（CompressionType，common/types 下沉定义）：盘面 fixed 段/
+    // trailer 各 1 字节直通（uint8_t 同宽，编码不变）；解析侧值域由
+    // is_valid_compression_type 校验（越界 = 损坏，确定性拒绝）。
+    CompressionType compression_type_ = CompressionType::NONE;
     // 块位置表（§14.1 B'）：每块压缩后字节长（不含 16B 块头）。紧凑式——
     // 前缀和即得各块偏移。磁盘侧消费者：读侧对账（Σ(comp_len+16) == 块区
     // 总长，防块头域损坏导致的边界漂移）与 L4 部分读。内存/bitsery 路径

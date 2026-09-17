@@ -333,7 +333,7 @@ void MetricsDb::record_worker_samples(uint64_t worker_id, const CMVector<Monitor
                           sqlite3_bind_int64(s, 8, sp.host_load1_x100_);
                           sqlite3_bind_int64(s, 9, static_cast<sqlite3_int64>(sp.net_read_bytes_));
                           sqlite3_bind_int64(s, 10, static_cast<sqlite3_int64>(sp.net_write_bytes_));
-                          sqlite3_bind_int(s, 11, sp.kind_);
+                          sqlite3_bind_int(s, 11, static_cast<int>(sp.kind_));
                       });
         }
     });

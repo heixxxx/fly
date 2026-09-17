@@ -226,7 +226,7 @@ fly::WriteErrorType Database::write_object(const CMString& object_name, const T&
     std::ostream counting_stream(&counting_buf);
 
     ObjectHeader header;
-    header.compression_type_ = static_cast<uint8_t>(compression_type_);
+    header.compression_type_ = compression_type_;
     header.py_name_ = py_name;
     header.py_name_len_ = static_cast<uint16_t>(py_name.size());
 
@@ -244,7 +244,7 @@ fly::WriteErrorType Database::write_object(const CMString& object_name, const T&
         chunk_count = csbuf.chunk_count();
         // Small payloads skip compression internally; record the actual format
         // so the read-side picks the matching (de)compressor path.
-        header.compression_type_ = static_cast<uint8_t>(csbuf.effective_compression_type());
+        header.compression_type_ = csbuf.effective_compression_type();
         header.block_comp_lens_ = csbuf.block_comp_lens();  // B' 块表
     }
     counting_stream.flush();

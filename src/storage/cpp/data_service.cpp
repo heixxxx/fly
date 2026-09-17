@@ -935,8 +935,7 @@ DataService::StreamingReadResult DataService::read_streaming(const CMString& obj
                     ObjectHeader::deserialize_trailer({tail.data(), tail.size()}, hdr, tl)) {
                     auto disk = CMMakeShared<fly::DiskChunkSource>(
                         loc.file_path, loc.offset, loc.size - tl, hdr.py_name_,
-                        hdr.total_size_, hdr.chunk_count_,
-                        static_cast<int>(hdr.compression_type_));
+                        hdr.total_size_, hdr.chunk_count_, hdr.compression_type_);
                     disk->is_temp = is_temp_object(object_name);  // 本地判定
                     out.success = true;
                     out.py_name = hdr.py_name_;

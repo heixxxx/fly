@@ -23,7 +23,7 @@ public:
     // （read_streaming）读 trailer 一次获得——源不重复解析）。
     DiskChunkSource(CMString file_path, uint64_t offset, uint64_t size,
                     CMString py_name, uint64_t total_uncompressed,
-                    uint32_t chunk_count, int comp_type);
+                    uint32_t chunk_count, CompressionType comp_type);
     ~DiskChunkSource() override;
 
     DiskChunkSource(const DiskChunkSource&) = delete;
@@ -34,7 +34,7 @@ public:
     const CMString& py_name() const override { return py_name_; }
     uint64_t total_uncompressed() const override { return total_uncompressed_; }
     uint32_t chunk_count() const override { return chunk_count_; }
-    int compression_type() const override { return comp_type_; }
+    CompressionType compression_type() const override { return comp_type_; }
     bool failed() const override { return failed_; }
     CMString failure_detail() const override { return failure_detail_; }
 
@@ -48,7 +48,7 @@ private:
     CMString py_name_;
     uint64_t total_uncompressed_ = 0;
     uint32_t chunk_count_ = 0;
-    int comp_type_ = -1;
+    CompressionType comp_type_ = CompressionType::NONE;
     bool failed_ = false;
     CMString failure_detail_;   // "io: ..."/"integrity: ..."（失败时非空）
 };

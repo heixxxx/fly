@@ -9,9 +9,9 @@ DecompressingStreamBuf::DecompressingStreamBuf(const char* data, size_t size) {
     auto mem = CMMakeShared<fly::MemoryChunkSource>(data, size);
     checksum_failed_ = mem->failed();
     block_area_len_ = mem->block_area_len();
-    const int comp_raw = mem->compression_type();
+    const CompressionType comp = mem->compression_type();
     source_ = std::move(mem);
-    build_pipeline(static_cast<CompressionType>(comp_raw));
+    build_pipeline(comp);
 }
 
 DecompressingStreamBuf::DecompressingStreamBuf(CMSharedPtr<fly::ChunkSource> source,
@@ -20,7 +20,7 @@ DecompressingStreamBuf::DecompressingStreamBuf(CMSharedPtr<fly::ChunkSource> sou
     // 流式模式（L3 §8.1）：META 提供块流边界与元数据（server 发送前 pread
     // 尾部解析）。trailer 完整性由 trailer 自身 CRC 承担（不进管线）。
     checksum_failed_ = source_->failed();
-    build_pipeline(static_cast<CompressionType>(source_->compression_type()));
+    build_pipeline(source_->compression_type());
 }
 
 void DecompressingStreamBuf::build_pipeline(CompressionType comp) {

@@ -9,7 +9,7 @@ namespace fly {
 
 DiskChunkSource::DiskChunkSource(CMString file_path, uint64_t offset, uint64_t size,
                                  CMString py_name, uint64_t total_uncompressed,
-                                 uint32_t chunk_count, int comp_type)
+                                 uint32_t chunk_count, CompressionType comp_type)
     : file_path_(std::move(file_path))
     , offset_(offset)
     , size_(size)

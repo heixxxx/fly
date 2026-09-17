@@ -25,7 +25,7 @@ namespace {
 
 // 回调同步等待辅助：测试线程阻塞到异步回调到达（带超时防挂死）。
 struct CallbackLatch {
-    void notify(uint64_t rpc_id, uint8_t status, const CMString& payload) {
+    void notify(uint64_t rpc_id, PeerRpcWireStatus status, const CMString& payload) {
         std::lock_guard<std::mutex> lk(m_);
         got = true;
         rpc_id_ = rpc_id;
@@ -39,7 +39,7 @@ struct CallbackLatch {
     }
     bool fired() const { std::lock_guard<std::mutex> lk(m_); return got; }
     uint64_t rpc_id_ = 0;
-    uint8_t status_ = 0;
+    PeerRpcWireStatus status_ = PeerRpcWireStatus::OK;
     CMString payload_;
 private:
     bool got = false;
@@ -193,7 +193,7 @@ TEST_F(PeerRpcServerTest, StreamRequestLargePayloadDeliveredIntact) {
         });
     ASSERT_NE(conn, 0u);
 
-    PeerStreamWriter w(client, conn, /*rpc_id=*/9, /*direction=*/0,
+    PeerStreamWriter w(client, conn, /*rpc_id=*/9, PeerStreamDirection::REQUEST,
                        CompressionType::LZ4, -1);
     ASSERT_TRUE(w.ok());
     w.write(payload.data(), payload.size());
@@ -241,7 +241,7 @@ TEST_F(PeerRpcServerTest, StreamMultiBlockMixedCompressibilityIntact) {
         });
     ASSERT_NE(conn, 0u);
 
-    PeerStreamWriter w(client, conn, /*rpc_id=*/11, /*direction=*/0,
+    PeerStreamWriter w(client, conn, /*rpc_id=*/11, PeerStreamDirection::REQUEST,
                        CompressionType::LZ4, -1);
     ASSERT_TRUE(w.ok());
     for (size_t off = 0; off < payload.size(); off += 7 * 1024) {
@@ -272,7 +272,7 @@ TEST_F(PeerRpcServerTest, StreamResponseRoundtripSmallPayload) {
     const std::string payload = MakePseudoRandomBytes(16);
     CallbackLatch latch;
     ReaderLatch rlatch;
-    client->set_response_handler([&latch, &rlatch](uint64_t, uint64_t rpc_id, uint8_t status,
+    client->set_response_handler([&latch, &rlatch](uint64_t, uint64_t rpc_id, PeerRpcWireStatus status,
                                           const CMString& payload_in,
                                           const PeerStreamReaderPtr& reader) {
         if (reader) rlatch.store(reader);   // 流式响应：reader 承载
@@ -295,7 +295,7 @@ TEST_F(PeerRpcServerTest, StreamResponseRoundtripSmallPayload) {
         });
     ASSERT_NE(conn, 0u);
 
-    PeerStreamWriter w(client, conn, /*rpc_id=*/77, /*direction=*/0,
+    PeerStreamWriter w(client, conn, /*rpc_id=*/77, PeerStreamDirection::REQUEST,
                        CompressionType::LZ4, -1);
     ASSERT_TRUE(w.ok());
     w.write(payload.data(), payload.size());
@@ -307,13 +307,14 @@ TEST_F(PeerRpcServerTest, StreamResponseRoundtripSmallPayload) {
     EXPECT_EQ(job.reader->read_all(), payload);   // 流式请求经读端到达
     uint64_t total = 0;
     uint32_t chunks = 0;
-    EXPECT_TRUE(server->send_stream_payload(job.c, job.rid, /*direction=*/1,
+    EXPECT_TRUE(server->send_stream_payload(job.c, job.rid,
+                                            PeerStreamDirection::RESPONSE,
                                             payload, CompressionType::LZ4, -1,
                                             total, chunks));
 
     ASSERT_TRUE(latch.wait()) << "streamed response should arrive";
     EXPECT_EQ(latch.rpc_id_, 77u);
-    EXPECT_EQ(latch.status_, static_cast<uint8_t>(PeerRpcWireStatus::OK));
+    EXPECT_EQ(latch.status_, PeerRpcWireStatus::OK);
     auto reader = rlatch.wait();
     ASSERT_TRUE(reader != nullptr);
     EXPECT_EQ(reader->read_all(), payload);
@@ -339,8 +340,8 @@ TEST_F(PeerRpcServerTest, StreamTruncatedVerifyClosesConnection) {
 
     // 发 START + 合法块流（真实管线产出）+ END 谎报 total —— 对账失配路径
     // （块流必须合法：块头自描述，非法头会让解析器等待而非失配）。
-    EXPECT_TRUE(client->send_stream_start(conn, 5, 0,
-                                          static_cast<uint8_t>(CompressionType::NONE)));
+    EXPECT_TRUE(client->send_stream_start(conn, 5, PeerStreamDirection::REQUEST,
+                                          CompressionType::NONE));
     std::string block_stream;
     {
         fly::EmitFn emit = [&](const char* d, size_t n) { block_stream.append(d, n); };
@@ -379,7 +380,7 @@ TEST_F(PeerRpcServerTest, StreamTruncatedVerifyClosesConnection) {
 
 TEST_F(PeerRpcServerTest, EndToEndRoundTrip) {
     CallbackLatch latch;
-    client->set_response_handler([&latch](uint64_t, uint64_t rpc_id, uint8_t status,
+    client->set_response_handler([&latch](uint64_t, uint64_t rpc_id, PeerRpcWireStatus status,
                                           const CMString& payload, const PeerStreamReaderPtr&) {
         latch.notify(rpc_id, status, payload);
     });
@@ -394,7 +395,7 @@ TEST_F(PeerRpcServerTest, EndToEndRoundTrip) {
     EXPECT_TRUE(client->send_request(conn, /*rpc_id=*/42, /*src_worker_id=*/7, "ping"));
     ASSERT_TRUE(latch.wait()) << "response should arrive";
     EXPECT_EQ(latch.rpc_id_, 42u);
-    EXPECT_EQ(latch.status_, static_cast<uint8_t>(PeerRpcWireStatus::OK));
+    EXPECT_EQ(latch.status_, PeerRpcWireStatus::OK);
     EXPECT_EQ(latch.payload_, "echo:ping");
     EXPECT_TRUE(client->is_connected(conn));
 }
@@ -402,7 +403,7 @@ TEST_F(PeerRpcServerTest, EndToEndRoundTrip) {
 TEST_F(PeerRpcServerTest, DeferredResponseViaSendResponse) {
     // handler 返回 nullopt（不立即回）→ 测试侧稍后 send_response → 客户端仍收到。
     CallbackLatch latch;
-    client->set_response_handler([&latch](uint64_t, uint64_t rpc_id, uint8_t status,
+    client->set_response_handler([&latch](uint64_t, uint64_t rpc_id, PeerRpcWireStatus status,
                                           const CMString& payload, const PeerStreamReaderPtr&) {
         latch.notify(rpc_id, status, payload);
     });
@@ -420,7 +421,7 @@ TEST_F(PeerRpcServerTest, DeferredResponseViaSendResponse) {
     ASSERT_GT(server_conn, 0u) << "server should have received the request";
 
     EXPECT_TRUE(server->send_response(server_conn, /*rpc_id=*/99,
-                                      static_cast<uint8_t>(PeerRpcWireStatus::OK), "late"));
+                                      PeerRpcWireStatus::OK, "late"));
     ASSERT_TRUE(latch.wait());
     EXPECT_EQ(latch.rpc_id_, 99u);
     EXPECT_EQ(latch.payload_, "late");
@@ -428,7 +429,7 @@ TEST_F(PeerRpcServerTest, DeferredResponseViaSendResponse) {
 
 TEST_F(PeerRpcServerTest, NotifyFailurePropagatesStatus) {
     CallbackLatch latch;
-    client->set_response_handler([&latch](uint64_t, uint64_t rpc_id, uint8_t status,
+    client->set_response_handler([&latch](uint64_t, uint64_t rpc_id, PeerRpcWireStatus status,
                                           const CMString& payload, const PeerStreamReaderPtr&) {
         latch.notify(rpc_id, status, payload);
     });
@@ -445,7 +446,7 @@ TEST_F(PeerRpcServerTest, NotifyFailurePropagatesStatus) {
 
     EXPECT_TRUE(client->send_request(conn, /*rpc_id=*/5, 1, "req"));
     ASSERT_TRUE(latch.wait());
-    EXPECT_EQ(latch.status_, static_cast<uint8_t>(PeerRpcWireStatus::NOTIFY_FAILURE));
+    EXPECT_EQ(latch.status_, PeerRpcWireStatus::NOTIFY_FAILURE);
     EXPECT_NE(latch.payload_.find("diverged"), CMString::npos);
 }
 
@@ -462,7 +463,7 @@ TEST_F(PeerRpcServerTest, SendByeGracefulCloseWithoutDisconnectCallback) {
     ASSERT_NE(conn, 0u);
     // 先做一次 RPC 往返（连接进入活跃状态，排除 recv_bufs_ 未建条目的干扰）。
     CallbackLatch rl;
-    client->set_response_handler([&rl](uint64_t, uint64_t rpc_id, uint8_t st,
+    client->set_response_handler([&rl](uint64_t, uint64_t rpc_id, PeerRpcWireStatus st,
                                        const CMString& pl, const PeerStreamReaderPtr& reader) {
             rl.notify(rpc_id, st, pl);
         });
@@ -494,7 +495,7 @@ TEST_F(PeerRpcServerTest, ByeAckDisconnectRaceDoesNotFireDisconnectHandler) {
     ASSERT_NE(conn, 0u);
     // 先做一次 RPC 往返（连接进入活跃状态）。
     CallbackLatch rl;
-    client->set_response_handler([&rl](uint64_t, uint64_t rpc_id, uint8_t st,
+    client->set_response_handler([&rl](uint64_t, uint64_t rpc_id, PeerRpcWireStatus st,
                                        const CMString& pl, const PeerStreamReaderPtr& reader) {
             rl.notify(rpc_id, st, pl);
         });
@@ -534,7 +535,7 @@ TEST_F(PeerRpcServerTest, StopClosesAllConnections) {
     // 先做一次 RPC 往返：stop() 的 disconnect 通知只覆盖活跃连接
     //（recv_bufs_ 有条目者）——无数据往来的连接不在通知范围。
     CallbackLatch rl;
-    client->set_response_handler([&rl](uint64_t, uint64_t rpc_id, uint8_t st,
+    client->set_response_handler([&rl](uint64_t, uint64_t rpc_id, PeerRpcWireStatus st,
                                        const CMString& pl, const PeerStreamReaderPtr& reader) {
             rl.notify(rpc_id, st, pl);
         });
@@ -627,7 +628,7 @@ TEST_F(PeerRpcServerTest, StopUnblocksBackpressuredFeed) {
     // 7MB 伪随机（lz4 近随机 → raw 直通，压缩态≈7MB）：块1 4MB 入队
     // （4≤5）；块2 3MB：4+3>5 → feed 永久 wait（读端不消费不释放）。
     const std::string payload = MakePseudoRandomBytes(7 * 1024 * 1024);
-    PeerStreamWriter w(client, conn, /*rpc_id=*/21, /*direction=*/0,
+    PeerStreamWriter w(client, conn, /*rpc_id=*/21, PeerStreamDirection::REQUEST,
                        CompressionType::LZ4, -1);
     ASSERT_TRUE(w.ok());
     std::thread wt([&] {
@@ -669,8 +670,8 @@ TEST_F(PeerRpcServerTest, ReaderVerifyFailureWakesBlockedFeed) {
 
     // 手工构造 4 块 NONE 块流（每块 1MB），翻转块0 的 CRC —— 读端消费块0
     // 即 CrcVerify 失败 → advance_block 置 failed（此时 feed 阻塞在块1）。
-    EXPECT_TRUE(client->send_stream_start(conn, 33, 0,
-                                          static_cast<uint8_t>(CompressionType::NONE)));
+    EXPECT_TRUE(client->send_stream_start(conn, 33, PeerStreamDirection::REQUEST,
+                                          CompressionType::NONE));
     constexpr size_t kBlock = 1024 * 1024;
     CMString block_stream;
     {
@@ -777,8 +778,8 @@ TEST_F(PeerRpcServerTest, SecondStartWhileStreamActiveFailsOldStreamAndKeepsConn
         });
     ASSERT_NE(conn, 0u);
 
-    EXPECT_TRUE(client->send_stream_start(conn, /*rpc_id=*/5, /*direction=*/0,
-                                          static_cast<uint8_t>(CompressionType::NONE)));
+    EXPECT_TRUE(client->send_stream_start(conn, /*rpc_id=*/5, PeerStreamDirection::REQUEST,
+                                          CompressionType::NONE));
     bool got_first = false;
     for (int i = 0; i < 100 && !got_first; ++i) {
         std::this_thread::sleep_for(std::chrono::milliseconds(20));
@@ -788,8 +789,8 @@ TEST_F(PeerRpcServerTest, SecondStartWhileStreamActiveFailsOldStreamAndKeepsConn
     ASSERT_TRUE(got_first) << "first START must dispatch its reader";
 
     // 旧流（rpc 5）未收尾直接开新流（rpc 6）：旧 reader 必须被判死。
-    EXPECT_TRUE(client->send_stream_start(conn, /*rpc_id=*/6, /*direction=*/0,
-                                          static_cast<uint8_t>(CompressionType::NONE)));
+    EXPECT_TRUE(client->send_stream_start(conn, /*rpc_id=*/6, PeerStreamDirection::REQUEST,
+                                          CompressionType::NONE));
     bool got_second = false;
     for (int i = 0; i < 100 && !got_second; ++i) {
         std::this_thread::sleep_for(std::chrono::milliseconds(20));
@@ -844,8 +845,8 @@ TEST_F(PeerRpcServerTest, CorruptStreamEndClosesConnection) {
     // START 经裸连接直发（client 封装没有这条连接）。
     PeerStreamStartMessage start;
     start.rpc_id_ = 7;
-    start.direction_ = 0;
-    start.compression_type_ = static_cast<uint8_t>(CompressionType::NONE);
+    start.direction_ = PeerStreamDirection::REQUEST;
+    start.compression_type_ = CompressionType::NONE;
     ASSERT_TRUE(raw->send(rc, MessageProtocol::encode(start)) > 0);
     CMString garbage(3, '\xFF');
     ASSERT_TRUE(raw->send(rc, make_raw_frame(
@@ -930,8 +931,8 @@ TEST_F(PeerRpcServerTest, DataChunkZeroRawLenOnActiveStreamClearsAndContinues) {
     // START 经裸连接直发（client 封装没有这条连接）。
     PeerStreamStartMessage start;
     start.rpc_id_ = 8;
-    start.direction_ = 0;
-    start.compression_type_ = static_cast<uint8_t>(CompressionType::NONE);
+    start.direction_ = PeerStreamDirection::REQUEST;
+    start.compression_type_ = CompressionType::NONE;
     ASSERT_TRUE(raw->send(rc, MessageProtocol::encode(start)) > 0);
     // total_len = 1 + 4 + 16 = 21 → raw_len = 0。
     CMString empty_small(20, '\0');
@@ -1000,7 +1001,7 @@ TEST_F(PeerRpcServerTest, BadFrameHeaderClearsBufferNoCrash) {
     uint64_t probe = client->connect_peer("127.0.0.1", port);
     ASSERT_NE(probe, 0u);
     CallbackLatch latch;
-    client->set_response_handler([&latch](uint64_t, uint64_t rpc_id, uint8_t status,
+    client->set_response_handler([&latch](uint64_t, uint64_t rpc_id, PeerRpcWireStatus status,
                                           const CMString& payload,
                                           const PeerStreamReaderPtr&) {
         latch.notify(rpc_id, status, payload);
@@ -1048,10 +1049,10 @@ TEST_F(PeerRpcServerTest, ListenFailurePaths) {
 TEST_F(PeerRpcServerTest, InvalidConstructionAndClosedConnNoOps) {
     // srv 为空 / conn_id=0：invalid 构造（ok=false，不 crash）。
     CMSharedPtr<PeerRpcServer> null_srv;
-    PeerStreamWriter bad1(null_srv, 1, 1, 0, CompressionType::NONE, -1);
+    PeerStreamWriter bad1(null_srv, 1, 1, PeerStreamDirection::REQUEST, CompressionType::NONE, -1);
     EXPECT_FALSE(bad1.ok());
     auto srv = std::make_shared<PeerRpcServer>();
-    PeerStreamWriter bad2(srv, /*conn_id=*/0, 1, 0, CompressionType::NONE, -1);
+    PeerStreamWriter bad2(srv, /*conn_id=*/0, 1, PeerStreamDirection::REQUEST, CompressionType::NONE, -1);
     EXPECT_FALSE(bad2.ok());
     bad1.write("x", 1);   // write no-op
     EXPECT_FALSE(bad1.finish());
@@ -1101,7 +1102,7 @@ TEST_F(PeerRpcServerTest, InvalidConstructionAndClosedConnNoOps) {
         if (!reaped) std::this_thread::sleep_for(std::chrono::milliseconds(20));
     }
     ASSERT_TRUE(reaped) << "server must observe the closed peer conn";
-    PeerStreamWriter dead(srv, rc, 9, 0, CompressionType::NONE, -1);
+    PeerStreamWriter dead(srv, rc, 9, PeerStreamDirection::REQUEST, CompressionType::NONE, -1);
     EXPECT_FALSE(dead.ok()) << "START on a closed conn must fail construction";
     dead.write("data", 4);   // no-op：不得崩溃/阻塞
     EXPECT_FALSE(dead.finish());
@@ -1117,7 +1118,7 @@ TEST_F(PeerRpcServerTest, InvalidConstructionAndClosedConnNoOps) {
     uint64_t cc = client->connect_peer("127.0.0.1", port2);
     ASSERT_NE(cc, 0u);
     {
-        PeerStreamWriter abandoned(client, cc, 10, 0, CompressionType::NONE, -1);
+        PeerStreamWriter abandoned(client, cc, 10, PeerStreamDirection::REQUEST, CompressionType::NONE, -1);
         ASSERT_TRUE(abandoned.ok());
         abandoned.write("no-finish-payload", 17);
     }   // 析构：close 队列 → 压缩线程排空 + 发尾块 + END → join
@@ -1132,7 +1133,7 @@ TEST_F(PeerRpcServerTest, AbandonedReaderDiscardsAndKeepsFrameSync) {
     std::condition_variable cv;
     PeerStreamReaderPtr reader;
     CallbackLatch latch;
-    client->set_response_handler([&latch](uint64_t, uint64_t rpc_id, uint8_t status,
+    client->set_response_handler([&latch](uint64_t, uint64_t rpc_id, PeerRpcWireStatus status,
                                           const CMString& payload,
                                           const PeerStreamReaderPtr&) {
         latch.notify(rpc_id, status, payload);
@@ -1150,8 +1151,8 @@ TEST_F(PeerRpcServerTest, AbandonedReaderDiscardsAndKeepsFrameSync) {
         });
     ASSERT_NE(conn, 0u);
 
-    EXPECT_TRUE(client->send_stream_start(conn, 21, 0,
-                                          static_cast<uint8_t>(CompressionType::NONE)));
+    EXPECT_TRUE(client->send_stream_start(conn, 21, PeerStreamDirection::REQUEST,
+                                          CompressionType::NONE));
     {
         std::unique_lock<std::mutex> lk(m);
         ASSERT_TRUE(cv.wait_for(lk, std::chrono::seconds(5),

@@ -87,7 +87,8 @@ void PeerRpcServer::server_loop() {
                         bool is_request;         // true=REQUEST, false=RESPONSE
                         uint64_t rpc_id;
                         uint64_t src_worker_id;  // REQUEST only
-                        uint8_t status;          // RESPONSE only
+                        PeerRpcWireStatus status;  // RESPONSE only（wire 边界
+                                                   // 单点 cast，见下方直读）
                         CMString payload;
                         PeerStreamReaderPtr reader;   // 流式请求/响应 START 承载
                     };
@@ -148,15 +149,17 @@ void PeerRpcServer::server_loop() {
                                     st->direction = m.direction_;
                                     st->active = true;
                                     auto reader = std::make_shared<PeerStreamReader>(
-                                        st, static_cast<CompressionType>(m.compression_type_));
+                                        st, m.compression_type_);
                                     streams_[event.conn_id_] = st;
                                     DBG("[R-START] conn={} rpc={} dir={}",
-                                        event.conn_id_, m.rpc_id_, m.direction_);
+                                        event.conn_id_, m.rpc_id_,
+                                        static_cast<int>(m.direction_));
                                     // START 即派发（payload 空，reader 承载）——
                                     // 业务 pickle.load 拉动边收边反序列化。
                                     decoded_msgs.push_back(
-                                        {m.direction_ == 0, m.rpc_id_, 0,
-                                         static_cast<uint8_t>(PeerRpcWireStatus::OK),
+                                        {m.direction_ == PeerStreamDirection::REQUEST,
+                                         m.rpc_id_, 0,
+                                         PeerRpcWireStatus::OK,
                                          CMString(), reader});
                                     continue;
                                 }
@@ -251,7 +254,11 @@ void PeerRpcServer::server_loop() {
                             const size_t payload_len = 8 + total_len - fixed;
                             uint64_t rpc_id = read_be64(buf.data() + 9);
                             uint64_t src = is_req ? read_be64(buf.data() + 17) : 0;
-                            uint8_t status = is_req ? 0 : static_cast<uint8_t>(buf[17]);
+                            // wire status 字节唯一 cast 点：越界值由消费端
+                            // switch default 归类真失败（语义同前）。
+                            const auto status = is_req
+                                ? PeerRpcWireStatus::OK
+                                : static_cast<PeerRpcWireStatus>(buf[17]);
                             CMString payload(buf.data() + fixed, payload_len);
                             buf.erase(0, fixed + payload_len);
                             decoded_msgs.push_back({is_req, rpc_id, src, status,
@@ -281,14 +288,14 @@ void PeerRpcServer::server_loop() {
                                                               dm.reader);
                                 if (resp.has_value()) {
                                     send_response(event.conn_id_, dm.rpc_id,
-                                                   static_cast<uint8_t>(PeerRpcWireStatus::OK),
+                                                   PeerRpcWireStatus::OK,
                                                    resp.value());
                                 }
                             }
                         } else {
                             // BYE 握手：status=BYE 是连接管理信号，
                             // 不走 response_handler（不传到 pending RPC）。
-                            if (dm.status == static_cast<uint8_t>(PeerRpcWireStatus::BYE)) {
+                            if (dm.status == PeerRpcWireStatus::BYE) {
                                 handle_bye(event.conn_id_);
                             } else if (response_handler_) {
                                 response_handler_(event.conn_id_, dm.rpc_id, dm.status,
@@ -335,7 +342,8 @@ void PeerRpcServer::server_loop() {
 }
 
 bool PeerRpcServer::send_stream_start(uint64_t conn_id, uint64_t rpc_id,
-                                      uint8_t direction, uint8_t compression_type) {
+                                      PeerStreamDirection direction,
+                                      CompressionType compression_type) {
     PeerStreamStartMessage m;
     m.rpc_id_ = rpc_id;
     m.direction_ = direction;
@@ -368,7 +376,8 @@ bool PeerRpcServer::send_stream_end(uint64_t conn_id, uint64_t rpc_id,
 }
 
 bool PeerRpcServer::send_stream_payload(uint64_t conn_id, uint64_t rpc_id,
-                                        uint8_t direction, const CMString& payload,
+                                        PeerStreamDirection direction,
+                                        const CMString& payload,
                                         CompressionType comp, int level,
                                         uint64_t& total_out, uint32_t& chunks_out) {
     // 整 payload 装配为流（无 writer 分步 API 时的便捷封装）：一次 write +
@@ -388,16 +397,17 @@ bool PeerRpcServer::send_stream_payload(uint64_t conn_id, uint64_t rpc_id,
 
 PeerStreamWriter::PeerStreamWriter(CMSharedPtr<PeerRpcServer> srv,
                                    uint64_t conn_id, uint64_t rpc_id,
-                                   uint8_t direction, CompressionType comp,
+                                   PeerStreamDirection direction,
+                                   CompressionType comp,
                                    int level)
     : srv_(srv), conn_id_(conn_id), rpc_id_(rpc_id) {
     if (!srv_ || conn_id_ == 0) {
         ERR("[PEER-STREAM-W] invalid construction");
         return;
     }
-    started_ = srv_->send_stream_start(conn_id_, rpc_id_, direction,
-                                       static_cast<uint8_t>(comp));
-    DBG("[W-START] conn={} rpc={} dir={}", conn_id_, rpc_id_, direction);
+    started_ = srv_->send_stream_start(conn_id_, rpc_id_, direction, comp);
+    DBG("[W-START] conn={} rpc={} dir={}", conn_id_, rpc_id_,
+        static_cast<int>(direction));
     if (!started_) {
         ERR("[PEER-STREAM-W] send START failed conn={}", conn_id_);
         return;
@@ -551,7 +561,7 @@ bool PeerRpcServer::send_request(uint64_t conn_id, uint64_t rpc_id,
 }
 
 bool PeerRpcServer::send_response(uint64_t conn_id, uint64_t rpc_id,
-                                   uint8_t status, const CMString& payload) {
+                                   PeerRpcWireStatus status, const CMString& payload) {
     // 专用直拼帧，同 send_request：
     //   [8B frame header][1B type=RESPONSE][8B rpc_id BE][1B status][payload]
     CMString frame;
@@ -559,7 +569,7 @@ bool PeerRpcServer::send_response(uint64_t conn_id, uint64_t rpc_id,
     write_be64(frame.data(), make_frame_header(1 + 9 + payload.size()));
     frame[8] = static_cast<char>(static_cast<uint8_t>(MessageType::PEER_RPC_RESPONSE));
     write_be64(frame.data() + 9, rpc_id);
-    frame[17] = static_cast<char>(status);
+    frame[17] = static_cast<char>(static_cast<uint8_t>(status));  // 枚举 → wire 字节（唯一出口 cast）
     if (!payload.empty()) {
         std::memcpy(frame.data() + 18, payload.data(), payload.size());
     }
@@ -570,17 +580,14 @@ bool PeerRpcServer::send_response(uint64_t conn_id, uint64_t rpc_id,
 
 bool PeerRpcServer::notify_failure(uint64_t conn_id, const CMString& reason) {
     // notify_failure = NOTIFY_FAILURE 的 response（无需对应 request，rpc_id=0）
-    return send_response(conn_id, 0,
-                          static_cast<uint8_t>(PeerRpcWireStatus::NOTIFY_FAILURE), reason);
+    return send_response(conn_id, 0, PeerRpcWireStatus::NOTIFY_FAILURE, reason);
 }
 
 bool PeerRpcServer::send_not_ready(uint64_t conn_id, uint64_t rpc_id,
                                    const CMString& reason) {
     // 未就绪（可恢复）：与 RESPOND_FAILURE（真失败）在协议层区分；
     // 精确匹配 rpc_id，payload 带诊断消息。
-    return send_response(conn_id, rpc_id,
-                         static_cast<uint8_t>(PeerRpcWireStatus::NOT_READY),
-                         reason);
+    return send_response(conn_id, rpc_id, PeerRpcWireStatus::NOT_READY, reason);
 }
 
 void PeerRpcServer::close_connection(uint64_t conn_id) {
@@ -685,8 +692,7 @@ void PeerRpcServer::handle_bye(uint64_t conn_id) {
         bye_cv_.notify_all();
     } else {
         // 服务端收到客户端 BYE：回 BYE_ACK + close + 标记正常关闭。
-        send_response(conn_id, 0,
-                       static_cast<uint8_t>(PeerRpcWireStatus::BYE), "");  // BYE_ACK
+        send_response(conn_id, 0, PeerRpcWireStatus::BYE, "");  // BYE_ACK
         {
             std::lock_guard<std::mutex> lk(bye_mutex_);
             bye_closed_conns_.insert(conn_id);
@@ -702,8 +708,7 @@ bool PeerRpcServer::send_bye(uint64_t conn_id) {
         std::lock_guard<std::mutex> lk(bye_mutex_);
         bye_pending_conns_.insert(conn_id);
     }
-    send_response(conn_id, 0,
-                   static_cast<uint8_t>(PeerRpcWireStatus::BYE), "");
+    send_response(conn_id, 0, PeerRpcWireStatus::BYE, "");
 
     // 等服务端回 BYE_ACK（bye_ack_conns），或 DISCONNECT 发生（bye_closed / bye_pending 被 erase）。
     std::unique_lock<std::mutex> lk(bye_mutex_);

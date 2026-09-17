@@ -49,7 +49,7 @@ enum class PeerRpcWireStatus : uint8_t {
 // PeerStreamReader 业务线程消费；qx 保护全部共享字段）。
 struct PeerStreamRxState {
     uint64_t rpc_id = 0;
-    uint8_t direction = 0;   // 0=请求流, 1=响应流
+    PeerStreamDirection direction = PeerStreamDirection::REQUEST;
     bool active = false;
     // 跨帧块重组（网络线程私有）
     CMString block_acc;      // 当前块记录累积（[16B 头][压缩数据]）
@@ -137,7 +137,7 @@ public:
     // 响应到达回调（客户端角色）：单帧响应 → payload 就绪；流式响应 →
     // START 即回调（payload 空，reader 承载）。status 同线上语义。
     using ResponseHandler = std::function<void(
-        uint64_t conn_id, uint64_t rpc_id, uint8_t status, CMString payload,
+        uint64_t conn_id, uint64_t rpc_id, PeerRpcWireStatus status, CMString payload,
         const PeerStreamReaderPtr& reader)>;
 
     // 连接断开回调（客户端角色）：P2P 连接断开时调用（对端关闭/网络断）。
@@ -172,14 +172,14 @@ public:
 
     // 服务端：发送响应（对应之前收到的 rpc_id）。
     bool send_response(uint64_t conn_id, uint64_t rpc_id,
-                       uint8_t status, const CMString& payload);
+                       PeerRpcWireStatus status, const CMString& payload);
 
     // ── 流式大 payload（流插件化 2026-08-31）──
     // 发送：send_stream_start → send_stream_data × N（4MB 切帧由
     // PeerStreamWriter 封装）→ send_stream_end。块级 CRC/END 对账承担
     // 完整性；连接独占（START 至 END 之间无其他帧）。
-    bool send_stream_start(uint64_t conn_id, uint64_t rpc_id, uint8_t direction,
-                           uint8_t compression_type);
+    bool send_stream_start(uint64_t conn_id, uint64_t rpc_id, PeerStreamDirection direction,
+                           CompressionType compression_type);
     // 原始块流发送（测试/诊断专用——单测构造任意/畸形流用；生产路径经
     // PeerStreamWriter，直发语义见 transport_send_raw）。
     bool send_stream_data(uint64_t conn_id, const char* data, size_t n);
@@ -189,7 +189,7 @@ public:
     // 便捷封装：压缩块流经管线（压缩+块格式化）→ 4MB 切帧 → END。
     // 返回统计（total_uncompressed/chunk_count），失败返回 false。
     // （当前仅单测消费；生产响应路径用 peer_stream_respond_writer。）
-    bool send_stream_payload(uint64_t conn_id, uint64_t rpc_id, uint8_t direction,
+    bool send_stream_payload(uint64_t conn_id, uint64_t rpc_id, PeerStreamDirection direction,
                              const CMString& payload, CompressionType comp,
                              int level, uint64_t& total_out, uint32_t& chunks_out);
 
@@ -301,8 +301,8 @@ public:
     static constexpr size_t kQueueBytes = 4 * 1024 * 1024;   // 明文队列上界（背压）
 
     PeerStreamWriter(CMSharedPtr<PeerRpcServer> srv, uint64_t conn_id,
-                     uint64_t rpc_id, uint8_t direction, CompressionType comp,
-                     int level);   // 共享持有 server——stop_peer_rpc 销毁 server
+                     uint64_t rpc_id, PeerStreamDirection direction,
+                     CompressionType comp, int level);   // 共享持有 server——stop_peer_rpc 销毁 server
                                   // 时在途 writer 保活，发送优雅失败不悬垂
     ~PeerStreamWriter();
 

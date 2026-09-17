@@ -60,7 +60,7 @@ public:
     const CMString& py_name() const override { return meta_py_name_; }
     uint64_t total_uncompressed() const override { return meta_total_uncompressed_; }
     uint32_t chunk_count() const override { return meta_chunk_count_; }
-    int compression_type() const override { return meta_comp_type_; }
+    CompressionType compression_type() const override { return meta_comp_type_; }
     bool failed() const override;
 
     // 流失败原因（诊断；流成功为空）。
@@ -106,7 +106,10 @@ private:
     CMString meta_py_name_;
     uint64_t meta_total_uncompressed_ = 0;
     uint32_t meta_chunk_count_ = 0;
-    int meta_comp_type_ = -1;
+    // META 的 chunk_compression_type_ 直通（值域已由 decode 校验保证；META
+    // 未提供时为 NONE——与原 -1 未知在 make_block_read_pipeline 同落
+    // DecompressStage(nullptr) 直通，行为等价）。
+    CompressionType meta_comp_type_ = CompressionType::NONE;
     CMString meta_write_hash_;
     ReleaseFn release_fn_;
     bool released_ = false;

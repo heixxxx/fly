@@ -1229,4 +1229,64 @@ TEST(FrameHeaderTest, LengthBoundaries) {
     EXPECT_EQ(parsed, 1u);
 }
 
+// ── CompressionType 定型（批次 C 第二程 P1-1）──────────────────────────
+// 线上字段 chunk_compression_type_ / PeerStreamStartMessage.compression_type_
+// 恒 1 字节（bitsery value1b，enum class : uint8_t 与原 uint8_t 同宽同码）；
+// decode 侧值域校验拒绝越界值（原先会以未定义枚举值流入解压管线）。
+
+TEST(CompressionTypeWireTest, PeerStreamStartRoundTripAndByteLayout) {
+    PeerStreamStartMessage msg;
+    msg.rpc_id_ = 77;
+    msg.direction_ = PeerStreamDirection::RESPONSE;
+    msg.compression_type_ = CompressionType::ZSTD;
+
+    CMString encoded = MessageProtocol::encode(msg);
+    // bitsery payload：[ver 1B][header ver 1B + type 1 + message_id 4 +
+    // timestamp 8 = 13B][u64 rpc_id][1B direction][1B compression_type]
+    // （每个 FLY_SERIALIZE 类型前有 1B version 前缀，Version ext）。
+    // 压缩类型是定长域末字节（帧末字节），direction 为其前一字节。
+    const size_t comp_off = encoded.size() - 1;
+    const size_t dir_off = encoded.size() - 2;
+    ASSERT_EQ(static_cast<uint8_t>(encoded[dir_off]), 1);  // RESPONSE 直通
+    ASSERT_GT(encoded.size(), comp_off);
+    EXPECT_EQ(static_cast<uint8_t>(encoded[comp_off]), 3);  // ZSTD 直通
+
+    CMString buffer = encoded;
+    PeerStreamStartMessage decoded;
+    ASSERT_TRUE(MessageProtocol::decode(buffer, decoded));
+    EXPECT_EQ(decoded.rpc_id_, 77u);
+    EXPECT_EQ(decoded.direction_, PeerStreamDirection::RESPONSE);
+    EXPECT_EQ(decoded.compression_type_, CompressionType::ZSTD);
+    EXPECT_TRUE(buffer.empty());
+}
+
+TEST(CompressionTypeWireTest, DecodeRejectsOutOfRangeStreamCompression) {
+    PeerStreamStartMessage msg;
+    msg.compression_type_ = CompressionType::LZ4;
+    CMString encoded = MessageProtocol::encode(msg);
+    // 压缩类型为帧末字节（布局见上例）。
+    encoded[encoded.size() - 1] = static_cast<char>(0x7F);  // 越界（未定义枚举值）
+
+    CMString buffer = encoded;
+    PeerStreamStartMessage decoded;
+    EXPECT_FALSE(MessageProtocol::decode(buffer, decoded));
+}
+
+TEST(CompressionTypeWireTest, DecodeRejectsOutOfRangeMetaCompression) {
+    DataResponseMessage msg;
+    msg.chunked_ = true;
+    msg.chunk_compression_type_ = CompressionType::ZLIB;
+    CMString encoded = MessageProtocol::encode(msg);
+    // bitsery 定长域按声明序连续编码，chunk_compression_type_ 之前全部是
+    // 定长标量（无变长域），帧尾倒数第 2 字节即它（其后仅 is_temp_ 1B）。
+    ASSERT_GE(encoded.size(), 2u);
+    const size_t comp_off = encoded.size() - 2;
+    ASSERT_EQ(static_cast<uint8_t>(encoded[comp_off]), 2);  // ZLIB 直通
+    encoded[comp_off] = static_cast<char>(0x80);            // 越界
+
+    CMString buffer = encoded;
+    DataResponseMessage decoded;
+    EXPECT_FALSE(MessageProtocol::decode(buffer, decoded));
+}
+
 }  // namespace fly
