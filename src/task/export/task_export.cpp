@@ -91,7 +91,11 @@ FLY_EXPORT_CLASS(fly::WorkerManager, "EXTaskWorkerManager")
     FLY_EXPORT_METHOD("get_idle_worker_count", &fly::WorkerManager::get_idle_worker_count);
 
 FLY_EXPORT_CLASS(fly::TaskScheduler, "EXTaskTaskScheduler")
-    FLY_EXPORT_INIT(fly::DependencyGraph*, fly::WorkerManager*)
+    // 构造参数为 CMSharedPtr 弱观察化配套（§16）：Python 面传 WorkerManager/
+    // DependencyGraph 对象时 nanobind 取实例指针构造 shared（所有权交接语义
+    // 由 nanobind keep_alive/引用管理不变——绑定面无 Python 级变化）。
+    FLY_EXPORT_INIT(fly::CMSharedPtr<fly::DependencyGraph>,
+                    fly::CMSharedPtr<fly::WorkerManager>)
     FLY_EXPORT_METHOD("schedule_next", &fly::TaskScheduler::schedule_next)
     FLY_EXPORT_METHOD("schedule_all_available", &fly::TaskScheduler::schedule_all_available)
     FLY_EXPORT_METHOD("set_locality_preference", &fly::TaskScheduler::set_locality_preference);
@@ -125,7 +129,7 @@ FLY_EXPORT_CLASS(fly::TaskManager, "EXTaskManager")
     FLY_EXPORT_METHOD("remove_task", &fly::TaskManager::remove_task);
 
 FLY_EXPORT_CLASS(fly::HeartbeatMonitor, "EXTaskHeartbeatMonitor")
-    FLY_EXPORT_INIT(fly::WorkerManager*, uint64_t)
+    FLY_EXPORT_INIT(fly::CMSharedPtr<fly::WorkerManager>, uint64_t)
     // 保留单参签名（Python/QA 兼容）：exempt 默认空（宽限豁免由 master 内部传入）。
     FLY_EXPORT_METHOD("check_all_workers",
         [](fly::HeartbeatMonitor& self, uint64_t now) { self.check_all_workers(now, {}); })

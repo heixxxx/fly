@@ -1,8 +1,19 @@
 #include <gtest/gtest.h>
 #include <task/cpp/task_scheduler.h>
+
+
 #include <chrono>
 #include <latch>
 #include <thread>
+
+namespace {
+// 栈对象 → 非拥有观察句柄（空删除器 shared_ptr）：与生产端「宿主 shared 持有、
+// scheduler 弱观察」同构；生命周期由测试作用域保证。
+template <typename T>
+CMSharedPtr<T> as_shared(T& obj) {
+    return CMSharedPtr<T>(&obj, [](T*) {});
+}
+}  // namespace
 
 namespace fly {
 
@@ -31,7 +42,11 @@ static TaskRequirements caps_priority(CMVector<CMString> c, int priority) {
 TEST(TaskSchedulerTest, ScheduleNoReadyTasks) {
     DependencyGraph graph;
     WorkerManager manager;
-    TaskScheduler scheduler(&graph, &manager);
+    auto graph_obs = as_shared(graph);      // 观察句柄存活至测试末尾：weak lock
+    auto manager_obs = as_shared(manager);  // 要求控制块 use_count>0（C++17 强制
+                                            // copy elision 下临时句柄构造完即亡，
+                                            // 弱观察会失效——具名保活）
+    TaskScheduler scheduler(graph_obs, manager_obs);
 
     auto result = scheduler.schedule_next();
     EXPECT_FALSE(result.scheduled_);
@@ -45,7 +60,11 @@ TEST(TaskSchedulerTest, ScheduleNoIdleWorkers) {
     manager.register_worker(1, "127.0.0.1", 8080, {});
     manager.assign_task(1, 100);
 
-    TaskScheduler scheduler(&graph, &manager);
+    auto graph_obs = as_shared(graph);      // 观察句柄存活至测试末尾：weak lock
+    auto manager_obs = as_shared(manager);  // 要求控制块 use_count>0（C++17 强制
+                                            // copy elision 下临时句柄构造完即亡，
+                                            // 弱观察会失效——具名保活）
+    TaskScheduler scheduler(graph_obs, manager_obs);
     auto result = scheduler.schedule_next();
     EXPECT_FALSE(result.scheduled_);
 }
@@ -57,7 +76,11 @@ TEST(TaskSchedulerTest, ScheduleSingleTask) {
     graph.add_task(1, {});
     manager.register_worker(1, "127.0.0.1", 8080, {});
 
-    TaskScheduler scheduler(&graph, &manager);
+    auto graph_obs = as_shared(graph);      // 观察句柄存活至测试末尾：weak lock
+    auto manager_obs = as_shared(manager);  // 要求控制块 use_count>0（C++17 强制
+                                            // copy elision 下临时句柄构造完即亡，
+                                            // 弱观察会失效——具名保活）
+    TaskScheduler scheduler(graph_obs, manager_obs);
     auto result = scheduler.schedule_next();
 
     EXPECT_TRUE(result.scheduled_);
@@ -77,7 +100,11 @@ TEST(TaskSchedulerTest, ScheduleMultipleTasksFIFO) {
     manager.register_worker(1, "127.0.0.1", 8080, {});
     manager.register_worker(2, "127.0.0.1", 8081, {});
 
-    TaskScheduler scheduler(&graph, &manager);
+    auto graph_obs = as_shared(graph);      // 观察句柄存活至测试末尾：weak lock
+    auto manager_obs = as_shared(manager);  // 要求控制块 use_count>0（C++17 强制
+                                            // copy elision 下临时句柄构造完即亡，
+                                            // 弱观察会失效——具名保活）
+    TaskScheduler scheduler(graph_obs, manager_obs);
     auto results = scheduler.schedule_all_available();
 
     EXPECT_EQ(results.size(), 2);
@@ -93,7 +120,11 @@ TEST(TaskSchedulerTest, ScheduleWithDependencies) {
     graph.add_task(2, {"output/1"});
     manager.register_worker(1, "127.0.0.1", 8080, {});
 
-    TaskScheduler scheduler(&graph, &manager);
+    auto graph_obs = as_shared(graph);      // 观察句柄存活至测试末尾：weak lock
+    auto manager_obs = as_shared(manager);  // 要求控制块 use_count>0（C++17 强制
+                                            // copy elision 下临时句柄构造完即亡，
+                                            // 弱观察会失效——具名保活）
+    TaskScheduler scheduler(graph_obs, manager_obs);
 
     auto result1 = scheduler.schedule_next();
     EXPECT_TRUE(result1.scheduled_);
@@ -116,7 +147,11 @@ TEST(TaskSchedulerTest, LocalityPreferenceToggle) {
     graph.add_task(1, {});
     manager.register_worker(1, "127.0.0.1", 8080, {});
 
-    TaskScheduler scheduler(&graph, &manager);
+    auto graph_obs = as_shared(graph);      // 观察句柄存活至测试末尾：weak lock
+    auto manager_obs = as_shared(manager);  // 要求控制块 use_count>0（C++17 强制
+                                            // copy elision 下临时句柄构造完即亡，
+                                            // 弱观察会失效——具名保活）
+    TaskScheduler scheduler(graph_obs, manager_obs);
     scheduler.set_locality_preference(false);
 
     auto result = scheduler.schedule_next();
@@ -131,7 +166,11 @@ TEST(TaskSchedulerTest, CapabilityMatch) {
     manager.register_worker(1, "127.0.0.1", 8080, {"gpu", "cuda"});
     manager.register_worker(2, "127.0.0.1", 8081, {});
 
-    TaskScheduler scheduler(&graph, &manager);
+    auto graph_obs = as_shared(graph);      // 观察句柄存活至测试末尾：weak lock
+    auto manager_obs = as_shared(manager);  // 要求控制块 use_count>0（C++17 强制
+                                            // copy elision 下临时句柄构造完即亡，
+                                            // 弱观察会失效——具名保活）
+    TaskScheduler scheduler(graph_obs, manager_obs);
     auto result = scheduler.schedule_next();
 
     EXPECT_TRUE(result.scheduled_);
@@ -147,7 +186,11 @@ TEST(TaskSchedulerTest, NoMatchingWorker) {
     graph.add_task(1, {}, caps({"gpu"}));
     manager.register_worker(1, "127.0.0.1", 8080, {});
 
-    TaskScheduler scheduler(&graph, &manager);
+    auto graph_obs = as_shared(graph);      // 观察句柄存活至测试末尾：weak lock
+    auto manager_obs = as_shared(manager);  // 要求控制块 use_count>0（C++17 强制
+                                            // copy elision 下临时句柄构造完即亡，
+                                            // 弱观察会失效——具名保活）
+    TaskScheduler scheduler(graph_obs, manager_obs);
     auto result = scheduler.schedule_next();
 
     EXPECT_FALSE(result.scheduled_);  // 死等，无完整匹配不调度
@@ -161,7 +204,11 @@ TEST(TaskSchedulerTest, PartialCapabilityMismatch) {
     manager.register_worker(1, "127.0.0.1", 8080, {"gpu"});
     manager.register_worker(2, "127.0.0.1", 8081, {"large_memory"});
 
-    TaskScheduler scheduler(&graph, &manager);
+    auto graph_obs = as_shared(graph);      // 观察句柄存活至测试末尾：weak lock
+    auto manager_obs = as_shared(manager);  // 要求控制块 use_count>0（C++17 强制
+                                            // copy elision 下临时句柄构造完即亡，
+                                            // 弱观察会失效——具名保活）
+    TaskScheduler scheduler(graph_obs, manager_obs);
     auto result = scheduler.schedule_next();
 
     EXPECT_FALSE(result.scheduled_);  // 死等，无完整匹配不调度
@@ -176,7 +223,11 @@ TEST(TaskSchedulerTest, MixedCapabilitiesAndConstraints) {
     manager.register_worker(1, "127.0.0.1", 8080, {"gpu"});
     manager.register_worker(2, "127.0.0.1", 8081, {});
 
-    TaskScheduler scheduler(&graph, &manager);
+    auto graph_obs = as_shared(graph);      // 观察句柄存活至测试末尾：weak lock
+    auto manager_obs = as_shared(manager);  // 要求控制块 use_count>0（C++17 强制
+                                            // copy elision 下临时句柄构造完即亡，
+                                            // 弱观察会失效——具名保活）
+    TaskScheduler scheduler(graph_obs, manager_obs);
     auto results = scheduler.schedule_all_available();
 
     EXPECT_EQ(results.size(), 2u);
@@ -195,7 +246,11 @@ TEST(TaskSchedulerTest, ConstrainedTaskDoesNotBlockUnconstrained) {
     graph.add_task(2, {}, {});
     manager.register_worker(1, "127.0.0.1", 8080, {});
 
-    TaskScheduler scheduler(&graph, &manager);
+    auto graph_obs = as_shared(graph);      // 观察句柄存活至测试末尾：weak lock
+    auto manager_obs = as_shared(manager);  // 要求控制块 use_count>0（C++17 强制
+                                            // copy elision 下临时句柄构造完即亡，
+                                            // 弱观察会失效——具名保活）
+    TaskScheduler scheduler(graph_obs, manager_obs);
     auto results = scheduler.schedule_all_available();
 
     EXPECT_EQ(results.size(), 1u);
@@ -210,7 +265,11 @@ TEST(TaskSchedulerTest, MultipleWorkersWithSameCapability) {
     manager.register_worker(1, "127.0.0.1", 8080, {"gpu"});
     manager.register_worker(2, "127.0.0.1", 8081, {"gpu"});
 
-    TaskScheduler scheduler(&graph, &manager);
+    auto graph_obs = as_shared(graph);      // 观察句柄存活至测试末尾：weak lock
+    auto manager_obs = as_shared(manager);  // 要求控制块 use_count>0（C++17 强制
+                                            // copy elision 下临时句柄构造完即亡，
+                                            // 弱观察会失效——具名保活）
+    TaskScheduler scheduler(graph_obs, manager_obs);
     auto result = scheduler.schedule_next();
 
     EXPECT_TRUE(result.scheduled_);
@@ -227,7 +286,11 @@ TEST(TaskSchedulerTest, ScheduleAllAvailableExhaustsReadyAndIdle) {
     graph.add_task(3, {});
     manager.register_worker(1, "127.0.0.1", 8080, {});
 
-    TaskScheduler scheduler(&graph, &manager);
+    auto graph_obs = as_shared(graph);      // 观察句柄存活至测试末尾：weak lock
+    auto manager_obs = as_shared(manager);  // 要求控制块 use_count>0（C++17 强制
+                                            // copy elision 下临时句柄构造完即亡，
+                                            // 弱观察会失效——具名保活）
+    TaskScheduler scheduler(graph_obs, manager_obs);
     auto results = scheduler.schedule_all_available();
 
     EXPECT_EQ(results.size(), 1u);
@@ -238,7 +301,11 @@ TEST(TaskSchedulerTest, ScheduleAllAvailableEmptyGraph) {
     DependencyGraph graph;
     WorkerManager manager;
 
-    TaskScheduler scheduler(&graph, &manager);
+    auto graph_obs = as_shared(graph);      // 观察句柄存活至测试末尾：weak lock
+    auto manager_obs = as_shared(manager);  // 要求控制块 use_count>0（C++17 强制
+                                            // copy elision 下临时句柄构造完即亡，
+                                            // 弱观察会失效——具名保活）
+    TaskScheduler scheduler(graph_obs, manager_obs);
     auto results = scheduler.schedule_all_available();
     EXPECT_TRUE(results.empty());
 }
@@ -251,7 +318,11 @@ TEST(TaskSchedulerTest, ScheduleRemovesTaskFromReady) {
     graph.add_task(2, {});
     manager.register_worker(1, "127.0.0.1", 8080, {});
 
-    TaskScheduler scheduler(&graph, &manager);
+    auto graph_obs = as_shared(graph);      // 观察句柄存活至测试末尾：weak lock
+    auto manager_obs = as_shared(manager);  // 要求控制块 use_count>0（C++17 强制
+                                            // copy elision 下临时句柄构造完即亡，
+                                            // 弱观察会失效——具名保活）
+    TaskScheduler scheduler(graph_obs, manager_obs);
     auto r1 = scheduler.schedule_next();
     EXPECT_TRUE(r1.scheduled_);
     EXPECT_EQ(r1.task_id_, 1);
@@ -268,7 +339,11 @@ TEST(TaskSchedulerTest, ScheduleNextWithMultipleCapabilities) {
     manager.register_worker(1, "127.0.0.1", 8080, {"gpu", "cuda", "python"});
     manager.register_worker(2, "127.0.0.1", 8081, {"gpu"});
 
-    TaskScheduler scheduler(&graph, &manager);
+    auto graph_obs = as_shared(graph);      // 观察句柄存活至测试末尾：weak lock
+    auto manager_obs = as_shared(manager);  // 要求控制块 use_count>0（C++17 强制
+                                            // copy elision 下临时句柄构造完即亡，
+                                            // 弱观察会失效——具名保活）
+    TaskScheduler scheduler(graph_obs, manager_obs);
     auto result = scheduler.schedule_next();
 
     EXPECT_TRUE(result.scheduled_);
@@ -286,7 +361,11 @@ TEST(TaskSchedulerTest, ScheduleWithAttrTimeoutNotExpiredStillWaits) {
     graph.add_task(1, {}, caps_timeout({"gpu"}, 10.0f));  // 10秒超时
     manager.register_worker(1, "127.0.0.1", 8080, {"cpu"});  // 无 gpu
 
-    TaskScheduler scheduler(&graph, &manager);
+    auto graph_obs = as_shared(graph);      // 观察句柄存活至测试末尾：weak lock
+    auto manager_obs = as_shared(manager);  // 要求控制块 use_count>0（C++17 强制
+                                            // copy elision 下临时句柄构造完即亡，
+                                            // 弱观察会失效——具名保活）
+    TaskScheduler scheduler(graph_obs, manager_obs);
     auto result = scheduler.schedule_next();
 
     // 未到期，不降级
@@ -304,7 +383,11 @@ TEST(TaskSchedulerTest, ScheduleWithAttrTimeoutExpiredDegradesToMostMatches) {
     manager.register_worker(2, "127.0.0.1", 8081, {"cuda"});
     manager.register_worker(3, "127.0.0.1", 8082, {"cuda", "memory"});
 
-    TaskScheduler scheduler(&graph, &manager);
+    auto graph_obs = as_shared(graph);      // 观察句柄存活至测试末尾：weak lock
+    auto manager_obs = as_shared(manager);  // 要求控制块 use_count>0（C++17 强制
+                                            // copy elision 下临时句柄构造完即亡，
+                                            // 弱观察会失效——具名保活）
+    TaskScheduler scheduler(graph_obs, manager_obs);
 
     // 第一次调度：未到期，死等
     auto result1 = scheduler.schedule_next();
@@ -330,7 +413,11 @@ TEST(TaskSchedulerTest, ScheduleWithAttrTimeoutZeroImmediateDegrade) {
     graph.add_task(1, {}, caps_timeout({"gpu"}, 0.0f));  // 立即降级
     manager.register_worker(1, "127.0.0.1", 8080, {"cpu"});  // 无 gpu
 
-    TaskScheduler scheduler(&graph, &manager);
+    auto graph_obs = as_shared(graph);      // 观察句柄存活至测试末尾：weak lock
+    auto manager_obs = as_shared(manager);  // 要求控制块 use_count>0（C++17 强制
+                                            // copy elision 下临时句柄构造完即亡，
+                                            // 弱观察会失效——具名保活）
+    TaskScheduler scheduler(graph_obs, manager_obs);
     auto result = scheduler.schedule_next();
 
     EXPECT_TRUE(result.scheduled_);
@@ -347,7 +434,11 @@ TEST(TaskSchedulerTest, ScheduleWithAttrTimeoutNegativeWaitForever) {
     graph.add_task(1, {}, caps_timeout({"gpu"}, -1.0f));  // 死等
     manager.register_worker(1, "127.0.0.1", 8080, {"cpu"});  // 无 gpu
 
-    TaskScheduler scheduler(&graph, &manager);
+    auto graph_obs = as_shared(graph);      // 观察句柄存活至测试末尾：weak lock
+    auto manager_obs = as_shared(manager);  // 要求控制块 use_count>0（C++17 强制
+                                            // copy elision 下临时句柄构造完即亡，
+                                            // 弱观察会失效——具名保活）
+    TaskScheduler scheduler(graph_obs, manager_obs);
     auto result = scheduler.schedule_next();
 
     EXPECT_FALSE(result.scheduled_);  // 死等，不降级
@@ -362,7 +453,11 @@ TEST(TaskSchedulerTest, ScheduleWithAttrTimeoutPreferFullMatch) {
     manager.register_worker(1, "127.0.0.1", 8080, {"cpu"});   // 无匹配
     manager.register_worker(2, "127.0.0.1", 8081, {"gpu"});   // 完整匹配
 
-    TaskScheduler scheduler(&graph, &manager);
+    auto graph_obs = as_shared(graph);      // 观察句柄存活至测试末尾：weak lock
+    auto manager_obs = as_shared(manager);  // 要求控制块 use_count>0（C++17 强制
+                                            // copy elision 下临时句柄构造完即亡，
+                                            // 弱观察会失效——具名保活）
+    TaskScheduler scheduler(graph_obs, manager_obs);
     auto result = scheduler.schedule_next();
 
     EXPECT_TRUE(result.scheduled_);
@@ -381,7 +476,11 @@ TEST(TaskSchedulerTest, WaitingTaskDoesNotBlockOthers) {
     graph.add_task(2, {});
     manager.register_worker(1, "127.0.0.1", 8080, {"cpu"});
 
-    TaskScheduler scheduler(&graph, &manager);
+    auto graph_obs = as_shared(graph);      // 观察句柄存活至测试末尾：weak lock
+    auto manager_obs = as_shared(manager);  // 要求控制块 use_count>0（C++17 强制
+                                            // copy elision 下临时句柄构造完即亡，
+                                            // 弱观察会失效——具名保活）
+    TaskScheduler scheduler(graph_obs, manager_obs);
     auto results = scheduler.schedule_all_available();
 
     // task1 waiting 被跳过，task2 正常调度
@@ -401,7 +500,11 @@ TEST(TaskSchedulerTest, DegradedScheduleSelectsMostMatchedWorker) {
     manager.register_worker(2, "127.0.0.1", 8081, {"a", "b"});       // 匹配 2（最多）
     manager.register_worker(3, "127.0.0.1", 8082, {"a"});            // 匹配 1
 
-    TaskScheduler scheduler(&graph, &manager);
+    auto graph_obs = as_shared(graph);      // 观察句柄存活至测试末尾：weak lock
+    auto manager_obs = as_shared(manager);  // 要求控制块 use_count>0（C++17 强制
+                                            // copy elision 下临时句柄构造完即亡，
+                                            // 弱观察会失效——具名保活）
+    TaskScheduler scheduler(graph_obs, manager_obs);
 
     // 第一次：未到期，死等
     EXPECT_FALSE(scheduler.schedule_next().scheduled_);
@@ -428,7 +531,11 @@ TEST(TaskSchedulerTest, AttrTimeoutStartsAfterDataDepSatisfied) {
     graph.add_task(1, {"output/a"}, caps_timeout({"gpu"}, 0.05f));
     manager.register_worker(1, "127.0.0.1", 8080, {"cpu"});  // 无 gpu
 
-    TaskScheduler scheduler(&graph, &manager);
+    auto graph_obs = as_shared(graph);      // 观察句柄存活至测试末尾：weak lock
+    auto manager_obs = as_shared(manager);  // 要求控制块 use_count>0（C++17 强制
+                                            // copy elision 下临时句柄构造完即亡，
+                                            // 弱观察会失效——具名保活）
+    TaskScheduler scheduler(graph_obs, manager_obs);
 
     // 提交后等 100ms（远超 timeout），但数据依赖未满足 → timeout 不应开始
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
@@ -456,7 +563,11 @@ TEST(TaskSchedulerTest, AttrTimeoutZeroAfterDataDepSatisfied) {
     graph.add_task(1, {"output/a"}, caps_timeout({"gpu"}, 0.0f));
     manager.register_worker(1, "127.0.0.1", 8080, {"cpu"});
 
-    TaskScheduler scheduler(&graph, &manager);
+    auto graph_obs = as_shared(graph);      // 观察句柄存活至测试末尾：weak lock
+    auto manager_obs = as_shared(manager);  // 要求控制块 use_count>0（C++17 强制
+                                            // copy elision 下临时句柄构造完即亡，
+                                            // 弱观察会失效——具名保活）
+    TaskScheduler scheduler(graph_obs, manager_obs);
 
     // 数据依赖未满足：不调度
     EXPECT_FALSE(scheduler.schedule_next().scheduled_);
@@ -477,7 +588,11 @@ TEST(TaskSchedulerTest, AttrTimeoutNegativeAfterDataDepSatisfied) {
     graph.add_task(1, {"output/a"}, caps_timeout({"gpu"}, -1.0f));
     manager.register_worker(1, "127.0.0.1", 8080, {"cpu"});
 
-    TaskScheduler scheduler(&graph, &manager);
+    auto graph_obs = as_shared(graph);      // 观察句柄存活至测试末尾：weak lock
+    auto manager_obs = as_shared(manager);  // 要求控制块 use_count>0（C++17 强制
+                                            // copy elision 下临时句柄构造完即亡，
+                                            // 弱观察会失效——具名保活）
+    TaskScheduler scheduler(graph_obs, manager_obs);
 
     graph.mark_data_ready("output/a");
     // 死等：即使数据依赖满足，属性不匹配也不调度
@@ -495,7 +610,11 @@ TEST(TaskSchedulerTest, AttrTimeoutInDependencyChain) {
     graph.add_task(2, {"output/1"}, caps_timeout({"gpu"}, 0.05f));
     manager.register_worker(1, "127.0.0.1", 8080, {"cpu"});  // 无 gpu
 
-    TaskScheduler scheduler(&graph, &manager);
+    auto graph_obs = as_shared(graph);      // 观察句柄存活至测试末尾：weak lock
+    auto manager_obs = as_shared(manager);  // 要求控制块 use_count>0（C++17 强制
+                                            // copy elision 下临时句柄构造完即亡，
+                                            // 弱观察会失效——具名保活）
+    TaskScheduler scheduler(graph_obs, manager_obs);
 
     // task1 可调度
     auto r1 = scheduler.schedule_next();
@@ -528,7 +647,11 @@ TEST(TaskSchedulerTest, AttrTimeoutFullMatchWhenDataDepSatisfied) {
     graph.add_task(1, {"output/a"}, caps_timeout({"gpu"}, 5.0f));
     manager.register_worker(1, "127.0.0.1", 8080, {"gpu"});  // 有 gpu
 
-    TaskScheduler scheduler(&graph, &manager);
+    auto graph_obs = as_shared(graph);      // 观察句柄存活至测试末尾：weak lock
+    auto manager_obs = as_shared(manager);  // 要求控制块 use_count>0（C++17 强制
+                                            // copy elision 下临时句柄构造完即亡，
+                                            // 弱观察会失效——具名保活）
+    TaskScheduler scheduler(graph_obs, manager_obs);
 
     graph.mark_data_ready("output/a");
     auto result = scheduler.schedule_next();
@@ -550,7 +673,11 @@ TEST(TaskSchedulerTest, DegradeAllWorkersSameMatchCountSelectsFirst) {
     manager.register_worker(2, "127.0.0.1", 8081, {"cpu"});
     manager.register_worker(3, "127.0.0.1", 8082, {"cpu"});
 
-    TaskScheduler scheduler(&graph, &manager);
+    auto graph_obs = as_shared(graph);      // 观察句柄存活至测试末尾：weak lock
+    auto manager_obs = as_shared(manager);  // 要求控制块 use_count>0（C++17 强制
+                                            // copy elision 下临时句柄构造完即亡，
+                                            // 弱观察会失效——具名保活）
+    TaskScheduler scheduler(graph_obs, manager_obs);
     auto result = scheduler.schedule_next();
 
     EXPECT_TRUE(result.scheduled_);
@@ -570,7 +697,11 @@ TEST(TaskSchedulerTest, DegradeWorkersWithSamePartialMatchSelectsFirst) {
     manager.register_worker(2, "127.0.0.1", 8081, {"b"});  // 匹配 1
     manager.register_worker(3, "127.0.0.1", 8082, {"c"});  // 匹配 1
 
-    TaskScheduler scheduler(&graph, &manager);
+    auto graph_obs = as_shared(graph);      // 观察句柄存活至测试末尾：weak lock
+    auto manager_obs = as_shared(manager);  // 要求控制块 use_count>0（C++17 强制
+                                            // copy elision 下临时句柄构造完即亡，
+                                            // 弱观察会失效——具名保活）
+    TaskScheduler scheduler(graph_obs, manager_obs);
     auto result = scheduler.schedule_next();
 
     EXPECT_TRUE(result.scheduled_);
@@ -589,7 +720,11 @@ TEST(TaskSchedulerTest, DegradeScheduleThenUnconstrainedTaskSchedules) {
     manager.register_worker(1, "127.0.0.1", 8080, {"cpu"});
     manager.register_worker(2, "127.0.0.1", 8081, {"cpu"});
 
-    TaskScheduler scheduler(&graph, &manager);
+    auto graph_obs = as_shared(graph);      // 观察句柄存活至测试末尾：weak lock
+    auto manager_obs = as_shared(manager);  // 要求控制块 use_count>0（C++17 强制
+                                            // copy elision 下临时句柄构造完即亡，
+                                            // 弱观察会失效——具名保活）
+    TaskScheduler scheduler(graph_obs, manager_obs);
     auto results = scheduler.schedule_all_available();
 
     EXPECT_EQ(results.size(), 2u);
@@ -622,7 +757,11 @@ TEST(TaskSchedulerTest, LocalityDisabledFallsBackToOriginal) {
     manager.register_worker(2, "127.0.0.1", 8081, {});
     inject_hint(graph, 1, {{2, 100}});  // 即使注入了 hint，关闭时应被忽略
 
-    TaskScheduler scheduler(&graph, &manager);
+    auto graph_obs = as_shared(graph);      // 观察句柄存活至测试末尾：weak lock
+    auto manager_obs = as_shared(manager);  // 要求控制块 use_count>0（C++17 强制
+                                            // copy elision 下临时句柄构造完即亡，
+                                            // 弱观察会失效——具名保活）
+    TaskScheduler scheduler(graph_obs, manager_obs);
     scheduler.set_locality_preference(false);  // 关闭
     auto result = scheduler.schedule_next();
 
@@ -641,7 +780,11 @@ TEST(TaskSchedulerTest, LocalityNoCapabilityPrefersHolder) {
     manager.register_worker(2, "127.0.0.1", 8081, {});
     inject_hint(graph, 1, {{2, 100}});  // worker 2 持有 obj
 
-    TaskScheduler scheduler(&graph, &manager);
+    auto graph_obs = as_shared(graph);      // 观察句柄存活至测试末尾：weak lock
+    auto manager_obs = as_shared(manager);  // 要求控制块 use_count>0（C++17 强制
+                                            // copy elision 下临时句柄构造完即亡，
+                                            // 弱观察会失效——具名保活）
+    TaskScheduler scheduler(graph_obs, manager_obs);
     scheduler.set_locality_preference(true);
     auto result = scheduler.schedule_next();
 
@@ -662,7 +805,11 @@ TEST(TaskSchedulerTest, LocalityHolderBusyFallsToNextIdle) {
     manager.register_worker(2, "127.0.0.1", 8081, {});
     inject_hint(graph, 1, {{3, 100}});  // worker 3 持有，但未注册
 
-    TaskScheduler scheduler(&graph, &manager);
+    auto graph_obs = as_shared(graph);      // 观察句柄存活至测试末尾：weak lock
+    auto manager_obs = as_shared(manager);  // 要求控制块 use_count>0（C++17 强制
+                                            // copy elision 下临时句柄构造完即亡，
+                                            // 弱观察会失效——具名保活）
+    TaskScheduler scheduler(graph_obs, manager_obs);
     scheduler.set_locality_preference(true);
     auto result = scheduler.schedule_next();
 
@@ -683,7 +830,11 @@ TEST(TaskSchedulerTest, LocalityYieldsToFullCapabilityMatch) {
     manager.register_worker(2, "127.0.0.1", 8081, {});
     inject_hint(graph, 1, {{2, 100}});  // worker 2 持有 obj
 
-    TaskScheduler scheduler(&graph, &manager);
+    auto graph_obs = as_shared(graph);      // 观察句柄存活至测试末尾：weak lock
+    auto manager_obs = as_shared(manager);  // 要求控制块 use_count>0（C++17 强制
+                                            // copy elision 下临时句柄构造完即亡，
+                                            // 弱观察会失效——具名保活）
+    TaskScheduler scheduler(graph_obs, manager_obs);
     scheduler.set_locality_preference(true);
     auto result = scheduler.schedule_next();
 
@@ -707,7 +858,11 @@ TEST(TaskSchedulerTest, LocalityDoesNotDegradeCapabilityQuality) {
     manager.register_worker(2, "127.0.0.1", 8081, {"a", "b"});
     inject_hint(graph, 1, {{1, 100}});  // worker 1 持有 obj
 
-    TaskScheduler scheduler(&graph, &manager);
+    auto graph_obs = as_shared(graph);      // 观察句柄存活至测试末尾：weak lock
+    auto manager_obs = as_shared(manager);  // 要求控制块 use_count>0（C++17 强制
+                                            // copy elision 下临时句柄构造完即亡，
+                                            // 弱观察会失效——具名保活）
+    TaskScheduler scheduler(graph_obs, manager_obs);
     scheduler.set_locality_preference(true);
     auto result = scheduler.schedule_next();
 
@@ -724,7 +879,11 @@ TEST(TaskSchedulerTest, LocalityNoInputsFallsBack) {
     manager.register_worker(1, "127.0.0.1", 8080, {});
     manager.register_worker(2, "127.0.0.1", 8081, {});
 
-    TaskScheduler scheduler(&graph, &manager);
+    auto graph_obs = as_shared(graph);      // 观察句柄存活至测试末尾：weak lock
+    auto manager_obs = as_shared(manager);  // 要求控制块 use_count>0（C++17 强制
+                                            // copy elision 下临时句柄构造完即亡，
+                                            // 弱观察会失效——具名保活）
+    TaskScheduler scheduler(graph_obs, manager_obs);
     scheduler.set_locality_preference(true);  // 即使启用，无输入也退原行为
     auto result = scheduler.schedule_next();
 
@@ -746,7 +905,11 @@ TEST(TaskSchedulerTest, LocalityNoCapabilityMatchStaysWaiting) {
     manager.register_worker(2, "127.0.0.1", 8081, {});
     inject_hint(graph, 1, {{2, 100}});  // worker 2 持有 obj
 
-    TaskScheduler scheduler(&graph, &manager);
+    auto graph_obs = as_shared(graph);      // 观察句柄存活至测试末尾：weak lock
+    auto manager_obs = as_shared(manager);  // 要求控制块 use_count>0（C++17 强制
+                                            // copy elision 下临时句柄构造完即亡，
+                                            // 弱观察会失效——具名保活）
+    TaskScheduler scheduler(graph_obs, manager_obs);
     scheduler.set_locality_preference(true);
     auto result = scheduler.schedule_next();
 
@@ -769,7 +932,11 @@ TEST(TaskSchedulerTest, PriorityOrdersReadyTasks) {
     manager.register_worker(1, "127.0.0.1", 8080, {});
     manager.register_worker(2, "127.0.0.1", 8081, {});
 
-    TaskScheduler scheduler(&graph, &manager);
+    auto graph_obs = as_shared(graph);      // 观察句柄存活至测试末尾：weak lock
+    auto manager_obs = as_shared(manager);  // 要求控制块 use_count>0（C++17 强制
+                                            // copy elision 下临时句柄构造完即亡，
+                                            // 弱观察会失效——具名保活）
+    TaskScheduler scheduler(graph_obs, manager_obs);
     auto results = scheduler.schedule_all_available();
 
     ASSERT_EQ(results.size(), 2u);
@@ -790,7 +957,11 @@ TEST(TaskSchedulerTest, PriorityEqualFallsBackToTaskId) {
     manager.register_worker(1, "127.0.0.1", 8080, {});
     manager.register_worker(2, "127.0.0.1", 8081, {});
 
-    TaskScheduler scheduler(&graph, &manager);
+    auto graph_obs = as_shared(graph);      // 观察句柄存活至测试末尾：weak lock
+    auto manager_obs = as_shared(manager);  // 要求控制块 use_count>0（C++17 强制
+                                            // copy elision 下临时句柄构造完即亡，
+                                            // 弱观察会失效——具名保活）
+    TaskScheduler scheduler(graph_obs, manager_obs);
     auto results = scheduler.schedule_all_available();
 
     ASSERT_EQ(results.size(), 2u);
@@ -809,7 +980,11 @@ TEST(TaskSchedulerTest, PrioritySkipDoesNotBlockLower) {
     graph.add_task(2, {}, caps_priority({}, 10));
     manager.register_worker(1, "127.0.0.1", 8080, {});  // 无 gpu
 
-    TaskScheduler scheduler(&graph, &manager);
+    auto graph_obs = as_shared(graph);      // 观察句柄存活至测试末尾：weak lock
+    auto manager_obs = as_shared(manager);  // 要求控制块 use_count>0（C++17 强制
+                                            // copy elision 下临时句柄构造完即亡，
+                                            // 弱观察会失效——具名保活）
+    TaskScheduler scheduler(graph_obs, manager_obs);
     auto results = scheduler.schedule_all_available();
 
     ASSERT_EQ(results.size(), 1u);
@@ -832,7 +1007,11 @@ TEST(TaskSchedulerTest, ConcurrentManagerMutationDuringScheduling) {
     for (int i = 1; i <= 300; ++i) {
         graph.add_task(static_cast<uint64_t>(i), {}, caps({"cap"}));
     }
-    TaskScheduler scheduler(&graph, &manager);
+    auto graph_obs = as_shared(graph);      // 观察句柄存活至测试末尾：weak lock
+    auto manager_obs = as_shared(manager);  // 要求控制块 use_count>0（C++17 强制
+                                            // copy elision 下临时句柄构造完即亡，
+                                            // 弱观察会失效——具名保活）
+    TaskScheduler scheduler(graph_obs, manager_obs);
     std::latch go{3};
     CMVector<std::thread> threads;
     for (int t = 0; t < 2; ++t) {
@@ -860,5 +1039,18 @@ TEST(TaskSchedulerTest, ConcurrentManagerMutationDuringScheduling) {
     // 参与调度判定。
     EXPECT_EQ(manager.get_worker_count(), 4u);
     (void)scheduler.schedule_all_available();
+}
+
+// 弱观察失效（§16 判据）：宿主重建/释放窗口内 weak lock 失败——调度必须
+// 安全返回未调度，不得悬垂访问已释放的 graph/worker_manager。
+TEST(TaskSchedulerTest, ExpiredObservationReturnsUnscheduled) {
+    auto graph = CMMakeShared<DependencyGraph>();
+    auto manager = CMMakeShared<WorkerManager>();
+    TaskScheduler scheduler(graph, manager);
+
+    graph.reset();    // 模拟宿主 start() 重建：旧对象释放
+    manager.reset();
+    EXPECT_FALSE(scheduler.schedule_next().scheduled_);
+    EXPECT_TRUE(scheduler.schedule_all_available().empty());
 }
 }  // namespace fly

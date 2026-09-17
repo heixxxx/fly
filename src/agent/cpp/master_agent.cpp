@@ -42,8 +42,8 @@ std::atomic<uint64_t> MasterAgent::remote_task_counter_{100000};
 
 MasterAgent::MasterAgent(const CMString& host, uint16_t port)
     : host_(host), port_(port), listen_port_(port), running_(false),
-      graph_(CMMakeUnique<DependencyGraph>()),
-      worker_manager_(CMMakeUnique<WorkerManager>()) {
+      graph_(CMMakeShared<DependencyGraph>()),
+      worker_manager_(CMMakeShared<WorkerManager>()) {
 }
 
 MasterAgent::~MasterAgent() {
@@ -73,8 +73,8 @@ void MasterAgent::start() {
     draining_ = false;
     shutdown_requested_ = false;
 
-    graph_ = CMMakeUnique<DependencyGraph>();
-    worker_manager_ = CMMakeUnique<WorkerManager>();
+    graph_ = CMMakeShared<DependencyGraph>();
+    worker_manager_ = CMMakeShared<WorkerManager>();
 
     INFO("MasterAgent start() called, listening on {}:{}", host_, port_);
 
@@ -359,12 +359,12 @@ void MasterAgent::start() {
         on_error(conn_id, err);
     });
 
-    scheduler_ = CMMakeUnique<TaskScheduler>(graph_.get(), worker_manager_.get());
+    scheduler_ = CMMakeShared<TaskScheduler>(graph_, worker_manager_);
     scheduler_->set_locality_preference(Config::instance()->get_int("locality_scheduling_enabled") == 1);
     metadata_ = CMMakeUnique<TaskManager>();
 
-    heartbeat_monitor_ = CMMakeUnique<HeartbeatMonitor>(
-        worker_manager_.get(), Config::instance()->get_int("heartbeat_timeout"));
+    heartbeat_monitor_ = CMMakeShared<HeartbeatMonitor>(
+        worker_manager_, Config::instance()->get_int("heartbeat_timeout"));
 
     // RunMetricsCollector：master 骨架采样（tick 线程）；worker monitor 通道
     // 成组样本（on_monitor_sample）按真实 epoch 时刻最近邻合并（合成推迟到

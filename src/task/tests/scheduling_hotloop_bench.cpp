@@ -91,7 +91,10 @@ TEST(SchedulingHotLoopBench, AScheduleAllAvailableThroughput) {
             WorkerManager manager;
             fill_ready_tasks(graph, c.tasks, /*mixed_priority=*/true);
             fill_idle_workers(manager, c.workers);
-            TaskScheduler scheduler(&graph, &manager);
+            // 非拥有观察句柄（对象在循环体内存活至调度完成）。
+            CMSharedPtr<DependencyGraph> graph_obs(&graph, [](DependencyGraph*) {});
+            CMSharedPtr<WorkerManager> manager_obs(&manager, [](WorkerManager*) {});
+            TaskScheduler scheduler(graph_obs, manager_obs);
             scheduler.set_locality_preference(false);
 
             auto t0 = std::chrono::steady_clock::now();
@@ -158,7 +161,10 @@ TEST(SchedulingHotLoopBench, CRepeatedScheduleCycles) {
             DependencyGraph graph;
             base = fill_ready_tasks(graph, kTasksPerCycle, /*mixed_priority=*/true, base);
             reset_workers_idle(manager, kWorkers);
-            TaskScheduler scheduler(&graph, &manager);
+            // 非拥有观察句柄（对象存活至本行 schedule_all_available 完成）。
+            CMSharedPtr<DependencyGraph> graph_obs(&graph, [](DependencyGraph*) {});
+            CMSharedPtr<WorkerManager> manager_obs(&manager, [](WorkerManager*) {});
+            TaskScheduler scheduler(graph_obs, manager_obs);
             scheduler.set_locality_preference(false);
             scheduler.schedule_all_available();
         }

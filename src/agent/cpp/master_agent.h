@@ -569,11 +569,15 @@ private:
     // 检测决策命中计数（含 send 失败的决策；诊断/测试用）。
     std::atomic<int64_t> storage_spawn_decisions_{0};
 
-    CMUniquePtr<DependencyGraph> graph_;
-    CMUniquePtr<WorkerManager> worker_manager_;
-    CMUniquePtr<TaskScheduler> scheduler_;
+    // graph/worker_manager/scheduler/heartbeat_monitor 用 CMSharedPtr：scheduler
+    // 与 heartbeat_monitor 对前两者是 CMWeakPtr 弱观察（§16，start() 重建窗口
+    // 悬垂防护），weak 需要控制块——宿主持有形式随之 shared。析构序不变
+    //（成员声明序逆序，scheduler/monitor 先于 graph/manager 析构）。
+    CMSharedPtr<DependencyGraph> graph_;
+    CMSharedPtr<WorkerManager> worker_manager_;
+    CMSharedPtr<TaskScheduler> scheduler_;
     CMUniquePtr<TaskManager> metadata_;
-    CMUniquePtr<HeartbeatMonitor> heartbeat_monitor_;
+    CMSharedPtr<HeartbeatMonitor> heartbeat_monitor_;
     // 运行时指标采集（RunSummary）：集群内存快照 tick / db 窗口 / 磁盘用量，
     // stop 时写 runtime.summary + db.summary 并在用户日志打文件地址与总耗时
     // （详见 run_metrics.h）。worker RSS 样本改经 monitor 通道（on_monitor_sample）

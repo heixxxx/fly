@@ -2,14 +2,20 @@
 
 namespace fly {
 
-HeartbeatMonitor::HeartbeatMonitor(WorkerManager* manager, uint64_t timeout_seconds)
-    : manager_(manager), timeout_seconds_(timeout_seconds) {}
+HeartbeatMonitor::HeartbeatMonitor(CMSharedPtr<WorkerManager> manager,
+                                   uint64_t timeout_seconds)
+    : manager_(std::move(manager)), timeout_seconds_(timeout_seconds) {}
 
 void HeartbeatMonitor::check_all_workers(uint64_t current_time,
                                          const CMVector<uint64_t>& exempt_workers) {
     dead_workers_.clear();
 
-    auto all_workers = manager_->get_all_workers();
+    // 弱观察锁定：lock 失败 = 宿主已重建/释放 worker_manager（start/stop 窗口）
+    // ——本轮检查跳过（无 worker 可判死，§16）。
+    auto manager = manager_.lock();
+    if (!manager) return;
+
+    auto all_workers = manager->get_all_workers();
     for (const auto& worker : all_workers) {
         // 正常退出（EXITED，master 主动关停确认）不是心跳判死的产物：
         // 跳过且不进 dead 列表。
@@ -32,7 +38,7 @@ void HeartbeatMonitor::check_all_workers(uint64_t current_time,
 
         uint64_t elapsed = current_time - worker.last_heartbeat_;
         if (elapsed > timeout_seconds_) {
-            manager_->update_worker_status(worker.worker_id_, WorkerStatus::DEAD);
+            manager->update_worker_status(worker.worker_id_, WorkerStatus::DEAD);
             dead_workers_.push_back(worker.worker_id_);
         }
     }
