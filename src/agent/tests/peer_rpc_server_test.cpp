@@ -742,6 +742,48 @@ static CMString make_data_chunk_frame(const CMString& raw) {
     return make_raw_frame(static_cast<uint8_t>(MessageType::DATA_CHUNK), payload);
 }
 
+// 行为驱动活性探针：裸连接直发合法 REQUEST，阻塞 poll（50ms 步进）等
+// 同 rpc_id 的 RESPONSE——「回包到达」是连接活性 + 帧同步的直接行为
+// 证据，取代 sleep 后轮询 is_connected 的状态断言与 poll(0)+sleep 自旋
+//（pre-push 重载窗口下前者 100ms 不定足、后者 150 轮空转 3s 拖慢且抖，
+// 实发过轮询超时）。
+// 无回包即重发再等：探针与被测帧粘包同批、被 clear 分支丢弃是被测契约
+// 的一部分（如 zero raw_len 的 buf.clear），重发必然落在后续读取批次，
+// 不依赖任何固定 sleep 的分批假设。总 deadline 有界（禁无界等待）：
+// 超时 = 行为失败。
+static bool wait_raw_echo(ConnectionManager& raw, uint64_t conn, uint64_t rpc_id,
+                          const char* payload, int timeout_ms = 5000) {
+    CMString body;
+    body.resize(16, '\0');
+    write_be64(body.data(), rpc_id);
+    write_be64(body.data() + 8, /*src=*/7);
+    body.append(payload);
+    const CMString frame = make_raw_frame(
+        static_cast<uint8_t>(MessageType::PEER_RPC_REQUEST), body);
+    const auto deadline = std::chrono::steady_clock::now() +
+                          std::chrono::milliseconds(timeout_ms);
+    while (std::chrono::steady_clock::now() < deadline) {
+        if (raw.send(conn, frame) <= 0) {
+            return false;   // send 失败即连接已失活
+        }
+        // 单次尝试窗口：本机回环足够往返，又给被测分支丢帧后的重发机会。
+        const auto attempt_end =
+            std::chrono::steady_clock::now() + std::chrono::milliseconds(200);
+        while (std::chrono::steady_clock::now() < attempt_end &&
+               std::chrono::steady_clock::now() < deadline) {
+            for (const auto& e : raw.poll(50)) {
+                if (e.type_ == TransportEventType::DATA && e.data_.size() >= 18 &&
+                    static_cast<uint8_t>(e.data_[8]) ==
+                        static_cast<uint8_t>(MessageType::PEER_RPC_RESPONSE) &&
+                    read_be64(e.data_.data() + 9) == rpc_id) {
+                    return true;
+                }
+            }
+        }
+    }
+    return false;
+}
+
 TEST_F(PeerRpcServerTest, CorruptStreamStartClosesConnection) {
     // START 帧头合法但 payload 截断（bitsery 读越界 → decode 失败）：
     // 流式零容忍 → 连接 close，进程存活。
@@ -889,27 +931,10 @@ TEST_F(PeerRpcServerTest, DataWithoutActiveStreamDiscardedKeepsFrameSync) {
     ASSERT_TRUE(raw->is_connected(rc))
         << "orphan DATA must be discarded, not fatal";
 
-    // 帧同步证据：同一连接上的合法 REQUEST 响应原样读回。
-    CMString body;
-    body.resize(16, '\0');
-    write_be64(body.data(), /*rpc_id=*/33);
-    write_be64(body.data() + 8, /*src=*/7);
-    body.append("after-orphan");
-    ASSERT_TRUE(raw->send(rc, make_raw_frame(
-        static_cast<uint8_t>(MessageType::PEER_RPC_REQUEST), body)) > 0);
-    bool got = false;
-    for (int i = 0; i < 150 && !got; ++i) {
-        for (const auto& e : raw->poll(0)) {
-            if (e.type_ == TransportEventType::DATA && e.data_.size() >= 18 &&
-                static_cast<uint8_t>(e.data_[8]) ==
-                    static_cast<uint8_t>(MessageType::PEER_RPC_RESPONSE) &&
-                read_be64(e.data_.data() + 9) == 33) {
-                got = true;
-            }
-        }
-        if (!got) std::this_thread::sleep_for(std::chrono::milliseconds(20));
-    }
-    EXPECT_TRUE(got) << "frame sync must survive an orphan DATA_CHUNK discard";
+    // 帧同步证据：同一连接上的合法 REQUEST 探针回包到达（行为驱动等待
+    // ——原 poll(0)+sleep 自旋 150 轮 3s 封顶，重载下空转且抖，已废）。
+    EXPECT_TRUE(wait_raw_echo(*raw, rc, /*rpc_id=*/33, "after-orphan"))
+        << "frame sync must survive an orphan DATA_CHUNK discard";
     EXPECT_TRUE(raw->is_connected(rc));
     raw->close_all();
 }
@@ -919,7 +944,10 @@ TEST_F(PeerRpcServerTest, DataChunkZeroRawLenOnActiveStreamClearsAndContinues) {
     // 当前实现语义：只清接收缓冲防积压（buf.clear + break），不判流死、
     // 不判连死——与 corrupt START/END 的零容忍 close 是不同分支。断言：
     // 不 crash、流上下文存活（后续合法 END 被正常消费而非判死）、连接保持、
-    // 同连接后续请求照常往返（帧同步恢复）。
+    // 同连接后续请求照常往返（帧同步恢复）。活性一律以探针 REQUEST 的
+    // RESPONSE 到达判定（wait_raw_echo 行为驱动）——sleep 后轮询
+    // is_connected 的状态断言在 pre-push 重载窗口下不可靠（100ms 不定足，
+    // 实发过 3.2s 轮询超时），已废。
     int port = server->listen("127.0.0.1", 0,
                               [](uint64_t, uint64_t, uint64_t, const CMString& payload,
                                  const PeerStreamReaderPtr&) -> std::optional<CMString> {
@@ -939,40 +967,22 @@ TEST_F(PeerRpcServerTest, DataChunkZeroRawLenOnActiveStreamClearsAndContinues) {
     write_be32(empty_small.data(), ChunkFrameProtocol::kSmallFieldsLen);
     ASSERT_TRUE(raw->send(rc, make_raw_frame(
         static_cast<uint8_t>(MessageType::DATA_CHUNK), empty_small)) > 0);
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
-    EXPECT_TRUE(raw->is_connected(rc))
+    // 探针回包到达 = 丢弃分支未判死连接且帧同步完好（is_connected 只证
+    // 状态、证不了同连接后续帧还能被正确解析）。
+    EXPECT_TRUE(wait_raw_echo(*raw, rc, /*rpc_id=*/35, "after-zero-raw-len"))
         << "zero raw_len must not crash (buffer cleared, conn kept per current contract)";
 
     // 流上下文存活：合法 END 被当作活跃流的收尾正常消费（不触发
-    // "END without active stream" 判死），连接保持。
+    // "END without active stream" 判死），连接保持——END 后探针仍有回包。
     PeerStreamEndMessage end;
     end.rpc_id_ = 8;
     ASSERT_TRUE(raw->send(rc, MessageProtocol::encode(end)) > 0);
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
-    EXPECT_TRUE(raw->is_connected(rc))
+    EXPECT_TRUE(wait_raw_echo(*raw, rc, /*rpc_id=*/36, "after-legit-end"))
         << "the active stream must have consumed the legitimate END";
 
     // 帧同步恢复：缓冲清除后的合法请求照常往返。
-    CMString body;
-    body.resize(16, '\0');
-    write_be64(body.data(), /*rpc_id=*/34);
-    write_be64(body.data() + 8, /*src=*/7);
-    body.append("after-zero-raw");
-    ASSERT_TRUE(raw->send(rc, make_raw_frame(
-        static_cast<uint8_t>(MessageType::PEER_RPC_REQUEST), body)) > 0);
-    bool got = false;
-    for (int i = 0; i < 150 && !got; ++i) {
-        for (const auto& e : raw->poll(0)) {
-            if (e.type_ == TransportEventType::DATA && e.data_.size() >= 18 &&
-                static_cast<uint8_t>(e.data_[8]) ==
-                    static_cast<uint8_t>(MessageType::PEER_RPC_RESPONSE) &&
-                read_be64(e.data_.data() + 9) == 34) {
-                got = true;
-            }
-        }
-        if (!got) std::this_thread::sleep_for(std::chrono::milliseconds(20));
-    }
-    EXPECT_TRUE(got) << "frame sync must survive the zero raw_len discard";
+    EXPECT_TRUE(wait_raw_echo(*raw, rc, /*rpc_id=*/34, "after-zero-raw"))
+        << "frame sync must survive the zero raw_len discard";
     EXPECT_TRUE(raw->is_connected(rc));
     raw->close_all();
 }

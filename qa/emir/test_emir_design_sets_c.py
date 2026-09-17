@@ -33,7 +33,7 @@ pe_strip 164 + ctrl 364；dangling 303 = 39 + (36×4) + 39 + 81；skip_pin
 import os
 import shutil
 
-from log import INFO
+from log import INFO, WARN
 
 from fly import get_config, launch_workers
 from fly.runtime import get_agent
@@ -195,7 +195,9 @@ if os.path.isfile(full_def):
          "hybrid_soc.def (expanded total 102192 — verify_full.sh runs "
          "the full build)")
 else:
-    INFO("[SKIP] full-set large files not present (regenerate via "
-         "gen_set_c.py; full build via verify_full.sh)")
+    # WARN 而非 INFO：分档规则下大件应随源码就位，此分支理论上不可触发
+    # ——万一触发即覆盖缩水，必须显式可见（PASS 语义不变，仅日志升级）。
+    WARN("[SKIP] full-set large files not present — coverage shrunk "
+         "(regenerate via gen_set_c.py; full build via verify_full.sh)")
 
 print("[PASS] test_emir_design_sets_c")

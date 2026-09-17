@@ -139,6 +139,9 @@ class Module:
         # 网连接：实例 pin（DEF 顺序）+ 端口位 ( PIN port )
         net_conns = {net: [] for net in sorted(self.nets)}
         port_net = {p: self._net_of_port(p) for p, _ in self.ports}
+        # net → port 反表一次遍历预构建（端口名即网名，网与端口一一对应
+        # ——逐网线性反查是 O(ports²)，纯打磨但反表更直白）。
+        net_to_port = {n: p for p, n in port_net.items()}
         for net in port_net.values():
             if net in net_conns:
                 net_conns[net].append(None)   # None = 端口位，渲染时回填名
@@ -150,8 +153,7 @@ class Module:
             terms = []
             for c in net_conns[net]:
                 if c is None:
-                    port = next(p for p, n in port_net.items() if n == net)
-                    terms.append(f"( PIN {port} )")
+                    terms.append(f"( PIN {net_to_port[net]} )")
                 else:
                     terms.append(f"( {c[0]} {c[1]} )")
             net_lines.append(f"    - {net} " + " ".join(terms) + " ;")

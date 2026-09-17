@@ -816,6 +816,18 @@ using DSInstanceNameHasher =
 using DSNetNameHasher =
     DSNameHasherT<CMNetId, DSHasherBackendHatrie<CMNetId>>;
 
+// 生产别名组编译期护栏：六实体 id 必须全部为强类型 class 形态（上方
+// 「生产实例化组全部强类型」的注释契约升级为编译期事实——若 emir_ids.h
+// 的某实体被回退成裸整型别名，这里先于任何业务代码编译报错）。裸整型
+// IdT 实例化仅限测试参照锚（ds_name_hasher_test 的裸 id 锚别名）。
+static_assert(std::is_class_v<CMCellId> && std::is_class_v<CMPinId> &&
+                  std::is_class_v<CMViaCellId> &&
+                  std::is_class_v<CMLayerId> &&
+                  std::is_class_v<CMInstanceId> &&
+                  std::is_class_v<CMNetId>,
+              "production hasher aliases require strongly-typed id classes "
+              "(StrongIdT), not bare integers");
+
 // —— per-DEF local 名空间伴生对象（㊵②）——
 
 // DSBlockNames：DSBlockBuildData 的名字伴生对象（DSBlockNames_<i> 独立
