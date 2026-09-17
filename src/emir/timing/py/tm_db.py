@@ -268,13 +268,13 @@ _alpha_schema = Schema.dict(
 
 build_timing_db_doc = UserDoc(
     "构建 timing db：解析 TWF（时序窗口文件，楷登 Innovus "
-    "write_timing_windows 格式，网络/引脚/混合三维度）→ 条目名换算为 "
-    "design db 全局 id（实例/网层级路径、pin 全局名字空间）→ 按 design "
-    "db 分区结构落库（时钟归属 + 到达窗口 + 翻转时间 + 常量标记）。"
-    "timing_files 支持文件列表（分块 TWF）与块绑定形态：纯路径 = 全层级"
-    "路径名；{'file_name', 'block_inst'} = 块实例内局部名；{'file_name', "
-    "'block_cell'} = 块定义级时序（对全部实例成立，建库期复制）；后两类"
-    "可附加 'strip_prefix' 段级剥离包装顶层前缀。")
+    "write_timing_windows 格式，网络/引脚/混合三维度），把时序数据（时钟"
+    "归属 + 到达窗口 + 翻转时间 + 常量标记）按 design db 的实例/网/pin "
+    "名字匹配归属并落库。timing_files 支持文件列表（分块 TWF）与块绑定"
+    "形态：纯路径 = 条目使用全层级路径名；{'file_name', 'block_inst'} = "
+    "条目使用块实例内局部名；{'file_name', 'block_cell'} = 块定义级时序"
+    "（对全部实例成立，建库期复制）；后两类可附加 'strip_prefix' 剥离"
+    "包装顶层前缀。")
 build_timing_db_doc.add_param("name",
     schema=Schema(str, check=is_nonempty_str,
                   error="must be a non-empty string, got {value}"),
@@ -288,20 +288,19 @@ build_timing_db_doc.add_param("timing_files",
 build_timing_db_doc.add_param("design_db",
     schema=Schema(object, check=_is_design_db_handle,
                   error="must be a DesignDb instance, got {value}"),
-    required=True, desc="design db（DesignDb 实例，名字换算与分区结构的"
-        "来源）")
+    required=True, desc="design db（DesignDb 实例）。时序条目按其实例/网/pin 名字匹配归属，并按其分区结构落库")
 build_timing_db_doc.add_param("settings",
     schema=Schema.dict(
         allow_extra=False,
         extra_error="settings currently has no available keys, "
                     "unexpected key {key}"),
     required=False, default=None, none_ok=True,
-    desc="稳定配置项（dict）。当前无可用键：传入任何键将直接报错"
+    desc="配置项（dict）。当前无可用键：传入任何键将直接报错"
          "（None 合法）")
 build_timing_db_doc.add_param("alpha",
     schema=_alpha_schema,
     required=False, default=None, none_ok=True,
-    desc="未稳定配置项（dict）。可用键：chunk_size_mb——单文件切块大小"
+    desc="实验性配置（dict）。可用键：chunk_size_mb——单文件切块大小"
          "（MB），整数 ≥16，默认 256；format——TWF 格式，'auto' 或 "
          "'innovus'，默认 'auto'。未知键或非法值将直接报错")
 build_timing_db_doc.add_example("构建 timing db",
@@ -309,7 +308,7 @@ build_timing_db_doc.add_example("构建 timing db",
     name="timing", timing_files=["design.twf"], design_db=design_db)
 proj.wait_frozen("timing", timeout=600)
 clocks = timing_db.load_timing_clocks_obj()''',
-    desc="TWF 解析 + 名字换算 + 分区落库 → 冻结后读时钟表")
+    desc="TWF 解析 + 名字匹配归属 + 分区落库 → 冻结后读时钟表")
 build_timing_db_doc.add_keyword(["timing", "twf", "clock", "window",
                                  "arrival", "slew", "emir"])
 
@@ -318,27 +317,28 @@ build_timing_db_doc.add_keyword(["timing", "twf", "clock", "window",
 @document(build_timing_db_doc)
 def build_timing_db(self, name: str, timing_files: list, design_db,
                     settings: dict = None, alpha: dict = None):
-    """构建 timing db：TWF 解析 + 名字换算 + 分区落库 + 冻结。
+    """构建 timing db：TWF 解析 + 名字匹配归属 + 分区落库 + 冻结。
 
-    异步 4 步：检查输入 → 建库（TimingDb，role="timing"）→ 解析阶段链
-    提交（切块 → 逐块解析 × N → 每分区合并 → 汇总 → freeze）。参数不
-    合法（空名、timing_files 结构错误、settings/alpha 含未知键或非法
-    值、design_db 类型不符、文件不存在/不可读/非 TWF 格式）时立即报错
-    终止，不建库。块绑定目标存在性（块实例路径/块 cell 名在 design db
-    命中）在解析阶段校验，未命中的条目跳过并计入汇总提醒（不阻塞其他
-    条目入库）。
+    每份文件按切块大小分块并行解析，条目按 design db 的实例/网/pin 名字
+    匹配归属后按分区合并，全部完成后冻结。参数不合法（空名、timing_files
+    结构错误、settings/alpha 含未知键或非法值、design_db 类型不符、
+    文件不存在/不可读/非 TWF 格式）时立即报错终止，不建库。块绑定目标
+    存在性（块实例路径/块 cell 名在 design db 命中）在解析阶段校验，
+    未命中的条目跳过并计入汇总提醒（不阻塞其他条目入库）。
 
     Args:
         self: 自动绑定的 EMIRProject 实例。
-        name: db 子目录名 + Project 内部 key。
-        timing_files: TWF 文件输入列表（纯路径或块绑定描述符 dict）。
-        design_db: DesignDb 实例（名字换算与分区结构来源）。
-        settings: 稳定配置项（当前无可用键，传任何键报错；None 合法）。
-        alpha: 未稳定配置项（两键：chunk_size_mb、format；未知键或非法
-            值报错；None 合法）。
+        name: db 子目录名 + Project 内部 key（重名自动递增）。
+        timing_files: TWF 文件输入列表（至少 1 个；纯路径或块绑定描述
+            符 dict，文件须存在且可读）。
+        design_db: DesignDb 实例（时序条目按其实例/网/pin 名字匹配归属，
+            并按其分区结构落库）。
+        settings: 配置项（当前无可用键，传任何键报错；None 合法）。
+        alpha: 实验性配置（两键：chunk_size_mb、format；未知键或非法值
+            报错；None 合法）。
 
     Returns:
-        ``TimingDb`` 句柄（freeze 异步进行中，可用 wait_frozen 等待）。
+        ``TimingDb`` 句柄（解析与冻结异步进行，可用 wait_frozen 等待）。
     """
     # ── Step 1: 检查输入（master 侧前置；结构已由 header schema 拦截，
     #    这里做可读性显式校验 + TWF 头嗅探）──

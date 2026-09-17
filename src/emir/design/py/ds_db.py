@@ -648,8 +648,8 @@ build_design_db_doc.add_param("name",
     required=True, desc="db 子目录名 + Project 内部 key（重名自动递增）")
 build_design_db_doc.add_param("def_paths",
     schema=Schema.list(_path_schema),
-    required=True, desc="DEF 文件路径列表（每文件一独立头扫描任务；可为空列表）。"
-        "文件必须存在且可读，否则报错")
+    required=True, desc="DEF 文件路径列表（可为空列表；每份文件独立并行"
+        "解析）。文件必须存在且可读，否则报错；非 DEF 格式报错")
 build_design_db_doc.add_param("lef_paths",
     schema=Schema.list(_path_schema, min_len=1),
     required=True, desc="lef 文件路径列表（至少 1 个）；首元素为 tech lef，"
@@ -657,19 +657,19 @@ build_design_db_doc.add_param("lef_paths",
 build_design_db_doc.add_param("lib_db",
     schema=Schema(object, check=_is_lib_db_handle,
                   error="must be a LibDb instance, got {value}"),
-    required=True, desc="lib 库 db（LibDb 实例，cell merge 的直接前驱）")
+    required=True, desc="lib 库 db（LibDb 实例）。建库时按 cell 名与 lib 库数据合并（补全功耗/时序表等库信息）")
 build_design_db_doc.add_param("settings",
     schema=Schema.dict(
         allow_extra=False,
         extra_error="settings currently has no available keys, "
                     "unexpected key {key}"),
     required=False, default=None, none_ok=True,
-    desc="稳定配置项（dict）。当前无可用键：传入任何键将直接报错"
+    desc="配置项（dict）。当前无可用键：传入任何键将直接报错"
          "（None 合法）")
 build_design_db_doc.add_param("alpha",
     schema=_alpha_schema,
     required=False, default=None, none_ok=True,
-    desc="未稳定配置项（dict）。可用键："
+    desc="实验性配置（dict）。可用键："
          "density_bin_size——密度采样格边长（µm），整数 ≥1，默认 10；"
          "net_batch_size——网内容解析批大小（网数），整数 ≥1，默认 1000；"
          "lcp_name_arena——名字存储内存压缩开关，bool，默认 False；"
@@ -699,25 +699,26 @@ def build_design_db(self, name: str, def_paths: list, lef_paths: list,
                     lib_db, settings: dict = None, alpha: dict = None):
     """构建 design db：lef/def 解析 + lib 库合并 + 冻结。
 
-    异步 4 步：检查输入 → 建库（DesignDb，role="design"）→ 解析阶段链
-    提交（tech lef → 每 cell lef 一任务 + 汇总 → lib merge ∥ 每 DEF 一
-    任务 + 汇总 → freeze）。跨文件重名 macro/port/via 保留首份并提醒
-    （不报错终止）。参数不合法（空名、路径列表含非字符串或空串、
-    settings/alpha 含未知键或非法值、lib_db 类型不符、文件不存在/
-    不可读/非 LEF 或 DEF 格式）时立即报错终止，不建库。
+    解析流程：tech lef 先行（确立层堆叠与单位基准）→ 每份 cell lef 一
+    个独立解析任务并行执行 → 与 lib 库按 cell 名合并；每份 DEF 一个独立
+    解析任务并行执行；全部完成后合并、冻结。跨文件重名 macro/port/via
+    保留首份并提醒，不报错终止。参数不合法（空名、路径列表含非字符串
+    或空串、settings/alpha 含未知键或非法值、lib_db 类型不符、文件不
+    存在/不可读/非 LEF 或 DEF 格式）时立即报错终止，不建库。
 
     Args:
         self: 自动绑定的 EMIRProject 实例。
-        name: db 子目录名 + Project 内部 key。
-        def_paths: DEF 文件路径列表（可为空；文件须存在且可读）。
-        lef_paths: lef 文件路径列表（首元素 tech lef，其余 cell lef）。
-        lib_db: LibDb 实例（cell merge 的直接前驱）。
-        settings: 稳定配置项（当前无可用键，传任何键报错；None 合法）。
-        alpha: 未稳定配置项（八键，可用键与约束见 help；未知键或非法
-            值报错；None 合法）。
+        name: db 子目录名 + Project 内部 key（重名自动递增）。
+        def_paths: DEF 文件路径列表（可为空列表；文件须存在且可读）。
+        lef_paths: lef 文件路径列表（至少 1 个；首元素 tech lef，其余
+            cell lef，文件须存在且可读）。
+        lib_db: LibDb 实例（按 cell 名合并库数据的来源）。
+        settings: 配置项（当前无可用键，传任何键报错；None 合法）。
+        alpha: 实验性配置（八键，可用键与约束见 help；未知键或非法值
+            报错；None 合法）。
 
     Returns:
-        ``DesignDb`` 句柄（freeze 异步进行中，可用 wait_frozen 等待）。
+        ``DesignDb`` 句柄（解析与冻结异步进行，可用 wait_frozen 等待）。
     """
     # ── Step 1: 检查输入（可读性显式校验 + LEF/DEF 形态嗅探，schema
     #    无法覆盖；master 侧前置）──

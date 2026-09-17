@@ -45,9 +45,10 @@ _path_schema = Schema(str, check=is_nonempty_str,
                       error="must be a non-empty file path, got {value}")
 
 build_lib_db_doc = UserDoc(
-    "构建 lib 库 db：解析多份 Liberty（.lib）单元库文件，分布式解析后整合为"
-    "单一 LIBLibrary 容器（cell 集合 + 库头单位与默认参数 + 查找表模板集）。"
-    "保存引脚电容、internal_power 功耗表、timing 时序表等全量数据表。")
+    "构建 lib 库 db：解析一份或多份 Liberty（.lib）单元库文件，产出单一"
+    "整合库容器（cell 集合 + 库头单位与默认参数 + 查找表模板集），保存引"
+    "脚电容、internal_power 功耗表、timing 时序表等全量数据表。每份文件"
+    "独立并行解析，全部解析完成后合并冻结。")
 build_lib_db_doc.add_param("name",
     schema=Schema(str, check=is_nonempty_str,
                   error="must be a non-empty string, got {value}"),
@@ -61,7 +62,7 @@ build_lib_db_doc.add_param("alpha",
                        extra_error="lib alpha currently has no available "
                                    "keys, unexpected key {key}"),
     required=False, default=None, none_ok=True,
-    desc="未稳定配置项（dict）。当前无可用键：传入任何键将直接报错"
+    desc="实验性配置（dict）。当前无可用键：传入任何键将直接报错"
          "（None 合法）")
 build_lib_db_doc.add_example("构建单元库",
     code='''lib_db = proj.build_lib_db(name="lib", lib_paths=["nangate45_typ.lib"])
@@ -76,20 +77,19 @@ build_lib_db_doc.add_keyword(["lib", "liberty", "cell", "power", "timing", "emir
 def build_lib_db(self, name: str, lib_paths: list, alpha: dict = None):
     """构建 lib 库 db：解析多份 .lib 并整合为单一库容器。
 
-    异步 4 步：检查输入 → 建库（LibDb，role="lib"）→ 解析任务提交
-    （每文件一解析任务 + 全量合并）→ freeze task（依赖 LIBLibrary 写完）。
-    cell 重复 = 库版本混用：保留当前、抛弃后续重复并提醒（不报错终止）。
-    参数不合法（空名、空路径列表、alpha 含未知键、文件不存在/不可读/
-    非 liberty 格式）时立即报错终止，不建库。
+    每份文件一个独立解析任务并行执行，全部解析完成后合并、冻结。跨文件
+    重名 cell（库版本混用迹象）保留首份并提醒，不报错终止。参数不合法
+    （空名、空路径列表、alpha 含未知键、文件不存在/不可读/非 liberty
+    格式）时立即报错终止，不建库。
 
     Args:
         self: 自动绑定的 EMIRProject 实例。
-        name: db 子目录名 + Project 内部 key。
-        lib_paths: .lib 文件路径列表（文件须存在且可读）。
-        alpha: 未稳定配置项（当前无可用键，传任何键报错；None 合法）。
+        name: db 子目录名 + Project 内部 key（重名自动递增）。
+        lib_paths: .lib 文件路径列表（至少 1 个；文件须存在且可读）。
+        alpha: 实验性配置（当前无可用键，传任何键报错；None 合法）。
 
     Returns:
-        ``LibDb`` 句柄（freeze 异步进行中，可用 wait_frozen 等待）。
+        ``LibDb`` 句柄（解析与冻结异步进行，可用 wait_frozen 等待）。
     """
     # ── Step 1: 检查输入（可读性显式校验 + liberty 形态嗅探，schema
     #    无法覆盖）──
@@ -110,10 +110,10 @@ def build_lib_db(self, name: str, lib_paths: list, alpha: dict = None):
     alpha_settings.apply(alpha)
     db.write_object(LibDb.ALPHA_SETTINGS_OBJ, alpha_settings)
 
-    # ── Step 3 + 4: MapReduce 分布式解析整合 + freeze 提交 ──
+    # ── Step 3 + 4: 并行解析整合 + 冻结提交 ──
     from .lib_flow import run_lib_flow
     run_lib_flow(db, lib_paths)
 
     INFO(f"build_lib_db: '{name}' submitted ({len(lib_paths)} lib files, "
-         f"MapReduce distributed parse)")
+         f"parallel per-file parse)")
     return db
