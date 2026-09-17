@@ -33,3 +33,21 @@ py_test(
         "//src/log/export:_fly_log.so",
     ],
 )
+
+# build_lib_db 入口参数校验负例单测（2026-09-17 裁定：header Schema 直接
+# 校验 raise + 白名单严格模式）
+py_test(
+    name = "lib_db_validation_test",
+    srcs = ["test_lib_db_validation.py"],
+    main = "test_lib_db_validation.py",
+    imports = ["../../..", "../export", "../../design/export",
+               "../../timing/export",
+           ],
+    deps = [
+        "//src/emir:emir_pkg",
+        "//src/emir/lib/export:_fly_emir_lib.so",
+        "//src/emir/timing/export:_fly_emir_timing.so",
+        "//src/fly:fly_py",
+        "//src/log/export:_fly_log.so",
+    ],
+)

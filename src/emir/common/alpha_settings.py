@@ -1,23 +1,22 @@
-"""AlphaSettings — 建库 alpha 配置的声明式基座（2026-09-13 裁定）。
+"""AlphaSettings — 建库 alpha 配置的声明式基座。
 
 alpha 项以**五要素**声明（dev-rules §3「建库 API 配置参数标准」）：
 setting 名（类属性名）/ 默认值 / 值类型及约束介绍（value_type + constraint，
 str）/ 值校验器（validator，None = 不校验）/ setting 介绍（description）。
 
 各 db 子模块定义自己的子类（例：design 的 ``DSAlphaSettings``）+ 模块级
-``get_default_alpha_settings()`` 工厂。建库入口（build_<角色>_db）接线：
-默认实例 ``apply(alpha)`` 逐键校验覆盖 → settings 对象以固定对象名
-``"alpha_settings"`` 写入 db → 消费点 ``read_object`` 读回后 ``normalize()``
-兜底（旧对象缺键补默认、未知属性丢弃，向前兼容）。
+``get_default_alpha_settings()`` 工厂。建库入口（build_<角色>_db）接线
+（2026-09-17 裁定：header schema 直接校验 raise）：header 的 alpha
+``Schema.dict`` 引用各键 validator（值域单一来源）拦截未知键/非法值
+（直接 raise，不再走 user message）→ 默认实例 ``apply(alpha)``
+**防御性**覆盖（schema 拦截后理论不再拒绝）→ settings 对象以固定对象名
+``"alpha_settings"`` 写入 db → 消费点 ``read_object`` 读回后
+``normalize()`` 兜底（旧对象缺键补默认、未知属性丢弃，向前兼容）。
 
-校验语义（裁定 5，dev-rules §7 兜底）：
-  - validator 拒绝（返回 False / 抛异常）→ rejected，保留默认值继续，不 raise；
-  - 未知键 → unknown，调用方发 user warn message 后忽略；
-  - None 默认值项（如 target_partitions）业务使用点自行判断值与处理。
-
-本基座为**纯逻辑**：apply 只返回结构化结果
-``{"rejected": {键: 原因}, "unknown": [键]}``，不直接发 message——透出归
-build 接线处按模块前缀处理（design 复用 DSGN::0013、lib 用 LIBR::0005）。
+apply 为**纯逻辑**：返回结构化结果
+``{"rejected": {键: 原因}, "unknown": [键]}``，不直接发 message。防御
+语义保留：validator 拒绝（返回 False / 抛异常）→ rejected，保留默认值；
+未知键 → unknown（入口接线处不再透出——header schema 已拦截）。
 
 序列化：pickle 友好——实例仅持当前值 dict（``_values``），描述符留在类
 层（pickle 按引用存类），write_object/read_object 直接受益。

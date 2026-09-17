@@ -1,9 +1,7 @@
-"""DSAlphaSettings — design db alpha 设置的声明式定义（2026-09-13 裁定）。
+"""DSAlphaSettings — design db alpha 设置的声明式定义。
 
 前七键迁移自 ds_flow.run_design_flow 边界的手工解析（``alpha.get`` +
-isinstance 系列，已删除）：校验规则逐条保留、迁入各键 validator——拒绝
-一律 user warn message（DSGN::0013 一次汇总，build_design_db 接线处发）
-后保留默认值继续，不 raise。
+isinstance 系列，已删除）：校验规则逐条保留、迁入各键 validator。
 
 键表（语义与默认值见各键 description；权威口径 docs/emir/design-db-plan.md
 §6 alpha 键表）：
@@ -11,8 +9,13 @@ isinstance 系列，已删除）：校验规则逐条保留、迁入各键 valid
   partition_count / partition_target_density / density_channel_weights /
   def_aggregate_threshold
 
+建库入口接线（2026-09-17 裁定）：header 的 alpha Schema.dict 引用与各键
+validator 同源的命名函数（emir/common/validators.py——值域单一来源）拦截
+未知键/非法值（直接 raise）→ 默认实例 apply(alpha) 防御性覆盖 → settings
+对象写入 db → 消费点 read_object 读回后 normalize() 兜底。
+
 target_partitions 的 '{x}x{y}' 解析细节仍留 C++ S8 路径（解析失败由
-ds_decide_partitions 内发 DSGN::0013 回退）——Python validator 只做
+ds_decide_partitions 内发 DSGN::0013 回退）——本模块 validator 只做
 str/None 类型级（None = 未设置；C++ 消费侧 None/空串同义）。
 """
 

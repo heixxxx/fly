@@ -75,28 +75,8 @@ def test_normalize_timing_files():
     out = tm_utils.normalize_timing_files(
         [{"file_name": "c.twf", "block_cell": "B1"}])
     assert out[0]["kind"] == 2 and out[0]["block_cell"] == "B1"
-
-    def _expect_value_error(files, frag):
-        try:
-            tm_utils.normalize_timing_files(files)
-            raise AssertionError(f"must reject: {files}")
-        except ValueError as e:
-            assert frag in str(e), str(e)
-
-    _expect_value_error([], "non-empty list")
-    _expect_value_error([42], "path string or dict")
-    _expect_value_error([{"file_name": "x.twf"}], "requires")
-    _expect_value_error([{"file_name": "x.twf", "block_inst": "a",
-                          "block_cell": "B"}], "cannot bind both")
-    _expect_value_error([{"file_name": "x.twf", "block_inst": ""}],
-                        "non-empty hierarchy path")
-    _expect_value_error([{"file_name": "x.twf", "block_cell": ""}],
-                        "non-empty cell name")
-    _expect_value_error([{"file_name": "x.twf", "block_inst": "a",
-                          "strip_prefix": 3}], "must be a string")
-    _expect_value_error([{"file_name": "x.twf", "block_inst": "a",
-                          "unknown_key": 1}], "unknown binding keys")
-    _expect_value_error([""], "empty path")
+    # 结构负例已由 header schema 拦截（2026-09-17 裁定：normalize 只保留
+    # 规范化职责）——见 test_tm_db_validation.py 的 timing_files 结构负例
     print("[OK] normalize_timing_files")
 
 

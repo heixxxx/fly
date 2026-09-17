@@ -10,13 +10,16 @@ import 本模块完成注册。仅注册过的 id 才会被 MSG 打印/发送，
 - TIMG::0003: 网条目无驱动/悬空（跳过 + 计数——分区 NETS 对象无该网记录
   或连接条目中无 driver 位条目，含仅端口网）
 - TIMG::0004: 全部输入解析成功但 0 有效条目（空结果放行，不 raise）
-- TIMG::0005: alpha 未知/非法键（一次汇总提醒后回退默认/忽略，不 raise）
 - TIMG::0006: 跨文件同名条目冲突（保留首份；同文件跨块的同源形态不计）
 - TIMG::0007: 时钟名跨文件周期/沿不一致（保留首份——顶层文件定义优先）
 - TIMG::0008: 未放置实例跳过（design db 无 primary 分区副本，无归属）
 - TIMG::0009: 全部文件解析失败（流程级范式 (a)：fatal message 码 80 退出
   + master 联动——下游数据无法产出）
 - TIMG::0010: strip_prefix 未命中条目跳过（含剥后余空；一次汇总）
+
+（历史：TIMG::0005 曾用于 timing alpha 设置问题的一次汇总提醒；2026-09-17
+裁定入口参数校验改为 header schema 直接 raise 后，该码再无使用点，
+注册删除。）
 """
 
 from fly import register_message_id
@@ -25,7 +28,6 @@ register_message_id("TIMG::0001", "WARN")
 register_message_id("TIMG::0002", "WARN")
 register_message_id("TIMG::0003", "WARN")
 register_message_id("TIMG::0004", "WARN")
-register_message_id("TIMG::0005", "WARN")
 register_message_id("TIMG::0006", "WARN")
 register_message_id("TIMG::0007", "WARN")
 register_message_id("TIMG::0008", "WARN")

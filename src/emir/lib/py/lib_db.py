@@ -14,6 +14,8 @@ from fly import register_flow
 from fly import UserDoc, Schema, document
 from storage import Database
 
+from emir.common import ensure_readable_file, is_nonempty_str
+
 # A6 后由 emir/__init__ 聚合触发（先 project 后 lib），此处包根已完成
 # 初始化，可安全取 EMIRProject（尾部迂回注册链已移除）。
 from emir.project import EMIRProject
@@ -37,23 +39,30 @@ class LibDb(Database):
 
 # ── flow：build_lib_db ──────────────────────────────────────────────
 
+# header schema（2026-09-17 裁定：结构化声明 + 命名 validator，禁止
+# 内联 lambda；白名单严格模式——未知键/非法值直接 raise）
+_path_schema = Schema(str, check=is_nonempty_str,
+                      error="must be a non-empty file path, got {value}")
+
 build_lib_db_doc = UserDoc(
     "构建 lib 库 db：解析多份 Liberty（.lib）单元库文件，分布式解析后整合为"
     "单一 LIBLibrary 容器（cell 集合 + 库头单位与默认参数 + 查找表模板集）。"
     "保存引脚电容、internal_power 功耗表、timing 时序表等全量数据表。")
 build_lib_db_doc.add_param("name",
-    schema=Schema(str, check=lambda s: len(s) > 0, error="must not be empty"),
+    schema=Schema(str, check=is_nonempty_str,
+                  error="must be a non-empty string, got {value}"),
     required=True, desc="db 子目录名 + Project 内部 key（重名自动递增）")
 build_lib_db_doc.add_param("lib_paths",
-    schema=Schema(list, check=lambda ps: len(ps) > 0 and all(
-        isinstance(p, str) and p for p in ps),
-        error="must be a non-empty list of non-empty file paths"),
-    required=True, desc=".lib 文件路径列表（每文件一独立解析任务，天然分布式）")
+    schema=Schema.list(_path_schema, min_len=1),
+    required=True, desc=".lib 文件路径列表（至少 1 个；每文件一独立解析"
+        "任务）。文件必须存在且可读，否则报错；非 liberty 格式报错")
 build_lib_db_doc.add_param("alpha",
-    schema=Schema(dict), required=False, default=None, none_ok=True,
-    desc="未稳定配置项（dict）；键经 LIBAlphaSettings 声明式定义（五要素"
-         "：src/emir/lib/py/alpha_settings.py，2026-09-13 裁定）——lib 首"
-         "版无激活键，未知键 LIBR::0005 一次汇总提醒后忽略，不 raise")
+    schema=Schema.dict(allow_extra=False,
+                       extra_error="lib alpha currently has no available "
+                                   "keys, unexpected key {key}"),
+    required=False, default=None, none_ok=True,
+    desc="未稳定配置项（dict）。当前无可用键：传入任何键将直接报错"
+         "（None 合法）")
 build_lib_db_doc.add_example("构建单元库",
     code='''lib_db = proj.build_lib_db(name="lib", lib_paths=["nangate45_typ.lib"])
 proj.wait_frozen("lib", timeout=600)
@@ -65,46 +74,40 @@ build_lib_db_doc.add_keyword(["lib", "liberty", "cell", "power", "timing", "emir
 @register_flow(EMIRProject)
 @document(build_lib_db_doc)
 def build_lib_db(self, name: str, lib_paths: list, alpha: dict = None):
-    """构建 lib 库 db：分布式解析多份 .lib 并整合为 LIBLibrary。
+    """构建 lib 库 db：解析多份 .lib 并整合为单一库容器。
 
-    异步 4 步：检查输入 → 建库（LibDb，role="lib"）→ MapReduce 提交
-    （每文件一解析任务 + 全量合并，语义见 lib_flow.run_lib_flow）→ freeze
-    task（依赖 LIBLibrary 写完）。cell 重复 = 库版本混用：保留当前、抛弃
-    后续重复 + LIBR::0001 提醒（不抛异常）。alpha 设置经 LIBAlphaSettings
-    声明式校验后随建库写入（问题一次汇总 LIBR::0005，不 raise）。
+    异步 4 步：检查输入 → 建库（LibDb，role="lib"）→ 解析任务提交
+    （每文件一解析任务 + 全量合并）→ freeze task（依赖 LIBLibrary 写完）。
+    cell 重复 = 库版本混用：保留当前、抛弃后续重复并提醒（不报错终止）。
+    参数不合法（空名、空路径列表、alpha 含未知键、文件不存在/不可读/
+    非 liberty 格式）时立即报错终止，不建库。
 
     Args:
         self: 自动绑定的 EMIRProject 实例。
         name: db 子目录名 + Project 内部 key。
-        lib_paths: .lib 文件路径列表。
-        alpha: 未稳定配置项（lib 首版无激活键；未知键 LIBR::0005 提醒忽
-            略）。
+        lib_paths: .lib 文件路径列表（文件须存在且可读）。
+        alpha: 未稳定配置项（当前无可用键，传任何键报错；None 合法）。
 
     Returns:
         ``LibDb`` 句柄（freeze 异步进行中，可用 wait_frozen 等待）。
     """
-    import os
-
-    # ── Step 1: 检查输入（文件存在性 + liberty 形态嗅探，schema 无法覆盖）──
+    # ── Step 1: 检查输入（可读性显式校验 + liberty 形态嗅探，schema
+    #    无法覆盖）──
     from .lib_utils import sniff_liberty_header
     for p in lib_paths:
-        if not os.path.isfile(p):
-            raise FileNotFoundError(f"build_lib_db: lib file not found: {p}")
+        ensure_readable_file(p, "build_lib_db", "lib_paths")
         sniff_liberty_header(p)
 
     # ── Step 2: 建库（LibDb，role="lib"）──
     db = self._create_db(name, db_cls=LibDb)
 
-    # ── Step 2.5: alpha 设置（声明式五要素，2026-09-13 裁定）：逐键校验
-    #    覆盖 → 问题一次汇总 LIBR::0005（user warn，不 raise）→ settings
-    #    对象随建库写入 db（消费点 read_object 读回 + normalize 兜底）──
+    # ── Step 2.5: alpha 设置：header schema 已拦截未知键/非法值（直接
+    #    raise）；此处 apply 防御性覆盖（理论不再拒绝）+ settings 对象随
+    #    建库写入 db（消费点 read_object 读回 + normalize 兜底，向前兼容
+    #    旧 db 对象）──
     from .alpha_settings import get_default_alpha_settings
     alpha_settings = get_default_alpha_settings()
-    apply_result = alpha_settings.apply(alpha)
-    detail = alpha_settings.format_apply_result(apply_result)
-    if detail:
-        from fly import message
-        message("LIBR::0005", 0, f"invalid lib alpha settings — {detail}")
+    alpha_settings.apply(alpha)
     db.write_object(LibDb.ALPHA_SETTINGS_OBJ, alpha_settings)
 
     # ── Step 3 + 4: MapReduce 分布式解析整合 + freeze 提交 ──

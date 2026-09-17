@@ -28,6 +28,9 @@ from fly import register_flow
 from fly import UserDoc, Schema, document
 from storage import Database
 
+from emir.common import (ensure_readable_file, is_nonneg_finite_number,
+                         is_nonempty_str, is_plain_int, is_positive_int)
+
 # A6 后由 emir/__init__ 聚合触发（先 project 后 design），此处包根已完成
 # 初始化，可安全取 EMIRProject。
 from emir.project import EMIRProject
@@ -590,48 +593,95 @@ class DesignDb(Database):
         return name or None
 
 
+# ── header schema（2026-09-17 裁定：结构化声明 + 命名 validator，禁止
+#    内联 lambda；白名单严格模式——alpha 八键未知键/非法值直接 raise）──
+
+_path_schema = Schema(str, check=is_nonempty_str,
+                      error="must be a non-empty file path, got {value}")
+
+
+def _is_lib_db_handle(value):
+    """lib_db 参数判定（LibDb 句柄——带 LIBRARY_OBJ 属性的 db 对象）。"""
+    return hasattr(value, "LIBRARY_OBJ")
+
+
+_channel_weight_schema = Schema((int, float), check=is_nonneg_finite_number,
+                                error="must be a non-negative finite number, "
+                                      "got {value}")
+
+_alpha_schema = Schema.dict(
+    optional={
+        "density_bin_size": Schema(int, check=is_positive_int,
+                                   error="must be an integer >= 1, got "
+                                         "{value}"),
+        "net_batch_size": Schema(int, check=is_positive_int,
+                                 error="must be an integer >= 1, got "
+                                       "{value}"),
+        "lcp_name_arena": Schema(bool,
+                                 error="must be a bool, got {value}"),
+        "target_partitions": Schema((str, type(None)), desc="None or str"),
+        "partition_count": Schema(int, check=is_plain_int,
+                                  error="must be an integer, got {value}"),
+        "partition_target_density": Schema(
+            int, check=is_plain_int, error="must be an integer, got {value}"),
+        "density_channel_weights": Schema.dict(
+            optional={"instance": _channel_weight_schema,
+                      "metal": _channel_weight_schema,
+                      "via": _channel_weight_schema},
+            allow_extra=False,
+            extra_error="unknown channel weight key {key} "
+                        "(allowed: instance/metal/via)"),
+        "def_aggregate_threshold": Schema(int, check=is_positive_int,
+                                          error="must be an integer >= 1, "
+                                                "got {value}"),
+    },
+    allow_extra=False)
+
 build_design_db_doc = UserDoc(
     "构建 design db：解析 tech lef（层堆叠/DBU 基准/通孔定义）+ 多份 cell "
     "lef（macro/简化 pin/禁布区/pin 几何）+ 多份 DEF（DIEAREA/port/通孔"
     "定义），并与 lib 库 db 按 cell 名 merge（填 lib 字段与关联、提取功耗/"
     "时序表）。lef_paths[0] 按 tech lef 解析，其余按 cell lef 解析。")
 build_design_db_doc.add_param("name",
-    schema=Schema(str, check=lambda s: len(s) > 0, error="must not be empty"),
+    schema=Schema(str, check=is_nonempty_str,
+                  error="must be a non-empty string, got {value}"),
     required=True, desc="db 子目录名 + Project 内部 key（重名自动递增）")
 build_design_db_doc.add_param("def_paths",
-    schema=Schema(list, check=lambda ps: all(isinstance(p, str) and p for p in ps),
-                  error="must be a list of non-empty file paths"),
-    required=True, desc="DEF 文件路径列表（每文件一独立头扫描任务；可为空列表）")
+    schema=Schema.list(_path_schema),
+    required=True, desc="DEF 文件路径列表（每文件一独立头扫描任务；可为空列表）。"
+        "文件必须存在且可读，否则报错")
 build_design_db_doc.add_param("lef_paths",
-    schema=Schema(list, check=lambda ps: len(ps) > 0 and all(
-        isinstance(p, str) and p for p in ps),
-        error="must be a non-empty list of non-empty file paths"),
-    required=True, desc="lef 文件路径列表；首元素为 tech lef，其余为 cell lef")
+    schema=Schema.list(_path_schema, min_len=1),
+    required=True, desc="lef 文件路径列表（至少 1 个）；首元素为 tech lef，"
+        "其余为 cell lef。文件必须存在且可读，否则报错")
 build_design_db_doc.add_param("lib_db",
-    schema=Schema(object, check=lambda v: hasattr(v, "LIBRARY_OBJ"),
-                  error="must be a LibDb instance"),
-    required=True, desc="lib 库 db（LibDb 实例，S3 merge 的直接前驱）")
+    schema=Schema(object, check=_is_lib_db_handle,
+                  error="must be a LibDb instance, got {value}"),
+    required=True, desc="lib 库 db（LibDb 实例，cell merge 的直接前驱）")
 build_design_db_doc.add_param("settings",
-    schema=Schema(dict), required=False, default=None, none_ok=True,
-    desc="稳定配置项（dict）；首版无激活键，保留参数位")
+    schema=Schema.dict(
+        allow_extra=False,
+        extra_error="settings currently has no available keys, "
+                    "unexpected key {key}"),
+    required=False, default=None, none_ok=True,
+    desc="稳定配置项（dict）。当前无可用键：传入任何键将直接报错"
+         "（None 合法）")
 build_design_db_doc.add_param("alpha",
-    schema=Schema(dict), required=False, default=None, none_ok=True,
-    desc="未稳定配置项（dict）；键经 DSAlphaSettings 声明式定义（五要素："
-         "src/emir/design/py/alpha_settings.py，2026-09-13 裁定）："
-         "density_bin_size（密度采样格边长，µm，≥1，缺省 10）、"
-         "net_batch_size（网内容批界网数，≥1，缺省 1000）、lcp_name_arena"
-         "（R8d 裁定 55：bool，缺省 False——名字伴生对象 instance/net 两 "
-         "hasher id→name 侧 LCP 后缀压缩封口，容量换内存的 alpha 路径）、"
-         "S8 分区决策四键：target_partitions（'{x}x{y}' 直切，如 '4x3'，"
-         "None=未设置）、partition_count（总分区数，0=未设置）、"
-         "partition_target_density（目标合成负载，缺省 150000——N = "
-         "ceil(总负载/目标)）、density_channel_weights（通道比重 dict "
-         "{'instance': 6, 'metal': 2, 'via': 2}，缺 key 用默认）；"
-         "S9 小 DEF 聚合阈值 def_aggregate_threshold（字节，≥1，缺省 "
-         "64 MiB——预估展开数据规模 = DEF 文件大小 × 实例化次数，低于阈值"
-         "的多个小 block 定义聚合到同一展开任务）；优先级 "
-         "target_partitions > partition_count > partition_target_density；"
-         "非法值/未知键 DSGN::0013 一次汇总提醒后回退默认/忽略，不 raise")
+    schema=_alpha_schema,
+    required=False, default=None, none_ok=True,
+    desc="未稳定配置项（dict）。可用键："
+         "density_bin_size——密度采样格边长（µm），整数 ≥1，默认 10；"
+         "net_batch_size——网内容解析批大小（网数），整数 ≥1，默认 1000；"
+         "lcp_name_arena——名字存储内存压缩开关，bool，默认 False；"
+         "target_partitions——直切分区形态 '{x}x{y}'（如 '4x3'），str 或 "
+         "None（未设置），默认 None；partition_count——总分区数，整数，"
+         "0=未设置，默认 0；partition_target_density——每分区目标负载，"
+         "整数，默认 150000；density_channel_weights——密度通道比重 "
+         "（dict，键 instance/metal/via，值为非负数；缺省键用默认 "
+         "6/2/2）；def_aggregate_threshold——小 DEF 聚合阈值（字节），"
+         "整数 ≥1，默认 67108864（64 MiB）。分区数优先级："
+         "target_partitions > partition_count > partition_target_density。"
+         "未知键或非法值将直接报错")
 build_design_db_doc.add_example("构建 design db",
     code='''design_db = proj.build_design_db(
     name="design", def_paths=["block.def"], lef_paths=["tech.lef", "cells.lef"],
@@ -647,53 +697,48 @@ build_design_db_doc.add_keyword(["design", "def", "lef", "stack", "via",
 @document(build_design_db_doc)
 def build_design_db(self, name: str, def_paths: list, lef_paths: list,
                     lib_db, settings: dict = None, alpha: dict = None):
-    """构建 design db：lef/def 解析 + lib merge + 冻结。
+    """构建 design db：lef/def 解析 + lib 库合并 + 冻结。
 
-    异步 4 步：检查输入 → 建库（DesignDb，role="design"）→ 阶段链提交
-    （S1 tech lef → S2 每 cell lef 一任务 + 汇总 → S3 lib merge ∥ S4+S4b
-    每 DEF 一任务 + 汇总 → freeze，语义见 ds_flow.run_design_flow）。
-    重名 macro/port/via 保留首份抛弃后续 + DSGN 消息提醒（不抛异常）。
+    异步 4 步：检查输入 → 建库（DesignDb，role="design"）→ 解析阶段链
+    提交（tech lef → 每 cell lef 一任务 + 汇总 → lib merge ∥ 每 DEF 一
+    任务 + 汇总 → freeze）。跨文件重名 macro/port/via 保留首份并提醒
+    （不报错终止）。参数不合法（空名、路径列表含非字符串或空串、
+    settings/alpha 含未知键或非法值、lib_db 类型不符、文件不存在/
+    不可读/非 LEF 或 DEF 格式）时立即报错终止，不建库。
 
     Args:
         self: 自动绑定的 EMIRProject 实例。
         name: db 子目录名 + Project 内部 key。
-        def_paths: DEF 文件路径列表。
+        def_paths: DEF 文件路径列表（可为空；文件须存在且可读）。
         lef_paths: lef 文件路径列表（首元素 tech lef，其余 cell lef）。
-        lib_db: LibDb 实例（S3 merge 的直接前驱）。
-        settings: 稳定配置项（首版无激活键）。
-        alpha: 未稳定配置项（八键经 DSAlphaSettings 声明式定义，见
-            UserDoc；非法值/未知键 DSGN::0013 提醒后回退/忽略）。
+        lib_db: LibDb 实例（cell merge 的直接前驱）。
+        settings: 稳定配置项（当前无可用键，传任何键报错；None 合法）。
+        alpha: 未稳定配置项（八键，可用键与约束见 help；未知键或非法
+            值报错；None 合法）。
 
     Returns:
         ``DesignDb`` 句柄（freeze 异步进行中，可用 wait_frozen 等待）。
     """
-    import os
-
-    # ── Step 1: 检查输入（文件存在性 + LEF/DEF 形态嗅探，schema 无法覆盖；
-    #    master 侧前置）──
+    # ── Step 1: 检查输入（可读性显式校验 + LEF/DEF 形态嗅探，schema
+    #    无法覆盖；master 侧前置）──
     from .ds_utils import sniff_def_header, sniff_lef_header
     for p in lef_paths:
-        if not os.path.isfile(p):
-            raise FileNotFoundError(f"build_design_db: lef file not found: {p}")
+        ensure_readable_file(p, "build_design_db", "lef_paths")
         sniff_lef_header(p)
     for p in def_paths:
-        if not os.path.isfile(p):
-            raise FileNotFoundError(f"build_design_db: def file not found: {p}")
+        ensure_readable_file(p, "build_design_db", "def_paths")
         sniff_def_header(p)
 
     # ── Step 2: 建库（DesignDb，role="design"）──
     db = self._create_db(name, db_cls=DesignDb)
 
-    # ── Step 2.5: alpha 设置（声明式五要素，2026-09-13 裁定）：逐键校验
-    #    覆盖 → 问题一次汇总 DSGN::0013（user warn，不 raise）→ settings
-    #    对象随建库写入 db（消费点 read_object 读回 + normalize 兜底）──
+    # ── Step 2.5: alpha 设置：header schema 已拦截未知键/非法值（直接
+    #    raise）；此处 apply 防御性覆盖（理论不再拒绝）+ settings 对象随
+    #    建库写入 db（消费点 read_object 读回 + normalize 兜底，向前兼容
+    #    旧 db 对象）──
     from .alpha_settings import get_default_alpha_settings
     alpha_settings = get_default_alpha_settings()
-    apply_result = alpha_settings.apply(alpha)
-    detail = alpha_settings.format_apply_result(apply_result)
-    if detail:
-        from fly import message
-        message("DSGN::0013", 0, f"invalid design alpha settings — {detail}")
+    alpha_settings.apply(alpha)
     db.write_object(DesignDb.ALPHA_SETTINGS_OBJ, alpha_settings)
 
     # ── Step 3 + 4: 阶段链提交 + freeze 提交 ──

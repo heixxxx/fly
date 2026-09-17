@@ -1,7 +1,8 @@
 """TMAlphaSettings — timing db alpha 设置的声明式定义（plan §4，两键）。
 
-建库入口接线与 design 同构：默认实例 apply(alpha) 逐键校验覆盖 → 问题
-一次汇总 TIMG::0005（user warn，不 raise）→ settings 对象以固定对象名
+建库入口接线（2026-09-17 裁定）：header 的 alpha Schema.dict 引用本模块
+is_chunk_size_mb / is_twf_format（值域单一来源）拦截未知键/非法值（直接
+raise）→ 默认实例 apply(alpha) 防御性覆盖 → settings 对象以固定对象名
 "alpha_settings" 写入 db → 消费点 read_object 读回后 normalize() 兜底。
 """
 

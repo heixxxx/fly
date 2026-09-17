@@ -30,6 +30,12 @@ from fly import register_flow
 from fly import UserDoc, Schema, document
 from storage import Database
 
+from emir.common import (ensure_readable_file, is_nonempty_str,
+                         is_valid_binding_desc)
+
+# alpha 键值域单一来源（header schema 与 TMAlphaSettings 声明同一函数）
+from .alpha_settings import is_chunk_size_mb, is_twf_format
+
 # A6 后由 emir/__init__ 聚合触发（common → project → lib → design →
 # timing），此处包根已完成初始化，可安全取 EMIRProject。
 from emir.project import EMIRProject
@@ -217,6 +223,49 @@ class TimingDb(Database):
         }
 
 
+# ── header schema（2026-09-17 裁定：结构化声明 + 命名 validator，禁止
+#    内联 lambda；白名单严格模式——未知键/非法值直接 raise）──
+
+_path_schema = Schema(str, check=is_nonempty_str,
+                      error="must be a non-empty file path, got {value}")
+
+
+def _is_design_db_handle(value):
+    """design_db 参数判定（DesignDb 句柄——带 DESIGN_OBJ 属性的 db 对象）。"""
+    return hasattr(value, "DESIGN_OBJ")
+
+
+_binding_desc_schema = Schema.dict(
+    required={"file_name": _path_schema},
+    optional={
+        "block_inst": Schema(str, check=is_nonempty_str,
+                             error="must be a non-empty hierarchy path, "
+                                   "got {value}"),
+        "block_cell": Schema(str, check=is_nonempty_str,
+                             error="must be a non-empty cell name, got "
+                                   "{value}"),
+        "strip_prefix": Schema(str,
+                               error="must be a string, got {value}"),
+    },
+    allow_extra=False,
+    check=is_valid_binding_desc,
+    error="must specify exactly one of 'block_inst' or 'block_cell', "
+          "got {value}")
+
+# timing_files 元素 schema（str 纯路径 | dict 块绑定描述符）
+_timing_file_schema = Schema.any_of(_path_schema, _binding_desc_schema)
+
+_alpha_schema = Schema.dict(
+    optional={
+        "chunk_size_mb": Schema(int, check=is_chunk_size_mb,
+                                error="must be an integer >= 16, got "
+                                      "{value}"),
+        "format": Schema(str, check=is_twf_format,
+                         error="must be one of ('auto', 'innovus'), got "
+                               "{value}"),
+    },
+    allow_extra=False)
+
 build_timing_db_doc = UserDoc(
     "构建 timing db：解析 TWF（时序窗口文件，楷登 Innovus "
     "write_timing_windows 格式，网络/引脚/混合三维度）→ 条目名换算为 "
@@ -227,27 +276,34 @@ build_timing_db_doc = UserDoc(
     "'block_cell'} = 块定义级时序（对全部实例成立，建库期复制）；后两类"
     "可附加 'strip_prefix' 段级剥离包装顶层前缀。")
 build_timing_db_doc.add_param("name",
-    schema=Schema(str, check=lambda s: len(s) > 0, error="must not be empty"),
+    schema=Schema(str, check=is_nonempty_str,
+                  error="must be a non-empty string, got {value}"),
     required=True, desc="db 子目录名 + Project 内部 key（重名自动递增）")
 build_timing_db_doc.add_param("timing_files",
-    schema=Schema(list, check=lambda ts: len(ts) > 0,
-                  error="must be a non-empty list"),
-    required=True, desc="TWF 文件输入列表（元素 = 纯路径字符串或块绑定"
-        "描述符 dict；单文件亦列表；分块 TWF 传全部块文件）")
+    schema=Schema.list(_timing_file_schema, min_len=1),
+    required=True, desc="TWF 文件输入列表（至少 1 个；元素 = 纯路径字符串"
+        "或块绑定描述符 dict；单文件亦列表；分块 TWF 传全部块文件）。"
+        "描述符键：file_name（必填）、block_inst / block_cell（互斥，"
+        "恰传其一）、strip_prefix（可选）。文件必须存在且可读，否则报错")
 build_timing_db_doc.add_param("design_db",
-    schema=Schema(object, check=lambda v: hasattr(v, "DESIGN_OBJ"),
-                  error="must be a DesignDb instance"),
-    required=True, desc="design db（直接前驱显式传参：名字映射器 + 分区表"
-        " + id 反向映射）")
+    schema=Schema(object, check=_is_design_db_handle,
+                  error="must be a DesignDb instance, got {value}"),
+    required=True, desc="design db（DesignDb 实例，名字换算与分区结构的"
+        "来源）")
 build_timing_db_doc.add_param("settings",
-    schema=Schema(dict), required=False, default=None, none_ok=True,
-    desc="稳定配置项（dict）；首版无激活键，保留参数位")
+    schema=Schema.dict(
+        allow_extra=False,
+        extra_error="settings currently has no available keys, "
+                    "unexpected key {key}"),
+    required=False, default=None, none_ok=True,
+    desc="稳定配置项（dict）。当前无可用键：传入任何键将直接报错"
+         "（None 合法）")
 build_timing_db_doc.add_param("alpha",
-    schema=Schema(dict), required=False, default=None, none_ok=True,
-    desc="未稳定配置项（dict）；两键经 TMAlphaSettings 声明式定义："
-         "chunk_size_mb（单文件字节区间切块大小，MB，≥16，缺省 256）、"
-         "format（TWF 方言，auto/innovus，缺省 auto）；非法值/未知键 "
-         "TIMG::0005 一次汇总提醒后回退默认/忽略，不 raise")
+    schema=_alpha_schema,
+    required=False, default=None, none_ok=True,
+    desc="未稳定配置项（dict）。可用键：chunk_size_mb——单文件切块大小"
+         "（MB），整数 ≥16，默认 256；format——TWF 格式，'auto' 或 "
+         "'innovus'，默认 'auto'。未知键或非法值将直接报错")
 build_timing_db_doc.add_example("构建 timing db",
     code='''timing_db = proj.build_timing_db(
     name="timing", timing_files=["design.twf"], design_db=design_db)
@@ -264,52 +320,46 @@ def build_timing_db(self, name: str, timing_files: list, design_db,
                     settings: dict = None, alpha: dict = None):
     """构建 timing db：TWF 解析 + 名字换算 + 分区落库 + 冻结。
 
-    异步 4 步范式：检查输入 → 建库（TimingDb，role="timing"）→ 阶段链
-    提交（T1 切块 → design 快照任务〔worker 上动态提交 T2 逐块解析×N →
-    T3 每分区合并 → T4 汇总 → freeze〕，语义见 tm_flow.run_timing_flow）。
-    入口同步校验：文件可读 + TWF 头嗅探 + alpha 逐键校验 + 绑定描述结构
-    （不合法 raise ValueError/FileNotFoundError，不建库）；绑定目标存在
-    性（块实例路径/块 cell 名在 design db 命中）随 design 快照任务异步
-    校验（评审 P2-3：不阻塞提交——未命中任务失败语义）；兜底场景走
-    TIMG 消息族（不 raise）。
+    异步 4 步：检查输入 → 建库（TimingDb，role="timing"）→ 解析阶段链
+    提交（切块 → 逐块解析 × N → 每分区合并 → 汇总 → freeze）。参数不
+    合法（空名、timing_files 结构错误、settings/alpha 含未知键或非法
+    值、design_db 类型不符、文件不存在/不可读/非 TWF 格式）时立即报错
+    终止，不建库。块绑定目标存在性（块实例路径/块 cell 名在 design db
+    命中）在解析阶段校验，未命中的条目跳过并计入汇总提醒（不阻塞其他
+    条目入库）。
 
     Args:
         self: 自动绑定的 EMIRProject 实例。
         name: db 子目录名 + Project 内部 key。
         timing_files: TWF 文件输入列表（纯路径或块绑定描述符 dict）。
-        design_db: DesignDb 实例（直接前驱）。
-        settings: 稳定配置项（首版无激活键）。
-        alpha: 未稳定配置项（两键，见 UserDoc）。
+        design_db: DesignDb 实例（名字换算与分区结构来源）。
+        settings: 稳定配置项（当前无可用键，传任何键报错；None 合法）。
+        alpha: 未稳定配置项（两键：chunk_size_mb、format；未知键或非法
+            值报错；None 合法）。
 
     Returns:
         ``TimingDb`` 句柄（freeze 异步进行中，可用 wait_frozen 等待）。
     """
-    import os
-
-    # ── Step 1: 检查输入（master 侧前置；dev-rules §3 校验前置）──
+    # ── Step 1: 检查输入（master 侧前置；结构已由 header schema 拦截，
+    #    这里做可读性显式校验 + TWF 头嗅探）──
     from .tm_utils import normalize_timing_files, sniff_twf_header
     files = normalize_timing_files(timing_files)
     for f in files:
         path = f["file_name"]
-        if not os.path.isfile(path):
-            raise FileNotFoundError(
-                f"build_timing_db: timing file not found: {path}")
+        ensure_readable_file(path, "build_timing_db", "timing_files")
         sniff_twf_header(path)
 
     # ── Step 2: 建库（TimingDb，role="timing"；直接前驱 design db 入
     #    链——dev-rules §3 数据库链，debug API find_db 的依赖来源）──
     db = self._create_db(name, db_cls=TimingDb, prev=[design_db])
 
-    # ── Step 2.5: alpha 设置（声明式五要素）：逐键校验覆盖 → 问题一次
-    #    汇总 TIMG::0005（user warn，不 raise）→ settings 对象随建库
-    #    写入 db（消费点 read_object 读回 + normalize 兜底）──
+    # ── Step 2.5: alpha 设置：header schema 已拦截未知键/非法值（直接
+    #    raise）；此处 apply 防御性覆盖（理论不再拒绝）+ settings 对象随
+    #    建库写入 db（消费点 read_object 读回 + normalize 兜底，向前兼容
+    #    旧 db 对象）──
     from .alpha_settings import get_default_alpha_settings
     alpha_settings = get_default_alpha_settings()
-    apply_result = alpha_settings.apply(alpha)
-    detail = alpha_settings.format_apply_result(apply_result)
-    if detail:
-        from fly import message
-        message("TIMG::0005", 0, f"invalid timing alpha settings — {detail}")
+    alpha_settings.apply(alpha)
     db.write_object(TimingDb.ALPHA_SETTINGS_OBJ, alpha_settings)
 
     # ── Step 3 + 4: 阶段链提交 + freeze 提交 ──
