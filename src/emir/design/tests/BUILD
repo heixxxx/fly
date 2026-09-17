@@ -252,3 +252,22 @@ py_test(
         "//src/log/export:_fly_log.so",
     ],
 )
+
+# build_design_db 三段式结构单测（master 提交面：O(1) 任务 + freeze
+# 固定标记依赖 + 预处理无内容 IO）
+py_test(
+    name = "ds_flow_structure_test",
+    srcs = ["test_ds_flow_structure.py"],
+    main = "test_ds_flow_structure.py",
+    imports = ["../../..", "../export", "../../lib/export",
+               "../../timing/export",
+           ],
+    deps = [
+        "//src/emir:emir_pkg",
+        "//src/emir/design/export:_fly_emir_design.so",
+        "//src/emir/lib/export:_fly_emir_lib.so",
+        "//src/emir/timing/export:_fly_emir_timing.so",
+        "//src/fly:fly_py",
+        "//src/log/export:_fly_log.so",
+    ],
+)

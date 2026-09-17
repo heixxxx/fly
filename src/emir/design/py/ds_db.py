@@ -8,7 +8,9 @@
 via cell 权威表（⑫ design_name:: 前缀）。DSDesign 容器的运行时专用字段
 （pin 表/几何）不序列化（裁定 ⑱），业务方经 load_design_with 按需注入。
 
-阶段链装配在 ds_flow.run_design_flow（流程实现与入口分离）。
+三段式流程（dev-rules §3「建库 API 流程标准」）：本文件入口函数 ①轻量
+参数预处理（schema 校验 + 文件存在性 + 建库；不读文件内容）②提交唯一
+flow 根任务 ③顶层提交 freeze——任务链目录见 ds_flow._design_flow_task。
 约定（择简）：lef_paths[0] 为 tech lef（确立 DBU 基准与层堆叠），其余
 为 cell lef。
 
@@ -664,11 +666,12 @@ build_design_db_doc.add_param("name",
 build_design_db_doc.add_param("def_paths",
     schema=Schema.list(_path_schema),
     required=True, desc="DEF 文件路径列表（可为空列表）。文件必须存在且"
-        "可读，否则报错；非 DEF 格式报错")
+        "可读（否则立即报错）；非 DEF 格式文件导致建库失败（库不冻结）")
 build_design_db_doc.add_param("lef_paths",
     schema=Schema.list(_path_schema, min_len=1),
     required=True, desc="lef 文件路径列表（至少 1 个）；首元素为 tech lef，"
-        "其余为 cell lef。文件必须存在且可读，否则报错")
+        "其余为 cell lef。文件必须存在且可读（否则立即报错）；非 lef "
+        "格式文件导致建库失败（库不冻结）")
 build_design_db_doc.add_param("lib_db",
     schema=Schema(object, check=_is_lib_db_handle,
                   error="must be a LibDb instance, got {value}"),
@@ -718,7 +721,8 @@ def build_design_db(self, name: str, def_paths: list, lef_paths: list,
     时序表等库信息）。全部文件解析完成后库冻结可读。跨文件重名 macro/
     port/via 保留首份并提醒，不报错终止。参数不合法（空名、路径列表含
     非字符串或空串、settings/alpha 含未知键或非法值、lib_db 类型不符、
-    文件不存在/不可读/非 LEF 或 DEF 格式）时立即报错终止，不建库。
+    文件不存在/不可读）时立即报错终止，不建库；非 LEF/DEF 格式文件在
+    解析任务中失败（库不冻结）。
 
     Args:
         self: 自动绑定的 EMIRProject 实例。
@@ -734,31 +738,24 @@ def build_design_db(self, name: str, def_paths: list, lef_paths: list,
     Returns:
         ``DesignDb`` 句柄（解析与冻结异步进行，可用 wait_frozen 等待）。
     """
-    # ── Step 1: 检查输入（可读性显式校验 + LEF/DEF 形态嗅探，schema
-    #    无法覆盖；master 侧前置）──
-    from .ds_utils import sniff_def_header, sniff_lef_header
+    # ── ① 轻量参数预处理：schema 已由 header 拦截；文件存在性（元数
+    #    据级，不读内容——形态错由文件首个解析任务失败透出）+ 建库 +
+    #    alpha 写入（header 已拦截非法值，apply 防御性覆盖）──
     for p in lef_paths:
         ensure_readable_file(p, "build_design_db", "lef_paths")
-        sniff_lef_header(p)
     for p in def_paths:
         ensure_readable_file(p, "build_design_db", "def_paths")
-        sniff_def_header(p)
-
-    # ── Step 2: 建库（DesignDb，role="design"）──
     db = self._create_db(name, db_cls=DesignDb)
-
-    # ── Step 2.5: alpha 设置：header schema 已拦截未知键/非法值（直接
-    #    raise）；此处 apply 防御性覆盖（理论不再拒绝）+ settings 对象随
-    #    建库写入 db（消费点 read_object 读回 + normalize 兜底，向前兼容
-    #    旧 db 对象）──
     from .alpha_settings import get_default_alpha_settings
     alpha_settings = get_default_alpha_settings()
     alpha_settings.apply(alpha)
     db.write_object(DesignDb.ALPHA_SETTINGS_OBJ, alpha_settings)
 
-    # ── Step 3 + 4: 阶段链提交 + freeze 提交 ──
-    from .ds_flow import run_design_flow
-    run_design_flow(db, lef_paths, def_paths, lib_db)
+    # ── ② flow 根任务 + ③ freeze（master 提交 O(1) 个任务——§20
+    #    编排判据；freeze 依赖固定标记 verify_report）──
+    from .ds_flow import _design_flow_task, _freeze_design_task
+    _design_flow_task(db, lef_paths, def_paths, lib_db)
+    _freeze_design_task(db, len(lef_paths) - 1, len(def_paths))
 
     INFO(f"build_design_db: '{name}' submitted "
          f"({len(lef_paths)} lef files [1 tech + {len(lef_paths) - 1} cell], "

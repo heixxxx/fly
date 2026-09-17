@@ -5,7 +5,7 @@
     DESIGN 关键字），非 LEF/DEF 文件（如 liberty 误传）ValueError 秒级拦截
   - ds_parse_cell_one：返回 (design, geoms, vias, stats) 四元组
     （stats.parse_failed_count 失败标记通道，cell lef 语法错误兜底）
-  - _cell_lef_merge_task 汇总层（review 2026-09-13 补测——此前 flow 接缝
+  - _merge_cell_lefs_task 汇总层（review 2026-09-13 补测——此前 flow 接缝
     零覆盖）：部分失败 → DSGN::0014 + merged/geoms 照常写出（依赖链
     满足，范式 (b)）；全部失败 → fatal 子进程断言 rc=80（范式 (a)）；
     全好不发 message；直调经 run_direct（R9），db 用内存桩
@@ -125,7 +125,7 @@ def _part(db_objs, prefix, failed):
 
 def _run_merge(db_objs, part_tuples):
     db = _MemDb(db_objs)
-    run_direct(ds_flow._cell_lef_merge_task, db, list(part_tuples),
+    run_direct(ds_flow._merge_cell_lefs_task, db, list(part_tuples),
                "stack", "tech_vias", "merged", "macro_geoms")
     return db
 
@@ -181,7 +181,7 @@ def test_cell_merge_all_failed_fatals_exit_80():
         "        pass\n"
         "tuples = [('p%d.design' % i, 'p%d.geoms' % i, 'p%d.vias' % i,\n"
         "           'p%d.failed' % i) for i in range(2)]\n"
-        "run_direct(ds_flow._cell_lef_merge_task, Db(), tuples,\n"
+        "run_direct(ds_flow._merge_cell_lefs_task, Db(), tuples,\n"
         "           'stack', 'tech_vias', 'merged', 'macro_geoms')\n"
     )
     env = dict(os.environ)
