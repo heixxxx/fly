@@ -360,9 +360,9 @@ def build_timing_db(self, name: str, timing_files: list, design_db,
 
     # ── ② flow 根任务 + ③ freeze（master 提交 O(1) 个任务——§20
     #    编排判据；freeze 依赖固定标记 clocks/summary）──
-    from .tm_flow import _freeze_timing_task, _timing_flow_task, _tmp_key
+    from .tm_flow import _freeze_timing_task, _timing_flow_task
     _timing_flow_task(db, design_db, files)
-    _freeze_timing_task(db, _tmp_key("snapshot_keys"))
+    _freeze_timing_task(db)
 
     INFO(f"build_timing_db: '{name}' submitted ({len(files)} timing file(s))")
     return db

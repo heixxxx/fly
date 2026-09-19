@@ -8,8 +8,7 @@
 
 根任务 _timing_flow_task 体内目录（依赖系统等 design db 必要对象——
 plan §3.1 入口等待语义，不等待 design db freeze）：
-  快照搬运（design db 逐对象 → timing db 临时对象 + 快照键清单对象）
-  → 绑定校验（条目级兜底：单文件无效跳过 + TIMG::0011；全无效
+  绑定校验（条目级兜底：单文件无效跳过 + TIMG::0011；全无效
      任务内 ValueError）
   → 每有效文件一个文件入口任务 _plan_file_chunks_task（TWF 嗅探 +
      切块扫描 + 体内提交该文件逐块解析任务 + 块数写清单对象——文件
@@ -18,12 +17,16 @@ plan §3.1 入口等待语义，不等待 design db freeze）：
      即全部文件入口完成；体内提交：时钟表合并 → 每分区合并 → 汇总。
      切片键集〔块数〕运行时才知，动态提交——形状运行时才知场景）
 
+块解析任务跨 db 直读 design db（§21「db 数据所有权：禁跨 db 数据搬
+运」——不搬运、无副本）：inputs 锚 design db 六类对象全名（枚举锚
+build_meta.def_count / INST 段表 / 分区表由根任务执行时刻读 design db
+得出），任务体内经 design_db 句柄直读组装 EXTMDesignContext。
+
 freeze _freeze_timing_task（build_timing_db 第③段顶层提交）：依赖固定
 标记 clocks/summary（summary ⟸ 各分区冲突计数临时对象 ⟸ 分区合并先写
-正式对象；clocks ⟸ 时钟合并——freeze 不可能早于任一正式产物）+ 清理
-快照键清单展开的快照对象（键集规模运行时，根任务写定清单）。其余运行
-时规模临时对象（切片/remap/冲突计数/清单）由汇总任务自清理——清理责任
-单点（§19 批次口径）。
+正式对象；clocks ⟸ 时钟合并——freeze 不可能早于任一正式产物）。其余
+运行时规模临时对象（切片/remap/冲突计数/清单）由汇总任务自清理——清
+理责任单点（§19 批次口径）。
 """
 
 from fly import as_task, fatal_message, message
@@ -63,10 +66,11 @@ def _tmp_key(name: str) -> str:
     db.get_full_name(TimingDb.ALPHA_SETTINGS_OBJ),
 ])
 def _timing_flow_task(db, design_db, files):
-    """快照搬运 → 绑定校验 → 文件入口任务族 + 合并链编排任务（体内
-    目录见模块 docstring；锚集证明见 design-db 文档——DESIGN_OBJ 锚
-    即伴生对象全集，GLOBAL_DENSITY 锚即分区表，INST 段表锚即分区六类
-    正式对象）。"""
+    """绑定校验 → 文件入口任务族 + 合并链编排任务（体内目录见模块
+    docstring；锚集证明见 design-db 文档——DESIGN_OBJ 锚即伴生对象全集，
+    GLOBAL_DENSITY 锚即分区表，INST 段表锚即分区六类正式对象）。design
+    db 数据零搬运（§21）——块解析任务直接锚/读 design db 对象，枚举锚
+    在本任务执行时刻读 design db 得出。"""
     design = design_db.read_object(DesignDb.DESIGN_OBJ)
     # 名字伴生对象全集（数量锚 build_meta.def_count——确定性循环读取）
     meta = design_db.load_build_meta()
@@ -97,40 +101,17 @@ def _timing_flow_task(db, design_db, files):
                 f"(file '{files[fi]['file_name']}') — file skipped, "
                 f"0 entries stored")
 
-    # ── 快照搬运（逐对象落临时对象；块解析任务 worker 端组装
-    #    EXTMDesignContext。键集规模运行时——落快照键清单对象供 freeze
-    #    清理展开〔静态依赖仅此一键〕）──
-    keys = {}
-
-    def _snap(name, obj):
-        key = _tmp_key(name)
-        db.write_object(key, obj, save_to_db=False)
-        keys[name] = key
-
-    _snap("design", design)
-    _snap("inst_index",
-          design_db.read_object(DesignDb.id_map_index_obj_name("INST")))
-    _snap("pg_nets", design_db.read_object(DesignDb.PG_NETS_OBJ))
-    for j, names in enumerate(names_list):
-        _snap(f"names_{j}", names)
-    # INST 段对象（段表 id_starts 升序）+ 分区 NETS 对象（分区表行主序）
+    # ── 块解析任务的 design db 枚举锚（本任务执行时刻确定性枚举）：
+    #    INST 段号（段表 id_starts 升序，段表锚即全部段对象已写定）+
+    #    分区表（行主序，DESIGN_OBJ 锚即分区表——§21 跨 db 直读，无
+    #    快照搬运）──
     index = design_db.read_object(DesignDb.id_map_index_obj_name("INST"))
-    for seg_start in index.id_starts:
-        seg_index = seg_start >> DesignDb.ID_MAP_SEGMENT_BITS
-        _snap(f"inst_seg_{seg_index}",
-              design_db.read_object(
-                  DesignDb.id_map_segment_obj_name("INST", seg_index)))
+    inst_seg_indexes = [seg_start >> DesignDb.ID_MAP_SEGMENT_BITS
+                        for seg_start in index.id_starts]
     partitions = []
     for p in range(design.partition_count):
         part = design.partition_at(p)
-        pid, xp, yp = part.partition_id, part.xp, part.yp
-        partitions.append((pid, xp, yp))
-        _snap(f"part_nets_{pid}",
-              design_db.read_object(
-                  DesignDb.partition_obj_name(xp, yp, "NETS")))
-    snapshot_keys_obj = _tmp_key("snapshot_keys")
-    db.write_object(snapshot_keys_obj, sorted(keys.values()),
-                    save_to_db=False)
+        partitions.append((part.partition_id, part.xp, part.yp))
 
     # ── 文件入口任务（每有效文件一个；chunk_size 经 alpha_settings
     #    读回）──
@@ -146,42 +127,43 @@ def _timing_flow_task(db, design_db, files):
         f = files[fi]
         # 绑定描述以散字段传参（pickle 友好）；全参数位置传递——
         # as_task 序列化仅覆盖位置参数
-        _plan_file_chunks_task(db, f["file_name"], f["kind"],
+        _plan_file_chunks_task(db, design_db, f["file_name"], f["kind"],
                                f["block_inst"], f["block_cell"],
-                               f["strip_prefix"], fi, chunk_size, keys,
-                               len(names_list), manifest_key)
+                               f["strip_prefix"], fi, chunk_size,
+                               len(names_list), inst_seg_indexes,
+                               partitions, manifest_key)
 
     # ── 合并链编排任务（体内提交时钟合并/每分区合并/汇总）──
     _plan_merge_chain_task(db, files, valid_file_indexes, partitions,
                            manifest_keys, invalid_indexes)
 
     from log import INFO
-    INFO(f"timing flow: {len(keys)} snapshot object(s), "
-         f"{len(valid_file_indexes)}/{len(files)} file(s) valid, "
-         f"{len(partitions)} partition(s)")
+    INFO(f"timing flow: {len(valid_file_indexes)}/{len(files)} file(s) "
+         f"valid, {len(partitions)} partition(s)")
 
 
 # ── 文件入口任务（每文件一个：嗅探 + 切块扫描 + 提交逐块解析）────────
 
-@as_task(inputs=lambda db, file_name, binding_kind, block_inst, block_cell,
-         strip_prefix, file_index, chunk_size, snapshot_keys, names_count,
-         manifest_key: [])
-def _plan_file_chunks_task(db, file_name, binding_kind, block_inst,
-                           block_cell, strip_prefix, file_index, chunk_size,
-                           snapshot_keys, names_count, manifest_key):
+@as_task(inputs=lambda db, design_db, file_name, binding_kind, block_inst,
+         block_cell, strip_prefix, file_index, chunk_size, names_count,
+         inst_seg_indexes, partitions, manifest_key: [])
+def _plan_file_chunks_task(db, design_db, file_name, binding_kind,
+                           block_inst, block_cell, strip_prefix, file_index,
+                           chunk_size, names_count, inst_seg_indexes,
+                           partitions, manifest_key):
     """文件入口任务：TWF 头嗅探（文件形态错在此失败透出——入口只查
     存在性，不读内容）+ tm_plan_file_chunks 切块扫描 + 体内提交该文件
-    逐块解析任务（块区间散标量传参）+ 块数写清单对象（合并链编排与
-    汇总的消费锚）。"""
+    逐块解析任务（块区间散标量传参；design db 枚举锚透传——块任务跨
+    db 直读，§21）+ 块数写清单对象（合并链编排与汇总的消费锚）。"""
     sniff_twf_header(file_name)
     fp = tm_plan_file_chunks(file_name, chunk_size)
     for cj in range(len(fp.chunk_starts)):
-        _parse_chunk_task(db, snapshot_keys, file_name, fp.prefix_start,
+        _parse_chunk_task(db, design_db, file_name, fp.prefix_start,
                           fp.prefix_end, fp.chunk_starts[cj],
                           fp.chunk_ends[cj], file_index, cj, binding_kind,
                           block_inst, block_cell, strip_prefix,
                           _tmp_key(f"chunk_{file_index}_{cj}"),
-                          names_count)
+                          names_count, inst_seg_indexes, partitions)
     db.write_object(manifest_key, {"chunk_count": len(fp.chunk_starts)},
                     save_to_db=False)
     from log import INFO
@@ -191,30 +173,44 @@ def _plan_file_chunks_task(db, file_name, binding_kind, block_inst,
 
 # ── 逐块解析任务（每块一任务，全并行）────────────────────────────────
 
-@as_task(inputs=lambda db, snapshot_keys, file_name, prefix_start,
-         prefix_end, chunk_start, chunk_end, file_index, chunk_index,
-         binding_kind, block_inst, block_cell, strip_prefix, slice_key,
-         names_count: [db.get_full_name(k) for k in snapshot_keys.values()])
-def _parse_chunk_task(db, snapshot_keys, file_name, prefix_start,
-                      prefix_end, chunk_start, chunk_end, file_index,
-                      chunk_index, binding_kind, block_inst, block_cell,
-                      strip_prefix, slice_key, names_count):
-    """单块解析：worker 端组装 EXTMDesignContext（共享注入零拷贝）→
-    tm_convert_chunk（解析 + 名字换算 + 分区路由）→ TMEntrySlice 分片。
-    块自包含 = 头段公共前缀拼块；单块语法破损 → 空分片 + failed_chunk
-    计数（依赖链保持满足）。"""
+@as_task(inputs=lambda db, design_db, file_name, prefix_start, prefix_end,
+         chunk_start, chunk_end, file_index, chunk_index, binding_kind,
+         block_inst, block_cell, strip_prefix, slice_key, names_count,
+         inst_seg_indexes, partitions: (
+    [design_db.get_full_name(DesignDb.DESIGN_OBJ),
+     design_db.get_full_name(DesignDb.id_map_index_obj_name("INST")),
+     design_db.get_full_name(DesignDb.PG_NETS_OBJ)]
+    + [design_db.get_full_name(DesignDb.names_obj_name(j))
+       for j in range(names_count)]
+    + [design_db.get_full_name(DesignDb.id_map_segment_obj_name("INST", s))
+       for s in inst_seg_indexes]
+    + [design_db.get_full_name(DesignDb.partition_obj_name(xp, yp, "NETS"))
+       for _, xp, yp in partitions]))
+def _parse_chunk_task(db, design_db, file_name, prefix_start, prefix_end,
+                      chunk_start, chunk_end, file_index, chunk_index,
+                      binding_kind, block_inst, block_cell, strip_prefix,
+                      slice_key, names_count, inst_seg_indexes, partitions):
+    """单块解析：worker 端跨 db 直读 design db 组装 EXTMDesignContext
+    （共享注入零拷贝——§21 禁跨 db 数据搬运，timing db 无 design 数据
+    副本；枚举锚与读取源同源，names_count/段号/分区表由根任务读
+    design db 得出后透传）→ tm_convert_chunk（解析 + 名字换算 + 分区
+    路由）→ TMEntrySlice 分片。块自包含 = 头段公共前缀拼块；单块语法
+    破损 → 空分片 + failed_chunk 计数（依赖链保持满足）。"""
     ctx = EXTMDesignContext()
-    ctx.set_design(db.read_object(snapshot_keys["design"]))
-    ctx.set_inst_id_map(db.read_object(snapshot_keys["inst_index"]))
-    ctx.set_pg_nets(db.read_object(snapshot_keys["pg_nets"]))
+    ctx.set_design(design_db.read_object(DesignDb.DESIGN_OBJ))
+    index = design_db.read_object(DesignDb.id_map_index_obj_name("INST"))
+    ctx.set_inst_id_map(index)
+    ctx.set_pg_nets(design_db.read_object(DesignDb.PG_NETS_OBJ))
     # names_count 确定性循环（规模随参数传递，禁键集试探——§19 批次）
     for j in range(names_count):
-        ctx.add_block_names(db.read_object(snapshot_keys[f"names_{j}"]))
-    for name, key in snapshot_keys.items():
-        if name.startswith("inst_seg_"):
-            ctx.add_inst_segment(db.read_object(key))
-        elif name.startswith("part_nets_"):
-            ctx.add_partition_nets(db.read_object(key))
+        ctx.add_block_names(design_db.read_object(
+            DesignDb.names_obj_name(j)))
+    for seg_index in inst_seg_indexes:
+        ctx.add_inst_segment(design_db.read_object(
+            DesignDb.id_map_segment_obj_name("INST", seg_index)))
+    for _, xp, yp in partitions:
+        ctx.add_partition_nets(design_db.read_object(
+            DesignDb.partition_obj_name(xp, yp, "NETS")))
 
     binding = EXTMFileBinding()
     binding.set_kind(binding_kind)
@@ -417,15 +413,13 @@ def _merge_summary_task(db, files, slice_keys, conflicts_keys,
 
 # ── freeze（build_timing_db 第③段顶层提交）──────────────────────────
 
-@as_task(inputs=lambda db, snapshot_keys_obj: [
+@as_task(inputs=lambda db: [
     db.get_full_name(TimingDb.CLOCKS_OBJ),
     db.get_full_name(TimingDb.SUMMARY_OBJ)])
-def _freeze_timing_task(db, snapshot_keys_obj):
+def _freeze_timing_task(db):
     """freeze：依赖固定标记 clocks/summary（蕴含链：summary ⟸ 汇总
     inputs 含各分区冲突计数与全部切片 ⟹ 分区对象/时钟表先写定——
-    freeze 不可能早于任一正式产物）。清理快照键清单展开 + 清单对象
-    自身（严格 remove——§19 批次口径）。"""
-    for key in db.read_object(snapshot_keys_obj):
-        db.remove_object(key)
-    db.remove_object(snapshot_keys_obj)
+    freeze 不可能早于任一正式产物）。快照搬运层已拆除（§21：块任务跨
+    db 直读 design db，timing db 无 design 数据副本需清理），运行时规
+    模临时对象由汇总任务自清理（§19 清理责任单点）。"""
     db.freeze()

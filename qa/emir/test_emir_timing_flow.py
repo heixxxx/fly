@@ -188,7 +188,7 @@ INFO("[OK] block_inst binding: entry=5 hit=3 dangling=2 (port entry on "
 # TIMG::0011 error 消息 + 跳过该文件〔零条目、不进切块链〕+ 计数入
 # summary.invalid_binding_count；仅当全部文件被跳过才任务失败）：
 #   混合场景（1 无效 + 1 有效）→ 建库成功、无效文件零条目、message 与
-#   summary 计数可查；全无效场景 → 快照任务 ValueError → freeze 永不
+#   summary 计数可查；全无效场景 → 根任务 ValueError → freeze 永不
 #   调度 → wait_frozen 经失败信号立即 False，原因经 db_failure_reason 可查
 _t0 = time.time()
 tdb_miss = proj.build_timing_db(
