@@ -37,6 +37,16 @@ public:
     void submit_to_lane(size_t lane, std::function<void()> task);
     void wait_idle(int timeout_ms);
     size_t lane_count() const { return lanes_.size(); }
+    // lane 排队深度（排队 + 执行中，各 lane 之和）——外部确定性观察点：
+    // 「消息已被 reactor loop 读出并提交进 lane」以计数跳变为准，不靠
+    // 时序推断。
+    size_t lane_pending_count() const {
+        size_t total = 0;
+        for (const auto& lane : lanes_) {
+            total += lane->pending.load(std::memory_order_relaxed);
+        }
+        return total;
+    }
     void shutdown();
     bool is_shutdown() const { return stop_.load(); }
 
@@ -80,6 +90,11 @@ public:
     // 线程，但此刻持有者（agent）的 unique_ptr 已置 null，迟到的 handler 经
     // agent 成员访问 reactor_ 会解引用空指针。
     void drain_handlers(int timeout_ms = 10000);
+    // lane 排队深度（转发 handler 池；池不存在返回 0）——stop 前确认在途
+    // 消息已提交进 lane 的确定性观察点。
+    size_t pending_handler_count() const {
+        return handler_pool_ ? handler_pool_->lane_pending_count() : 0;
+    }
     void stop();
     void wait_until_running() const;
     bool is_running() const { return running_.load(); }

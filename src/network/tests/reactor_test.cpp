@@ -399,11 +399,19 @@ TEST(ReactorTest, LaneShutdownDrainsPendingHandlers) {
             hb.worker_id_ = wid;
             client_reactor.send(client_conn, hb);
         }
-        // 等首条已进入 handler（占住唯一 lane），第二条已在 lane 队列排队。
+        // 等首条已进入 handler（占住唯一 lane）。
         for (int i = 0; i < 300 && !first_started.load(); ++i) {
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
         ASSERT_TRUE(first_started.load());
+        // 显式等第二条已提交进 lane（pending = 执行中 1 + 排队 1）——
+        // first_started 只证明首条开始执行；若 stop() 早于 reactor loop
+        // 读出第二条，消息永不提交，排干无从谈起（时序推断缺同步）。
+        for (int i = 0; i < 300 && server_reactor.pending_handler_count() < 2;
+             ++i) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        ASSERT_EQ(server_reactor.pending_handler_count(), 2);
 
         server_reactor.stop();
         server_thread.join();
