@@ -9,6 +9,14 @@ except ImportError:
 
 from agent import create_executor
 
+# 新载体线格式（2026-09-19 kwargs 修复）：位置编码元素 + 恒定 kwargs 尾段
+# （空 kwargs 也追加）。缺尾段 = 修复前旧载体，worker 端显式报错。
+KWARGS_SECTION = "__fly_kwargs__:[]"
+
+
+def _payload(*encoded):
+    return list(encoded) + [KWARGS_SECTION]
+
 
 class MockWorker:
     def __init__(self, worker_id=1):
@@ -159,7 +167,7 @@ def test_executor_from_user_basic():
     executor = create_executor(worker)
 
     payload = "__user_func__:" + cloudpickle.dumps(_user_add).hex()
-    pickled_args = [pickle.dumps(3).hex(), pickle.dumps(4).hex()]
+    pickled_args = _payload(pickle.dumps(3).hex(), pickle.dumps(4).hex())
 
     result = executor(
         task_id=101,
@@ -184,7 +192,7 @@ def test_executor_from_user_no_args():
         task_id=102,
         task_name=payload,
         task_module="from_user",
-        args=[],
+        args=_payload(),
     )
 
     assert result['task_id'] == 102
@@ -198,7 +206,7 @@ def test_executor_from_user_with_side_effects():
     executor = create_executor(worker)
 
     payload = "__user_func__:" + cloudpickle.dumps(_user_log_task).hex()
-    pickled_args = [pickle.dumps("test_message").hex()]
+    pickled_args = _payload(pickle.dumps("test_message").hex())
 
     result = executor(
         task_id=103,
@@ -222,7 +230,7 @@ def test_executor_from_user_raises_exception():
         task_id=104,
         task_name=payload,
         task_module="from_user",
-        args=[],
+        args=_payload(),
     )
 
     assert result['task_id'] == 104
@@ -287,7 +295,7 @@ def test_executor_from_user_preserves_original_function():
     executor = create_executor(worker)
 
     payload = "__user_func__:" + cloudpickle.dumps(_user_identity).hex()
-    pickled_args = [pickle.dumps(42).hex()]
+    pickled_args = _payload(pickle.dumps(42).hex())
 
     result = executor(
         task_id=108,
@@ -309,7 +317,7 @@ def test_executor_repo_module_still_works():
         task_id=109,
         task_name="simple_task",
         task_module="test_executor_tasks",
-        args=[],
+        args=_payload(),
     )
 
     assert result['task_id'] == 109
@@ -322,11 +330,11 @@ def test_executor_from_user_with_mixed_args():
     executor = create_executor(worker)
 
     payload = "__user_func__:" + cloudpickle.dumps(_user_concat).hex()
-    pickled_args = [
+    pickled_args = _payload(
         pickle.dumps("hello").hex(),
         pickle.dumps(42).hex(),
         pickle.dumps([1, 2]).hex(),
-    ]
+    )
 
     result = executor(
         task_id=110,

@@ -16,6 +16,7 @@ fires an immediate DatabaseFreezeNotification to master (which registers it as
 master commits pending freezes by task_id on task completion.
 """
 import importlib
+import json
 import pickle
 import time
 import traceback
@@ -25,7 +26,7 @@ try:
 except ImportError:  # pragma: no cover（cloudpickle 为硬依赖，恒存在）
     cloudpickle = None
 
-from task import USER_MODULE, USER_FUNC_PREFIX
+from task import USER_MODULE, USER_FUNC_PREFIX, KWARGS_PREFIX
 
 from monitor import set_current as io_set_current, take_result as io_take_result, \
     add_drain_ms as io_add_drain_ms
@@ -48,100 +49,121 @@ def _split_full_name(full_name):
     return full_name[:pos], full_name[pos + 1:]
 
 
-def deserialize_args(args: list, worker) -> list:
-    result = []
-    for arg in args:
-        is_db2 = isinstance(arg, str) and arg.startswith("__fly_db2__:")
-        if is_db2 or (isinstance(arg, str) and arg.startswith("__fly_db__:")):
-            # 支持三种格式：
-            #   v2（现行）：__fly_db2__:{uid}:{db_path}——data_path 是 db 级
-            #     属性存 _DB_META，从 meta 获取（同一次读盘取 role，零新增 IO）
-            #   旧 4 段：__fly_db__:{uid}:{db_path}:{data_path}
-            #   旧 3 段：__fly_db__:{db_path}:{data_path}
-            # 旧格式 db 无 _DB_META（无 chain），data_path 须用参数自带值。
-            uid = None
-            db_path = ""
-            data_path = ""
-            if is_db2:
-                parts = arg.split(":", 2)
-                uid = parts[1] if len(parts) > 1 else None
-                db_path = parts[2] if len(parts) > 2 else ""
-            else:
-                parts = arg.split(":", 3)  # maxsplit=3 防止 data_path 含 ':' 被过度拆分
-                if len(parts) == 4:
-                    uid = parts[1]
-                    db_path = parts[2]
-                    data_path = parts[3]
-                elif len(parts) == 3:
-                    db_path = parts[1]
-                    data_path = parts[2]
-                else:
-                    db_path = parts[1] if len(parts) > 1 else ""
-                    data_path = parts[2] if len(parts) > 2 else ""
-
-            cache_key = uid or db_path
-            # uid 命中但 path 不一致 = merge/迁移场景（同 uid 换物理路径）：
-            # 旧实例的 db_path 是源路径，读旧命名空间必败——按参数 path 重建。
-            # （历史缺陷由 write-through 缓存掩盖——旧名读也命中缓存；§4.7
-            # 缓存取消后暴露。db 身份以 path 为准，uid 是查找提示。）
-            cached_db = worker._db_cache.get(cache_key)
-            if cached_db is not None and db_path and cached_db.get_db_path() != db_path:
-                cached_db = None
-            if cached_db is None:
-                from storage import ex_stg_get_data_service
-                ds = ex_stg_get_data_service()
-
-                # 读 _DB_META 一次（role + chain info + data_path），失败时
-                # 安全 fallback 到基类。
-                chain_data = None
-                try:
-                    chain_data = DbMetaFile(db_path).read()
-                except Exception:
-                    pass
-
-                if is_db2 and chain_data:
-                    # v2：data_path 权威在 _DB_META（参数不携带）。
-                    data_path = chain_data.get("data_path", "") or ""
-
-                # 按 role 选子类
-                role = chain_data.get("role") if chain_data else None
-                cls = Database._ROLE_REGISTRY.get(role) if role else None
-                if cls is None:
-                    if role:
-                        # 正常路径不可达（preprocess 已先导入 task 模块完成注册）；
-                        # 触达说明 meta 带了 role 但承载包在 worker 上无人导入。
-                        WARN(f"deserialize_args: role={role!r} subclass not "
-                             f"registered — db falls back to base Database")
-                    cls = Database
-
-                if ds.has_database(db_path):
-                    from storage import ex_stg_create_database_with_path
-                    db = cls.__new__(cls)
-                    db._db = ex_stg_create_database_with_path(db_path, data_path, worker._worker_id, db_path)
-                else:
-                    db = cls(db_path, data_path, worker._worker_id)
-
-                # 从已读的 chain_data 恢复链信息（不重复读文件）
-                db._meta_file = DbMetaFile(db_path)
-                db._chain_uid = chain_data.get("uid") if chain_data else None
-                db._chain_role = role
-                db._chain_logical_name = chain_data.get("logical_name") if chain_data else None
-                if db._chain_uid:
-                    get_chain_registry().register(db._chain_uid, db.get_db_path())
-
-                worker._agent.register_database(db_path, db._db)
-                worker._db_cache[cache_key] = db
-                worker._db_cache[db_path] = db
-                cached_db = db
-            result.append(cached_db)
-        elif isinstance(arg, str) and arg.startswith("__fly_cfunc__:"):
-            # callable 参数（cloudpickle，见 task.py::_serialize_args）。
-            # cloudpickle 缺失时退回标准 pickle（模块级函数场景仍可用）。
-            _dumps_mod = cloudpickle if cloudpickle is not None else pickle
-            result.append(_dumps_mod.loads(bytes.fromhex(arg[len("__fly_cfunc__:"):])))
+def _decode_single_arg(arg, worker):
+    """解码单个编码参数（位置参数与 kwargs value 同一路径，见 task.py
+    的 _serialize_args/_encode_arg）。db 对象按需重建/注册并缓存。"""
+    is_db2 = isinstance(arg, str) and arg.startswith("__fly_db2__:")
+    if is_db2 or (isinstance(arg, str) and arg.startswith("__fly_db__:")):
+        # 支持三种格式：
+        #   v2（现行）：__fly_db2__:{uid}:{db_path}——data_path 是 db 级
+        #     属性存 _DB_META，从 meta 获取（同一次读盘取 role，零新增 IO）
+        #   旧 4 段：__fly_db__:{uid}:{db_path}:{data_path}
+        #   旧 3 段：__fly_db__:{db_path}:{data_path}
+        # 旧格式 db 无 _DB_META（无 chain），data_path 须用参数自带值。
+        uid = None
+        db_path = ""
+        data_path = ""
+        if is_db2:
+            parts = arg.split(":", 2)
+            uid = parts[1] if len(parts) > 1 else None
+            db_path = parts[2] if len(parts) > 2 else ""
         else:
-            result.append(pickle.loads(bytes.fromhex(arg)))
-    return result
+            parts = arg.split(":", 3)  # maxsplit=3 防止 data_path 含 ':' 被过度拆分
+            if len(parts) == 4:
+                uid = parts[1]
+                db_path = parts[2]
+                data_path = parts[3]
+            elif len(parts) == 3:
+                db_path = parts[1]
+                data_path = parts[2]
+            else:
+                db_path = parts[1] if len(parts) > 1 else ""
+                data_path = parts[2] if len(parts) > 2 else ""
+
+        cache_key = uid or db_path
+        # uid 命中但 path 不一致 = merge/迁移场景（同 uid 换物理路径）：
+        # 旧实例的 db_path 是源路径，读旧命名空间必败——按参数 path 重建。
+        # （历史缺陷由 write-through 缓存掩盖——旧名读也命中缓存；§4.7
+        # 缓存取消后暴露。db 身份以 path 为准，uid 是查找提示。）
+        cached_db = worker._db_cache.get(cache_key)
+        if cached_db is not None and db_path and cached_db.get_db_path() != db_path:
+            cached_db = None
+        if cached_db is None:
+            from storage import ex_stg_get_data_service
+            ds = ex_stg_get_data_service()
+
+            # 读 _DB_META 一次（role + chain info + data_path），失败时
+            # 安全 fallback 到基类。
+            chain_data = None
+            try:
+                chain_data = DbMetaFile(db_path).read()
+            except Exception:
+                pass
+
+            if is_db2 and chain_data:
+                # v2：data_path 权威在 _DB_META（参数不携带）。
+                data_path = chain_data.get("data_path", "") or ""
+
+            # 按 role 选子类
+            role = chain_data.get("role") if chain_data else None
+            cls = Database._ROLE_REGISTRY.get(role) if role else None
+            if cls is None:
+                if role:
+                    # 正常路径不可达（preprocess 已先导入 task 模块完成注册）；
+                    # 触达说明 meta 带了 role 但承载包在 worker 上无人导入。
+                    WARN(f"deserialize_args: role={role!r} subclass not "
+                         f"registered — db falls back to base Database")
+                cls = Database
+
+            if ds.has_database(db_path):
+                from storage import ex_stg_create_database_with_path
+                db = cls.__new__(cls)
+                db._db = ex_stg_create_database_with_path(db_path, data_path, worker._worker_id, db_path)
+            else:
+                db = cls(db_path, data_path, worker._worker_id)
+
+            # 从已读的 chain_data 恢复链信息（不重复读文件）
+            db._meta_file = DbMetaFile(db_path)
+            db._chain_uid = chain_data.get("uid") if chain_data else None
+            db._chain_role = role
+            db._chain_logical_name = chain_data.get("logical_name") if chain_data else None
+            if db._chain_uid:
+                get_chain_registry().register(db._chain_uid, db.get_db_path())
+
+            worker._agent.register_database(db_path, db._db)
+            worker._db_cache[cache_key] = db
+            worker._db_cache[db_path] = db
+            return db
+        return cached_db
+    if isinstance(arg, str) and arg.startswith("__fly_cfunc__:"):
+        # callable 参数（cloudpickle，见 task.py::_encode_arg）。
+        # cloudpickle 缺失时退回标准 pickle（模块级函数场景仍可用）。
+        _dumps_mod = cloudpickle if cloudpickle is not None else pickle
+        return _dumps_mod.loads(bytes.fromhex(arg[len("__fly_cfunc__:"):]))
+    return pickle.loads(bytes.fromhex(arg))
+
+
+def deserialize_args(args: list, worker) -> tuple:
+    """解码任务参数线格式 → (args_list, kwargs_map)。
+
+    线格式：位置编码元素 + 恒定 kwargs 尾段（task.py::KWARGS_PREFIX，
+    空 kwargs 也追加）。尾段缺失 = kwargs 序列化修复（2026-09-19）之前
+    的旧载体——不做版本兼容（用户裁定），显式报错让该任务失败透出原因，
+    而非静默按空 kwargs 错跑。
+    """
+    if not args or not (isinstance(args[-1], str)
+                        and args[-1].startswith(KWARGS_PREFIX)):
+        raise ValueError(
+            "task args lack the __fly_kwargs__ section: legacy payload "
+            "produced before kwargs-aware serialization (no version "
+            "compatibility) — the task cannot be executed faithfully")
+    result = []
+    for arg in args[:-1]:
+        result.append(_decode_single_arg(arg, worker))
+    kwargs_map = {}
+    for key, encoded in json.loads(args[-1][len(KWARGS_PREFIX):]):
+        kwargs_map[key] = _decode_single_arg(encoded, worker)
+    return result, kwargs_map
 
 
 def create_executor(worker):
@@ -177,7 +199,7 @@ def create_executor(worker):
         - Deserialize args (creates/registers Database objects).
         - Inject master-inlined vars (from TaskAssignMessage) into the relevant
           Database local caches so get_var hits locally during execute.
-        Returns the deserialized argument list.
+        Returns the (deserialized_args, deserialized_kwargs) pair.
         """
         # 解析 task 函数必须先于参数反序列化：模块导入的包副作用会把子类注册
         # 进 Database._ROLE_REGISTRY（如 solver 的 SolveDb），db 参数按 _DB_META
@@ -185,7 +207,7 @@ def create_executor(worker):
         # 实例（importlib 缓存使后续 task 零开销）。
         _resolve_func(task_name, task_module)
 
-        deserialized_args = deserialize_args(args, worker)
+        deserialized_args, deserialized_kwargs = deserialize_args(args, worker)
 
         # Inject inlined vars. Each VarPayload.var_name is a FULL name
         # (db_path:short_name); split to find the right Database and inject the
@@ -208,12 +230,16 @@ def create_executor(worker):
                     buf.write(vp.value)
                     db_obj._db._inject_var(short_name, buf, vp.type_name)
 
-        return deserialized_args
+        return deserialized_args, deserialized_kwargs
 
-    def execute(task_id, task_name, task_module, deserialized_args):
-        """Phase 2: call the resolved task function with prepared arguments."""
+    def execute(task_id, task_name, task_module, deserialized_args,
+                deserialized_kwargs):
+        """Phase 2: call the resolved task function with prepared arguments.
+
+        kwargs 形态还原调用（2026-09-19 修复：此前仅 *args，提交侧 kwargs
+        被静默丢弃）。"""
         original_func = _resolve_func(task_name, task_module)
-        return original_func(*deserialized_args)
+        return original_func(*deserialized_args, **deserialized_kwargs)
 
     def postprocess(task_id):
         """Phase 3: post-execution cleanup.
@@ -249,13 +275,15 @@ def create_executor(worker):
 
         try:
             # Phase 1: preprocess (db creation, var injection, etc.)
-            deserialized_args = preprocess(task_id, task_name, task_module, args)
+            deserialized_args, deserialized_kwargs = preprocess(
+                task_id, task_name, task_module, args)
 
             # IO 归属窗口开启（execute+postprocess 期间的 read/write 计入本 task）。
             io_set_current(task_id)
 
             # Phase 2: execute
-            output = execute(task_id, task_name, task_module, deserialized_args)
+            output = execute(task_id, task_name, task_module,
+                             deserialized_args, deserialized_kwargs)
 
             # Phase 3: postprocess (drain write-back so writes are flushed &
             # recorded before C++ end_task collects them)

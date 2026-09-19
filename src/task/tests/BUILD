@@ -97,6 +97,22 @@ py_test(
     ],
 )
 
+# as_task kwargs 序列化修复（2026-09-19 缺陷修复）：kwargs 曾被静默丢弃——
+# 载体 (args, kwargs) 二元组 + 线格式恒定 kwargs 尾段 + worker 端
+# func(*args, **kwargs) + 旧格式载体显式失效
+py_test(
+    name = "kwargs_args_test",
+    srcs = ["test_kwargs_args.py"],
+    main = "test_kwargs_args.py",
+    deps = [
+        requirement("coverage"),  # 测量自启（sitecustomize→coverage.process_startup）
+        "//src/task/py:fly_task_py",
+        # 仅为 executor.py 源进 runfiles（其 C++ 依赖在测试内全部被 stub 接管）
+        "//src/agent/py:fly_agent_py",
+        requirement("cloudpickle"),
+    ],
+)
+
 # wait_obj 依赖传播体系（R9 批次，裁定 ㊼）：wrapper.deps 依赖解析透传 +
 # run_direct 剥离包装直调（monkeypatch _wait_for_objects 断言零等待）+
 # wait_obj 轮询等待/无法产出兜底语义本体

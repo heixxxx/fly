@@ -8,6 +8,8 @@ worker 链式编排（如 dynamic solver 的 controller task 持有用户 update
   - 闭包（捕获局部变量）、lambda、模块级函数三种 callable 均可往返且行为正确
   - 普通 pickle 参数路径不受影响
   - db 参数编码优先级不受影响（db 判定先于 callable 判定）
+  - 载体为 (args, kwargs) 二元组（2026-09-19 kwargs 修复；专项覆盖见
+    test_kwargs_args.py）
 """
 import sys
 import types
@@ -101,7 +103,7 @@ def _load(name, rel):
 task_mod = _load('task', 'src/task/py/task.py')
 executor_mod = _load('executor_ser', 'src/agent/py/executor.py')
 
-from task import _serialize_args, as_task, wait_obj
+from task import _serialize_args, _encode_payload, as_task, wait_obj
 from executor_ser import deserialize_args
 
 
@@ -133,9 +135,11 @@ class _FakeDbWithUid(_FakeDb):
         return "uid1234"
 
 
-def _roundtrip(args):
+def _roundtrip(args, kwargs=None):
     """序列化 + 反序列化往返（callable 参数不涉及 db，worker 传 None）。"""
-    return deserialize_args(_serialize_args(args), None)
+    payload = _encode_payload(_serialize_args(args, kwargs or {}))
+    args_list, kwargs_map = deserialize_args(payload, None)
+    return args_list + list(kwargs_map.values())
 
 
 def test_closure_roundtrip():
@@ -163,7 +167,7 @@ def test_callable_tag_prefix():
     def f():
         pass
 
-    enc = _serialize_args([f])[0]
+    enc = _serialize_args([f], {})[0][0]
     assert isinstance(enc, str) and enc.startswith("__fly_cfunc__:"), \
         f"callable must be tagged, got: {enc[:40]}"
 
@@ -204,7 +208,7 @@ def test_db_like_priority_over_callable():
 
         _db = _db()
 
-    enc = _serialize_args([FakeDb()])[0]
+    enc = _serialize_args([FakeDb()], {})[0][0]
     assert enc.startswith("__fly_db__:"), f"db encoding must win, got {enc[:40]}"
 
 
@@ -268,13 +272,13 @@ def test_wait_obj_timeout_unready_raises():
 
 def test_serialize_args_db_legacy_format():
     # 旧格式（无 uid）：__fly_db__:{db_path}:{data_path}。
-    enc = _serialize_args([_FakeDb()])[0]
+    enc = _serialize_args([_FakeDb()], {})[0][0]
     assert enc == "__fly_db__:/tmp/fake_db:/tmp/fake_data", enc
 
 
 def test_serialize_args_db_v2_format():
     # 新格式 v2（带 uid）：__fly_db2__:{uid}:{db_path}（data_path 移交 _DB_META）。
-    enc = _serialize_args([_FakeDbWithUid()])[0]
+    enc = _serialize_args([_FakeDbWithUid()], {})[0][0]
     assert enc == "__fly_db2__:uid1234:/tmp/fake_db", enc
 
 

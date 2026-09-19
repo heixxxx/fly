@@ -1,3 +1,4 @@
+import json
 import pickle
 
 try:
@@ -11,6 +12,11 @@ task_registry = {}
 
 USER_MODULE = "from_user"
 USER_FUNC_PREFIX = "__user_func__:"
+
+# 序列化载体线格式：位置参数编码元素 + 恒定追加的 kwargs 尾段（空 kwargs
+# 也追加——尾段存在性即新旧载体判别依据，无需版本号）。worker 端
+# （executor.deserialize_args）尾段缺失 = 修复前旧载体，显式报错。
+KWARGS_PREFIX = "__fly_kwargs__:"
 
 
 def task_name(name: str):
@@ -145,14 +151,14 @@ def as_task(inputs=None, requires=None, vars=None, priority=10, owner=None):
                         f"got {type(owner_db).__name__}")
                 owner_db_path = owner_db._db.get_db_path()
 
-            serialized = _serialize_args(args)
+            serialized_payload = _encode_payload(_serialize_args(args, kwargs))
 
             task_name = func_payload if func_payload is not None else name
 
             write_context_hash = ex_stg_compute_write_context_hash(
-                task_name, module, serialized, task_inputs)
+                task_name, module, serialized_payload, task_inputs)
 
-            agent.submit(task_name, module, serialized, task_inputs,
+            agent.submit(task_name, module, serialized_payload, task_inputs,
                          required_capabilities=caps,
                          attribute_timeout=attr_timeout,
                          write_context_hash=write_context_hash,
@@ -309,34 +315,49 @@ def _wait_for_objects(deps, poll_interval, timeout=None):
         time.sleep(poll_interval)
 
 
-def _serialize_args(args):
-    try:
-        import cloudpickle
-    except ImportError:  # pragma: no cover（cloudpickle 为硬依赖）
-        cloudpickle = None
-    result = []
-    for arg in args:
-        if hasattr(arg, 'get_db_path') and hasattr(arg, 'get_full_name'):
-            db_path = arg._db.get_db_path()
-            uid = getattr(arg, 'get_uid', lambda: None)()
-            # 新格式 v2（__fly_db2__ tag 代际区分——与旧 3 段 __fly_db__:
-            # {db_path}:{data_path} 段数相同语义相反）：data_path 是 db 级
-            # 属性存 _DB_META，参数不再携带，worker 端从 meta 获取。
-            # 旧 db 无 uid 时仍用旧格式（meta 也不存在，data_path 须自带）。
-            if uid:
-                result.append(f"__fly_db2__:{uid}:{db_path}")
-            else:
-                data_path = arg._db.get_data_path()
-                result.append(f"__fly_db__:{db_path}:{data_path}")
-        elif callable(arg):
-            # callable 参数（如编排 task 持有的用户回调）——标准 pickle 无法
-            # 序列化脚本内闭包/lambda，走 cloudpickle（from_user task 同源）。
-            # cloudpickle 缺失时退回标准 pickle：模块级函数仍可传，闭包在此
-            # 处抛出明确异常。
-            dumps = cloudpickle.dumps if cloudpickle is not None else pickle.dumps
-            result.append("__fly_cfunc__:" + dumps(arg).hex())
-        else:
-            result.append(pickle.dumps(arg).hex())
-    return result
+def _encode_arg(arg):
+    """单参数编码（位置参数与 kwargs value 同一编码路径）。
+
+    - db 对象 → __fly_db2__:{uid}:{db_path}（新格式，data_path 是 db 级
+      属性存 _DB_META，参数不携带）或 __fly_db__:{db_path}:{data_path}
+      （旧 db 无 uid——meta 也不存在，data_path 须自带）
+    - callable（如编排 task 持有的用户回调）→ __fly_cfunc__:cloudpickle
+      （标准 pickle 无法序列化脚本内闭包/lambda；cloudpickle 缺失时退回
+      标准 pickle——模块级函数仍可传，闭包在此抛出明确异常）
+    - 其他 → 标准 pickle
+    """
+    if hasattr(arg, 'get_db_path') and hasattr(arg, 'get_full_name'):
+        db_path = arg._db.get_db_path()
+        uid = getattr(arg, 'get_uid', lambda: None)()
+        if uid:
+            return f"__fly_db2__:{uid}:{db_path}"
+        data_path = arg._db.get_data_path()
+        return f"__fly_db__:{db_path}:{data_path}"
+    if callable(arg):
+        dumps = cloudpickle.dumps if cloudpickle is not None else pickle.dumps
+        return "__fly_cfunc__:" + dumps(arg).hex()
+    return pickle.dumps(arg).hex()
+
+
+def _serialize_args(args, kwargs):
+    """序列化任务参数 → (args_list, kwargs_map) 二元组。
+
+    修复记录（2026-09-19）：此前仅序列化位置参数，调用方的 **kwargs 被
+    静默丢弃——被丢参数有默认值时 worker 静默拿默认值产出错误数据，无
+    任何报错。现 kwargs 逐值走与位置参数相同的编码路径，worker 端以
+    func(*args, **kwargs) 还原调用。
+    """
+    return [_encode_arg(arg) for arg in args], \
+        {key: _encode_arg(val) for key, val in kwargs.items()}
+
+
+def _encode_payload(serialized):
+    """(args, kwargs) 二元组 → 线格式列表（worker 反序列化 / owner 推导 /
+    write_context_hash 的统一输入）：位置编码元素 + 恒定 kwargs 尾段
+    （空 kwargs 也追加——尾段存在性即新旧载体判别依据，无需版本号）。"""
+    args_list, kwargs_map = serialized
+    return list(args_list) + [
+        KWARGS_PREFIX + json.dumps(
+            [[key, val] for key, val in kwargs_map.items()])]
 
 

@@ -24,6 +24,15 @@ from storage import Database
 import _fly_log as log
 import _fly_storage as storage
 
+# 新载体线格式（2026-09-19 kwargs 修复）：位置编码元素 + 恒定 kwargs 尾段
+# （task.py::KWARGS_PREFIX，空 kwargs 也追加）。缺尾段 = 修复前旧载体，
+# deserialize_args 显式报错——本文件全部 payload 统一经 _payload 构造。
+KWARGS_SECTION = "__fly_kwargs__:[]"
+
+
+def _payload(*encoded):
+    return list(encoded) + [KWARGS_SECTION]
+
 
 def _unique_id():
     return uuid.uuid4().hex[:8]
@@ -63,15 +72,16 @@ def teardown_module():
 
 def test_deserialize_pickle_args():
     worker = MockWorker()
-    
+
     original = {"key": "value", "num": 42}
     pickled = pickle.dumps(original).hex()
-    
-    args = [pickled, pickle.dumps([1, 2, 3]).hex()]
-    result = deserialize_args(args, worker)
-    
-    assert result[0] == original
-    assert result[1] == [1, 2, 3]
+
+    args = _payload(pickled, pickle.dumps([1, 2, 3]).hex())
+    args_list, kwargs_map = deserialize_args(args, worker)
+
+    assert args_list[0] == original
+    assert args_list[1] == [1, 2, 3]
+    assert kwargs_map == {}
 
 
 def test_deserialize_fly_db_marker():
@@ -79,18 +89,18 @@ def test_deserialize_fly_db_marker():
 
     marker_dir = tempfile.mkdtemp(prefix="test_executor_marker_")
     db_marker = f"__fly_db__:{marker_dir}:"
-    args = [db_marker]
+    args = _payload(db_marker)
 
-    result = deserialize_args(args, worker)
+    args_list, _ = deserialize_args(args, worker)
 
-    assert len(result) == 1
-    assert isinstance(result[0], Database)
+    assert len(args_list) == 1
+    assert isinstance(args_list[0], Database)
     # cache key == db_path（db_path == db_path，不再单独传）
     assert marker_dir in worker._db_cache
     assert marker_dir in worker._agent.registered_dbs
 
-    result[0]._db.reset()
-    del result[0]
+    args_list[0]._db.reset()
+    del args_list[0]
     del worker._db_cache[marker_dir]
     shutil.rmtree(marker_dir, ignore_errors=True)
 
@@ -102,11 +112,11 @@ def test_deserialize_fly_db_with_data_path():
     data_dir = tempfile.mkdtemp(prefix="test_executor_data_")
 
     db_marker = f"__fly_db__:{temp_dir}:{data_dir}"
-    args = [db_marker]
+    args = _payload(db_marker)
 
-    result = deserialize_args(args, worker)
+    args_list, _ = deserialize_args(args, worker)
 
-    assert isinstance(result[0], Database)
+    assert isinstance(args_list[0], Database)
     # cache key == db_path（temp_dir）
     assert temp_dir in worker._db_cache
 
@@ -131,14 +141,14 @@ def test_deserialize_fly_db2_reads_data_path_from_meta():
         make_meta("uid_v2test", "test", "test", data_path=data_dir))
 
     db_marker = f"__fly_db2__:uid_v2test:{temp_dir}"
-    result = deserialize_args([db_marker], worker)
+    args_list, _ = deserialize_args(_payload(db_marker), worker)
 
-    assert isinstance(result[0], Database)
+    assert isinstance(args_list[0], Database)
     # uid 与 db_path 双 key 注册
     assert "uid_v2test" in worker._db_cache
     assert temp_dir in worker._db_cache
     # data_path 取自 _DB_META（参数未携带）
-    assert result[0].get_data_path() == data_dir
+    assert args_list[0].get_data_path() == data_dir
 
     for db_path_key, db_obj in worker._db_cache.items():
         db_obj._db.reset()
@@ -152,12 +162,12 @@ def test_deserialize_fly_db2_meta_missing_falls_back_empty():
     temp_dir = tempfile.mkdtemp(prefix="test_executor_v2nometa_")
 
     db_marker = f"__fly_db2__:uid_nometa:{temp_dir}"
-    result = deserialize_args([db_marker], worker)
+    args_list, _ = deserialize_args(_payload(db_marker), worker)
 
-    assert isinstance(result[0], Database)
+    assert isinstance(args_list[0], Database)
     # 空 data_path = 自包含（正式数据落 db_path，由 DataWriter 写层解释；
     # getter 返回空串而非 db_path）。
-    assert result[0].get_data_path() == ""
+    assert args_list[0].get_data_path() == ""
 
     for db_path_key, db_obj in worker._db_cache.items():
         db_obj._db.reset()
@@ -171,11 +181,11 @@ def test_deserialize_cached_db():
     
     db_marker = f"__fly_db__:{temp_dir}:"
     
-    args1 = [db_marker]
-    result1 = deserialize_args(args1, worker)
-    
-    args2 = [db_marker]
-    result2 = deserialize_args(args2, worker)
+    args1 = _payload(db_marker)
+    result1, _ = deserialize_args(args1, worker)
+
+    args2 = _payload(db_marker)
+    result2, _ = deserialize_args(args2, worker)
     
     assert result1[0] is result2[0]
     assert len(worker._agent.registered_dbs) == 1
@@ -192,13 +202,13 @@ def test_deserialize_mixed_args():
     
     pickle_arg = pickle.dumps({"data": "test"}).hex()
     db_marker = f"__fly_db__:{temp_dir}:"
-    
-    args = [pickle_arg, db_marker, pickle.dumps(123).hex()]
-    result = deserialize_args(args, worker)
-    
-    assert result[0] == {"data": "test"}
-    assert isinstance(result[1], Database)
-    assert result[2] == 123
+
+    args = _payload(pickle_arg, db_marker, pickle.dumps(123).hex())
+    args_list, _ = deserialize_args(args, worker)
+
+    assert args_list[0] == {"data": "test"}
+    assert isinstance(args_list[1], Database)
+    assert args_list[2] == 123
     
     for db_path_key, db_obj in worker._db_cache.items():
         db_obj._db.reset()
@@ -220,7 +230,7 @@ def test_executor_successful_execution():
         task_id=1,
         task_name="simple_task",
         task_module="test_executor_tasks",
-        args=[]
+        args=_payload()
     )
     
     assert result['task_id'] == 1
@@ -238,7 +248,7 @@ def test_executor_module_import_failure():
         task_id=2,
         task_name="some_func",
         task_module="nonexistent_module",
-        args=[]
+        args=_payload()
     )
     
     assert result['task_id'] == 2
@@ -254,7 +264,7 @@ def test_executor_function_not_found():
         task_id=3,
         task_name="nonexistent_func",
         task_module="test_executor_tasks",
-        args=[]
+        args=_payload()
     )
     
     assert result['task_id'] == 3
@@ -266,8 +276,8 @@ def test_executor_with_args():
     worker = MockWorker()
     executor = create_executor(worker)
     
-    pickled_args = [pickle.dumps([10, 20]).hex()]
-    
+    pickled_args = _payload(pickle.dumps([10, 20]).hex())
+
     result = executor(
         task_id=4,
         task_name="add_numbers",
@@ -288,7 +298,7 @@ def test_executor_exception_handling():
         task_id=5,
         task_name="raising_task",
         task_module="test_executor_tasks",
-        args=[]
+        args=_payload()
     )
     
     assert result['task_id'] == 5
@@ -304,7 +314,7 @@ def test_executor_freeze_detection():
     temp_dir = tempfile.mkdtemp(prefix="test_executor_freeze_")
 
     db_marker = f"__fly_db__:{temp_dir}:"
-    pickled_args = [db_marker]
+    pickled_args = _payload(db_marker)
 
     result = executor(
         task_id=6,
@@ -333,7 +343,7 @@ def test_executor_from_user_deserialization():
         return a + b
 
     payload = "__user_func__:" + pickle.dumps(_inline_add).hex()
-    pickled_args = [pickle.dumps((3, 4)).hex()]
+    pickled_args = _payload(pickle.dumps((3, 4)).hex())
 
     result = executor(
         task_id=7,
