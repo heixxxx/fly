@@ -11,7 +11,8 @@ master 侧提交面断言（§20 编排判据）：
 快照搬运层拆除断言（§21「db 数据所有权：禁跨 db 数据搬运」，2026-09-18
 用户裁定）：
   - 根任务体零写入——不再产出 __tmg__ 快照对象族与快照键清单对象，
-    timing db 内无 design db 数据副本（对象名空间检查）；
+    timing db 内无 design db 数据副本（对象名空间检查）；kind=1 绑定
+    校验路径同零写入（mapper 打桩，2026-09-19 合审 P3 补充）；
   - 块解析任务 inputs 恰锚 design db 六类对象全名（跨 db 直读——无
     timing db 中转键），枚举锚 names_count/INST 段号/分区表随参传递。
 
@@ -118,10 +119,14 @@ class _RootDesignDb:
 
 class _StubMapper:
     """ds_make_instance_name_mapper 打桩（真实 C++ mapper 需要真实
-    design 对象；结构断言不消费换算面——kind=0 文件不触发绑定校验）。"""
+    design 对象；结构断言不消费换算面）。get_global_id 返回值可指定
+    ——kind=1 绑定校验分支的命中/未命中形态均可控。"""
+
+    def __init__(self, inst_id=None):
+        self._inst_id = inst_id
 
     def get_global_id(self, name):
-        return None
+        return self._inst_id
 
 
 class _FakeProject:
@@ -166,9 +171,10 @@ def _build(timing_files):
     return db, agent.submitted
 
 
-def _run_root_body(files):
+def _run_root_body(files, mapper=None):
     """直跑根任务函数体（绕过 as_task 提交——体内嵌套任务仍经捕获
-    agent 提交），返回 (timing db, submitted)。名字 mapper 打桩。"""
+    agent 提交），返回 (timing db, submitted)。名字 mapper 打桩
+    （默认 get_global_id 返回 None）。"""
     import fly.runtime
     from emir.timing.py import tm_flow
 
@@ -177,7 +183,9 @@ def _run_root_body(files):
     original_agent = fly.runtime.get_agent
     original_mapper = tm_flow.ds_make_instance_name_mapper
     fly.runtime.get_agent = lambda: agent
-    tm_flow.ds_make_instance_name_mapper = lambda design, names: _StubMapper()
+    tm_flow.ds_make_instance_name_mapper = \
+        lambda design, names: (mapper if mapper is not None
+                               else _StubMapper())
     try:
         tm_flow._timing_flow_task._fly_original_func(db, _RootDesignDb(),
                                                      files)
@@ -234,7 +242,6 @@ def test_root_task_writes_no_snapshot_objects():
     db, submitted = _run_root_body(files)
     assert db.written == [], \
         f"root task body must not write to timing db: {db.written}"
-    assert not any(k.startswith("__tmg__") for k in db.written), db.written
     design = _RootDesignDb()
     design_namespace = [
         design.DESIGN_OBJ, "pg_nets", "global_density",
@@ -246,6 +253,20 @@ def test_root_task_writes_no_snapshot_objects():
     names = [name for name, _ in submitted]
     assert names == ["_plan_file_chunks_task"] * len(files) + \
         ["_plan_merge_chain_task"], names
+
+
+def test_root_task_kind1_binding_path_writes_nothing():
+    """kind=1 绑定校验路径零写入（§21 断言补充，2026-09-19 合审 P3）：
+    kind=1 文件经 mapper 绑定校验（打桩命中）后照常进文件入口链——校
+    验消费 design db 数据但不向 timing db 写任何对象。"""
+    files = [{"file_name": "f0.twf", "kind": 1, "block_inst": "i0",
+              "block_cell": "", "strip_prefix": ""}]
+    db, submitted = _run_root_body(files, mapper=_StubMapper(inst_id=1))
+    assert db.written == [], \
+        f"root task body must not write to timing db: {db.written}"
+    names = [name for name, _ in submitted]
+    assert names == ["_plan_file_chunks_task", "_plan_merge_chain_task"], \
+        names
 
 
 def test_chunk_task_inputs_anchor_design_db():
@@ -286,5 +307,6 @@ if __name__ == "__main__":
     test_root_task_inputs_anchor_design_db()
     test_preprocess_does_not_read_file_content()
     test_root_task_writes_no_snapshot_objects()
+    test_root_task_kind1_binding_path_writes_nothing()
     test_chunk_task_inputs_anchor_design_db()
     print("[PASS] test_tm_flow_structure")

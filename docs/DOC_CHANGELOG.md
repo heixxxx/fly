@@ -34,7 +34,7 @@ inputs/requires/vars/owner 四个解析钩子都正确透传 kwargs，唯独参�
 - **write_context_hash**：输入为新 serialized 载体（含 kwargs 尾段），
   同任务同参数哈希稳定；kwargs 差异参与哈希。
 - **timing 调用形态恢复**（`tm_flow.py`）：体内提交（文件入口 / 块解
-  析 / 合并链）从「全位置绕开传参」（18 参透传链）改回 kwargs 形态可
+  析 / 合并链）从「全位置绕开传参」（17 参透传链）改回 kwargs 形态可
   读调用，「as_task 序列化仅覆盖位置参数」约束注释删除。
 - **测试**：`test_kwargs_args.py`（8 例：二元组形态 / 尾段恒追加 /
   无默认值 kwargs 到达 worker / 有默认值取调用值非默认值 / 混合位置
