@@ -2,6 +2,46 @@
 
 ---
 
+## 2026-09-18: timing 快照搬运层拆除——design db 跨 db 直读（§21 入册）
+
+**问题形态**：`_timing_flow_task` 根任务体内把 design db 六类对象
+（design/inst_index/pg_nets/names_{j}/inst_seg_{s}/part_nets_{pid}）
+逐个读出、以 `save_to_db=False` 写入 timing db 临时对象（`__tmg__*`）
++ 快照键清单对象 `__tmg__snapshot_keys`；块解析任务再读 timing db 临
+时对象组装 `EXTMDesignContext`——一层纯搬运。
+
+**拆除论据**（2026-09-18 用户裁定，DEVELOPMENT_GUIDELINES §21「db 数
+据所有权：禁跨 db 数据搬运」随本批入册）：每块任务仍逐任务全量读+
+各自组装，读取次数与字节数不变（「避免读放大」不成立）；`ObjectCache`
+是进程级全局单例（不分 db），直接跨 db 读与本 db 副本读同样命中；design
+db 对象一次性写定锚定即稳定，无一致性诉求。
+
+- **块任务跨 db 直读**（`tm_flow.py`）：`_parse_chunk_task` 增
+  `design_db` 句柄参数（as_task 位置传参先例），inputs 锚 design db
+  六类对象全名（`design_db.get_full_name`——全局唯一，跨 db 依赖天然
+  支持），体内 `design_db.read_object` 直读组装 ctx。枚举锚
+  （names_count / INST 段号 / 分区表）由根任务执行时刻读 design db
+  得出后随参透传（读取源与依赖锚同源确定性）。
+- **根任务瘦身**：快照搬运段整体删除（不再向 timing db 写任何对象
+  ——design db 数据零副本）；快照键清单对象删除；绑定校验保留（仍
+  直读 design db 组装 mapper，校验用对象不落 timing db）。
+- **freeze 简化**：inputs 仍 [clocks, summary]（不变）；`snapshot_keys`
+  参数族删除，清理清单收缩为零（快照键族与清单对象不复存在）；运行
+  时规模临时对象（切片/remap/冲突计数/清单）清理责任不变——汇总任
+  务单点（§19 批次口径）。
+- **结构单测随动**（`test_tm_flow_structure.py`，新增 2 例）：根任务
+  体零写入断言（`__tmg__` 快照族 + design db 对象名空间检查——零副
+  本）；块任务 inputs 恰锚 design db 六类对象全名断言（无 timing db
+  中转键）。
+- **文档同步**：timing-db-plan §5.3/§6 快照描述改跨 db 直读 + 清理责
+  任表更新；emir/module.md timing 行根任务与 ctx 组装表述随实。
+
+**验证**：行为等价——全量 QA 193/193（qa/emir timing 全家
+timing_flow/timing_pg_grid/design_sets 断言数字不变）；全量单测
+120/120（`test_tm_flow_structure` 新增 2 例）。pre-push 全量校验通过。
+
+---
+
 ## 2026-09-17: lib flow 三段式收编 + 架构评审 P3 两项顺带
 
 **背景**：三段式批次（timing/design）的同款遗留收编——`build_lib_db`

@@ -150,7 +150,7 @@ class TMSummary { /* 计数器 + 来源文件表 */ };
 RedHawk sta.timing 方言概念）——频率经时钟表周期推导（1/period），不
 单独存储实例级覆盖字段。
 
-### 5.3 中间形态（temp 对象，freeze 清理）
+### 5.3 中间形态（temp 对象，链上任务自清理——§6 清理责任单点）
 
 - `TMChunkPlan`——切块清单（文件 → [(字节起点, 字节终点)]）；
 - `TMEntrySlice`——逐块解析产物分区分片（块 → 各分区 (inst_id,
@@ -167,8 +167,9 @@ build_timing_db（master，三段式——提交任务数 O(1)，与输入规模
   ③ 顶层提交 freeze _freeze_timing_task（依赖固定标记 clocks/summary）
 
 _timing_flow_task（根任务，体内目录；依赖系统等 design db 必要对象）：
-  快照搬运（design db 逐对象 → 临时对象 + 快照键清单对象）
-  → 绑定校验（条目级兜底 §7.5；全无效任务内 ValueError）
+  绑定校验（条目级兜底 §7.5；全无效任务内 ValueError）
+  → design db 枚举锚（本任务执行时刻读 design db：INST 段号〔段表〕+
+     分区表〔行主序〕+ names_count〔build_meta.def_count〕）
   → 每有效文件一个文件入口任务 _plan_file_chunks_task（TWF 嗅探 +
      tm_plan_file_chunks 切块扫描〔master 同步切块段已删——IO 下放
      worker 并行〕+ 体内提交该文件逐块解析任务 + 块数写清单对象）
@@ -176,12 +177,14 @@ _timing_flow_task（根任务，体内目录；依赖系统等 design db 必要�
      提交——切片键集〔块数〕运行时才知：时钟表合并 → 每分区合并 →
      汇总〔写 clocks/summary 固定标记〕）
 _freeze_timing_task：依赖固定标记 clocks/summary（蕴含全部分区正式
-  对象）；清理快照键清单展开 + 清单自身；其余运行时规模临时对象（切片/
-  remap/冲突计数/清单）由汇总任务自清理——清理责任单点
+  对象）；运行时规模临时对象（切片/remap/冲突计数/清单）由汇总任务
+  自清理——清理责任单点（快照搬运层已拆除——2026-09-18 §21：块解析
+  任务跨 db 直读 design db，timing db 无 design 数据副本）
 ```
 
 - T2 逐块解析任务（每块一任务，全并行；块自包含 = 头段公共前缀拼块，
-  评审 P1-1；inputs 注入快照临时对象）：解析 → 名字换算（§7）→
+  评审 P1-1；inputs 锚 design db 六类对象全名〔跨 db 直读，§21——
+  设计 db 数据零搬运、零副本〕）：解析 → 名字换算（§7）→
   inst_id 经 id_partition_map.INST 段表路由 → 各分区 TMEntrySlice
   片段 + 统计片段。
 - 时钟合并优先级（2026-09-16 裁定）：**顶层文件（无绑定、纯路径）定义
@@ -248,7 +251,7 @@ _freeze_timing_task：依赖固定标记 clocks/summary（蕴含全部分区正�
 - 绑定目标不存在（块实例路径未命中 / cell 名未命中）→ 条目级兜底
   （2026-09-17 裁定）：该文件 TIMG::0011 error + 跳过（零条目入库、
   计数入 summary.invalid_binding_count）；仅全部文件被跳过才任务内
-  ValueError（输入整体无意义；评审 P2-3 后随 design 快照任务异步执行
+  ValueError（输入整体无意义；评审 P2-3 后随根任务异步执行
   ——不阻塞 master 提交线程）。
 
 ## 8. 分区路由与对象布局
