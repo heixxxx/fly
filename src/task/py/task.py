@@ -64,6 +64,9 @@ def as_task(inputs=None, requires=None, vars=None, priority=10, owner=None):
             -> db 对象。默认 None = 自动推导——取参数列表中第一个 db 对象（开发
             规范要求 task 第一个参数必须是归属 db 对象，见 DEVELOPMENT_GUIDELINES
             "Task db 归属规则"节）。失败记录按归属落盘 {owner_db_path}/failed_tasks.bin。
+            注意：db 对象参数必须位置传递（归属 db 首位；其余 db 引用亦不得进
+            kwargs——owner 推导与 restart 路径自愈只扫位置参数，kwargs 内的 db
+            引用不可见，重启后无法自愈归属）。
 
     Usage::
 
@@ -354,7 +357,11 @@ def _serialize_args(args, kwargs):
 def _encode_payload(serialized):
     """(args, kwargs) 二元组 → 线格式列表（worker 反序列化 / owner 推导 /
     write_context_hash 的统一输入）：位置编码元素 + 恒定 kwargs 尾段
-    （空 kwargs 也追加——尾段存在性即新旧载体判别依据，无需版本号）。"""
+    （空 kwargs 也追加——尾段存在性即新旧载体判别依据，无需版本号）。
+
+    注意：kwargs 序 = 调用点传参序，直接参与写上下文哈希——同一任务的
+    调用点必须保持 kwargs 顺序稳定（顺序漂移 = 不同哈希 = 写上下文判重
+    失效；2026-09-19 合审 P2 契约显式化，零行为改动）。"""
     args_list, kwargs_map = serialized
     return list(args_list) + [
         KWARGS_PREFIX + json.dumps(

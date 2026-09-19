@@ -1009,6 +1009,11 @@ def bad_task(key, db):              # 反例：归属 db 不在首位 → WARN
     db.write_object(key, 1)
 ```
 
+- **db 对象参数必须位置传递**：归属 db 首位；其余 db 引用（跨 db 直读的
+  上游 db 句柄等）亦不得进 kwargs——owner 推导与 restart 路径自愈只扫位
+  置参数，kwargs 内的 db 引用不可见，重启后无法自愈归属（2026-09-19 合审
+  P2）。
+
 ### 15.3 例外：显式 owner 覆盖
 
 极少数 task 需要归属到非第一个 db 参数的 db（如读上游 db、写本 db，而
