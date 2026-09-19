@@ -198,10 +198,12 @@ def test_flow_temp_keys_static():
     # uid 静态化（2026-09-17 §19 批次裁定）：编排临时对象键固定名
     # __dsn__{name}——freeze 清理清单由 _flow_temp_keys 按输入规模静态构造
     #（不再沿任务链逐层收集键集传参）。清单不含 net_union slice（归并汇总
-    # 任务自清理）与 pg/id 片段（各自汇总任务自清理）——清理责任单点。
+    # 任务自清理）、pg/id 片段（各自汇总任务自清理）与 lib_library（§21
+    # lib 快照搬运层拆除——lib 数据不经 design db 中转）——清理责任单点。
     keys = ds_flow._flow_temp_keys(2, 3)
-    assert keys[:3] == ["__dsn__tech_vias", "__dsn__macro_geoms",
-                        "__dsn__lib_library"], keys[:3]
+    assert keys[:2] == ["__dsn__tech_vias", "__dsn__macro_geoms"], keys[:2]
+    assert "__dsn__lib_library" not in keys, \
+        "lib 快照搬运层已拆除（§21）——lib merge 直接锚/读 lib db"
     assert "__dsn__cell_lef_0_design" in keys
     assert "__dsn__cell_lef_1_failed" in keys
     assert "__dsn__cell_lef_2_design" not in keys       # n_cell_lefs=2 封顶

@@ -10,7 +10,8 @@
   tech lef（层堆叠 + via 权威表）
   → cell lef 族（每文件一任务）+ cell lef 汇总（统一 cell id/pin
      hasher 重挂/via 与几何合入）
-  → lib merge（lib 快照搬运 + 按 cell 名并入库信息 → DSPinTables）
+  → lib merge（跨 db 直读 lib 库对象 + 按 cell 名并入库信息 →
+     DSPinTables）
   → DEF 头族（每文件一任务：嗅探 + 头扫描）+ DEF 头汇总（cell 全集
      快照 + 正式 DSPinGeometry）
   → COMPONENTS 族（每文件一任务：实例 ∥ 网名扫描，正式名字伴生对象
@@ -24,6 +25,11 @@
      → 每分区合并〔六类正式对象〕→ id 映射/pg 汇总 → 分区校验族 →
      全局校验〔写 verify_report 固定标记〕——分区数运行时才知，形状
      运行时才知场景）
+
+lib merge 任务跨 db 直读 lib db（§21「db 数据所有权：禁跨 db 数据搬
+运」——不搬运、无副本）：inputs 锚 lib db 库对象全名，任务体内经
+lib_db 句柄直读并入；根任务仍锚 lib 库对象（入口等待语义——lib 数据
+就绪才开跑）。
 
 freeze _freeze_design_task（build_design_db 第③段顶层提交）：依赖固定
 标记 verify_report（权威终态锚——蕴含链见任务 docstring）；清理清单
@@ -88,9 +94,10 @@ def _tmp_key(name: str) -> str:
 def _flow_temp_keys(n_cell_lefs: int, n_defs: int) -> list:
     """freeze 清理清单（build_design_db 提交时静态构造——按输入规模
     枚举，§19 批次）。net_union slice / pg 片段 / id 映射片段 / 展开分
-    片 / 校验结果不在本清单——由各自消费任务自清理（责任单点）。"""
-    keys = [_tmp_key("tech_vias"), _tmp_key("macro_geoms"),
-            _tmp_key("lib_library")]
+    片 / 校验结果不在本清单——由各自消费任务自清理（责任单点）；
+    lib_library 亦不在（§21 快照搬运层拆除——lib 数据不经 design db
+    中转）。"""
+    keys = [_tmp_key("tech_vias"), _tmp_key("macro_geoms")]
     for i in range(n_cell_lefs):
         keys += [_tmp_key(f"cell_lef_{i}_design"),
                  _tmp_key(f"cell_lef_{i}_geoms"),
@@ -119,8 +126,9 @@ def _flow_temp_keys(n_cell_lefs: int, n_defs: int) -> list:
 ])
 def _design_flow_task(db, lef_paths, def_paths, lib_db):
     """按模块 docstring 目录顺序提交全部阶段任务族（键构造随提交——
-    编排调用即流程图）。alpha 三键与 lib 快照经 inputs 锚读回（master
-    预处理不读内容——lib 快照搬运在任务内，§20）。"""
+    编排调用即流程图）。alpha 三键经 inputs 锚读回（master 预处理不读
+    内容，§20）；lib 库对象仅入口锚（数据零搬运，§21——lib merge 任务
+    直接锚/读 lib db）。"""
     settings = db.read_object(DesignDb.ALPHA_SETTINGS_OBJ)
     settings.normalize()
     bin_um = settings.density_bin_size
@@ -150,13 +158,10 @@ def _design_flow_task(db, lef_paths, def_paths, lib_db):
     _merge_cell_lefs_task(db, part_tuples, stack_key, tech_vias_key,
                           merged_key, macro_geoms_key)
 
-    # ── lib merge（lib 快照先入 design db——merge 任务全程单 db）──
-    lib_snapshot_key = _tmp_key("lib_library")
-    db.write_object(lib_snapshot_key,
-                    lib_db.read_object(lib_db.LIBRARY_OBJ),
-                    save_to_db=False)
+    # ── lib merge（跨 db 直读 lib 库对象——§21 禁跨 db 数据搬运，
+    #    design db 无 lib 数据副本）──
     s3_key = _tmp_key("lib_merged_design")
-    _merge_lib_task(db, merged_key, lib_snapshot_key, tables_key, s3_key)
+    _merge_lib_task(db, merged_key, lib_db, tables_key, s3_key)
 
     # ── DEF 头族 + 头汇总（cell 全集快照临时 + 正式 DSPinGeometry）──
     header_part_keys = []
@@ -344,16 +349,18 @@ def _merge_cell_lefs_task(db, part_tuples, stack_key, tech_vias_key,
 
 # ── lib merge（lib cell ↔ lef cell 结构 merge；与 DEF 头扫描并行）────
 
-@as_task(inputs=lambda db, merged_key, lib_obj_name, tables_key, s3_key: [
+@as_task(inputs=lambda db, merged_key, lib_db, tables_key, s3_key: [
     db.get_full_name(merged_key),
-    db.get_full_name(lib_obj_name),
+    lib_db.get_full_name(lib_db.LIBRARY_OBJ),
 ])
-def _merge_lib_task(db, merged_key, lib_obj_name, tables_key, s3_key):
+def _merge_lib_task(db, merged_key, lib_db, tables_key, s3_key):
     """按 cell 名并入 lib 库信息（DSGN::0002/0003/0004 由 C++ 侧发送）→
     DSPinTables 正式对象唯一写定（先写正式对象、s3 锚最后写——锚后写
-    红线：下游经 s3 锚依赖本任务 ⟹ DSPinTables 已先写定）。"""
+    红线：下游经 s3 锚依赖本任务 ⟹ DSPinTables 已先写定）。lib 数据跨
+    db 直读（§21）：inputs 锚 lib db 库对象全名，体内经 lib_db 句柄
+    读取——无 design db 中转副本。"""
     design = db.read_object(merged_key)
-    lib = db.read_object(lib_obj_name)
+    lib = lib_db.read_object(lib_db.LIBRARY_OBJ)
     matched = design.merge_lib(lib)
     from log import INFO
     INFO(f"merge_lib: {matched} cells matched with lib")
