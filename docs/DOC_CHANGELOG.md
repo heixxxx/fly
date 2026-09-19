@@ -2,6 +2,49 @@
 
 ---
 
+## 2026-09-19: as_task kwargs 序列化修复——kwargs 静默丢弃缺陷归零
+
+**缺陷形态**：`@as_task` wrapper 仅序列化位置参数
+（`_serialize_args(args)`），调用方传的 `**kwargs` 被静默丢弃——worker
+端按 `(module, name)` 取回原函数后仅以位置参数调用。同函数内
+inputs/requires/vars/owner 四个解析钩子都正确透传 kwargs，唯独参数本
+体漏了，属半成品实现。两种失败形态：
+  - 被丢参数**无默认值** → worker 端 TypeError（timing 批次实证形态）；
+  - 被丢参数**有默认值** → 提交成功、worker 正常执行、**静默拿默认值
+    产出错误数据，无任何报错**（更危险形态）。
+
+**修复落点**（不做版本兼容，2026-09-19 用户裁定）：
+- **序列化载体**（`src/task/py/task.py`）：`_serialize_args(args, kwargs)`
+  产出 `(args_list, kwargs_map)` 二元组，kwargs 逐值走与位置参数相同的
+  编码路径（db 编码/cfunc 编码/pickle，`_encode_arg` 单点复用）；新增
+  `_encode_payload` 统一线格式——位置编码元素后**恒定追加**
+  `__fly_kwargs__:` 尾段（json 编码键值对，空 kwargs 也追加），尾段
+  存在性即新旧载体判别依据，无需版本号。
+- **worker 执行侧**（`src/agent/py/executor.py`）：
+  `deserialize_args` 校验尾段并解出 kwargs（单参数解码抽
+  `_decode_single_arg` 复用），返回 `(args, kwargs)`；execute 改
+  `func(*args, **kwargs)` 还原调用。
+- **旧格式显式失效**：worker 端载体缺尾段 → ValueError（该任务失败
+  透出明确原因，不静默当空 kwargs）；master `restart_failed_tasks`
+  对无尾段的旧格式记录显式拒绝整 bin 并保留文件（与 uid 不可解析同
+  模式）——failed_tasks.bin / project 断点重投中的旧格式按失效处理。
+- **owner 推导三消费点**（master 本地 / worker 转发 / restart 重投，
+  全部经 `MasterAgent::submit_task` 单一真相点）：kwargs 尾段非 db 前
+  缀被 `parse_db_arg` 自动跳过，位置参数首位不变，逻辑无需改动即正确。
+- **write_context_hash**：输入为新 serialized 载体（含 kwargs 尾段），
+  同任务同参数哈希稳定；kwargs 差异参与哈希。
+- **timing 调用形态恢复**（`tm_flow.py`）：体内提交（文件入口 / 块解
+  析 / 合并链）从「全位置绕开传参」（18 参透传链）改回 kwargs 形态可
+  读调用，「as_task 序列化仅覆盖位置参数」约束注释删除。
+- **测试**：`test_kwargs_args.py`（8 例：二元组形态 / 尾段恒追加 /
+  无默认值 kwargs 到达 worker / 有默认值取调用值非默认值 / 混合位置
+  +命名 / inputs lambda kwargs 透传回归 / 重复提交哈希一致 / 旧载体
+  显式报错）；`master_agent_test.cpp` 新增旧载体整 bin 拒绝用例。
+
+**验证**：全量单测 + 全量 QA 193/193 通过；pre-push 全量校验自然通过。
+
+---
+
 ## 2026-09-18: timing 快照搬运层拆除——design db 跨 db 直读（§21 入册）
 
 **问题形态**：`_timing_flow_task` 根任务体内把 design db 六类对象
