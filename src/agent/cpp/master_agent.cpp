@@ -826,6 +826,8 @@ namespace {
 //   v2（现行）__fly_db2__:{uid}:{db_path}（data_path 是 db 级属性存 _DB_META）
 //   旧 4 段 __fly_db__:{uid}:{db_path}:{data_path}（与 executor.py 对齐）
 //   旧 3 段 __fly_db__:{db_path}:{data_path}
+// 非 db 前缀（含 kwargs 尾段 __fly_kwargs__:——2026-09-19 载体扩展，恒在
+// args_ 末尾）一律返回 ""，owner 推导/关联 db 收集自动跳过。
 CMString parse_db_arg(const CMString& arg) {
     constexpr size_t kPrefixLen = 11;  // "__fly_db__:"
     if (arg.compare(0, kPrefixLen, "__fly_db__:") != 0) {
@@ -877,6 +879,8 @@ std::pair<CMString, CMString> parse_db_arg_uid(const CMString& arg) {
 void MasterAgent::submit_task(uint64_t task_id, const TaskSubmissionSpec& spec) {
     // Task db 归属兜底推导（单一真相点：master 本地 / worker 转发 / restart 重投
     // 全部经此）：显式 owner 为空时取 args_ 中第一个 __fly_db__ 编码参数。
+    // kwargs 尾段（__fly_kwargs__:，2026-09-19 载体扩展）非 db 前缀被跳过，
+    // 位置参数首位不变——三个消费点无需各自适配。
     TaskSubmissionSpec effective = spec;
     if (effective.owner_db_path_.empty()) {
         bool first_arg_is_db = false;
@@ -3634,6 +3638,23 @@ size_t MasterAgent::restart_failed_tasks(const CMString& file_path) {
         if (records.empty()) {
             WARN("No failed tasks to restart");
             return 0;
+        }
+
+        // ── 旧载体格式校验（不做版本兼容，2026-09-19 as_task kwargs 修复）：
+        // 新载体恒以 __fly_kwargs__ 尾段结尾（空 kwargs 也追加）；缺失 =
+        // 修复前旧格式（kwargs 被静默丢弃缺陷期的产物），重投会静默错跑
+        // 或缺参失败——显式拒绝整 bin 并保留文件，与 uid 不可解析同模式。
+        constexpr size_t kKwargsPrefixLen = 15;  // "__fly_kwargs__:"
+        for (const auto& record : records) {
+            const auto& args = record.submission_.args_;
+            if (args.empty() ||
+                args.back().compare(0, kKwargsPrefixLen, "__fly_kwargs__:") != 0) {
+                ERR("Cannot restart failed tasks from '{}': task {} predates "
+                    "kwargs-aware serialization (args lack the __fly_kwargs__ "
+                    "section, no version compatibility) — resubmit manually",
+                    file_path, record.task_id_);
+                return 0;
+            }
         }
 
         // ── uid 解析（文件级原子）：bin 内任一 db 引用无法解析 → 整 bin 拒绝。

@@ -542,7 +542,7 @@ TEST(MasterAgentTest, RestartNormalizesOwnerToBinLocation) {
     FailedTaskRecord record;
     record.task_id_ = 42;
     record.submission_.name_ = "migrated_task";
-    record.submission_.args_ = {"arg1"};
+    record.submission_.args_ = {"arg1", "__fly_kwargs__:[]"};
     record.submission_.owner_db_path_ = old_path;
 
     CMString bin_path = new_path + "/failed_tasks.bin";
@@ -585,7 +585,8 @@ TEST(MasterAgentTest, RestartResolvesDbByUid) {
     FailedTaskRecord record;
     record.task_id_ = 7;
     record.submission_.name_ = "migrated_task";
-    record.submission_.args_ = {"__fly_db2__:uid_deadbeef:" + old_path, "plain_arg"};
+    record.submission_.args_ = {"__fly_db2__:uid_deadbeef:" + old_path,
+                                "plain_arg", "__fly_kwargs__:[]"};
     record.submission_.inputs_ = {old_path + ":dep_obj"};
     record.submission_.vars_ = {old_path + ":some_var"};
     record.submission_.owner_db_path_ = old_path;
@@ -633,12 +634,13 @@ TEST(MasterAgentTest, RestartAtomicOnUnresolvedUid) {
     FailedTaskRecord r1;
     r1.task_id_ = 1;
     r1.submission_.name_ = "ok_task";
-    r1.submission_.args_ = {"__fly_db2__:uid_ok:" + db_path};
+    r1.submission_.args_ = {"__fly_db2__:uid_ok:" + db_path, "__fly_kwargs__:[]"};
 
     FailedTaskRecord r2;
     r2.task_id_ = 2;
     r2.submission_.name_ = "bad_task";
-    r2.submission_.args_ = {"__fly_db2__:uid_missing:" + other_db};
+    r2.submission_.args_ = {"__fly_db2__:uid_missing:" + other_db,
+                            "__fly_kwargs__:[]"};
 
     CMString bin_path = db_path + "/failed_tasks.bin";
     std::filesystem::create_directories(db_path);
@@ -663,6 +665,49 @@ TEST(MasterAgentTest, RestartAtomicOnUnresolvedUid) {
     EXPECT_EQ(master.restart_failed_tasks(bin_path), 2u);
     EXPECT_FALSE(std::filesystem::exists(bin_path))
         << "bin is consumed once all uids resolve";
+
+    master.stop();
+    wait_for_running(master, false);
+}
+
+// 旧载体格式拒绝（不做版本兼容，2026-09-19 as_task kwargs 修复）：修复前
+// 旧格式（args 无 __fly_kwargs__ 尾段）重投会静默错跑或缺参失败——显式
+// 拒绝整 bin，文件保留。
+TEST(MasterAgentTest, RestartRejectsLegacyPayloadWithoutKwargsSection) {
+    MasterAgent master("127.0.0.1", 0);
+    master.start();
+    wait_for_running(master, true);
+    TempDir tmpdir;
+    CMString db_path = tmpdir.path() + "/legacy_payload_db";
+
+    FailedTaskRecord old_fmt;
+    old_fmt.task_id_ = 91;
+    old_fmt.submission_.name_ = "pre_kwargs_task";
+    old_fmt.submission_.args_ = {"__fly_db2__:uid_x:" + db_path, "plain"};
+    // 故意无 __fly_kwargs__ 尾段。
+
+    FailedTaskRecord new_fmt;
+    new_fmt.task_id_ = 92;
+    new_fmt.submission_.name_ = "kwargs_aware_task";
+    new_fmt.submission_.args_ = {"__fly_db2__:uid_x:" + db_path,
+                                 "__fly_kwargs__:[]"};
+    // uid_x 不注册（本测试不触达 uid 解析——尾段校验先行拒绝）。
+
+    CMString bin_path = db_path + "/failed_tasks.bin";
+    std::filesystem::create_directories(db_path);
+    for (const auto& r : {old_fmt, new_fmt}) {
+        CMString body;
+        FLY_ENCODE(r, body);
+        int64_t body_size = static_cast<int64_t>(body.size());
+        std::ofstream ofs(bin_path, std::ios::binary | std::ios::app);
+        ofs.write(reinterpret_cast<const char*>(&body_size), sizeof(body_size));
+        ofs.write(body.data(), body.size());
+    }
+
+    EXPECT_EQ(master.restart_failed_tasks(bin_path), 0u)
+        << "legacy payload (no kwargs section) must reject the whole bin";
+    EXPECT_TRUE(std::filesystem::exists(bin_path))
+        << "rejected bin must be preserved";
 
     master.stop();
     wait_for_running(master, false);
@@ -4009,12 +4054,14 @@ TEST(MasterAgentTest, RestartFailedTasksBoundaryCases) {
     EXPECT_EQ(master.restart_failed_tasks(tmpdir.path() + "/empty.bin"), 0u);
     EXPECT_TRUE(std::filesystem::exists(tmpdir.path() + "/empty.bin"));
 
-    // ③ 旧 3 段格式（无 uid）→ 文件级拒绝 0（文件保留）。
+    // ③ 旧 3 段格式（无 uid）→ 文件级拒绝 0（文件保留）。载体带 kwargs
+    //    尾段——本条专测 uid 拒绝路径（缺尾段拒绝见专属测试）。
     {
         FailedTaskRecord legacy;
         legacy.task_id_ = 5301;
         legacy.submission_.name_ = "legacy_task";
-        legacy.submission_.args_ = {"__fly_db__:/tmp/legacy_db:/tmp/legacy_data"};
+        legacy.submission_.args_ = {
+            "__fly_db__:/tmp/legacy_db:/tmp/legacy_data", "__fly_kwargs__:[]"};
         CMString body;
         FLY_ENCODE(legacy, body);
         int64_t body_size = static_cast<int64_t>(body.size());
