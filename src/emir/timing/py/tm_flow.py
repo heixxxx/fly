@@ -125,13 +125,19 @@ def _timing_flow_task(db, design_db, files):
                      for fi in valid_file_indexes]
     for fi, manifest_key in zip(valid_file_indexes, manifest_keys):
         f = files[fi]
-        # 绑定描述以散字段传参（pickle 友好）；全参数位置传递——
-        # as_task 序列化仅覆盖位置参数
-        _plan_file_chunks_task(db, design_db, f["file_name"], f["kind"],
-                               f["block_inst"], f["block_cell"],
-                               f["strip_prefix"], fi, chunk_size,
-                               len(names_list), inst_seg_indexes,
-                               partitions, manifest_key)
+        # 绑定描述以散字段传参（pickle 友好）
+        _plan_file_chunks_task(db, design_db,
+                               file_name=f["file_name"],
+                               binding_kind=f["kind"],
+                               block_inst=f["block_inst"],
+                               block_cell=f["block_cell"],
+                               strip_prefix=f["strip_prefix"],
+                               file_index=fi,
+                               chunk_size=chunk_size,
+                               names_count=len(names_list),
+                               inst_seg_indexes=inst_seg_indexes,
+                               partitions=partitions,
+                               manifest_key=manifest_key)
 
     # ── 合并链编排任务（体内提交时钟合并/每分区合并/汇总）──
     _plan_merge_chain_task(db, files, valid_file_indexes, partitions,
@@ -158,12 +164,22 @@ def _plan_file_chunks_task(db, design_db, file_name, binding_kind,
     sniff_twf_header(file_name)
     fp = tm_plan_file_chunks(file_name, chunk_size)
     for cj in range(len(fp.chunk_starts)):
-        _parse_chunk_task(db, design_db, file_name, fp.prefix_start,
-                          fp.prefix_end, fp.chunk_starts[cj],
-                          fp.chunk_ends[cj], file_index, cj, binding_kind,
-                          block_inst, block_cell, strip_prefix,
-                          _tmp_key(f"chunk_{file_index}_{cj}"),
-                          names_count, inst_seg_indexes, partitions)
+        _parse_chunk_task(db, design_db,
+                          file_name=file_name,
+                          prefix_start=fp.prefix_start,
+                          prefix_end=fp.prefix_end,
+                          chunk_start=fp.chunk_starts[cj],
+                          chunk_end=fp.chunk_ends[cj],
+                          file_index=file_index,
+                          chunk_index=cj,
+                          binding_kind=binding_kind,
+                          block_inst=block_inst,
+                          block_cell=block_cell,
+                          strip_prefix=strip_prefix,
+                          slice_key=_tmp_key(f"chunk_{file_index}_{cj}"),
+                          names_count=names_count,
+                          inst_seg_indexes=inst_seg_indexes,
+                          partitions=partitions)
     db.write_object(manifest_key, {"chunk_count": len(fp.chunk_starts)},
                     save_to_db=False)
     from log import INFO
@@ -255,20 +271,33 @@ def _plan_merge_chain_task(db, files, valid_file_indexes, partitions,
     clocks_key = TimingDb.CLOCKS_OBJ
     remap_key = _tmp_key("clock_remap")
     clock_conflicts_key = _tmp_key("clock_conflicts")
-    _merge_clocks_task(db, files, slice_keys, clocks_key, remap_key,
-                       clock_conflicts_key)
+    _merge_clocks_task(db, files,
+                       slice_keys=slice_keys,
+                       clocks_key=clocks_key,
+                       remap_key=remap_key,
+                       clock_conflicts_key=clock_conflicts_key)
 
     conflicts_keys = []
     for pid, xp, yp in partitions:
         conflicts_key = _tmp_key(f"conflicts_{pid}")
         conflicts_keys.append(conflicts_key)
-        _merge_partition_task(db, slice_keys, remap_key, pid, xp, yp,
-                              TimingDb.partition_obj_name(xp, yp),
-                              conflicts_key)
+        _merge_partition_task(db,
+                              slice_keys=slice_keys,
+                              remap_key=remap_key,
+                              pid=pid,
+                              xp=xp,
+                              yp=yp,
+                              part_key=TimingDb.partition_obj_name(xp, yp),
+                              conflicts_key=conflicts_key)
 
-    _merge_summary_task(db, files, slice_keys, conflicts_keys,
-                        clock_conflicts_key, manifest_keys,
-                        TimingDb.SUMMARY_OBJ, invalid_indexes, remap_key)
+    _merge_summary_task(db, files,
+                        slice_keys=slice_keys,
+                        conflicts_keys=conflicts_keys,
+                        clock_conflicts_key=clock_conflicts_key,
+                        manifest_keys=manifest_keys,
+                        summary_key=TimingDb.SUMMARY_OBJ,
+                        invalid_file_indexes=invalid_indexes,
+                        remap_key=remap_key)
     from log import INFO
     INFO(f"timing merge chain: {len(slice_keys)} slice(s), "
          f"{len(partitions)} partition(s) submitted")
