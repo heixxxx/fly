@@ -11,7 +11,7 @@
 | 新建 C++ 模块 | [NEW_MODULE_GUIDE.md](NEW_MODULE_GUIDE.md) |
 | 了解用户侧 API | [userdoc.md](userdoc.md) + [python-api/module.md](python-api/module.md)（公开符号权威总表） |
 | 打开集群监控 GUI | [monitor-design.md](monitor-design.md)（`fly --serve-monitor <db>` 实时/事后浏览） |
-| 查当前待办/路线 | [remaining-todo.md](remaining-todo.md)（欠账清单）+ [roadmap.md](roadmap.md)（决策记录）+ [emir-capability-gap.md](emir-capability-gap.md)（能力差距演进参考） |
+| 查当前待办/路线 | [remaining-todo.md](remaining-todo.md)（欠账清单）+ [roadmap.md](roadmap.md)（决策记录） |
 | 查已知问题 | [ISSUES.md](ISSUES.md) |
 | push 被拦/门禁行为 | [push-hook.md](push-hook.md) |
 | 了解某次改动的来龙去脉 | [DOC_CHANGELOG.md](DOC_CHANGELOG.md)（倒序，最新在顶部） |
@@ -31,7 +31,6 @@
 | 优先级调度 | [priority-scheduling-design.md](priority-scheduling-design.md) |
 | 内存增长分析（M1 依据） | [memory-growth-analysis.md](memory-growth-analysis.md) |
 | 竞品对比与战略边界 | [competitor-analysis.md](competitor-analysis.md)（2026-06 版本，部分状态以 roadmap 修正为准） |
-| **能力演进与差距分析** | [emir-capability-gap.md](emir-capability-gap.md)（面向分布式 EMIR 工具的框架能力现状 + 差距路线） |
 | **EMIR 业务数据流转流程** | [emir-data-flow.md](emir-data-flow.md)（13 个数据库的职责/依赖/架构裁定——业务层总流程权威） |
 
 ## 性能与测试

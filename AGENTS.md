@@ -190,6 +190,5 @@ src/test/       → TestObject, e2e_tasks.py, test_tasks.py (not public API)
 | [`docs/NEW_MODULE_GUIDE.md`](docs/NEW_MODULE_GUIDE.md) | Step-by-step new module creation |
 | [`docs/architecture.md`](docs/architecture.md) | System architecture, data flow, thread model |
 | [`docs/matrix-solver-analysis.md`](docs/matrix-solver-analysis.md) | RAS algorithm analysis, convergence theory |
-| [`docs/emir-capability-gap.md`](docs/emir-capability-gap.md) | Capability status + gap analysis for distributed EMIR tooling (evolution reference) |
 | [`qa/README.md`](qa/README.md) | QA test framework and conventions |
 | `big_qa/` | Large matrix solver tests (n≥1000), not run in regular QA |

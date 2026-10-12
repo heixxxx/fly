@@ -12,7 +12,7 @@
 | **F3** | Worker role（storage_only/hybrid） | ✅ | 已实现（2026-08-15）：role 静态身份（注册时设定不可变更），调度候选层过滤 storage_only（get_idle_workers，scheduler 零 role 概念）；仍参与心跳/数据面/internal 数据 task |
 | F1 | SSH / 多机 Worker 启动 | ✅ 已实现（2026-08-28） | `launch_ssh_workers`（nohup 后台化 + 消息管理生命周期）；localhost 自连 QA 验证；跨机实测待环境 |
 | F2 | Freeze 后处理（idx 合并/merged.idx/_META 聚合） | ⏸ 降级 | master 无 IdxRequest handler，database.cpp:440 有 TODO |
-| F4 | 大对象分片传输 + 背压 | ✅ 分片已落地；credit 裁定不做 | chunked L0-L3+L1+v2 统一块模型全层落地（2026-08-29/30，[chunked-transfer-design.md](chunked-transfer-design.md) §13/§14.7：DATA_CHUNK 帧流 + 逐块 CRC + resend byte-offset）；credit 窗口流控 2026-08-28 裁定不做（fly 负载画像无持续速率失衡，见 [emir-capability-gap.md](emir-capability-gap.md) P0-3） |
+| F4 | 大对象分片传输 + 背压 | ✅ 分片已落地；credit 裁定不做 | chunked L0-L3+L1+v2 统一块模型全层落地（2026-08-29/30，[chunked-transfer-design.md](chunked-transfer-design.md) §13/§14.7：DATA_CHUNK 帧流 + 逐块 CRC + resend byte-offset）；credit 窗口流控 2026-08-28 裁定不做（fly 负载画像无持续速率失衡，见 [chunked-transfer-design.md](chunked-transfer-design.md) §1） |
 | — | 弹性 worker（运行时动态加入/退出） | ❌ | 仅常规 register_worker |
 | F6 | stage checkpoint / 断点续跑 | ⛔ 不做 | db 级 checkpoint 足够（用户决策）|
 | F7 | 协议版本号 | ⛔ 不做 | 早期无需（用户决策）|
@@ -37,7 +37,7 @@
 |---|---|---|
 | HandlerThreadPool 未接线（P1）| ✅ 已做 | handler lane 并行分发（同连接保序/跨连接并行，commit 8a7e8b8）|
 | Reactor send 同步阻塞 | ✅ 已做 | reactor 路径已非阻塞化（write_buffers + EV_WRITE drain）|
-| 背压 / 流控 | ✅ 结构性已含 / credit 裁定不做 | 每连接单 in-flight + client slot 信号量 + epoll oneshot rearm 构成天然背压；credit 窗口流控 2026-08-28 裁定不做（见 [emir-capability-gap.md](emir-capability-gap.md) P0-3） |
+| 背压 / 流控 | ✅ 结构性已含 / credit 裁定不做 | 每连接单 in-flight + client slot 信号量 + epoll oneshot rearm 构成天然背压；credit 窗口流控 2026-08-28 裁定不做（见 [chunked-transfer-design.md](chunked-transfer-design.md) §1） |
 | DataResponse 大消息分片（=F4）| ✅ 已做 | DATA_CHUNK 帧流（ChunkFrameProtocol v2，byte-offset 寻址 resend）落地（2026-08-29/30，见 [chunked-transfer-design.md](chunked-transfer-design.md) §13/§14.7） |
 | 远程读重试无指数退避 | ✅ 已做 | TIER2（DataService::read_raw_compressed）已有指数退避（10ms×2 上限 500ms + 抖动 + 30s deadline）；request_remote_data 现为 TIER3 纯位置查询不取数不重试 |
 | DataClientPool release 不验 fd | ✅ 已做 | keep-alive 连接池改造（commit a408523）：borrow 时 SO_ERROR 预检 + release healthy 标记 + 60s idle TTL |
@@ -187,19 +187,18 @@
 | 4 | P3-17 并发压力测试覆盖面 | 待治理 | 有 DataService bench + latch 竞态测试，非全结构覆盖（§五） |
 | 5 | db_instances_ 锁内 IO 专项 | 待治理 | §13 锁收敛改造遗留欠账（freeze() 重 IO 已迁出，其余锁内 IO 待专项盘点，见 DEVELOPMENT_GUIDELINES §13） |
 | 6 | sd9 偶发挂起 | 观察 | `test_golden_n50_sd9` 曾 12 轮 1 次 TIMEOUT，修复后 soak 46+ 轮零复现保留观察；诊断打点已在树内，复现即按 rpc_id 对账（[HANDOFF-peer-stream.md](HANDOFF-peer-stream.md) §2） |
-| 7 | launch_custom_workers | 功能空缺 | bsub 等自定义 launcher 集成仍未实现；expect_workers 逃生通道已可覆盖，按成本收益启动（[emir-capability-gap.md](emir-capability-gap.md) P0-1） |
+| 7 | launch_custom_workers | 功能空缺 | bsub 等自定义 launcher 集成仍未实现；expect_workers 逃生通道已可覆盖，按成本收益启动 |
 
 ### P3 — 条件触发（记录在案）
 
 | # | 项 | 触发条件 |
 |---|---|---|
 | 8 | F1 跨机实测 | 真实集群环境（TIER2 多副本读/net_probe/共享存储路径约定；localhost 自连已 QA 验证） |
-| 9 | M1/S1-3 索引内存上限（LRU/TTL） | 对象 >100 万或 master 内存 >500MB；EMIR 亿级立项时需提前实施（[emir-capability-gap.md](emir-capability-gap.md) P0-2） |
+| 9 | M1/S1-3 索引内存上限（LRU/TTL） | 对象 >100 万或 master 内存 >500MB；EMIR 亿级立项时需提前实施 |
 | 10 | F2 Freeze 后处理（idx 合并/_META 聚合） | load_db worker 不齐备真实痛点（设计方案见 [db-merge-design.md](db-merge-design.md)） |
 | 11 | 弹性 worker（运行时动态加入/退出） | 出现真实运行时缩扩容需求 |
 | 12 | Solver：PCG / master reduce RPC / Worker 进程复用 | reduce 原语补齐 + 迭代重构收益见顶（[solver/optimization-roadmap.md](solver/optimization-roadmap.md)，§四） |
-| 13 | EMIR 差距 P0-4 非均匀分区 / P1-1~P1-5 / P2 工程化 | 按 [emir-capability-gap.md](emir-capability-gap.md) §4 依赖序整体立项 |
-| 14 | L4 块级寻址 | 部分读（solver 子域切片）/块粒度缓存逐出需求（[chunked-transfer-design.md](chunked-transfer-design.md) §12） |
+| 13 | L4 块级寻址 | 部分读（solver 子域切片）/块粒度缓存逐出需求（[chunked-transfer-design.md](chunked-transfer-design.md) §12） |
 
 ### ⛔ 维持不做（既有裁定，不再列为欠账）
 

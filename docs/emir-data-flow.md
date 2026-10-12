@@ -1,6 +1,6 @@
 # EMIR 仿真分析数据流转流程
 
-> **定位**：业务层总流程权威文档——EMIR（电压降 IR 分析 + 电迁移 EM 分析）工具 13 个数据库的职责、输入、计算内容、依赖关系与架构裁定。框架能力缺口见 [emir-capability-gap.md](emir-capability-gap.md)，求解内核机制见 [solver/module.md](solver/module.md)，本文只定业务数据流。
+> **定位**：业务层总流程权威文档——EMIR（电压降 IR 分析 + 电迁移 EM 分析）工具 13 个数据库的职责、输入、计算内容、依赖关系与架构裁定。求解内核机制见 [solver/module.md](solver/module.md)，本文只定业务数据流。
 > **创建**：2026-09-06，经三轮流程确认收敛（v1 初稿 → v2 输入范围/负载电容/电流模型纠正 → v3 全局 ID 化/首期范围裁定）。
 > **编号约定**：①-⑬ 为本文内部约定，与流程讨论顺序一致。
 > **实施状态**：EMIRProject 子模块 + common 查找表（CMLookupTable）+ lib 库 db（build_lib_db）已实施（2026-09-06，见 [DOC_CHANGELOG.md](DOC_CHANGELOG.md)）；其余 db 随立项逐个落地。
@@ -141,8 +141,8 @@
 | 方向 | 说明 |
 |------|------|
 | dynamic current db | 时间序列电流波形（逐翻转时刻叠加），替代/并列 ⑪ 的平均电流值；配合 ⑧⑨ 的时间粒度数据 |
-| 动态 IR 多时间步求解 | 复用 solver dynamic 三阶段机制；含电容后矩阵非对称/不定依赖 Krylov 内核（[emir-capability-gap.md](emir-capability-gap.md) P1-2） |
-| 非线性迭代反馈 | 电流随节点电压变化的定点迭代（⑫ → ⑪ 反馈环），对应 P1-3 矩阵在线更新缺口 |
+| 动态 IR 多时间步求解 | 复用 solver dynamic 三阶段机制；含电容后矩阵非对称/不定，需 Krylov 内核类迭代法（待 EMIR 求解器立项评估，当前 solver 为框架能力验证项未覆盖） |
+| 非线性迭代反馈 | 电流随节点电压变化的定点迭代（⑫ → ⑪ 反馈环），需矩阵在线更新机制（待 EMIR 求解器立项评估） |
 | 信号网络提取并入 ⑥ | 若将来左端项需要 SPEF 信号网寄生，扩展 ⑥ 的输入（当前忽略） |
 
 ---

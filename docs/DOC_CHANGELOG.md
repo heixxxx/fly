@@ -2,6 +2,35 @@
 
 ---
 
+## 2026-10-12: 删除 emir-capability-gap.md——solver 为框架能力验证项，差距分析前提不成立（用户裁定）
+
+**裁定**：solver（src/solver RAS 求解器）是框架分布式求解能力的
+**验证项**，并非最终集成至 EMIR 项目的求解器。原文档以「solver 直接
+演进为 EMIR 求解器、直接吃真实电源网格负载」为前提的差距分析整体
+失去依据（用户 2026-10-12 裁定，主要指其中 solver 部分无意义），
+整份删除（git 历史可查）。
+
+**受影响条目的去向**（无信息丢失，均有既有落点）：
+- P0-3 分片传输已落地（chunked-transfer-design.md 权威）；credit
+  流控裁定记录同在 chunked-transfer-design.md §1，remaining-todo
+  F4/背压两处引用随本次改指 §1；
+- P0-1 剩余差距（跨机实测/launch_custom_workers）→ remaining-todo
+  F1 与「当前优先级」P2-7；
+- P0-2 索引内存上限 → remaining-todo「当前优先级」P3-9（M1/S1-3）；
+- P0-4 非均匀分区、P1-1~P1-5（归约原语/Krylov/矩阵在线更新/多级
+  粗网格/数值监控）、P2 solver 工程化——均为「最终 EMIR 求解器」
+  立项后才存在的设计输入，不再是待办；remaining-todo P3 表原第
+  13 行（按依赖序整体立项）随之删除，L4 块级寻址改号为 13；
+- emir-data-flow.md §6 演进方向两行的 P1-2/P1-3 引用改为
+  「待 EMIR 求解器立项评估」口径（正文业务事实保留）。
+
+**引用清理**：AGENTS.md 文档表行、docs/README.md 快速入口与主题
+表行、chunked-transfer-design.md 关联行、emir-data-flow.md 定位行
+与 §6 两处、remaining-todo.md 五处。DOC_CHANGELOG 既有历史条目中
+的引用按变更记录惯例不改写。
+
+---
+
 ## 2026-09-19: as_task kwargs 序列化修复——kwargs 静默丢弃缺陷归零
 
 **缺陷形态**：`@as_task` wrapper 仅序列化位置参数
