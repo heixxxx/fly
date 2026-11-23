@@ -1,19 +1,35 @@
 # spef db 立项方案（⑤ 寄生数据库——设计稿待裁定）
 
+> **状态：2026-11-24 用户裁定全部待裁定点按建议通过（§11），方案进入
+> 可实施状态。** 实施分工沿用 waveform 的裁定：主 agent 只做任务分配与
+> 测试设计，代码交 coder 子代理，评审交 code-reviewer 串行派发。同日
+> 新增贯通用设计的要求（§9.5）。
+
 > **定位**：EMIR 12 库体系 ⑤ spef db 的实现方案——解析 SPEF（Standard
 > Parasitic Exchange Format，标准寄生交换格式，IEEE 1481），把逐网
-> 寄生数据（总电容 + 完整 RC 明细）换算为全局网 id，**按 design db
-> 分区结构落库**。首期消费者 = power db 的 net load（负载电容——
-> emir-data-flow 裁定 4：首期仅服务右端项 net load，不进 matrix 端；
-> RC 明细是否入库见待裁定点 2）。方案先行，
-> 待逐节裁定后实施。上游 lib db 功耗数据补齐已另行实施（2026-10-13
+> 寄生数据换算为全局网 id，**按 design db 分区结构落库**。首期消费者 =
+> power db 的 net load（负载电容——emir-data-flow 裁定 4：首期仅服务
+> 右端项 net load，不进 matrix 端；落库范围见裁定 2）。上游 lib db
+> 功耗数据补齐已另行实施（2026-10-13
 > 任务，与本方案并行）。创建：2026-10-13。格式调研来源：IEEE 1481
-> 规范与公开语法文档（Wikipedia/Parser-SPEF 等）。
+> 规范与公开语法文档（Wikipedia/Parser-SPEF 等）；OpenSTA、OpenROAD
+> 源码核实结论见 §2.5。
 > **修订：2026-11-23**——对照 RedHawk-SC User Manual（Release 2024 R2）
 > 与 IEEE 1481 语法（开源静态时序工具 OpenSTA 的语法文件核实）：勘误
 > CONN 段 `*C` / `*L` 语义与 R_NET 结构两处；新增 §2.4 块级 SPEF、§12
 > 下游用途参考、§13 文档同步项；待裁定点保留原编号并补修订建议、新增
 > 三项（10-12）。
+> **同日第二轮**——通读 OpenSTA 的 SPEF 读取器（`parasitics/SpefReader.cc`、
+> `SpefReaderPvt.hh`、`Parasitics.tcl`）与 OpenROAD 的 SPEF 写出器
+> （`openroad/rcx/src/extSpef.cpp`、`include/rcx/extSpef.h`）：更正 R_NET
+> 的 `*RC` 语义（负载引脚的埃尔莫尔延迟，单值）；总电容口径改为「行首
+> 自报值 + 对地 / 耦合明细合计」三值并存（§2.1、§5.2、裁定 2）；
+> 新增 §2.5 方言与解析器容忍清单；§9 测试规划按调研落实；待裁定点
+> 2、6、8、10、11、12 的补充建议随源码事实更新；§12 增 OpenSTA 对照。
+> 同日第三轮——并入两份补调研（OpenSTA 官方命令参考页、OpenROAD 官方
+> 文档）：§9.1 写明本机提取不可行的依据；§12 增 OpenROAD 对照表，
+> OpenSTA 对照表补多值取值、层次化、忽略的构造等行；§2.5 补 `*RES` 段
+> 可缺省、单位刻度可为小数、`*CONN` 段被 OpenSTA 整段忽略。
 
 ---
 
@@ -26,8 +42,9 @@
 - **直接前驱**（显式传参）：design db（网名映射器 + 分区 NETS 连接
   表〔连接位分区枚举——路由依据，同 waveform 复制范围机制〕+ id
   反向映射）。
-- **下游消费者**：power db（首期：total_cap 的 net load）；演进期
-  matrix db / 提取端（RC 明细的下游消费另立项——本库只存不消费）。
+- **下游消费者**：power db（首期：整网电容的 net load）；演进期
+  动态电流、信号电迁移、matrix 端扩展（RC 明细的下游消费另立项——
+  明细是否入库见裁定 2）。
 - **不依赖**：lib/tech/timing/waveform——独立数据链（寄生与活动/
   时序正交）。
 
@@ -59,17 +76,41 @@ p_clk I  p_din I  p_dout O           ← 设计端口（方向）
 *END
 ```
 
-- **NAME_MAP**：索引别名展开（`*123` 引用 → 头部映射名）——解析
-  边界一次展开，落库名字为展开全名；未登记索引 = 流级破损 raise。
-- **节点形态**：`实例名:引脚名`（换算连接位）| `*n:m`（网内内部
-  节点，保留原文字串）| 端口名（`*P` 声明）。
+- **整网总电容的口径**（2026-11-23 源码核实）：`*D_NET` 行首的总电容 =
+  本网对地电容之和 + 耦合电容全值——OpenROAD 的写出器把网的「总耦合
+  电容」直接加进行首值（`extSpef.cpp` 的 `addCouplingCaps`）；维基百科
+  SPEF 条目与 Cadence 样例的求和一致。OpenSTA 的读取器则丢弃行首值、
+  按明细累加（`SpefReader.cc` 注释 "Net cap (total_cap) is ignored"）。
+  两者在正常文件里相等，但有出入的情况：行首值只有 6 位有效数字（写出
+  器用 `%g`）；写出器有开关可让耦合电容只在一个网的段里出现（默认是在
+  两个网的段里各写一次）。落库三值并存——行首自报值、对地合计、耦合
+  合计（§5.2），用哪个由消费侧定。
+- **耦合电容**：`*CAP` 的双节点记录。两个节点分属两个信号网时，同一条
+  记录默认在两个网的段里各出现一次。首版只累计（系数 1，同 OpenSTA 与
+  OpenROAD 写出器的口径），不随相邻网翻转方向调整。节点之一在供电类
+  网上时怎么写，未核实（调研缺口）。
+- **供电类网**：OpenROAD 的写出器对供电类网不写 `*D_NET` 与 `*PORTS`
+  条目（`getSigType().isSupply()` 跳过）——电源地网通常不在文件里；
+  文件里若有，按 pg 网跳过（§2.2，防御性口径）。
+- **NAME_MAP**：`*<索引> <名字>`，可代网名、实例名、端口名；引脚名不
+  编号（写作 `*2453:CLK`）；映射名与原名可以在同一文件里混用。解析
+  边界一次展开，落库名字为展开全名。引用了未登记的索引：OpenSTA 只
+  告警、该名字视为找不到（`warn(1645)`）；本库处置见裁定 11。
+- **节点形态**：按**最后一个**引脚分隔符切分——前半经名字映射查到实例
+  即「实例:引脚」；查到网且后半全是数字即网内内部节点（`网名:序号` 或
+  `*编号:序号`，序号不必从 1 起）；没有分隔符即端口名。首版节点原文
+  只在解析期用于判定对地 / 耦合与归属，不落库（裁定 2）；网 id 由网段
+  头的网名决定。
 - **R_NET（缩减网形态）**：`*R_NET net total_cap` + 逐驱动缩减模型——
-  `*DRV <驱动引脚> *CELL <单元名> *C2_R1_C1 <c2> <r1> <c1>`（驱动端
-  π 模型：负载端电容 / 串联电阻 / 驱动端电容）+ `*LOADS` 下逐负载
-  `*RC <负载引脚> <r> <c>`（可带 `*Q` 极点 / `*K` 留数）。行首同样带
-  整网总电容——处置见待裁定点 5。
-- **min:typ:max 三值形态**（`*DESIGN_FLOW "MIN_MAX"` 下电容/电阻写
-  三值）：首版取 typ 单值，min/max 观测计数（待裁定点 6）。
+  `*DRV <驱动引脚> *CELL <单元名> *C2_R1_C1 <c2> <r1> <c1>`（π 模型：
+  负载端电容 / 串联电阻 / 驱动端电容）+ `*LOADS` 下逐负载
+  `*RC <负载引脚> <埃尔莫尔延迟>`（**单值**，时间单位；可带 `*Q` 极点
+  数 / `*K` 留数）。行首同样带整网总电容——处置见裁定 5。
+- **多值形态**：数值可以写成 1 个，或 n 个用冒号连接（n = 工艺角数，
+  OpenROAD 的写出器按工艺角个数输出）。OpenSTA 的语法只接受 1 个或
+  3 个，多工艺角靠「一个工艺角一个文件」加 `-min` / `-max` 标注；它的
+  取值下标固定为 0（`SpefReaderPvt.hh` 的 `triple_index_{0}`，从不
+  赋值）。本库取值规则见裁定 6。
 - **多文件**：`spef_files` 列表（单文件亦列表；块绑定三形态 +
   strip_prefix 复用 timing/waveform 先例——SPEF 按 block 提取的
   局部名场景与 TWF/VCD 同构）。
@@ -85,13 +126,31 @@ p_clk I  p_din I  p_dout O           ← 设计端口（方向）
 - NAME_MAP 展开 + DIVIDER 归一（`/`）先行；pg 网（VDD/VSS 全局 pg
   集命中）→ 跳过 + 计数（寄生无功耗语义，同 waveform 口径）。
 - 未命中网名 → 跳过 + 计数（SPEF 与 design 网表失配的兜底观测）。
+- 网名命中、但 design db 的分区 NETS 里没有这个网（未布线，无几何）
+  → 跳过 + 计数（SPMG::0011），下游视为未覆盖。
+- **名字的转义与查找**（2026-11-23 源码核实）：规范要求反斜杠转义的
+  字符集合见 OpenSTA 的 `SpefLex.ll`（括号、方括号、算术符号、引号等
+  30 余个字符）。但 OpenROAD 的写出器对网名、引脚名**不转义方括号**
+  （总线位直接写 `count[0]`），对实例名转义；且存在不合规转义——OpenSTA
+  为此放宽了查找（`SpefReader.cc` 注释 "some commercial tools don't
+  follow the rules"）。本库建议：名字查找先按原名，未命中再按去转义
+  的名查，仍不命中才计未匹配。
+- `*DIVIDER` / `*DELIMITER` 的取值是 `.` `/` `|` `:` 四种；`*BUS_DELIMITER`
+  的合法括号对是 `[ ]`、`{ }`、`( )`、`< >`。
+- 端口方向取值 `I` / `O` / `B`；未知的方向值计未知、不报错（OpenSTA
+  `warn(1646)` 同口径）。
 
-### 2.3 单位（待裁定点 7）
+### 2.3 单位（裁定 7）
 
 头声明 `*C_UNIT`/`*R_UNIT`/`*L_UNIT`/`*T_UNIT` 各自独立（1/10/100 ×
 单位档）。**建议内部统一：电容飞法（fF，double）、电阻欧姆（ohm，
 double）**——换算 = 头档位 ×10 幂，无损且消费面（power/未来 matrix）
 口径单一；时间/电感首版不消费、仅记录头原值。
+
+单位词（2026-11-23 源码核实）：OpenSTA 接受 NS / PS、PF / FF、OHM /
+KOHM、HENRY / MH / UH，未知单位词只告警；OpenROAD 的写出器档位恒为 1。
+本库口径：未知单位词意味着全部数值无法换算，属文件形态错，由文件入口
+任务失败透出。刻度按实数解析（StarRC 的样例写 `1.0`）。
 
 ### 2.4 块级 SPEF 与跨块边界的网（2026-11-23 补设计）
 
@@ -100,10 +159,10 @@ double）**——换算 = 头档位 ×10 幂，无损且消费面（power/未来
 连接归并）——块内段（块绑定文件）与顶层段（顶层文件）是互补的两部
 分寄生，整网负载 = 两者相加，而非二选一。按来源文件的绑定作用域区分：
 
-| 来源组合 | 同一展平网上的条目关系 | 合并语义（建议） |
+| 来源组合 | 同一展平网上的条目关系 | 合并语义（裁定 8） |
 |---|---|---|
 | 顶层文件 + 块实例绑定文件 | 互补（各描述不同走线段） | **相加** |
-| 同一作用域的两个文件（两个顶层文件 / 绑同一块实例的两个文件） | 重合（输入异常） | 冲突处置——待裁定点 8 |
+| 同一作用域的两个文件（两个顶层文件 / 绑同一块实例的两个文件） | 重合（输入异常） | 冲突处置——裁定 8 |
 | 块定义绑定（定义级复制，timing §7.2） | 逐实例各得一份（不同全局网） | 无合并；边界网的负载只含块内部分——固有局限，观测计数 |
 
 - 判定材料在合并任务本地：分片条目携带来源文件序，文件的绑定形态
@@ -112,6 +171,54 @@ double）**——换算 = 头档位 ×10 幂，无损且消费面（power/未来
 - RedHawk-SC 的参照：事件回放流程对「块级运行与整芯片运行的负载电容
   差异」做了专门处理——块级边界实例的负载会因顶层连接而变化，工具改
   取整芯片运行的负载电容（RedHawk-SC User Manual 第 276 页）。
+- OpenSTA 的先例（2026-11-23 源码核实）：`read_spef` 对同一个网**默认
+  累加**——网已有寄生网络就往里加（`SpefReader.cc` 的 `dspfBegin`），
+  加 `-replace` 才先清空；`read_spef -path` 读块级文件时，寄生网络挂在
+  「最高连接网」上（`dspefNet`，注释 "The highest connected net owns
+  the parasitic network."）——跨块边界的各段并入同一个网络对象。
+
+### 2.5 方言与解析器容忍清单（2026-11-23 源码核实）
+
+规范之外的差异主要来自 OpenROAD 的写出器（OpenRCX）。下表是解析器
+必须接受的事实，逐条有源码对应：
+
+| 构造 | 事实 | 出处 | 对解析器的要求 |
+|---|---|---|---|
+| `*CAP` 行首的整数编号 | 可以省略 | `extSpef.cpp` `writeCNodeNumber`（开关 `_noCnum`） | 编号可选；编号不参与任何逻辑（OpenSTA 读取时弃用该参数） |
+| `*RES` 行首的整数编号 | 始终写出——省略编号的开关只作用于 `*CAP` 行 | `extSpef.cpp` `writeRes`、`writeCNodeNumber` | 正常解析 |
+| `*RES` 段 | 单引脚网可以没有；关键字后也可以零条记录 | 写出器；维基百科 SPEF 条目 | 各段都可缺省，零条记录合法 |
+| `*I` 行的方向字段 | 来自下层的具名节点，`*I` 行只有名字 | `extSpef.cpp` `writeITerms` | 方向可选 |
+| 数值个数 | 1 个，或 n 个用冒号连接（n = 工艺角数） | `extSpef.cpp` `writeRCvalue` | 接受任意个数；取值规则见裁定 6 |
+| 耦合电容出现次数 | 默认在两个网的段里各一次；开关可改为只在源端网 | `extSpef.h` `_symmetricCCcaps = true` | 按记录累计；行首值与明细合计的差入统计 |
+| 行首总电容 | 对地 + 耦合全值；`%g` 输出，6 位有效数字 | `extSpef.cpp` `addCouplingCaps` | 与明细合计并存（§5.2） |
+| 供电类网 | 不写网段与端口条目 | `extSpef.cpp` `writeNetMap` 与端口表写出 | pg 网跳过属防御性口径 |
+| 名字映射表 | 可选；映射网名与实例名 | `extSpef.cpp`（开关 `_writeNameMap`） | 映射名与原名可混用 |
+| 文件头 | `*SPEF "ieee 1481-1999"`（小写）；`*DESIGN_FLOW "NAME_SCOPE LOCAL" "PIN_CAP NONE"`（见过的取值还有 `"COUPLING C"`）；四个单位行，刻度可以是小数（StarRC 样例写 `1.0`） | `extSpef.cpp` `SpefHeader::string`；调研底稿 | 版本串大小写不敏感；DESIGN_FLOW 只收集不解释；刻度按实数解析 |
+| 注释 | `//` 与 `/* */` 都合法 | OpenSTA `SpefLex.ll` | 两种都支持 |
+| gzip 压缩文件 | OpenSTA 透明解压读取 | `SpefReader.cc` `gzstream::igzstream` | 同 waveform 裁定 IV-1 |
+| `*CONN` 段 | OpenSTA 读取时整段忽略——语法动作里没有读取调用；其官方命令参考页列出的忽略项还有 `*DESIGN_FLOW`、`*S`、`*D`、`*Q`、`*K` | OpenSTA `SpefParse.yy`；OpenSTA 命令参考页 | 本库首版同样不消费（裁定 3） |
+| `*N` 节点坐标 | 开启坐标选项时输出，位于 `*CONN` 的 `*I` / `*P` 行之后 | `extSpef.cpp` `writeNodeCoords` | 接受并忽略 |
+| `*S` | 是转换时间，不是形状记录；OpenROAD 不输出 | OpenSTA `SpefParse.yy` | 接受并忽略 |
+| `*V`、`*INDUC`、`*D_PNET`、`*R_PNET`、`*PHYSICAL_PORTS`、`*DEFINE`、`*PDEFINE` | 语法内的构造；OpenROAD 不输出 | OpenSTA `SpefParse.yy` | 接受并忽略 / 跳过 + 计数（裁定 12） |
+
+未核实（调研缺口）：规范原文与各商业提取工具的官方文档没有取到。
+StarRC、Quantus、Calibre xACT 是否输出名字映射表、是否写电源地网的
+网段、多工艺角是一个文件多值还是多个文件，以及 `*DESIGN_FLOW` 各标记
+的含义，都未核实。
+
+商业提取工具的方言背景（来源都不是官方文档，只作背景）：StarRC 有
+把耦合电容并入对地电容的开关（选项名 `CC_to_GND`），默认单位飞法、
+欧姆，样例使用名字映射表；Cadence 的样例单位是皮法，`*DESIGN_FLOW`
+里有 `"COUPLING C"`，端口条目带坐标；Calibre xACT 可以做「只含对地
+电容」的提取，也有耦合电容缩减选项。对本库的含义：有的文件耦合电容
+合计本来就该是零——三值并存的形态天然覆盖，消费侧不必区分来源工具。
+
+来源：OpenSTA 仓库（github.com/parallaxsw/OpenSTA）的 `parasitics/`
+下 `SpefReader.cc`、`SpefReaderPvt.hh`、`SpefParse.yy`、`SpefLex.ll`、
+`Parasitics.tcl`；OpenROAD 仓库（github.com/The-OpenROAD-Project/
+OpenROAD）的 `openroad/rcx/src/extSpef.cpp` 与 `openroad/rcx/include/
+rcx/extSpef.h`；维基百科 SPEF 条目；RedHawk-SC User Manual（Release
+2024 R2）。均为 2026-11-23 的 master 快照。
 
 ## 3. API
 
@@ -123,7 +230,7 @@ build_spef_db(name, spef_files, design_db, settings=None, alpha=None)
 
 - `spef_files: list`——SPEF 文件列表（元素 = 纯路径或块绑定描述符，
   同 timing/waveform 形态）。
-- 三段式流程（§5）；入口预处理不读文件内容，SPEF 嗅探（`*SPEF` 头
+- 三段式流程（§6）；入口预处理不读文件内容，SPEF 嗅探（`*SPEF` 头
   关键字 + gzip 魔数〔gzip 支持口径同 waveform 裁定 IV-1：流程层
   解压临时文件〕）下放文件入口任务。
 
@@ -131,35 +238,39 @@ build_spef_db(name, spef_files, design_db, settings=None, alpha=None)
 
 | API | 对象 | 说明 |
 |---|---|---|
-| `load_spef_summary(db)` | `summary` | 单位/来源文件/网命中数/未命中计数/耦合与 R_NET 观测 |
+| `load_spef_summary(db)` | `summary` | 单位 / 来源文件 / 网命中数 / 各类未命中与跳过计数 / 覆盖率统计（裁定 10）/ 行首值与明细合计不一致统计 |
 | `iter_spef_partition(db)` | DESIGN_OBJ 锚 | 枚举全部分区 (xp, yp)（空分区空对象，先例同构） |
-| `load_partition_spef(db, xp, yp)` | `PART_{xp}_{yp}.SPEF` | 本区逐网寄生：net id → {总电容 + 明细}（power db 取 total_cap；明细为未来扩展） |
-| debug：`get_net_parasitics(net_id 或 net 名)` | 同上 + 反查 | 单网点查（LRU 8 先例） |
+| `load_partition_net_load(db, xp, yp)` | `PART_{xp}_{yp}.NET_LOAD` | 本区逐网网负载（轻对象）：net id → {行首自报总电容、对地合计、耦合合计、贡献来源、缩减形态标记}——power db 的输入 |
+| debug：`get_net_load(net_id 或 net 名)` | 反查 | 单网点查（LRU 8 先例） |
 
 ## 4. 用户设置（settings / alpha）
 
-- **settings（首版空表）**：无稳定键。消费口径（total 含/不含耦合、
-  min/max 角选择）属 **power db 消费侧**——本库存原始量（total_cap
-  文件自报值 + 对地/耦合分列明细），口径由消费侧推导（同 waveform
-  「率由消费侧推导」哲学）。
+- **settings（首版空表）**：无稳定键。消费口径（总电容用行首自报值
+  还是明细合计、对地 / 耦合怎么取舍、多工艺角选哪个）属 **power db
+  消费侧**——本库存原始量（行首自报总电容 + 对地 / 耦合明细合计），口径
+  由消费侧推导（同 waveform「率由消费侧推导」哲学）。
 - **alpha**：
 
 | 键 | 默认 | 约束 | 说明 |
 |----|------|------|------|
 | `chunk_size_mb` | 256 | int ≥ 16 | 单文件字节切块大小（D_NET 段边界切块，同 timing 先例） |
+| `value_index` | —（缺省规则见裁定 6） | int ≥ 0 | 多值形态取第几个值；不给时按缺省规则 |
 
 ## 5. 数据结构（C++，前缀 SP——既定简写）
 
 ### 5.1 解析边界（`sp_types.h`，不落库）
 
 ```cpp
-struct SPConn { CMString node_; CMString direction_; CMString cell_; 
-                double cap_obs_ff_; };          // *I/*P 行（cap_obs = *L 引脚负载电容；*C 为坐标 x y，不入此字段）
-struct SPCap  { uint32_t id_; CMString node1_, node2_;  // node2 空 = 对地
-                double cap_ff_; };              // *CAP 行（两形态统一）
+struct SPConn { CMString node_; CMString direction_; CMString cell_;
+                double cap_obs_ff_; };
+                // *I/*P 行：cap_obs = *L 引脚负载电容；*C 为坐标 x y，
+                // 不入此字段；direction 可为空（具名节点的 *I 行无方向）
+struct SPCap  { uint32_t id_; CMString node1_, node2_;  // node2 空 = 对地；
+                double cap_ff_; };              // id 可为 0（编号可省略）
 struct SPRes  { uint32_t id_; CMString node1_, node2_; double res_ohm_; };
 struct SPNet  { CMString name_;                 // NAME_MAP 展开全名（原文形态）
-                double total_cap_ff_;           // *D_NET 行自报值
+                double total_cap_reported_ff_;  // *D_NET / *R_NET 行首自报值
+                uint32_t value_count_ = 1;      // 本网数值的个数（多值形态观测）
                 CMVector<SPConn> conns_; CMVector<SPCap> caps_;
                 CMVector<SPRes> res_; };
 class SPSpefFile { 头元信息（design/divider/units/design_flow 列表）
@@ -170,36 +281,44 @@ class SPSpefFile { 头元信息（design/divider/units/design_flow 列表）
 ### 5.2 落库形态（`sp_partition.h`）
 
 ```cpp
-// 逐网寄生（id 化终态；明细保留解析边界原文形态——未来 matrix 立项
-// 时再决定节点 id 化，本库不预支）
-struct SPNetParasitics {
+// ── 网负载轻对象（PART_{xp}_{yp}.NET_LOAD 正式对象）──
+// 首期消费者 power db 的全部所需。每网一条，按连接位分区复制（每区自足）。
+struct SPNetLoad {
     CMNetId net_id_;
-    double total_cap_ff_;        // 文件自报（消费口径见 §4——原始量保存）
-    CMVector<SPCap> caps_;       // 对地与耦合分列同存（node2 区分）
-    CMVector<SPRes> res_;
-    // conn 明细：首版不入库（消费面无需求；*L 引脚负载电容观测值计入
-    // summary 统计）——待裁定点 3
+    double total_cap_reported_ff_;   // 行首自报总电容（提取工具口径）
+    double ground_cap_ff_;           // 明细合计：对地电容
+    double coupling_cap_ff_;         // 明细合计：耦合电容（全值，系数 1）
+    // 贡献来源位图：第 i 位 = 第 i 个输入文件对该网有贡献（互补相加可
+    // 追溯；位数 = 文件数，超过 64 位时只记前 64 个并计数）
+    uint64_t source_mask_ = 0;
+    uint8_t flags_ = 0;              // bit0 = 缩减形态（R_NET 收录，裁定
+                                     // 5）：没有明细，两个合计值无效
 };
-class SPPartitionSpef {          // PART_{xp}_{yp}.SPEF 正式对象
+class SPPartitionNetLoad {
     CMPartitionId part_id_;
-    CMUnorderedMap<CMNetId, SPNetParasitics> items_;   // 键 = 网全局 id
+    CMVector<SPNetLoad> items_;      // 按 net id 升序（确定性 + 二分查找）
 };
 class SPSummary {                // "summary" 正式对象
     struct SPFileStats { CMString source_file_;
                          double c_unit_ff_per_unit_;    // 单位换算原值（可追溯）
                          uint64_t net_count_, hit_count_, skipped_pg_count_;
-                         uint64_t net_name_miss_count_, rnet_obs_count_,
-                                  minmax_obs_count_, coupling_cap_count_; }
+                         uint64_t net_name_miss_count_, unrouted_net_count_;
+                         uint64_t rnet_count_, multi_value_net_count_;
+                         uint64_t coupling_cap_count_, name_map_miss_count_; }
     CMVector<SPFileStats> files_;
-    // 全局计数 + 单位基准声明（内部 fF/ohm）
+    // 全局：覆盖率统计（裁定 10）、行首值与明细合计不一致的网数与
+    // 最大相对偏差（SPMG::0013）、同作用域重合数、跨作用域相加数、
+    // 单位基准声明（内部 fF/ohm）
 };
 ```
 
 ### 5.3 中间形态（temp）
 
-`SPEntrySlice`——逐块产物分区分片（本块触及各分区的
-`net id → SPNetParasitics 片段` + 统计 delta）。网不跨块（D_NET 段
-边界切块）→ 合并 = 分片收集 + 跨文件同网冲突处理。
+`SPEntrySlice`——逐块产物分区分片：本块触及各分区的
+`net id → 逐网分片 {行首自报值、对地合计、耦合合计、来源文件序、
+缩减形态标记}` + 统计 delta。网不跨块（D_NET 段边界切块；单个网段超过
+切块阈值时**不拆分**，整段进一块）→ 合并 = 按来源作用域相加 / 同作用域
+重合处置（§2.4、裁定 8）。
 
 ## 6. 建库流程（三段式 + 直接任务链，全先例复用）
 
@@ -217,7 +336,8 @@ _spef_flow_task（根任务；依赖 design db 必要对象锚，跨 db 直读�
 
 _sp_file_entry_task（每文件一任务）：
   SPEF 嗅探（gzip 魔数 → 流程层解压临时文件〔同 waveform 裁定 IV-1〕；
-  *SPEF 头关键字形态校验——形态错任务失败透出）
+  *SPEF 头关键字形态校验——版本串大小写不敏感，形态错任务失败透出；
+  未知单位词同属形态错）
   → 头部解析（单位/DIVIDER/NAME_MAP → temp 对象〔键 `__spg__vars_{fi}`
   同 waveform var 表先例——块任务共享读〕）
   → 切块扫描 sp_plan_file_chunks（D_NET 段边界字节区间——段自包含，
@@ -225,14 +345,16 @@ _sp_file_entry_task（每文件一任务）：
   → 体内提交逐块解析任务 + 块数写清单对象
 
 T2 逐块解析任务 sp_convert_chunk（每块一任务，全并行）：
-  逐 D_NET 段解析（NAME_MAP 展开 + CONN/CAP/RES 明细 + 单位换算）
-  → 网名换算（§2.2）→ net id → 连接位分区枚举路由
+  逐 D_NET / R_NET 段解析（名字映射展开 + 单位换算 + 取值规则
+  〔裁定 6〕；D_NET 另累计对地 / 耦合电容，行首自报值原样保留）
+  → 网名换算（§2.2，含转义容错）→ net id → 连接位分区枚举路由
   → 各分区 SPEntrySlice
 
 T3 每分区一合并任务 sp_merge_partition：
-  分片收集 → 跨文件同网冲突处理（后文件覆盖〔对齐 waveform 场景 b
-  裁定〕+ 计数——待裁定点 8）
-  → PART_{xp}_{yp}.SPEF
+  按来源作用域合并（不同作用域相加；同作用域重合的处置见裁定 8）
+  → 本区覆盖率统计（对照该区 NETS——裁定 10）
+  → 行首值与明细合计差异统计（SPMG::0013）
+  → PART_{xp}_{yp}.NET_LOAD
 
 T4 汇总任务：逐文件统计 + 全局计数 → summary → freeze 标记
 ```
@@ -242,7 +364,7 @@ T4 汇总任务：逐文件统计 + 全局计数 → summary → freeze 标记
 - 可 raise 场景两类（先例同构）：文件不可读（预处理拦截）；文件形态
   错（嗅探不通过，入口任务失败透出）。
 
-## 7. 消息族（前缀 SPMG——待裁定点 1）
+## 7. 消息族（前缀 SPMG——裁定 1）
 
 | 消息 | 级别 | 场景 |
 |------|------|------|
@@ -250,13 +372,15 @@ T4 汇总任务：逐文件统计 + 全局计数 → summary → freeze 标记
 | SPMG::0002 | warn | 连接位节点未匹配（明细完整性观测，不阻塞） |
 | SPMG::0003 | warn | pg 网跳过（VDD/VSS 全局 pg 集命中） |
 | SPMG::0004 | warn | 全部输入解析成功但 0 有效网（空结果放行） |
-| SPMG::0005 | warn | R_NET 缩减网形态观测（跳过 + 计数——待裁定 5） |
-| SPMG::0006 | warn | min:typ:max 多值形态观测（取 typ——待裁定 6） |
-| SPMG::0007 | warn | 跨文件同网冲突（后文件覆盖 + 计数——待裁定 8） |
+| SPMG::0005 | warn | R_NET 缩减网形态收录观测（行首总电容照常收录，π 模型明细不入库——裁定 5） |
+| SPMG::0006 | warn | 多值形态观测（按取值规则取其一——裁定 6） |
+| SPMG::0007 | warn | 同作用域的跨文件同网重合（处置见裁定 8 + 计数） |
 | SPMG::0008 | fatal(80) | 全部文件解析失败 |
 | SPMG::0009 | error | 绑定目标未命中（条目级兜底跳过该文件，仅全部跳过才失败） |
-| SPMG::0010 | warn | 段级语法破损跳过（含 NAME_MAP 索引未登记——处置口径待裁定点 11） |
+| SPMG::0010 | warn | 段级语法破损跳过 |
 | SPMG::0011 | warn | 网名命中但 design db 无布线几何（分区 NETS 无此网——未布线设计的合法兜底，同 WFMG::0003 / TIMG::0003 口径）：跳过 + 计数，下游该网视为未覆盖 |
+| SPMG::0012 | warn | 名字映射表里引用了未登记的索引（处置见裁定 11） |
+| SPMG::0013 | warn | 行首总电容与明细合计不一致（超过容差的网数与最大相对偏差——只观测，不改数值） |
 
 ## 8. 模块结构（简写 SP 既定）
 
@@ -272,31 +396,160 @@ src/emir/spef/
 └── tests/    sp_parser_test.cpp + flow error/structure .py
 ```
 
-## 9. 测试规划
+## 9. 测试规划（2026-11-23 按调研落实）
 
-- **测试数据（待裁定点 9——生成策略）**：真实 SPEF 优先开源工具产
-  出——候选：OpenROAD 寄生提取器（rcx，DEF+LEF → SPEF）或 magic
-  提取流（.ext → SPEF）；轻量替代 = Parser-SPEF 开源仓库的真实样张
-  + 手写规范样张（全构造覆盖：NAME_MAP/对地+耦合电容/内部节点/
-  端口/R_NET 观测/min:max 观测/单位各档/破损段）。**与 design db 测试
-  设计名对齐**（既有 qa/emir/data/waveform/design 三件套优先复用）。
-- **单测**：解析器全构造；换算与路由（net id + 连接位分区枚举 +
-  跨区每区一份）；合并（跨文件覆盖）；单位换算各档。
-- **QA e2e**：基础建库（网命中 + total_cap 精确断言〔手工推导〕+
-  分区路由 + 空分区）；多文件块绑定；未命中网兜底；错误流（gzip
-  已支持口径/破损/全失败 fatal）；确定性双跑。
-- **回归锚点**：与 waveform 的统计推导表交叉——同一设计的网集合
-  命中数可对齐断言。
+### 9.1 测试数据（裁定 9）
+
+- **主路线：手写规范样张，对齐既有设计**。沿用
+  `qa/emir/data/waveform/design/wf_small.def` 的实例名与网名（14 个
+  实例、16 个网），数值手工可推导——与波形数据库「Verilog 网表与 DEF
+  同源生成」的做法同构。解析器单测样张放 `src/emir/spef/tests/data/`，
+  端到端样张放 `qa/emir/data/spef/`。
+- **真实工具样张：只作解析器回归参照，首版不入库**。OpenSTA 仓库的
+  `examples/noise_delay1.spef`（文件头自述由 OpenROAD 生成，含两种
+  注释、科学计数法、跨网耦合）与
+  `parasitics/test/parasitics_coupling_spef.spef`（含名字映射表、耦合
+  电容、电源地声明）。OpenSTA 是 GPL-3.0，入库前须确认；首版留在调研
+  底稿目录，单测按「文件存在才跑」处理。**这些样张里没有** `*R_NET`、
+  `*D_PNET`、多值形态——只能手写。
+- **本机提取（OpenROAD 的 OpenRCX）：不作为首版前提**。官方文档写明
+  提取命令 `extract_parasitics`「基于已布线设计提取，没有布线信息就不
+  返回寄生」——既有测试设计的 DEF 没有布线，直接不可行。Nangate45 的
+  提取规则文件存在（OpenROAD-flow-scripts 仓库
+  `flow/platforms/nangate45/rcx_patterns.rules` 与 `setRC.tcl`）；安装以
+  预编译包为先（官方推荐顺序：预编译包、Docker 镜像、本地编译）。仍未
+  核实：本机的具体安装步骤。列为演进项（§10）。
+
+### 9.2 解析器单测（`sp_parser_test.cpp`）
+
+按 §2.5 的清单逐项构造，每项至少一个正例；另加格式错误负例：
+
+- **头部**：版本串大小写两形态；`*DESIGN_FLOW` 单串与多串；四个单位
+  行的各种单位词；`*BUS_DELIMITER` 带与不带；`//` 与 `/* */` 注释；
+  gzip 压缩输入。
+- **名字**：名字映射表（映射名与原名混用、引脚名不编号、引用未登记
+  索引）；总线位不转义方括号；四种分隔符；按最后一个分隔符切分。
+- **`*PORTS`**：方向 I / O / B / 未知值。
+- **`*D_NET`**：行首值与明细和相等 / 不等两种；行尾 `*V`；`*CAP` 带编号
+  与不带编号；耦合电容（两个信号网之间；两个节点同网）；零值电容；
+  内部节点 `网名:序号` 与 `*编号:序号`（序号不从 1 起）；`*RES`。
+- **`*CONN`**：`*I` / `*P` 行带 `*L`、`*C`、`*S`、`*D`；无方向的 `*I`
+  行；`*N` 坐标记录。
+- **`*R_NET`**：`*DRV` / `*CELL` / `*C2_R1_C1` / `*LOADS` / `*RC`（埃尔
+  莫尔延迟，单值）/ `*Q` / `*K`。
+- **数值**：1 个、2 个、3 个、4 个值的形态；科学计数法；整数写法。
+- **跳过项**：`*INDUC`、`*D_PNET`、`*R_PNET`、`*PHYSICAL_PORTS`、
+  `*DEFINE`、`*PDEFINE`——接受并忽略 / 跳过 + 计数。
+- **负例**：缺 `*END`、缺文件头、未知单位词、网段内记录残缺等——段级
+  破损 → 该段跳过 + 计数；文件级破损 → 入口任务失败。
+- **切块**：按网段边界切块的正确性；单个网段超过切块阈值时不拆分；
+  头段前缀区间。
+
+### 9.3 换算 / 路由 / 合并单测（`sp_partition_test.cpp`）
+
+- **名字换算**：网名命中 → 全部连接位分区各一份；未命中；pg 网跳过；
+  未布线网；转义容错（原名未命中、去转义后命中）。
+- **取值规则**：三个值取第 1 个；其它个数取第 0 个；`value_index` 覆盖。
+- **合并**：顶层文件 + 块实例绑定文件对同一网相加；同作用域重合的
+  处置；块定义绑定逐实例复制。
+- **统计**：覆盖率四项；行首值与明细合计的差异统计。
+- **空结果**：0 有效网 → 空结果放行（SPMG::0004）。
+
+### 9.4 端到端（`qa/emir/test_emir_spef_flow.py`）
+
+建库按批提交、每批 `wait_tasks` 一次等待（同波形用例的改法）。
+
+| case | 断言要点 |
+|---|---|
+| 基础建库 | 对齐 `wf_small` 的手写样张：逐网三个电容值精确断言；分区路由与 design 一致；空分区空对象 |
+| 多文件 | 顶层 + 块实例绑定互补相加；同作用域重合计数 |
+| 兜底 | 未命中网 / pg 网 / 未布线网 / 未登记映射索引——各自的计数与消息 |
+| 覆盖率 | 命中率、未覆盖网数、未覆盖实例数、零电容实例数 |
+| R_NET | 行首总电容收录 + 缩减形态标记 + 计数 |
+| gzip | 压缩样张与明文样张逐字节一致 |
+| 错误流 | 破损文件 → 入口任务失败、库不冻结；全部文件失败 → fatal 码 80 |
+| 确定性 | 同输入双跑逐字节一致 |
+
+### 9.5 贯通下游用的已布局布线设计（2026-11-24 用户新增要求）
+
+**要求**：寻找现成的设计，或用开源工具跑出一批**已完成布局布线**的
+设计，能够贯通后续的电源网络提取（④ extraction db）、功耗计算（⑨
+power db）与电压降计算（⑪ analysis db）。这是跨数据库的测试数据需求，
+不只服务于本库。
+
+各环节需要的数据：
+
+| 环节 | 需要的数据 |
+|---|---|
+| ③ design db | DEF（布局布线完成，含电源网络的 SPECIALNETS 段）+ LEF（工艺与单元） |
+| ⑤ spef db | SPEF（信号网寄生） |
+| ④ extraction db | DEF 里电源网络的几何（条带、环、通孔）+ 工艺层的电阻参数 |
+| ⑧ waveform db | 门级网表 + 激励，仿真产出 VCD；或只用 settings 给统计值 |
+| ⑦ timing db | 时序窗口文件——开源流程产出这一项的办法还没有（缺口） |
+| ⑨ power db | Liberty 库（① 已支持 Nangate45） |
+
+途径（2026-11-24 核实，工具链的实际运行结果另行记录）：
+
+- 本机是 Ubuntu 20.04（glibc 2.31），没有 Docker。OpenROAD 在 2024 年
+  12 月之前发布过 Ubuntu 20.04 的预编译包（如
+  `openroad_2.0-17598-ga008522d8_amd64-ubuntu-20.04.deb`），可以在本机
+  原生运行；解包到项目工作目录使用，不改系统。
+- 用 OpenROAD-flow-scripts 的 Nangate45 平台跑完整流程（布局、时钟树、
+  布线、寄生提取），产出带电源网络的 DEF、SPEF、网表。本地已有的
+  Nangate45 单元库与该平台同源（许可文件的校验值一致）。
+- 综合需要 Yosys，本机没有，Ubuntu 20.04 软件源里的版本也太旧——用
+  OpenROAD 仓库里现成的已综合网表跳过综合。
+- **时序窗口是贯通链上的缺口**：fly 的时序数据库读的是 PrimeTime 脚本
+  产出的格式，开源流程产出不了。需要另做转换，或这一路先用 settings
+  给的统计值——待定。
 
 ## 10. 演进路径（不在首期）
 
-- R_NET 缩减网支持（消费面出现时）；
-- min:typ:max 三值全保存（多角分析）；
+- **π 模型生成**：由网的 RC 网络归并出驱动端 π 模型（负载端电容 /
+  串联电阻 / 驱动端电容）。动态电流合成与信号电迁移用的是 π 模型而非
+  原始 RC 明细——RedHawk-SC 默认由外部寄生生成 π 模型（手册第 125
+  页），OpenSTA 有 `read_spef -reduce`。届时优先存归并结果；
+- 多工艺角：一个文件多值全保存，或按工艺角读多个文件（OpenSTA 的
+  `-min` / `-max` 模型）；
+- R_NET 的 π 模型明细与埃尔莫尔延迟入库；
 - CONN 明细入库 + 节点 id 化（matrix 端立项时）；
-- 电感（*L_UNIT 消费面）；
-- 与 extraction db（④，几何提取链）的数据一致性交叉校验工具。
+- RC 明细入库：独立对象、单一归属分区存一份（裁定 2 的备选形态，出现
+  消费者时再启用）；
+- 块定义绑定的边界网补全顶层部分的负载（§2.4 的固有局限）；
+- 电感（`*L_UNIT` 消费面）；
+- 与 extraction db（④，几何提取链）的数据一致性交叉校验工具；
+- 本机 OpenROAD OpenRCX 提取流水线（规则文件已有；Ubuntu 20.04 的
+  预编译包可用，见 §9.5）。
 
-## 11. 裁定记录与待裁定点
+## 11. 裁定记录（2026-11-24 全部裁定完毕，方案进入可实施状态）
+
+### 2026-11-24 用户裁定：全部按建议通过
+
+用户裁定「全部按照建议进行开发」。逐条生效结论如下（各条的建议依据
+与备选见本节末的历史记录）：
+
+1. **消息前缀 SPMG**——✅ 裁定：确认。
+2. **入库范围**——✅ 裁定：首版只落**网负载轻对象**
+   （`PART_{xp}_{yp}.NET_LOAD`：行首自报总电容、对地电容合计、耦合电容
+   合计、贡献来源位图、缩减形态标记），按连接位分区复制；**RC 明细不
+   入库**（演进项见 §10）。
+3. **CONN 明细不入库**——✅ 裁定：确认。
+4. （并入 3）
+5. **R_NET 形态**——✅ 裁定：收录行首总电容，该网标缩减形态；
+   SPMG::0005 观测。
+6. **多值形态取值**——✅ 裁定：三个值取第 1 个（典型值），其它个数取
+   第 0 个；alpha `value_index` 可覆盖。
+7. **内部单位**——✅ 裁定：电容飞法、电阻欧姆（double）。
+8. **跨文件同网**——✅ 裁定：不同作用域相加；同作用域重合保留首份 +
+   SPMG::0007 计数。
+9. **测试数据**——✅ 裁定：手写规范样张为主，开源样张只作回归参照。
+   **同日新增要求**：寻找或用开源工具产出已完成布局布线的设计，能够
+   贯通后续的电源网络提取、功耗计算与电压降计算——见 §9.5。
+10. **完整性与覆盖率统计**——✅ 裁定：summary 增四项（命中率、未覆盖
+    网数、未覆盖实例数、零电容实例数）。
+11. **名字映射表里未登记的索引**——✅ 裁定：该网跳过 + 计数
+    （SPMG::0012）。
+12. **次要构造**——✅ 裁定：接受并忽略；物理网相关段跳过 + 计数。
 
 ### 已并入本方案的既有裁定（引用）
 
@@ -306,22 +559,29 @@ src/emir/spef/
 - gzip 支持口径（waveform 裁定 IV-1 同款）；
 - 「原始量保存、消费口径由消费侧推导」（waveform 裁定 2 哲学推广）。
 
-### 待裁定点（2026-10-13 提出；2026-11-23 调研补充——【原建议】为
-### 原文保留，【补充】为对照 RedHawk-SC User Manual 与 IEEE 1481 语法
-### 后的修订建议，均待裁定）
+### 待裁定点历史记录（2026-10-13 提出，2026-11-23 调研补充；2026-11-24
+### 全部按建议裁定）
+
+【原建议】为原文保留，【补充】为对照 RedHawk-SC User Manual、IEEE 1481
+语法与 OpenSTA / OpenROAD 源码后的修订建议：
 
 1. **消息前缀**——建议 SPMG（全仓检索无冲突）。
-2. **RC 明细入库范围**
+2. **入库范围**（原名「RC 明细全量入库」）
    - 【原建议】全量保存——为 matrix 扩展留底，存储代价 = SPEF 文件量
      级；备选只存 total_cap，库极简但未来重解析。
-   - 【补充】若保存明细，须与总电容**分对象**（沿 waveform「双容器 =
-     双对象」先例）：首期消费者 power db 只要整网总电容，单对象会让
-     它连带加载全部 RC 明细；且现稿「网跨区时每区各存一份」会把时钟、
-     复位等跨区大网的明细复制多份。建议形态：总电容轻对象按连接位
-     分区复制（每区自足），RC 明细单一归属分区存一份、独立对象。
-     另一端的依据：dev-rules §7「无意义的字段/中间产物直接删除，不以
-     『保留以防万一』为由留存」——首期明细没有消费者，是否入库请一并
-     裁定（§12 启示 3）。
+   - 【补充一】若保存明细，须与总电容**分对象**（沿 waveform「双容器 =
+     双对象」先例）：首期消费者 power db 只要整网电容，单对象会让它
+     连带加载全部 RC 明细；且「网跨区时每区各存一份」会把时钟、复位等
+     跨区大网的明细复制多份。建议形态：网负载轻对象按连接位分区复制，
+     RC 明细单一归属分区存一份、独立对象（§5.2）。
+   - 【补充二】网负载不是「一个总电容」而是**三值并存**：行首自报总
+     电容、对地电容合计、耦合电容合计（§2.1）。依据：行首值只有 6 位
+     有效数字；写出器有开关可让耦合电容只写在一个网的段里；OpenSTA
+     丢弃行首值按明细累加。用哪个由 power db 定，本库只存。
+   - 【建议】首版只落网负载轻对象，RC 明细不入库——首期没有消费者，
+     dev-rules §7「无意义的字段/中间产物直接删除，不以『保留以防万一』
+     为由留存」；将来需要时优先存归并出的 π 模型（§10），而不是原始
+     明细。备选：RC 明细按【补充一】的形态独立入库。
 3. **CONN 明细首版不入库**——建议不入库（`*L` 引脚负载电容观测值只进
    summary 统计）；备选随 SPNetParasitics 全量保存。
 4. （并入 3）
@@ -329,40 +589,64 @@ src/emir/spef/
    - 【原建议】跳过 + SPMG::0005 观测（不阻塞建库）；备选遇 R_NET
      文件级报错。
    - 【补充】R_NET 行首同样带整网总电容，对首期功耗用途已经够用；
-     整网跳过会让这些网在下游成为「未覆盖、负载为零」。建议**至少
-     收录行首总电容**（驱动 π 模型明细列演进项），SPMG::0005 改为
+     整网跳过会让这些网在下游成为「未覆盖、负载为零」。建议**收录
+     行首总电容**——该网标缩减形态，两个明细合计标无效（§5.2 的
+     `flags_`）；π 模型与埃尔莫尔延迟列演进项（§10）；SPMG::0005 改为
      观测「以缩减形态收录的网数」。
-6. **min:typ:max**——建议取 typ 单值 + 观测计数；备选三值全存。
+6. **多值形态的取值**（原名「min:typ:max」）
+   - 【原建议】取 typ 单值 + 观测计数；备选三值全存。
+   - 【补充】实际形态是 1 个或 n 个值（n = 工艺角数，OpenROAD 的写出器
+     如此），不限于三个；OpenSTA 的语法只认 1 个或 3 个，多工艺角靠
+     「一个工艺角一个文件」，三值文件取第一个值（源码里取值下标恒为 0，
+     官方命令参考页也这么写）。建议规则：**三个值取第 1 个（典型值），
+     其它个数取第 0 个**；alpha `value_index` 可覆盖（§4）；每个文件的
+     多值网数与值个数入 summary（SPMG::0006）。「按工艺角选多个文件」
+     是输入形态问题，列演进项。
 7. **内部单位**——建议电容 fF / 电阻 ohm（double，头档位换算）。
-8. **跨文件同网冲突**
+8. **跨文件同网**
    - 【原建议】后文件覆盖（对齐 waveform 场景 b 裁定）+ SPMG::0007
      计数；备选保留首份（lib/timing 口径）。
    - 【补充】须按来源作用域区分（§2.4）：顶层文件 + 块绑定文件对同一
-     展平网的条目是互补关系，应**相加**；只有同作用域重合才是冲突。
-     冲突时取哪一套，建议本次一并定下今后的默认口径（现有两套：
-     lib/timing 保留首份、waveform 后文件覆盖）。
-9. **测试数据生成策略**——【原建议】优先调研 OpenROAD rcx 可用性
-   （真实工具），不可行则 Parser-SPEF 仓库样张 + 手写规范样张。
-   【补充】本机未安装 openroad / magic / klayout / yosys（2026-11-23
-   核实），且现有测试设计的 DEF 没有布线——真实提取工具在其上跑不出
-   有意义的寄生。建议主路线 = 与波形测试设计网表对齐的手写规范样张
-   （`qa/emir/data/waveform/design/` 的网名可直接对齐）；开源样张与
-   工具安装途径的核实结论见调研报告底稿（`.work/spef_research/`）。
-10. **（新增）完整性与覆盖率统计**——建议 summary 增四项：SPEF 命中
-    网数 / 设计内有布线信号网数、未覆盖网数、所连网含未覆盖网的实例
-    数、全部所连网电容为零的实例数。依据：RedHawk-SC 的 SPEF 数据
-    完整性检查就是「未覆盖实例数 + 零电容检查」两项（手册第 38、
-    40 页）。材料在每分区合并任务本地（该区 NETS 对象）。
-11. **（新增）NAME_MAP 未登记索引的处置**——§2.1 写「流级破损
-    raise」，§7 的 SPMG::0010 写「段级跳过」，两处不一致，须定其一。
-    建议文件级失败：未登记索引说明头部映射表不完整，属文件形态错，
-    由文件入口任务失败透出（同 waveform 破损文件的处置）。
-12. **（新增）次要构造的处置**——D_NET / R_NET 行尾的 `*V` 置信度、
-    `*CONN` 段的 `*N` 节点坐标记录、`*INDUC` 电感段、`*D_PNET` /
-    `*R_PNET` 物理网段（均为 IEEE 1481 语法内的构造）：建议解析器
-    容忍并忽略前三者（电感首版不消费，§2.3），物理网段跳过 + 计数。
+     展平网的条目互补，**相加**——OpenSTA 的 `read_spef` 对同一个网
+     默认累加、`-replace` 才清空，是现成先例；只有同作用域重合才是
+     冲突。
+   - 【建议】同作用域重合时**保留首份** + 计数：lib 与 timing 都是保留
+     首份，waveform 的「后文件覆盖」在它的方案里写明是显式特例，依据
+     是分块转储里后文件替换先文件的语义——SPEF 没有这个语义。
+9. **测试数据生成策略**
+   - 【原建议】优先调研 OpenROAD rcx 可用性（真实工具），不可行则
+     Parser-SPEF 仓库样张 + 手写规范样张。
+   - 【补充】调研结论：本机未安装 openroad / magic / klayout / yosys；
+     既有测试设计的 DEF 没有布线，真实提取工具在其上跑不出有意义的
+     寄生；名为 Parser-SPEF 的仓库没有找到；OpenSTA 仓库有 10 个小样张
+     （GPL-3.0，入库前须确认），但都没有 `*R_NET`、`*D_PNET`、多值
+     形态；OpenROAD 的 Nangate45 提取规则文件存在，官方文档写明提取命令
+     基于已布线设计（没有布线就不返回寄生），安装以预编译包为先。
+     建议按 §9.1：手写规范样张为主，开源样张只作回归参照。
+10. **（新增）完整性与覆盖率统计**
+    - 建议 summary 增四项：SPEF 命中网数 / 设计内有布线信号网数、
+      未覆盖网数、所连网含未覆盖网的实例数、全部所连网电容为零的
+      实例数。依据：RedHawk-SC 的 SPEF 数据完整性检查就是「未覆盖
+      实例数 + 零电容检查」两项（手册第 38、40 页）。材料在每分区合并
+      任务本地（该区 NETS 对象）。
+    - 对照：OpenSTA 的 `report_parasitic_annotation` 按**驱动引脚**分
+      「未标注」（找不到任何寄生）与「部分未标注」（有寄生，但从驱动
+      节点沿电阻走不到某些负载引脚）两类。后一类要 RC 明细才能判定
+      ——首版若不入库明细（裁定 2）就做不了，只做前一类。
+11. **（新增）名字映射表里未登记索引的处置**
+    - 原稿 §2.1 写「流级破损 raise」，§7 写「段级跳过」，两处不一致。
+    - 【第一轮补充】文件级失败（同 waveform 破损文件的处置）。
+    - 【修订】改为建议**该网跳过 + 计数**（SPMG::0012）：OpenSTA 就是
+      只告警、该名字视为找不到（`warn(1645)`）；dev-rules §7 也要求能
+      继续处理的情况不 raise。一个文件里的网因此全部被跳过时，该文件
+      计入失败文件（全部文件失败才 fatal）。备选仍是文件级失败。
+12. **（新增）次要构造的处置**——均为语法内的构造（§2.5）。建议：
+    `*D_NET` / `*R_NET` 行尾的 `*V` 置信度、`*CONN` 段的 `*N` 节点坐标、
+    `*CONN` 属性里的 `*S`（转换时间）、`*INDUC` 电感段、`*DEFINE` /
+    `*PDEFINE`——解析器接受并忽略；`*D_PNET` / `*R_PNET` /
+    `*PHYSICAL_PORTS` 物理网相关段——跳过 + 计数。
 
-## 12. 下游用途参考——RedHawk-SC 对照（2026-11-23）
+## 12. 下游用途参考——RedHawk-SC、OpenSTA 与 OpenROAD 对照（2026-11-23）
 
 参照 RedHawk-SC User Manual（Release 2024 R2）。该工具把「从版图
 提取电源地网寄生」与「从 SPEF 文件导入信号网寄生」做成同一种视图
@@ -387,13 +671,54 @@ src/emir/spef/
 1. 首期只有「静态功耗」一项用途——整网总电容即全部所需（§1）。
 2. 未覆盖的网要有明确口径：RedHawk-SC 有内部估算电容兜底，fly 首期
    ④ extraction db 不提取信号网——未被 SPEF 覆盖的网在 power db 里
-   负载为零。本库以「无条目」表达未覆盖并提供覆盖率统计（待裁定点
+   负载为零。本库以「无条目」表达未覆盖并提供覆盖率统计（裁定
    10）；兜底规则在 power db 立项时裁定。
-3. 动态分析与信号电迁移使用的是 π 模型而非原始 RC 明细——明细入库
-   与否（待裁定点 2）与 π 模型生成（演进项，§10）分开考虑。
+3. 动态分析与信号电迁移使用的是 π 模型而非原始 RC 明细——首版不存
+   原始明细（裁定 2），π 模型生成列为演进项（§10）。
 4. 主输出端口的片外负载不在 SPEF 内——RedHawk-SC 以
    `default_output_port_capacitance` 给缺省值（第 231 页）；属 power
    db 的 settings，本库不涉及。
+5. 耦合电容按全值计入是 OpenSTA 与 OpenROAD 写出器的共同口径。公开
+   教程证实相邻网反向翻转时驱动器等效看到 2 倍耦合电容、同向约为 0，
+   但那是延迟口径；开源流程里耦合电容按普通负载计。功耗工具是否套用
+   这个系数未核实——留给 power db 立项时裁定。
+6. 未覆盖网的兜底有先例：OpenROAD 在没有提取结果时用全局布线估算寄生
+   （`estimate_parasitics -global_routing`），RedHawk-SC 用内部估算的网
+   电容。fly 的 ④ extraction db 首期不提取信号网——兜底规则要在 power
+   db 立项时定（见启示 2）。
+
+### 12.1 OpenSTA 对照（2026-11-23 源码与官方命令参考页核实）
+
+来源：OpenSTA 仓库（github.com/parallaxsw/OpenSTA，master 快照）的
+`power/Power.cc`、`dcalc/GraphDelayCalc.cc` 与 `parasitics/` 下各文件；
+OpenSTA 命令参考页（opensta.readthedocs.io 的 Commands 页）。
+
+| 用途 | OpenSTA 的做法 |
+|---|---|
+| 开关功耗 | `0.5 × 负载电容 × 电压² × 翻转密度`，只对输出引脚算；负载电容 = 引脚电容 + 线电容 |
+| 线电容 | 整网总电容 = 非外部节点的对地电容之和 + 全部耦合电容 × 1 |
+| 外部负载优先 | 对网设了 `set_load` 就直接采用、忽略 SPEF |
+| 耦合电容 | 默认乘缩减因子（1.0）后折成对地电容，只加到属于本网的节点；没有按相邻网翻转方向取 2 倍或 0 倍的逻辑 |
+| 多文件 | 对同一个网默认累加；`-replace` 才先清空 |
+| 多值文件 | 取第一个值 |
+| 多工艺角 | 一个工艺角一个文件，用 `-name` 配合 `define_scene` 标注（`-min` / `-max` 选标注到哪一路分析；`-corner` 已废弃） |
+| 引脚电容 | `-pin_cap_included`：SPEF 已含引脚电容时不再叠加库的引脚电容 |
+| 层次化 | `-path` 指定块实例路径；上层网表里的寄生网络在块的层次引脚处拼接 |
+| 忽略的构造 | `*DESIGN_FLOW`、`*CONN` 的内容（含 `*S`、`*D`）、`*Q`、`*K` |
+| 未标注统计 | `report_parasitic_annotation` 按驱动引脚分「未标注」与「部分未标注」 |
+| gzip | 透明解压 |
+
+### 12.2 OpenROAD 对照（2026-11-23 官方文档核实）
+
+来源：OpenROAD 官方文档（readthedocs）的寄生提取、电压降分析、安装
+三页，与 OpenROAD-flow-scripts 仓库的 `flow/scripts/final_report.tcl`。
+
+| 用途 | OpenROAD 的做法 |
+|---|---|
+| 寄生提取 | `extract_parasitics` 基于已布线设计；规则文件按工艺节点与工艺角给出；`-coupling_threshold` 默认 0.1 fF，低于阈值的耦合电容接地 |
+| 流程里的用法 | 设了规则文件才依次执行：`define_process_corner` → `extract_parasitics` → `write_spef` → `read_spef` |
+| 没有规则文件时 | `estimate_parasitics -global_routing`，回退到全局布线估算；布线前用 `-placement` |
+| 电压降分析 | 基于 PDNSim，要求已布局并生成电源网络；文档没有提到 SPEF（是否读 SPEF 未核实） |
 
 ## 13. 实施期文档同步项（裁定后执行）
 
