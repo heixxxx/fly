@@ -7,7 +7,8 @@ namespace fly {
 size_t LIBLibrary::merge_from(const LIBLibrary& src) {
     // cell 冲突 = 库版本混用（业务异常场景，非解析错误）：保留当前
     // （首次出现）、抛弃后续重复，LIBR::0001 逐次提醒并携带两处来源
-    // 路径；header_attrs 保留首个文件的（后续文件不再覆盖）。
+    // 路径；header_attrs / voltage_maps_ 保留首个文件的（后续文件不再
+    // 覆盖，故此处无并入逻辑）。
     size_t dropped = 0;
     for (const auto& cell : src.cells_) {
         if (find_cell(cell.name_) != nullptr) {

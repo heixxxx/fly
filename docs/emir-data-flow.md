@@ -70,7 +70,7 @@
 
 | 序号 | 数据库 | 外部文件输入 | 前置数据库 | 核心计算 | 主要产出数据 |
 |-----|--------|------------|-----------|---------|-------------|
-| ① | lib 库 db | .lib 文件（Liberty，多文件 list） | 无 | 分布式解析（每文件一独立任务）：energy 查找表、引脚电容（receiver pin load）、时序模型等全量数据表；结果汇整为单一容器 | **LIBLibrary** 整合容器（cell 集合，以 cell name 为键 + 库头单位与默认参数 + 模板集） |
+| ① | lib 库 db | .lib 文件（Liberty，多文件 list） | 无 | 分布式解析（每文件一独立任务）：energy 查找表、引脚电容（receiver pin load）、时序模型等全量数据表；结果汇整为单一容器 | **LIBLibrary** 整合容器（cell 集合，以 cell name 为键 + 库头单位与默认参数 + 模板集）+ 功耗侧数据（逐状态漏电分项 / 电源地引脚声明 pg_pin / 库级电压映射 voltage_map / 引脚供电归属——power db 的上游输入，2026-10-13 补齐） |
 | ② | tech db | 工艺厂 tech 文件 | 无 | 解析各层电阻计算参数、电容计算参数、电迁移（EM）规则 | 层电阻电容参数表 + EM 规则表 |
 | ③ | design db | DEF 文件 + LEF 文件（含 tech lef） | ① lib 库 db（读入 LIBLibrary：cell 齐全性校验 + cell name → cell id 转换） | 解析实例清单、网表、电源网（SPECIALNETS）；以 tech lef 的 layer 信息与各层默认线宽重建 net 金属导线几何；读入 LIBLibrary 校验 cell 齐全并分配 cell / instance / pin / net 全局 id | 按空间分块的实例表（id 化，经 cell id 关联 lib 数据）、重建的导线几何、网名索引、name → id 映射表 |
 | ④ | extraction db | 无 | ③ design db + ② tech db | 按空间分区对电源网导线几何做寄生提取：层电阻、对地电容、通孔电阻；在分支/拐角/交叉处打断建节点；建议同时持久化「instance 电源引脚 ↔ 图节点」绑定 | 天然分区的提取图（节点表 + 电阻电容边表 + 对地电容表） |

@@ -1,6 +1,7 @@
 /* 最小 Liberty 测试样例：覆盖库头单位、2D 功耗模板 + 功耗表（模板引用 + 表级
-   索引覆盖）、1D 时序模板、组合单元（引脚电容 + internal_power + timing）、
-   时序单元（ff 组）与注释/未知组跳过。结构对齐 Nangate45 风格。 */
+   索引覆盖）、1D 时序模板、组合单元（引脚电容 + internal_power + timing + 漏电/
+   pg_pin 供电归属）、时序单元（ff 组，功耗数据缺失形态对照）与注释/未知组跳过。
+   结构对齐 Nangate45 风格。 */
 library (minitest_typ) {
   time_unit : "1ns";
   voltage_unit : "1V";
@@ -14,6 +15,11 @@ library (minitest_typ) {
   nom_temperature : 25;
   nom_voltage : 1.0;
   nom_process : 1.0;
+  voltage_map (VDD, 1.10);
+
+  voltage_map (VDDG) {
+    voltage : 1.8;
+  }
 
   lu_table_template (power_2d) {
     variable_1 : input_net_transition;
@@ -29,6 +35,29 @@ library (minitest_typ) {
 
   cell (INV_X1) {
     area : 2.0;
+    cell_leakage_power : 0.70;
+    pg_pin (VDD) {
+      pg_type : primary_power;
+      voltage_name : VDD;
+      voltage_sensitivity : 0.0;
+    }
+    pg_pin (VSS) {
+      pg_type : primary_ground;
+      voltage_name : VSS;
+    }
+    leakage_power () {
+      when : "!A";
+      value : 1.17;
+    }
+    leakage_power () {
+      when : "A";
+      value : 0.23;
+    }
+    leakage_power () {
+      related_pg_pin : VDDPE;
+      power_level : "IO_VOLTAGE";
+      value : 2.5;
+    }
     pin (A) {
       direction : input;
       capacitance : 1.5;
@@ -39,6 +68,9 @@ library (minitest_typ) {
       rise_capacitance : 1.2;
       fall_capacitance : 1.3;
       function : "A'";
+      related_power_pin : VDD;
+      related_ground_pin : VSS;
+      power_down_function : "!VDD + VSS";
       internal_power () {
         related_pin : "A";
         rise_power (power_2d) {

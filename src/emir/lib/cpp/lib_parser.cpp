@@ -2,6 +2,7 @@
 
 #include <message/cpp/message_macros.h>
 
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <stdexcept>
@@ -176,6 +177,34 @@ bool find_float_attr(si2drGroupIdT group, const char* name, double& out) {
     return found;
 }
 
+// 数值属性读取（FLOAT64 与整数书写形态 INT32 均收）：漏电等功耗量在库中
+// 可能写整数形态（value : 0;），按类型窄化为 FLOAT64 会把「声明为 0」
+// 误判成未声明（NaN 哨兵失真）。
+bool find_number_attr(si2drGroupIdT group, const char* name, double& out) {
+    bool found = false;
+    for_each_attr(group, [&](si2drAttrIdT attr) {
+        si2drErrorT err = SI2DR_NO_ERROR;
+        si2drStringT n = si2drAttrGetName(attr, &err);
+        if (found || !n || std::strcmp(n, name) != 0 ||
+            si2drAttrGetAttrType(attr, &err) != SI2DR_SIMPLE) {
+            return;
+        }
+        switch (si2drSimpleAttrGetValueType(attr, &err)) {
+            case SI2DR_FLOAT64:
+                out = si2drSimpleAttrGetFloat64Value(attr, &err);
+                found = true;
+                break;
+            case SI2DR_INT32:
+                out = static_cast<double>(si2drSimpleAttrGetInt32Value(attr, &err));
+                found = true;
+                break;
+            default:
+                break;
+        }
+    });
+    return found;
+}
+
 // complex float 列表属性（index_1/2/3、values）→ double 向量。
 // Liberty 的数值列表以「引号字符串」承载（如 values ("1.0, 1.1", "2.0")——
 // 每个 STRING 值内含逗号分隔的多个数值），须拆分解析；个别裸 FLOAT64 值
@@ -304,6 +333,79 @@ void collect_timing(si2drGroupIdT group, LIBLibrary& lib, LIBTimingArc& arc) {
     collect_tables(group, lib, arc.tables_);
 }
 
+// leakage_power 组 → LIBLeakagePower（漏电逐状态分项，cell 级可多组）
+void collect_leakage_power(si2drGroupIdT group, LIBLibrary& lib,
+                           LIBLeakagePower& lp) {
+    find_string_attr(group, "when", lp.when_);
+    find_string_attr(group, "related_pg_pin", lp.related_pg_pin_);
+    find_string_attr(group, "power_level", lp.power_level_);
+    find_number_attr(group, "value", lp.value_);   // 缺失保持 NaN 哨兵
+    for_each_attr(group, [&](si2drAttrIdT attr) {
+        si2drErrorT err = SI2DR_NO_ERROR;
+        si2drStringT n = si2drAttrGetName(attr, &err);
+        if (!n) return;
+        CMString name = n;
+        if (name == "when" || name == "related_pg_pin" ||
+            name == "power_level" || name == "value") return;
+        LIBHeaderAttr a;
+        a.name_ = name;
+        a.value_ = attr_value_text(attr);
+        if (!a.value_.empty()) lp.extra_attrs_.push_back(a);
+    });
+}
+
+// pg_pin 组 → LIBPgPin（电源/地引脚声明，cell 级可多组）
+void collect_pg_pin(si2drGroupIdT group, LIBLibrary& lib, LIBPgPin& pg) {
+    pg.pg_name_ = group_first_name(group);
+    find_string_attr(group, "pg_type", pg.pg_type_);
+    find_string_attr(group, "voltage_name", pg.voltage_name_);
+    for_each_attr(group, [&](si2drAttrIdT attr) {
+        si2drErrorT err = SI2DR_NO_ERROR;
+        si2drStringT n = si2drAttrGetName(attr, &err);
+        if (!n) return;
+        CMString name = n;
+        if (name == "pg_type" || name == "voltage_name") return;
+        LIBHeaderAttr a;
+        a.name_ = name;
+        a.value_ = attr_value_text(attr);
+        if (!a.value_.empty()) pg.extra_attrs_.push_back(a);
+    });
+}
+
+// 库级 voltage_map 组形态（voltage_map (VDD) { voltage : 1.10; }）；
+// 简写属性形态（voltage_map (VDD, 1.10);）由 collect_voltage_map_attr 处理
+void collect_voltage_map_group(si2drGroupIdT group, LIBLibrary& lib) {
+    LIBVoltageMap vm;
+    vm.name_ = group_first_name(group);
+    find_number_attr(group, "voltage", vm.voltage_);   // 缺失保持 NaN 哨兵
+    lib.voltage_maps_.push_back(std::move(vm));
+}
+
+// 库级 voltage_map 简写形态：解析器文法把 voltage_map (VDD, 1.10);
+// 归为 complex 属性（第一个 STRING 值 = supply 名，其后第一个数值 =
+// 标称电压），Nangate45 即此形态
+void collect_voltage_map_attr(si2drAttrIdT attr, LIBLibrary& lib) {
+    LIBVoltageMap vm;
+    bool have_name = false;
+    for_each_complex_value(attr, [&](si2drValueTypeT type, si2drInt32T iv,
+                                     si2drFloat64T dv, si2drStringT sv,
+                                     si2drBooleanT) {
+        if (!have_name && type == SI2DR_STRING && sv) {
+            vm.name_ = sv;
+            have_name = true;
+            return;
+        }
+        if (std::isnan(vm.voltage_)) {
+            if (type == SI2DR_FLOAT64) {
+                vm.voltage_ = dv;
+            } else if (type == SI2DR_INT32) {
+                vm.voltage_ = static_cast<double>(iv);
+            }
+        }
+    });
+    if (have_name) lib.voltage_maps_.push_back(std::move(vm));
+}
+
 void collect_pin(si2drGroupIdT group, LIBLibrary& lib, LIBPin& pin) {
     pin.name_ = group_first_name(group);
     find_string_attr(group, "direction", pin.direction_);
@@ -311,6 +413,9 @@ void collect_pin(si2drGroupIdT group, LIBLibrary& lib, LIBPin& pin) {
     find_float_attr(group, "rise_capacitance", pin.rise_capacitance_);
     find_float_attr(group, "fall_capacitance", pin.fall_capacitance_);
     find_float_attr(group, "max_capacitance", pin.max_capacitance_);
+    find_string_attr(group, "related_power_pin", pin.related_power_pin_);
+    find_string_attr(group, "related_ground_pin", pin.related_ground_pin_);
+    find_string_attr(group, "power_down_function", pin.power_down_function_);
 
     for_each_group(group, [&](si2drGroupIdT sub, const CMString& type_name) {
         if (type_name == "internal_power") {
@@ -322,7 +427,7 @@ void collect_pin(si2drGroupIdT group, LIBLibrary& lib, LIBPin& pin) {
             collect_timing(sub, lib, arc);
             pin.timings_.push_back(std::move(arc));
         } else {
-            // pin 级其他子组（pg_pin 等）：结构化收集留待需要时扩展
+            // pin 级其他子组（ccs_waveform/dc_current 等）：统计
             lib.record_skipped_group(type_name.empty() ? "<unnamed>" : type_name);
         }
     });
@@ -334,7 +439,8 @@ void collect_pin(si2drGroupIdT group, LIBLibrary& lib, LIBPin& pin) {
         CMString name = n;
         if (name == "direction" || name == "capacitance" ||
             name == "rise_capacitance" || name == "fall_capacitance" ||
-            name == "max_capacitance") return;
+            name == "max_capacitance" || name == "related_power_pin" ||
+            name == "related_ground_pin" || name == "power_down_function") return;
         LIBHeaderAttr a;
         a.name_ = name;
         a.value_ = attr_value_text(attr);
@@ -348,6 +454,7 @@ void collect_cell(si2drGroupIdT group, LIBLibrary& lib, LIBCell& cell,
     cell.library_name_ = library_name;
     cell.source_file_ = source_path;
     find_float_attr(group, "area", cell.area_);
+    find_number_attr(group, "cell_leakage_power", cell.cell_leakage_power_);
 
     for_each_group(group, [&](si2drGroupIdT sub, const CMString& type_name) {
         if (type_name == "pin") {
@@ -356,8 +463,16 @@ void collect_cell(si2drGroupIdT group, LIBLibrary& lib, LIBCell& cell,
             cell.pins_.push_back(std::move(pin));
         } else if (type_name == "ff" || type_name == "latch") {
             cell.is_sequence_cell_ = true;
+        } else if (type_name == "leakage_power") {
+            LIBLeakagePower lp;
+            collect_leakage_power(sub, lib, lp);
+            cell.leakages_.push_back(std::move(lp));
+        } else if (type_name == "pg_pin") {
+            LIBPgPin pg;
+            collect_pg_pin(sub, lib, pg);
+            cell.pg_pins_.push_back(std::move(pg));
         } else {
-            // cell 级其他子组（burst/clkgate 等）：统计
+            // cell 级其他子组（burst/clkgate/ccs leakage_current 等）：统计
             lib.record_skipped_group(type_name.empty() ? "<unnamed>" : type_name);
         }
     });
@@ -365,7 +480,8 @@ void collect_cell(si2drGroupIdT group, LIBLibrary& lib, LIBCell& cell,
     for_each_attr(group, [&](si2drAttrIdT attr) {
         si2drErrorT err = SI2DR_NO_ERROR;
         si2drStringT n = si2drAttrGetName(attr, &err);
-        if (!n || std::strcmp(n, "area") == 0) return;
+        if (!n || std::strcmp(n, "area") == 0 ||
+            std::strcmp(n, "cell_leakage_power") == 0) return;
         LIBHeaderAttr a;
         a.name_ = n;
         a.value_ = attr_value_text(attr);
@@ -414,6 +530,8 @@ void collect_library(si2drGroupIdT group, LIBLibrary& lib,
             LIBCell cell;
             collect_cell(sub, lib, cell, library_name, source_path);
             lib.cells_.push_back(std::move(cell));
+        } else if (type_name == "voltage_map") {
+            collect_voltage_map_group(sub, lib);
         } else {
             // 库级其他子组（operating_conditions/wire_load/type 等）：统计
             lib.record_skipped_group(type_name.empty() ? "<unnamed>" : type_name);
@@ -427,6 +545,12 @@ void collect_library(si2drGroupIdT group, LIBLibrary& lib,
         a.name_ = n ? n : "";
         a.value_ = attr_value_text(attr);
         if (!a.name_.empty() && !a.value_.empty()) lib.header_attrs_.push_back(a);
+        // voltage_map 简写属性形态（voltage_map (VDD, 1.10);）结构化提取；
+        // header_attrs 全量保存不变（属性仍保留在库头属性列表内）
+        if (a.name_ == "voltage_map" &&
+            si2drAttrGetAttrType(attr, &err) == SI2DR_COMPLEX) {
+            collect_voltage_map_attr(attr, lib);
+        }
     });
 }
 

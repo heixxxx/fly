@@ -1,5 +1,8 @@
 // Liberty 解析适配层单测：最小 .lib 样例的结构化提取断言 + 序列化往返。
-// 样例见 data/minitest.lib（组合/时序单元、模板引用、索引覆盖、未知组跳过）。
+// 样例见 data/minitest.lib（组合/时序单元、模板引用、索引覆盖、漏电/pg_pin/
+// voltage_map 功耗数据、缺失形态对照、未知组跳过）与
+// data/nangate45_power_extract.lib（Nangate45 原文逐字节截取的 INV_X1 段，
+// 断言真实库数据收集）。
 #include <emir/lib/cpp/lib_parser.h>
 #include <emir/lib/cpp/lib_types.h>
 
@@ -15,14 +18,21 @@ using namespace fly;
 
 namespace fs = std::filesystem;
 
-fs::path sample_path() {
+fs::path sample_path(const char* filename) {
     // bazel test 注入 TEST_SRCDIR/TEST_WORKSPACE：定位 runfiles 内的 data
     const char* srcdir = std::getenv("TEST_SRCDIR");
     const char* workspace = std::getenv("TEST_WORKSPACE");
     if (srcdir && workspace) {
-        return fs::path(srcdir) / workspace / "src/emir/lib/tests/data/minitest.lib";
+        return fs::path(srcdir) / workspace / "src/emir/lib/tests/data" / filename;
     }
-    return fs::path("data") / "minitest.lib";
+    return fs::path("data") / filename;
+}
+
+const LIBPin* find_pin(const LIBCell& cell, const char* name) {
+    for (const auto& p : cell.pins_) {
+        if (p.name_ == name) return &p;
+    }
+    return nullptr;
 }
 
 class LibParserTest : public ::testing::Test {
@@ -30,7 +40,18 @@ protected:
     LIBLibrary lib_;
 
     void SetUp() override {
-        lib_ = lib_parse_lib_file(sample_path().string());
+        lib_ = lib_parse_lib_file(sample_path("minitest.lib").string());
+    }
+};
+
+// Nangate45 真实片段（INV_X1 段 + 库头 voltage_map/模板），断言真实库数据
+class Nangate45ExtractTest : public ::testing::Test {
+protected:
+    LIBLibrary lib_;
+
+    void SetUp() override {
+        lib_ = lib_parse_lib_file(
+            sample_path("nangate45_power_extract.lib").string());
     }
 };
 
@@ -52,7 +73,7 @@ TEST_F(LibParserTest, CellProvenanceFields) {
     // 文件完整路径；容器级 name 字段已删除（多库混用是正常现象）。
     for (const auto& cell : lib_.cells_) {
         EXPECT_EQ(cell.library_name_, "minitest_typ");
-        EXPECT_EQ(cell.source_file_, sample_path().string());
+        EXPECT_EQ(cell.source_file_, sample_path("minitest.lib").string());
     }
 }
 
@@ -190,6 +211,95 @@ TEST_F(LibParserTest, SequentialCell) {
     EXPECT_EQ(q->timings_[0].timing_type_, "rising_edge");
 }
 
+TEST_F(LibParserTest, LeakagePowerCollection) {
+    // 漏电逐状态分项（cell_leakage_power + leakage_power 组）
+    const LIBCell* inv = lib_.find_cell("INV_X1");
+    ASSERT_NE(inv, nullptr);
+    ASSERT_FALSE(std::isnan(inv->cell_leakage_power_));
+    EXPECT_DOUBLE_EQ(inv->cell_leakage_power_, 0.70);
+
+    ASSERT_EQ(inv->leakages_.size(), 3u);
+    // when 条件原文保留 + 数值
+    EXPECT_EQ(inv->leakages_[0].when_, "!A");
+    EXPECT_DOUBLE_EQ(inv->leakages_[0].value_, 1.17);
+    EXPECT_EQ(inv->leakages_[0].related_pg_pin_, "");
+    EXPECT_EQ(inv->leakages_[0].power_level_, "");
+    EXPECT_EQ(inv->leakages_[1].when_, "A");
+    EXPECT_DOUBLE_EQ(inv->leakages_[1].value_, 0.23);
+    // 多电源分轨变体（无 when：条件为空的缺失形态）
+    EXPECT_EQ(inv->leakages_[2].when_, "");
+    EXPECT_EQ(inv->leakages_[2].related_pg_pin_, "VDDPE");
+    EXPECT_EQ(inv->leakages_[2].power_level_, "IO_VOLTAGE");
+    EXPECT_DOUBLE_EQ(inv->leakages_[2].value_, 2.5);
+    EXPECT_TRUE(inv->leakages_[0].extra_attrs_.empty());
+}
+
+TEST_F(LibParserTest, PgPinCollection) {
+    const LIBCell* inv = lib_.find_cell("INV_X1");
+    ASSERT_NE(inv, nullptr);
+    ASSERT_EQ(inv->pg_pins_.size(), 2u);
+
+    EXPECT_EQ(inv->pg_pins_[0].pg_name_, "VDD");
+    EXPECT_EQ(inv->pg_pins_[0].pg_type_, "primary_power");
+    EXPECT_EQ(inv->pg_pins_[0].voltage_name_, "VDD");
+    // 非核心属性走 extra_attrs 全量（voltage_sensitivity : 0.0）
+    ASSERT_EQ(inv->pg_pins_[0].extra_attrs_.size(), 1u);
+    EXPECT_EQ(inv->pg_pins_[0].extra_attrs_[0].name_, "voltage_sensitivity");
+    EXPECT_EQ(inv->pg_pins_[0].extra_attrs_[0].value_, "0");
+
+    EXPECT_EQ(inv->pg_pins_[1].pg_name_, "VSS");
+    EXPECT_EQ(inv->pg_pins_[1].pg_type_, "primary_ground");
+    EXPECT_EQ(inv->pg_pins_[1].voltage_name_, "VSS");
+    EXPECT_TRUE(inv->pg_pins_[1].extra_attrs_.empty());
+
+    // 未声明 pg_pin 的 cell（DFF_X1）：容器为空
+    const LIBCell* dff = lib_.find_cell("DFF_X1");
+    ASSERT_NE(dff, nullptr);
+    EXPECT_TRUE(dff->pg_pins_.empty());
+    EXPECT_TRUE(dff->leakages_.empty());
+}
+
+TEST_F(LibParserTest, PinPowerAttributes) {
+    // 供电归属三属性（未声明 = 空串语义）
+    const LIBCell* inv = lib_.find_cell("INV_X1");
+    ASSERT_NE(inv, nullptr);
+    const LIBPin* zn = find_pin(*inv, "ZN");
+    ASSERT_NE(zn, nullptr);
+    EXPECT_EQ(zn->related_power_pin_, "VDD");
+    EXPECT_EQ(zn->related_ground_pin_, "VSS");
+    EXPECT_EQ(zn->power_down_function_, "!VDD + VSS");
+
+    // 输入 pin 未声明 → 空串（不是 0.0/占位）
+    const LIBPin* a = find_pin(*inv, "A");
+    ASSERT_NE(a, nullptr);
+    EXPECT_EQ(a->related_power_pin_, "");
+    EXPECT_EQ(a->related_ground_pin_, "");
+    EXPECT_EQ(a->power_down_function_, "");
+}
+
+TEST_F(LibParserTest, VoltageMapCollection) {
+    // 双形态统一收集：展开组 (VDDG, 1.8) + 简写 complex 属性 (VDD, 1.10)。
+    // 收集顺序确定：组形态在组遍历阶段先入，简写属性在属性遍历阶段后入
+    ASSERT_EQ(lib_.voltage_maps_.size(), 2u);
+    EXPECT_EQ(lib_.voltage_maps_[0].name_, "VDDG");
+    EXPECT_DOUBLE_EQ(lib_.voltage_maps_[0].voltage_, 1.8);
+    EXPECT_EQ(lib_.voltage_maps_[1].name_, "VDD");
+    ASSERT_FALSE(std::isnan(lib_.voltage_maps_[1].voltage_));
+    EXPECT_DOUBLE_EQ(lib_.voltage_maps_[1].voltage_, 1.10);
+}
+
+TEST_F(LibParserTest, MissingPowerDataDefaults) {
+    // 缺失形态显式：cell_leakage_power 未声明 = NaN（0.0 是合法声明值，
+    // 不可混用）；pin 级供电属性未声明 = 空串
+    const LIBCell* dff = lib_.find_cell("DFF_X1");
+    ASSERT_NE(dff, nullptr);
+    EXPECT_TRUE(std::isnan(dff->cell_leakage_power_));
+    const LIBPin* q = find_pin(*dff, "Q");
+    ASSERT_NE(q, nullptr);
+    EXPECT_EQ(q->related_power_pin_, "");
+    EXPECT_EQ(q->power_down_function_, "");
+}
+
 TEST_F(LibParserTest, UnknownGroupsCounted) {
     // operating_conditions 未结构化收集 → 统计里可见
     bool found = false;
@@ -223,7 +333,25 @@ TEST_F(LibParserTest, SerializeRoundTrip) {
     ASSERT_NE(dff, nullptr);
     EXPECT_TRUE(dff->is_sequence_cell_);
     EXPECT_EQ(dff->library_name_, "minitest_typ");
-    EXPECT_EQ(dff->source_file_, sample_path().string());
+    EXPECT_EQ(dff->source_file_, sample_path("minitest.lib").string());
+
+    // 功耗字段往返：声明值 + NaN 哨兵 + 嵌套结构 + 库级 voltage_map
+    const LIBCell* inv = back.find_cell("INV_X1");
+    ASSERT_NE(inv, nullptr);
+    EXPECT_DOUBLE_EQ(inv->cell_leakage_power_, 0.70);
+    ASSERT_EQ(inv->leakages_.size(), 3u);
+    EXPECT_EQ(inv->leakages_[2].related_pg_pin_, "VDDPE");
+    EXPECT_DOUBLE_EQ(inv->leakages_[2].value_, 2.5);
+    ASSERT_EQ(inv->pg_pins_.size(), 2u);
+    EXPECT_EQ(inv->pg_pins_[0].pg_type_, "primary_power");
+    const LIBPin* zn = find_pin(*inv, "ZN");
+    ASSERT_NE(zn, nullptr);
+    EXPECT_EQ(zn->power_down_function_, "!VDD + VSS");
+    EXPECT_TRUE(std::isnan(dff->cell_leakage_power_));
+    ASSERT_EQ(back.voltage_maps_.size(), 2u);
+    EXPECT_EQ(back.voltage_maps_[0].name_, "VDDG");
+    EXPECT_DOUBLE_EQ(back.voltage_maps_[0].voltage_, 1.8);
+    EXPECT_DOUBLE_EQ(back.voltage_maps_[1].voltage_, 1.10);
 }
 
 TEST(LibParserDeathTest, ParseErrors) {
@@ -251,6 +379,66 @@ TEST(LibParseRobustnessTest, EmptyLibraryNoThrow) {
     EXPECT_NO_THROW(lib = lib_parse_lib_file(empty.string()));
     EXPECT_TRUE(lib.cells_.empty());
     fs::remove(empty);
+}
+
+TEST_F(Nangate45ExtractTest, RealLibraryPowerData) {
+    // 真实 Nangate45 数据（qa/emir/data/timing 原文截取，INV_X1 段）：
+    // 断言数值即真实库值——库级 voltage_map 简写属性形态
+    ASSERT_EQ(lib_.cells_.size(), 1u);
+    ASSERT_EQ(lib_.voltage_maps_.size(), 2u);
+    EXPECT_EQ(lib_.voltage_maps_[0].name_, "VDD");
+    EXPECT_DOUBLE_EQ(lib_.voltage_maps_[0].voltage_, 1.10);
+    EXPECT_EQ(lib_.voltage_maps_[1].name_, "VSS");
+    EXPECT_DOUBLE_EQ(lib_.voltage_maps_[1].voltage_, 0.00);
+
+    // 模板全收（power_lut_template + lu_table_template）
+    EXPECT_EQ(lib_.templates_.size(), 2u);
+    EXPECT_NE(lib_.find_template("Power_7_7"), nullptr);
+    EXPECT_NE(lib_.find_template("Timing_7_7"), nullptr);
+
+    const LIBCell* inv = lib_.find_cell("INV_X1");
+    ASSERT_NE(inv, nullptr);
+    EXPECT_DOUBLE_EQ(inv->area_, 0.532000);
+
+    // cell_leakage_power + 逐状态 leakage_power（真实值）
+    EXPECT_DOUBLE_EQ(inv->cell_leakage_power_, 14.353185);
+    ASSERT_EQ(inv->leakages_.size(), 2u);
+    EXPECT_EQ(inv->leakages_[0].when_, "!A");
+    EXPECT_DOUBLE_EQ(inv->leakages_[0].value_, 10.102224);
+    EXPECT_EQ(inv->leakages_[1].when_, "A");
+    EXPECT_DOUBLE_EQ(inv->leakages_[1].value_, 18.604146);
+    // 真实库（Nangate45）的 leakage_power 无 related_pg_pin/power_level
+    EXPECT_EQ(inv->leakages_[0].related_pg_pin_, "");
+    EXPECT_EQ(inv->leakages_[0].power_level_, "");
+
+    // pg_pin：Nangate45 仅 voltage_name/pg_type 两属性（extra_attrs 空）
+    ASSERT_EQ(inv->pg_pins_.size(), 2u);
+    EXPECT_EQ(inv->pg_pins_[0].pg_name_, "VDD");
+    EXPECT_EQ(inv->pg_pins_[0].pg_type_, "primary_power");
+    EXPECT_EQ(inv->pg_pins_[0].voltage_name_, "VDD");
+    EXPECT_TRUE(inv->pg_pins_[0].extra_attrs_.empty());
+    EXPECT_EQ(inv->pg_pins_[1].pg_name_, "VSS");
+    EXPECT_EQ(inv->pg_pins_[1].pg_type_, "primary_ground");
+
+    // pin 级供电归属（真实形态带引号 STRING 值）
+    const LIBPin* a = find_pin(*inv, "A");
+    ASSERT_NE(a, nullptr);
+    EXPECT_EQ(a->related_power_pin_, "VDD");
+    EXPECT_EQ(a->related_ground_pin_, "VSS");
+    EXPECT_EQ(a->power_down_function_, "");
+    EXPECT_DOUBLE_EQ(a->capacitance_, 1.700230);
+
+    // internal_power/timing 结构化收集不受新增字段影响（真实 7x7 表）
+    const LIBPin* zn = find_pin(*inv, "ZN");
+    ASSERT_NE(zn, nullptr);
+    ASSERT_EQ(zn->internal_powers_.size(), 1u);
+    ASSERT_EQ(zn->internal_powers_[0].tables_.size(), 2u);
+    EXPECT_EQ(zn->internal_powers_[0].related_pin_, "A");
+    ASSERT_EQ(zn->timings_.size(), 1u);
+    ASSERT_EQ(zn->timings_[0].tables_.size(), 4u);
+
+    // 真实形态片段内全部组均可结构化收集：无 skipped 统计
+    EXPECT_TRUE(lib_.skipped_group_names_.empty());
 }
 
 TEST(LibMergeTest, KeepFirstDropDuplicates) {
@@ -314,6 +502,31 @@ TEST(LibMergeTest, TemplateMergeFirstWins) {
         }
     }
     EXPECT_TRUE(found_stat);
+}
+
+TEST(LibMergeTest, VoltageMapKeepsFirst) {
+    // voltage_maps_ merge 语义与 header_attrs 同款：保留 self（首个文件），
+    // src 的不并入（多文件解析同一库集时库头以首文件为准）
+    LIBLibrary a;
+    LIBVoltageMap vm_a;
+    vm_a.name_ = "VDD";
+    vm_a.voltage_ = 1.10;
+    a.voltage_maps_.push_back(vm_a);
+
+    LIBLibrary b;
+    LIBVoltageMap vm_b;
+    vm_b.name_ = "VDD";
+    vm_b.voltage_ = 1.20;
+    b.voltage_maps_.push_back(vm_b);
+    LIBVoltageMap vm_b2;
+    vm_b2.name_ = "VDDG";
+    vm_b2.voltage_ = 1.80;
+    b.voltage_maps_.push_back(vm_b2);
+
+    a.merge_from(b);
+    ASSERT_EQ(a.voltage_maps_.size(), 1u);
+    EXPECT_EQ(a.voltage_maps_[0].name_, "VDD");
+    EXPECT_DOUBLE_EQ(a.voltage_maps_[0].voltage_, 1.10);
 }
 
 }  // namespace

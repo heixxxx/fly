@@ -6,7 +6,10 @@ load("@rules_python//python:defs.bzl", "py_test")
 cc_test(
     name = "lib_parser_test",
     srcs = ["lib_parser_test.cpp"],
-    data = ["data/minitest.lib"],
+    data = [
+        "data/minitest.lib",
+        "data/nangate45_power_extract.lib",
+    ],
     deps = [
         "@googletest//:gtest_main",
         "//src/emir/lib/cpp:fly_emir_lib",

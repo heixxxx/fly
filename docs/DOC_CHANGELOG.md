@@ -2,6 +2,25 @@
 
 ---
 
+## 2026-10-13: lib db 功耗数据补齐——漏电功耗分项 / 电源地引脚声明 / 库级电压映射 / 引脚供电归属
+
+**落地**（power db / current db 的上游数据，与 spef db 立项并行）：
+`LIBLeakagePower`（cell 级 leakage_power 组逐状态漏电分项：when /
+related_pg_pin / power_level / value）+ `LIBPgPin`（cell 级 pg_pin 组：
+pg_name / pg_type / voltage_name）+ `LIBVoltageMap`（库级 voltage_map：
+supply 名 → 标称电压，展开组与简写属性两种源形态统一收集）+
+`LIBPin` 供电归属三字段（related_power_pin / related_ground_pin /
+power_down_function）+ `LIBCell.cell_leakage_power_`；数值属性 FLOAT64
+与整数书写形态均收（声明为 0 不与未声明混淆，缺失以 NaN 哨兵表示）；
+`LIBLibrary.voltage_maps_` 合并语义同 header_attrs（保留首个文件）。
+全部经 `EXLIB*` 绑定导出；单测 `lib_parser_test` 补（测试数据
+`nangate45_power_extract.lib` 新增 + `minitest.lib` 扩充）。
+
+**随改**：[emir/module.md](emir/module.md) lib 行；
+[emir-data-flow.md](emir-data-flow.md) ① 行产出补功耗侧数据。
+
+---
+
 ## 2026-10-12: 删除 emir-capability-gap.md——solver 为框架能力验证项，差距分析前提不成立（用户裁定）
 
 **裁定**：solver（src/solver RAS 求解器）是框架分布式求解能力的
