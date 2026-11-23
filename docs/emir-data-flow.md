@@ -128,7 +128,7 @@
   | ① lib | `build_lib_db` | name, lib_paths（list，每文件一独立解析任务） | — |  | ② tech | `build_tech_db` | name, tech_path | — |
   | ③ design | `build_design_db` | name, def_path, lef_paths, **lib_db** | — |
   | ④ extraction | `build_extraction_db` | name, design_db, tech_db | — |
-  | ⑤ spef | `build_spef_db` | name, spef_path, design_db | — |
+  | ⑤ spef | `build_spef_db` | name, spef_files（list，每文件一独立解析任务——元素形态同 timing/waveform：纯路径 / 块实例绑定 / 块定义绑定）, design_db | — |
   | ⑥ matrix | `build_matrix_db` | name, extraction_db | — |
   | ⑦ timing | `build_timing_db` | name, timing_files, design_db | — |
   | ⑧ waveform | `build_waveform_db` | name, design_db, vcd_files（可选——None = settings-only 模式）, settings（activity/x_z_handling） | — |

@@ -87,6 +87,20 @@ ln -sf ../../scripts/pre-push .git/hooks/pre-push
   - 汇总日志：`qa/logs/qa.log`（含每个 case 的 PASSED/FAILED/TIMEOUT 标记）
   - 单个 case 输出：`qa/<dir>/<test_name>/fly.log`（例如 `qa/storage/test_read_cache_basic/fly.log`）
 
+### 钩子已放行，但 push 失败（退出码 141）
+
+现象：日志末尾是 `PUSH ALLOWED`，`git push` 却以 141（SIGPIPE）退出，远端没有收到提交。2026-11-23 实测一次：冷构建使钩子跑了约 9.6 分钟后出现。
+
+推断原因：`git push` 经 SSH 时先与远端建连取引用状态，再跑 pre-push 钩子，钩子通过后在**同一条连接**上发送数据。钩子期间连接一直空闲，耗时过长时被网络路径按空闲超时丢弃，发送时管道已断。该次重推时钩子只跑了约 2.5 分钟且带了保活，两个因素同时变化，未单独归因。
+
+处置（不绕过钩子）——给 SSH 连接加保活后重推：
+
+```bash
+GIT_SSH_COMMAND='ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=20' git push
+```
+
+或在本机 `~/.ssh/config` 为远端主机配置 `ServerAliveInterval`。重推会再跑一遍钩子。
+
 ### 耗时参考
 
 完整流水线耗时取决于 build 增量和 QA 用例规模（**QA case 数随开发持续增长，以 runqa 运行输出为准，文档不写死**）。当前脚本配方（`scripts/pre-push` 为唯一权威：单测 `--jobs=4`、QA `-j 6 -t 20`）实测 QA 阶段全量门禁通过约 70s；保守降档 `-j 2` 约 171s，属资源安全的设计取舍。

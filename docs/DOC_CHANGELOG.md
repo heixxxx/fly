@@ -2,6 +2,29 @@
 
 ---
 
+## 2026-11-23: spef db 设计稿修订——语法勘误 + 块级 SPEF + RedHawk-SC 对照 + 待裁定点补充
+
+**修订** [emir/spef-db-plan.md](emir/spef-db-plan.md)（设计稿仍待裁定）：
+
+- 勘误两处（对照开源静态时序工具 OpenSTA 的 IEEE 1481 语法文件核实）：
+  CONN 段 `*C` 是引脚坐标 x y，引脚负载电容是 `*L`（原稿示例与
+  `SPConn` 注释写反）；R_NET 结构为 `*DRV … *CELL … *C2_R1_C1 …` +
+  `*LOADS` 下的 `*RC`（原稿写成不存在的 `*REQ` / `*NODE`）。
+- 新增 §2.4 块级 SPEF 与跨块边界的网：顶层文件 + 块绑定文件对同一
+  展平网是互补寄生，应相加；同作用域重合才是冲突。
+- 新增 §12 下游用途参考（RedHawk-SC User Manual 对照，页码引用）与
+  §13 实施期文档同步项；消息族补 SPMG::0011（网名命中但无布线几何）。
+- §11 待裁定点保留原编号与原建议，逐条补修订建议（RC 明细分对象 /
+  R_NET 至少收录总电容 / 冲突按作用域区分），新增三项：完整性与覆盖率
+  统计、NAME_MAP 未登记索引处置、次要构造处置。
+
+**随改**：[emir-data-flow.md](emir-data-flow.md) §5 API 表
+`build_spef_db` 参数 `spef_path` → `spef_files` 列表（与设计稿一致）；
+[push-hook.md](push-hook.md) 失败排查补「钩子已放行，但 push 失败
+（退出码 141）」。
+
+---
+
 ## 2026-11-23: waveform db QA 用例改批量提交 + wait_tasks 统一等待（推送钩子配方下超时修复）
 
 **问题**：qa/emir/test_emir_waveform_flow.py 串行 22 次「提交建库 →
