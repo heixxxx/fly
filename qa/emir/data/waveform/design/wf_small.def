@@ -1,0 +1,83 @@
+VERSION 5.8 ;
+DIVIDERCHAR "/" ;
+BUSBITCHARS "[]" ;
+DESIGN wf_small ;
+UNITS DISTANCE MICRONS 2000 ;
+DIEAREA ( 0 0 ) ( 40000 20000 ) ;
+
+COMPONENTS 14 ;
+    - u_inv_c0 INV_X1 + PLACED ( 2000 2000 ) N ;
+    - u_xor_c1 XOR2_X1 + PLACED ( 4000 2000 ) N ;
+    - u_and_c2 AND2_X1 + PLACED ( 6000 2000 ) N ;
+    - u_xor_c2 XOR2_X1 + PLACED ( 8000 2000 ) N ;
+    - u_and_c3a AND2_X1 + PLACED ( 10000 2000 ) N ;
+    - u_xor_c3 XOR2_X1 + PLACED ( 12000 2000 ) N ;
+    - u_cnt0 DFFR_X1 + PLACED ( 14000 2000 ) N ;
+    - u_cnt1 DFFR_X1 + PLACED ( 16000 2000 ) N ;
+    - u_cnt2 DFFR_X1 + PLACED ( 18000 2000 ) N ;
+    - u_cnt3 DFFR_X1 + PLACED ( 20000 2000 ) N ;
+    - u_inv_div INV_X1 + PLACED ( 22000 2000 ) N ;
+    - u_div DFFR_X1 + PLACED ( 24000 2000 ) N ;
+    - u_and1 AND2_X1 + PLACED ( 26000 2000 ) N ;
+    - u_xor1 XOR2_X1 + PLACED ( 28000 2000 ) N ;
+END COMPONENTS
+
+PINS 9 ;
+    - clk + NET clk
+      + DIRECTION INPUT + USE CLOCK
+      + LAYER metal1 ( -50 -50 ) ( 50 50 )
+      + FIXED ( 2000 19000 ) N ;
+    - rn + NET rn
+      + DIRECTION INPUT + USE SIGNAL
+      + LAYER metal1 ( -50 -50 ) ( 50 50 )
+      + FIXED ( 6000 19000 ) N ;
+    - count[0] + NET count[0]
+      + DIRECTION OUTPUT + USE SIGNAL
+      + LAYER metal1 ( -50 -50 ) ( 50 50 )
+      + FIXED ( 10000 19000 ) N ;
+    - count[1] + NET count[1]
+      + DIRECTION OUTPUT + USE SIGNAL
+      + LAYER metal1 ( -50 -50 ) ( 50 50 )
+      + FIXED ( 14000 19000 ) N ;
+    - count[2] + NET count[2]
+      + DIRECTION OUTPUT + USE SIGNAL
+      + LAYER metal1 ( -50 -50 ) ( 50 50 )
+      + FIXED ( 18000 19000 ) N ;
+    - count[3] + NET count[3]
+      + DIRECTION OUTPUT + USE SIGNAL
+      + LAYER metal1 ( -50 -50 ) ( 50 50 )
+      + FIXED ( 22000 19000 ) N ;
+    - clk_div2 + NET clk_div2
+      + DIRECTION OUTPUT + USE SIGNAL
+      + LAYER metal1 ( -50 -50 ) ( 50 50 )
+      + FIXED ( 26000 19000 ) N ;
+    - n_and + NET n_and
+      + DIRECTION OUTPUT + USE SIGNAL
+      + LAYER metal1 ( -50 -50 ) ( 50 50 )
+      + FIXED ( 30000 19000 ) N ;
+    - n_xor + NET n_xor
+      + DIRECTION OUTPUT + USE SIGNAL
+      + LAYER metal1 ( -50 -50 ) ( 50 50 )
+      + FIXED ( 34000 19000 ) N ;
+END PINS
+
+NETS 16 ;
+    - count[0] ( u_inv_c0 A ) ( u_xor_c1 A ) ( u_and_c2 A1 ) ( u_cnt0 Q ) ( u_xor1 B ) ( PIN count[0] ) ;
+    - n_cnt0_d ( u_inv_c0 ZN ) ( u_cnt0 D ) ;
+    - count[1] ( u_xor_c1 B ) ( u_and_c2 A2 ) ( u_cnt1 Q ) ( u_xor1 A ) ( PIN count[1] ) ;
+    - n_cnt1_d ( u_xor_c1 Z ) ( u_cnt1 D ) ;
+    - n_b1 ( u_and_c2 ZN ) ( u_xor_c2 A ) ( u_and_c3a A1 ) ;
+    - count[2] ( u_xor_c2 B ) ( u_and_c3a A2 ) ( u_cnt2 Q ) ( u_and1 A2 ) ( PIN count[2] ) ;
+    - n_cnt2_d ( u_xor_c2 Z ) ( u_cnt2 D ) ;
+    - n_b2 ( u_and_c3a ZN ) ( u_xor_c3 A ) ;
+    - count[3] ( u_xor_c3 B ) ( u_cnt3 Q ) ( u_and1 A1 ) ( PIN count[3] ) ;
+    - n_cnt3_d ( u_xor_c3 Z ) ( u_cnt3 D ) ;
+    - clk ( u_cnt0 CK ) ( u_cnt1 CK ) ( u_cnt2 CK ) ( u_cnt3 CK ) ( u_div CK ) ( PIN clk ) ;
+    - rn ( u_cnt0 RN ) ( u_cnt1 RN ) ( u_cnt2 RN ) ( u_cnt3 RN ) ( u_div RN ) ( PIN rn ) ;
+    - clk_div2 ( u_inv_div A ) ( u_div Q ) ( PIN clk_div2 ) ;
+    - n_div_d ( u_inv_div ZN ) ( u_div D ) ;
+    - n_and ( u_and1 ZN ) ( PIN n_and ) ;
+    - n_xor ( u_xor1 Z ) ( PIN n_xor ) ;
+END NETS
+
+END DESIGN

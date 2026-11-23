@@ -2,6 +2,53 @@
 
 ---
 
+## 2026-11-23: waveform db QA 用例改批量提交 + wait_tasks 统一等待（推送钩子配方下超时修复）
+
+**问题**：qa/emir/test_emir_waveform_flow.py 串行 22 次「提交建库 →
+wait_frozen」——逐库轮询每次至少等满一个缺省周期（0.5s），纯轮询即占
+约 11s；推送钩子配方（`runqa -j 6 -t 20`，6 核机）实测超时 22s（超时
+瞬间栈停在 wait_frozen 的 sleep 上）。
+
+**修法**：建库改批量提交——design db 族 7 库一批、waveform db 第一批
+11 库（场景 1-7 + 确定性对照）、第二批 2 库（混合模式 + gzip）——每批
+经 `wait_tasks` 一次等待全部任务完成（freeze 是任务链末环），再逐库
+`wait_frozen` 确认（已冻结即返回，保留失败信号即时返回语义）。断言与
+场景顺序不变；混合模式库留第二批（场景 6 的「恰 1 条未解析覆盖」断言
+读进程级 message.log，须在无其它 settings 覆盖库运行时判定）。实测
+（-j 6 -t 20）三轮 12.1s / 13.9s / 12.6s 全过（单独运行 18.7s → 11.4s）。
+
+**调研结论**：QA 等待 db 冻结没有事件驱动原语——`wait_frozen`（逐库
+轮询）与 `wait_tasks` / `wait_for_all_tasks`（整批一次，内部同为 0.5s
+轮询）之外无其它；导出层无冻结事件回调，代理层条件变量等待仅在进程
+收尾排空（`drain_cv_`）内使用、未对外导出。
+
+---
+
+## 2026-10-13: waveform db 裁定 IV/V 重构批次落地——gzip 支持、混合模式、轨道归并、四级回落、统计与过滤挪合并、快照删除、变量表入库
+
+**落地**（方案 [emir/waveform-db-plan.md](emir/waveform-db-plan.md) §13
+裁定 IV/V，2026-10-13 两轮）：① gzip 压缩 VCD 支持（文件入口任务魔数
+嗅探 → 解压到 db 临时目录副本后进常规切块链，副本目录由汇总任务单点
+清理）；② 混合模式（VCD + settings.activity.overrides 并存：每分区合并
+产物上命中条目替换统计值、波形引用保留，覆盖条目数入 summary）；
+③ 轨道身份归并（§7.2：同标识码多名有网名命中时整轨道立网身份，引脚
+名不另立实体）；④ 引脚波形四级回落（§7.3：引脚自身轨道 → 所连网轨道
+→ 同网输出引脚轨道〔多个取连接表第一个〕→ 连接表第一个有波形的引脚，
+四级全无 = 哨兵）；⑤ 引脚身份波形分区复制范围扩大（自身实例分区 +
+所连网全部连接位分区——回落本地可解）；⑥ 统计与等值过滤挪 T3 合并
+阶段（T2 纯事件分片；完整序列上前导段 + 事件间隔 + 尾段覆盖全程，
+块界缝隙问题作废）；⑦ 块首快照删除（T1 退化为纯字节切块）；⑧ 变量
+表写 db temp 对象（逐块任务按键共享读取，不随任务参数逐块复制）；
+⑨ 词法公共化（标量取值 / 时间档位 / 转储参数在 wf_types 单点维护）；
+⑩ 初值事件修复（首块起点含 $dumpvars 段）；⑪ 多位向量「全位同值」
+简写行等价判定覆盖全位。
+
+**随改**：[emir/module.md](emir/module.md) 波形行随实（T2 纯事件 / T3
+五步重排 + 合并产物上的混合模式覆盖 / waveform_id 身份键全序 / var 表入库 / QA 清单补重构场景；
+原行按首轮口径写就，四处落后于代码）；方案头部状态更新为已实施。
+
+---
+
 ## 2026-10-13: lib db 功耗数据补齐——漏电功耗分项 / 电源地引脚声明 / 库级电压映射 / 引脚供电归属
 
 **落地**（power db / current db 的上游数据，与 spef db 立项并行）：
@@ -18,6 +65,32 @@ power_down_function）+ `LIBCell.cell_leakage_power_`；数值属性 FLOAT64
 
 **随改**：[emir/module.md](emir/module.md) lib 行；
 [emir-data-flow.md](emir-data-flow.md) ① 行产出补功耗侧数据。
+
+---
+
+## 2026-10-12: waveform db（⑧ 波形数据库）全链落地——⑧ vcd db 与 ⑨ switching db 合并更名，库体系 13 库 → 12 库编号全重排
+
+**落地**：waveform db 全链实施（解析器 + 换算合并层 + nanobind 绑定 +
+Python 层 + 建库 flow + 读库 API + QA e2e）。解析 VCD（IEEE 1364 标准
+四态）与/或用户统计设置，名字换算（net 名挂全部连接位 / 实例引脚直配
+两形态）后按 design db 分区落库；双容器双对象（波形容器事件去重存储 +
+统计容器 SAIF 等价原始量，翻转率/概率由消费侧推导）；settings-only 模
+式消费接口恒定。方案 [emir/waveform-db-plan.md](emir/waveform-db-plan.md)
+（§13 两轮裁定 + §2.1 多文件合并语义三轮裁定）。
+
+**emir-data-flow.md 全重排**（§13-II-10 裁定执行）：⑧ vcd db 与
+⑨ switching db 合并更名 **⑧ waveform db**，power/current/analysis/em
+编号前移为 ⑨⑩⑪⑫；§1 流程图 + §2 全局 ID 化条目 + §3 明细表 +
+§4 裁定补记（新增裁定 19——合并与改名 + 双容器/消费侧推导/settings-
+only 口径；裁定 11/12 的 switching 引用与 VCD/SW 简写随改）+
+§5 API 表（`build_waveform_db(name, design_db, vcd_files?, settings?)`
+；`build_power_db` 显式参数 switching_db → **waveform_db**）+ §6 演进
+方向编号。
+
+**随改**：[emir/dev-rules.md](emir/dev-rules.md) §5 简写分配表（VCD/SW
+撤销、WF 新增）；[emir/module.md](emir/module.md) 子模块表（waveform 行
+✅ + 概述 12 库）；[README.md](README.md) 文档地图行；
+`src/emir/project/py/project.py` 与其测试的库清单 docstring。
 
 ---
 

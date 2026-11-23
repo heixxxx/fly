@@ -1,0 +1,39 @@
+VERSION 5.8 ;
+DIVIDERCHAR "/" ;
+BUSBITCHARS "[]" ;
+DESIGN wf_blk_top ;
+UNITS DISTANCE MICRONS 2000 ;
+DIEAREA ( 0 0 ) ( 40000 20000 ) ;
+
+COMPONENTS 2 ;
+    - u_blk_a wf_blk_a + PLACED ( 2000 2000 ) N ;
+    - u_blk_b wf_blk_b + PLACED ( 4000 2000 ) N ;
+END COMPONENTS
+
+PINS 4 ;
+    - clk + NET clk
+      + DIRECTION INPUT + USE CLOCK
+      + LAYER metal1 ( -50 -50 ) ( 50 50 )
+      + FIXED ( 2000 19000 ) N ;
+    - rn + NET rn
+      + DIRECTION INPUT + USE SIGNAL
+      + LAYER metal1 ( -50 -50 ) ( 50 50 )
+      + FIXED ( 6000 19000 ) N ;
+    - n_top + NET n_top
+      + DIRECTION OUTPUT + USE SIGNAL
+      + LAYER metal1 ( -50 -50 ) ( 50 50 )
+      + FIXED ( 10000 19000 ) N ;
+    - n_top2 + NET n_top2
+      + DIRECTION OUTPUT + USE SIGNAL
+      + LAYER metal1 ( -50 -50 ) ( 50 50 )
+      + FIXED ( 14000 19000 ) N ;
+END PINS
+
+NETS 4 ;
+    - clk ( u_blk_a clk ) ( u_blk_b clk ) ( PIN clk ) ;
+    - rn ( u_blk_a rn ) ( u_blk_b rn ) ( PIN rn ) ;
+    - n_top ( u_blk_a n_out ) ( PIN n_top ) ;
+    - n_top2 ( u_blk_b n_out ) ( PIN n_top2 ) ;
+END NETS
+
+END DESIGN

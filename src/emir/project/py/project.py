@@ -1,8 +1,10 @@
 """EMIRProject — EMIR（电压降 IR + 电迁移 EM）仿真分析的 Project 类型。
 
-全部 13 个数据库（lib / tech / design / extraction / spef / matrix / timing /
-vcd / switching / power / current / analysis / em）及其创建流程 API 均注册
-归属本 Project 子类（归属约定与 API 规划表见 docs/emir-data-flow.md §5）。
+全部 12 个数据库（lib / tech / design / extraction / spef / matrix /
+timing / waveform / power / current / analysis / em——原 ⑧ vcd db 与
+⑨ switching db 合并更名 waveform db，2026-10-12 裁定）及其创建流程
+API 均注册归属本 Project 子类（归属约定与 API 规划表见
+docs/emir-data-flow.md §5）。
 
 文件组织（体现"分离到不同模块"，详见 docs/project-design.md §4.1）::
 

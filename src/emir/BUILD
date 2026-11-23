@@ -11,5 +11,6 @@ py_library(
         "//src/emir/lib:lib_pkg",
         "//src/emir/project:project_pkg",
         "//src/emir/timing:timing_pkg",
+        "//src/emir/waveform:waveform_pkg",
     ],
 )

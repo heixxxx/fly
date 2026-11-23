@@ -1,0 +1,57 @@
+$date
+	handwritten fixture
+$end
+$version
+	wf basic fixture 1.0
+$end
+$timescale
+	100ps
+$end
+$scope module top $end
+$var wire 1 ! clk $end
+$var reg 4 * count [3:0] $end
+$var tri 1 " data $end
+$scope module u_sub $end
+$var wire 1 ! echo $end
+$var wire 1 # flag $end
+$upscope $end
+$upscope $end
+$enddefinitions $end
+#0
+$dumpvars(1, top)
+1!
+x*
+0"
+1#
+$end
+#10
+0!
+b0101 *
+#10
+0"
+z"
+#20
+b1 *
+1!
+#30
+$dumpoff
+x*
+x"
+x#
+$end
+#40
+$dumpall
+0!
+b00x1 *
+0"
+0#
+$end
+#50
+$dumpon
+1!
+b1z0 *
+$end
+#60
+0!
+b101 *
+1&

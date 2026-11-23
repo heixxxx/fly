@@ -21,6 +21,8 @@ from .ds_export import (  # noqa: F401
     EXDSDensityGrid,
     EXDSGeomEntry,
     EXDSIdDomain,
+    EXDSIdPartitionIndex,
+    EXDSIdPartitionSegment,
     EXDSInstance,
     EXDSInstanceStats,
     EXDSLayer,

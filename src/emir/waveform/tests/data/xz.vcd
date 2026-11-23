@@ -1,0 +1,130 @@
+$date
+	Mon Oct 12 22:58:41 2026
+$end
+$version
+	Icarus Verilog
+$end
+$timescale
+	1ns
+$end
+$scope module wf_xz $end
+$var wire 1 ! n_tri $end
+$var wire 1 " n_q $end
+$var wire 1 # n_inv $end
+$var wire 1 $ n_f $end
+$var reg 1 % clk $end
+$var reg 1 & en $end
+$var reg 1 ' n_seed $end
+$scope module u_buf $end
+$var wire 1 $ Z $end
+$var wire 1 # A $end
+$upscope $end
+$scope module u_dff $end
+$var wire 1 % CK $end
+$var wire 1 ' D $end
+$var wire 1 " Q $end
+$var wire 1 ( QN $end
+$var reg 1 ) q_r $end
+$upscope $end
+$scope module u_inv1 $end
+$var wire 1 " A $end
+$var wire 1 # ZN $end
+$upscope $end
+$scope module u_tri $end
+$var wire 1 # A $end
+$var wire 1 & EN $end
+$var wire 1 ! Z $end
+$upscope $end
+$upscope $end
+$enddefinitions $end
+#0
+$dumpvars
+x)
+x(
+x'
+0&
+0%
+x$
+x#
+x"
+z!
+$end
+#5
+1%
+#8
+0'
+#10
+0%
+#15
+1(
+1$
+1#
+0"
+0)
+1%
+#18
+x$
+#20
+0%
+1'
+#25
+0(
+x$
+0#
+1"
+1)
+1%
+#30
+0!
+0%
+1&
+#35
+1%
+#38
+1$
+#40
+0%
+0'
+#45
+1!
+1(
+1$
+1#
+0"
+0)
+1%
+#50
+0%
+#55
+1%
+#58
+z$
+#60
+z!
+0%
+0&
+#65
+1%
+#70
+0%
+1'
+#75
+0(
+z$
+0#
+1"
+1)
+1%
+#78
+0$
+#80
+0%
+#85
+1%
+#90
+0%
+#95
+1%
+#100
+0%
+#101

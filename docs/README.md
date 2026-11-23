@@ -31,7 +31,7 @@
 | 优先级调度 | [priority-scheduling-design.md](priority-scheduling-design.md) |
 | 内存增长分析（M1 依据） | [memory-growth-analysis.md](memory-growth-analysis.md) |
 | 竞品对比与战略边界 | [competitor-analysis.md](competitor-analysis.md)（2026-06 版本，部分状态以 roadmap 修正为准） |
-| **EMIR 业务数据流转流程** | [emir-data-flow.md](emir-data-flow.md)（13 个数据库的职责/依赖/架构裁定——业务层总流程权威） |
+| **EMIR 业务数据流转流程** | [emir-data-flow.md](emir-data-flow.md)（12 个数据库的职责/依赖/架构裁定——业务层总流程权威） |
 
 ## 性能与测试
 

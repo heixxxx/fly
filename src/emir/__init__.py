@@ -8,3 +8,4 @@ from emir.project import *  # noqa: F401,F403
 from emir.lib import *  # noqa: F401,F403
 from emir.design import *  # noqa: F401,F403
 from emir.timing import *  # noqa: F401,F403
+from emir.waveform import *  # noqa: F401,F403

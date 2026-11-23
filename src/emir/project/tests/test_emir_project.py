@@ -1,7 +1,8 @@
 """EMIRProject 类身份与 Project 机制集成测试。
 
 EMIRProject 是 EMIR（电压降 IR + 电迁移 EM）仿真分析的 Project 类型——
-全部 13 个数据库及创建 API 归属它（docs/emir-data-flow.md §5）。flow 随
+全部 12 个数据库及创建 API 归属它（docs/emir-data-flow.md §5；原 ⑧ vcd
+db 与 ⑨ switching db 合并更名 waveform db，2026-10-12 裁定）。flow 随
 立项注册；本测试钉住三件地基：类身份与 meta class 字段（load_project
 动态还原的依据）、meta 持久化与重绑定、flow 注册表与基类隔离。
 """

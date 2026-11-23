@@ -1,0 +1,44 @@
+VERSION 5.8 ;
+DIVIDERCHAR "/" ;
+BUSBITCHARS "[]" ;
+DESIGN wf_xz ;
+UNITS DISTANCE MICRONS 2000 ;
+DIEAREA ( 0 0 ) ( 16000 8000 ) ;
+
+COMPONENTS 4 ;
+    - u_dff DFF_X1 + PLACED ( 2000 2000 ) N ;
+    - u_inv1 INV_X1 + PLACED ( 4000 2000 ) N ;
+    - u_buf BUF_X1 + PLACED ( 6000 2000 ) N ;
+    - u_tri TBUF_X1 + PLACED ( 8000 2000 ) N ;
+END COMPONENTS
+
+PINS 4 ;
+    - clk + NET clk
+      + DIRECTION INPUT + USE CLOCK
+      + LAYER metal1 ( -50 -50 ) ( 50 50 )
+      + FIXED ( 2000 7000 ) N ;
+    - n_q + NET n_q
+      + DIRECTION OUTPUT + USE SIGNAL
+      + LAYER metal1 ( -50 -50 ) ( 50 50 )
+      + FIXED ( 6000 7000 ) N ;
+    - n_tri + NET n_tri
+      + DIRECTION OUTPUT + USE SIGNAL
+      + LAYER metal1 ( -50 -50 ) ( 50 50 )
+      + FIXED ( 10000 7000 ) N ;
+    - n_f + NET n_f
+      + DIRECTION OUTPUT + USE SIGNAL
+      + LAYER metal1 ( -50 -50 ) ( 50 50 )
+      + FIXED ( 14000 7000 ) N ;
+END PINS
+
+NETS 7 ;
+    - n_seed ( u_dff D ) ;
+    - clk ( u_dff CK ) ( PIN clk ) ;
+    - n_q ( u_dff Q ) ( u_inv1 A ) ( PIN n_q ) ;
+    - n_inv ( u_inv1 ZN ) ( u_buf A ) ( u_tri A ) ;
+    - n_f ( u_buf Z ) ( PIN n_f ) ;
+    - en ( u_tri EN ) ;
+    - n_tri ( u_tri Z ) ( PIN n_tri ) ;
+END NETS
+
+END DESIGN

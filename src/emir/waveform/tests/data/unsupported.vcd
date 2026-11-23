@@ -1,0 +1,18 @@
+$timescale 1fs $end
+$scope module top $end
+$var real 64 ! val $end
+$var event 1 @ ev $end
+$var wire xx # broken $end
+$var wire 1 % sig $end
+$var wire 2 % sig2 $end
+$upscope $end
+$enddefinitions $end
+#0
+$dumpvars
+0%
+$end
+#10
+r3.5 !
+S01 %
+p0101 @
+1%

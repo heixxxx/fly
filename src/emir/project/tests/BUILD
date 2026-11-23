@@ -8,12 +8,14 @@ py_test(
     main = "test_emir_project.py",
     imports = ["../../lib/export", "../../design/export",
                "../../timing/export",
+               "../../waveform/export",
            ],
     deps = [
         "//src/emir:emir_pkg",
         "//src/emir/design/export:_fly_emir_design.so",
         "//src/emir/lib/export:_fly_emir_lib.so",
         "//src/emir/timing/export:_fly_emir_timing.so",
+        "//src/emir/waveform/export:_fly_emir_waveform.so",
         "//src/fly:fly_py",
     ],
 )

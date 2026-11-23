@@ -1,0 +1,25 @@
+VERSION 5.8 ;
+DIVIDERCHAR "/" ;
+BUSBITCHARS "[]" ;
+DESIGN wf_blk_b ;
+UNITS DISTANCE MICRONS 2000 ;
+DIEAREA ( 0 0 ) ( 16000 8000 ) ;
+
+COMPONENTS 3 ;
+    - u_dff_b1 DFFR_X1 + PLACED ( 2000 2000 ) N ;
+    - u_buf_b BUF_X1 + PLACED ( 4000 2000 ) N ;
+    - u_inv_b INV_X1 + PLACED ( 6000 2000 ) N ;
+END COMPONENTS
+
+PINS 0 ;
+END PINS
+
+NETS 5 ;
+    - n_b2 ( u_dff_b1 D ) ( u_buf_b Z ) ;
+    - clk ( u_dff_b1 CK ) ;
+    - rn ( u_dff_b1 RN ) ;
+    - n_b1 ( u_dff_b1 Q ) ( u_buf_b A ) ( u_inv_b A ) ;
+    - n_out ( u_inv_b ZN ) ;
+END NETS
+
+END DESIGN

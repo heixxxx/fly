@@ -1,0 +1,42 @@
+$date
+	Mon Oct 12 22:58:41 2026
+$end
+$version
+	Icarus Verilog
+$end
+$timescale
+	1ns
+$end
+$scope module wf_blk_top $end
+$scope module u_blk_a $end
+$scope module u_inv1 $end
+$var wire 1 ! A $end
+$var wire 1 " ZN $end
+$upscope $end
+$upscope $end
+$upscope $end
+$enddefinitions $end
+#0
+$dumpvars
+1"
+0!
+$end
+#25
+0"
+1!
+#35
+1"
+0!
+#45
+0"
+1!
+#55
+1"
+0!
+#65
+0"
+1!
+#75
+1"
+0!
+#84
