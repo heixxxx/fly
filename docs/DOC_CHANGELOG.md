@@ -68,6 +68,19 @@ power_down_function）+ `LIBCell.cell_leakage_power_`；数值属性 FLOAT64
 
 ---
 
+## 2026-10-13: spef db 立项方案设计稿（⑤ 寄生数据库——待裁定）
+
+**新增** [emir/spef-db-plan.md](emir/spef-db-plan.md)：解析 SPEF（标准
+寄生交换格式，IEEE 1481）逐网寄生（整网总电容 + 完整 RC 明细），名字
+换算为 design db 全局网 id 后按分区结构落库；首期消费者 = power db 的
+net load（emir-data-flow 裁定 4：不进 matrix 端），RC 明细全量保存为
+后续扩展留底。三段式 + 直接任务链全先例复用；**8 个待裁定点见方案
+§11**（编号至 9，第 4 项并入第 3 项：消息前缀、RC 明细入库范围、CONN
+明细、R_NET 形态、min:typ:max、内部单位、跨文件同网冲突、测试数据
+生成策略），裁定后实施。
+
+---
+
 ## 2026-10-12: waveform db（⑧ 波形数据库）全链落地——⑧ vcd db 与 ⑨ switching db 合并更名，库体系 13 库 → 12 库编号全重排
 
 **落地**：waveform db 全链实施（解析器 + 换算合并层 + nanobind 绑定 +
