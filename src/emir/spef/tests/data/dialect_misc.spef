@@ -1,0 +1,26 @@
+// 用途：方言容忍（矩阵条目 6）——小写版本串、*DESIGN_FLOW 多串、
+// *CONN / *RES / *INDUC 关键字后零条记录、零值网紧跟 *END、一行多条
+// 记录、一条记录跨多行、*CAP 无编号与带编号同行混排。
+*SPEF "ieee 1481-1999"
+*DESIGN "t"
+*DESIGN_FLOW "NAME_SCOPE LOCAL" "PIN_CAP NONE"
+*DIVIDER /
+*DELIMITER :
+*T_UNIT 1 PS
+*C_UNIT 1 FF
+*R_UNIT 1 OHM
+*L_UNIT 1 MH
+
+*D_NET n_zero 0
+*END
+
+*D_NET n_plain 3.0
+*CONN
+*CAP
+*RES
+*INDUC
+*CAP
+n_plain:1 0.5
+u_i:P n_a:2
+1.0 2 u_i:Q n_a:3 1.5
+*END

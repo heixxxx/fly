@@ -1,0 +1,21 @@
+// 用途：*CONN 方言（矩阵条目 6）——只有节点名的 *I 行、*L/*C/*S/*D
+// 属性（*L 进观测和，多值 2:4:6 取下标 1 = 4）、*P 行、*N 坐标记录、
+// 未知方向值 X 计数不报错。
+*SPEF "IEEE 1481-1998"
+*DIVIDER /
+*DELIMITER :
+*C_UNIT 1 FF
+*R_UNIT 1 OHM
+
+*D_NET n_a 5.0
+*CONN
+*I u_x:P
+*I u_y:A I *L 0.001 *C 1500 2400
+*I u_z:B O *S 0.01 0.02 *D CELLX *L 2:4:6
+*P p_clk I
+*P p_out O *L 0.002
+*N n_a:1 *C 100 200
+*I u_w:Q X
+*CAP
+1 n_a:1 1.0
+*END

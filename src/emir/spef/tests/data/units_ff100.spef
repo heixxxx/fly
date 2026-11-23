@@ -1,0 +1,10 @@
+// 用途：单位换算（矩阵条目 2）——100 FF 刻度：1 文件单位 = 100 fF。
+// 无 *DIVIDER / *DELIMITER 行——顺带钉死缺省分隔符（'/' 与 ':'）。
+*SPEF "IEEE 1481-1998"
+*C_UNIT 100 FF
+*R_UNIT 1 OHM
+
+*D_NET n_h 0.001
+*CAP
+1 n_h:1 0.001
+*END

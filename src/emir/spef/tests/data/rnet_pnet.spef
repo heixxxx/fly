@@ -1,0 +1,46 @@
+// 用途：跳过项（矩阵条目 7）——*R_NET 收录（行首总电容 7.5、kind
+// R_NET、*DRV/*CELL/*C2_R1_C1/*LOADS/*RC/*Q/*K 全部被消费）、
+// *D_PNET / *R_PNET 整段跳过（pnet_skip_count == 2）、*INDUC 记录
+// 忽略并计数（2 条）；文件头 *POWER_NETS / *GROUND_NETS / *PORTS /
+// *PHYSICAL_PORTS / *DEFINE / *PDEFINE 全部接受，电源地网名被记录。
+*SPEF "IEEE 1481-1998"
+*DIVIDER /
+*DELIMITER :
+*C_UNIT 1 FF
+*R_UNIT 1 OHM
+*POWER_NETS VDD
+*GROUND_NETS VSS
+*PORTS
+p1 I
+p2 O
+*PHYSICAL_PORTS
+pp1 I
+*DEFINE abc = 1
+*PDEFINE pd1 = 2
+
+*D_PNET n_p1 1.0
+*CAP
+1 n_p1:1 0.5
+*END
+
+*R_NET n_r 7.5
+*DRV n_r:1 *CELL DRVC *C2_R1_C1 2.0 3.0 1.5
+*LOADS
+*RC u_l:A 0.001
+*RC n_r:2 0.002
+*Q 2
+*K 0.5 0.25
+*END
+
+*R_PNET n_p2 2.0
+*RES
+1 n_p2:1 n_p2:2 1.0
+*END
+
+*D_NET n_d 1.0
+*INDUC
+1 n_d:1 n_d:2 0.001
+2 n_d:2 n_d:3 0.002
+*CAP
+1 n_d:1 1.0
+*END

@@ -1,0 +1,15 @@
+// 用途：单位换算（矩阵条目 2）——四个单位行乱序出现 + 刻度 10、
+// KOHM / UH 单位词；电容换算行为经网值断言（0.005 x 10 PF x 1000
+// = 50 fF）。
+*SPEF "IEEE 1481-1998"
+*DIVIDER /
+*DELIMITER :
+*T_UNIT 10 NS
+*R_UNIT 1 KOHM
+*L_UNIT 100 UH
+*C_UNIT 10 PF
+
+*D_NET n_u 0.005
+*CAP
+1 n_u:1 0.005
+*END

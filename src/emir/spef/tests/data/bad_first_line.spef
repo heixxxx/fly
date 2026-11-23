@@ -1,0 +1,4 @@
+// 用途：文件级错误（矩阵条目 9）——首个非注释、非空行不是 *SPEF，
+// 文件级错误：解析必须抛 std::runtime_error。
+*DESIGN "t"
+*C_UNIT 1 FF

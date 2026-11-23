@@ -1,0 +1,23 @@
+// 用途：节点分类与合计口径（矩阵条目 5）——四类节点（本网内部 /
+// 别的网内部 / 实例引脚 / 端口）与 external 计数口径：对地挂别的网
+// 内部节点不计入 ground（external_ground_cap_count）；耦合两端都是
+// 别的网内部节点不计入 coupling（external_coupling_cap_count）；
+// 内部节点序号不从 1 起。
+*SPEF "IEEE 1481-1998"
+*DIVIDER /
+*DELIMITER :
+*C_UNIT 1 FF
+*R_UNIT 1 OHM
+
+*D_NET n_a 10.0
+*CAP
+1 n_a:5 1.0
+2 n_b:7 2.0
+3 u_x:P 3.0
+4 p_clk 4.0
+5 n_a:5 n_b:8 1.0
+6 n_b:8 n_c:9 1.0
+7 u_x:P n_a:6 1.0
+*RES
+1 n_a:5 n_b:7 1.0
+*END

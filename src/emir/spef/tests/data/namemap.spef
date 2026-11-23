@@ -1,0 +1,35 @@
+// 用途：名字映射（矩阵条目 4）——网名经映射引用（*5 -> n_top）、映射
+// 名与原名混用（n_top:3）、引脚名不编号（*2453:CLK 只查实例部分）、
+// 索引重复定义保留首份（*6）、未登记索引出现在网名（*888 整网跳过）、
+// 未登记索引出现在节点（*999:X 该条记录丢弃）。
+*SPEF "IEEE 1481-1998"
+*DIVIDER /
+*DELIMITER :
+*C_UNIT 1 PF
+*R_UNIT 1 OHM
+*NAME_MAP
+*5 n_top
+*6 u_and1
+*6 n_dup_first_lost
+*7 n_other
+*2453 u_clkbuf
+
+*D_NET *5 0.010
+*CONN
+*I *6:ZN O
+*CAP
+1 *6:ZN 0.004
+2 n_top:3 0.003
+3 *2453:CLK *6:ZN 0.002
+4 *6:ZN *999:X 0.001
+*END
+
+*D_NET *888 0.005
+*CAP
+1 n_top:1 0.001
+*END
+
+*D_NET n_other 0.002
+*CAP
+1 *7:1 0.001
+*END

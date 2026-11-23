@@ -1,0 +1,26 @@
+// 用途：基准样张（解析矩阵条目 1）——期望值逐项钉死：total 10 fF /
+// ground 7 fF / coupling 3 fF / cap_count 3 / coupling_cap_count 1 /
+// res_count 2 / value_count 1 / kind D_NET。单位 1 PF = 1000 fF；
+// 节点全部为实例引脚或本网内部形态（全部计入本网合计）。
+*SPEF "IEEE 1481-1998"
+*DESIGN "wf_top"
+*DIVIDER /
+*DELIMITER :
+*BUS_DELIMITER [ ]
+*T_UNIT 1 NS
+*C_UNIT 1 PF
+*R_UNIT 1 OHM
+*L_UNIT 1 HENRY
+
+*D_NET n_a 0.010
+*CONN
+*I u_and1:ZN O *D AND2 *L 0.001
+*I u_xor:A1 I
+*CAP
+1 u_and1:ZN 0.004
+2 u_xor:A1 0.003
+3 u_and1:ZN u_xor:A1 0.003
+*RES
+1 u_and1:ZN n_a:1 1.5
+2 n_a:1 u_xor:A1 2.5
+*END

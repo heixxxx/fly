@@ -1,0 +1,12 @@
+// 用途：单位换算（矩阵条目 2）——FF 单位 + 小数刻度 1.0（StarRC
+// 样例形态）：1 文件单位 = 1 fF；电阻 10 OHM。
+*SPEF "IEEE 1481-1998"
+*DIVIDER /
+*DELIMITER :
+*C_UNIT 1.0 FF
+*R_UNIT 10 OHM
+
+*D_NET n_f 2.0
+*CAP
+1 n_f:1 2.0
+*END

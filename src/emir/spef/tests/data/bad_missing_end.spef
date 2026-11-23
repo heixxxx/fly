@@ -1,0 +1,16 @@
+// 用途：段级错误（矩阵条目 10）——最后一个网缺 *END：该网整网丢弃
+//（broken_net_count == 1），之前的网完好（n_ok 的合计不受影响）。
+*SPEF "IEEE 1481-1998"
+*DIVIDER /
+*DELIMITER :
+*C_UNIT 1 FF
+*R_UNIT 1 OHM
+
+*D_NET n_ok 1.0
+*CAP
+1 n_ok:1 1.0
+*END
+
+*D_NET n_broken 2.0
+*CAP
+1 n_broken:1 2.0
