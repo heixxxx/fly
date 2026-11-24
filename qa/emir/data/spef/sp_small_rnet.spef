@@ -1,0 +1,83 @@
+*SPEF "IEEE 1481-1998"
+*DESIGN "wf_small"
+*DATE "Tue Nov 24 00:00:00 2026"
+*VENDOR "fly QA"
+*PROGRAM "gen_spef.py"
+*VERSION "1.0"
+*DESIGN_FLOW "PIN_CAP NONE"
+*DIVIDER /
+*DELIMITER :
+*BUS_DELIMITER [ ]
+*T_UNIT 1 NS
+*C_UNIT 1 FF
+*R_UNIT 1 OHM
+*L_UNIT 1 HENRY
+
+// 缩减网形态：clk 带完整构造；rn 只有网段头；n_and 带 *Q / *K；
+// n_b1 行首值是三值形态（取第 1 个 = 18）。同文件里混有分布式网。
+
+*R_NET clk 80.0
+*CONN
+*I u_cnt0:CK I *D DFFR_X1
+*I u_cnt1:CK I *D DFFR_X1
+*I u_cnt2:CK I *D DFFR_X1
+*I u_cnt3:CK I *D DFFR_X1
+*I u_div:CK I *D DFFR_X1
+*P clk I
+*DRV clk *CELL PAD_CLK *C2_R1_C1 4.0 30.0 6.0
+*LOADS
+*RC u_cnt0:CK 0.020
+*RC u_cnt1:CK 0.024
+*RC u_cnt2:CK 0.028
+*RC u_cnt3:CK 0.032
+*RC u_div:CK 0.036
+*END
+
+*R_NET rn 90.0
+*END
+
+*R_NET n_and 12.0
+*DRV n_and *CELL PAD_OUT *C2_R1_C1 1.0 10.0 1.0
+*LOADS
+*RC u_and1:ZN 0.008
+*Q 2
+*K 0.5 0.25
+*END
+
+*R_NET n_b1 15:18:20
+*END
+
+*D_NET count[0] 3
+*CONN
+*I u_cnt0:Q O *D DFFR_X1
+*I u_inv_c0:A I *D INV_X1
+*I u_xor_c1:A I *D XOR2_X1
+*I u_and_c2:A1 I *D AND2_X1
+*I u_xor1:B I *D XOR2_X1
+*P count[0] I
+*CAP
+1 u_cnt0:Q 2
+2 u_cnt0:Q n_cnt0_d:3 1
+*END
+
+*D_NET n_xor 8
+*CONN
+*I u_xor1:Z O *D XOR2_X1
+*P n_xor O
+*CAP
+1 u_xor1:Z 5
+2 u_xor1:Z count[1]:4 3
+*END
+
+*D_NET n_div_d 0
+*END
+
+*D_NET clk_div2 2
+*CONN
+*I u_inv_div:A I *D INV_X1
+*I u_div:Q O *D DFFR_X1
+*P clk_div2 O
+*CAP
+1 u_div:Q 1
+2 u_inv_div:A 1
+*END

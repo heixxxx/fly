@@ -1,0 +1,29 @@
+*SPEF "IEEE 1481-1998"
+*DESIGN "wf_blk_top"
+*DIVIDER /
+*DELIMITER :
+*T_UNIT 1 NS
+*C_UNIT 1 FF
+*R_UNIT 1 OHM
+
+// 块定义绑定文件（block_cell = wf_sub）：网名是块定义内的局部名，对该
+// 定义的每个实例化各算一次（本设计只有一个 u_blk_a/u_sub）。n1 与顶层
+// 文件里的 u_blk_a/u_sub/n1 互补相加；n2 / n3 是新贡献。
+
+*D_NET n1 3
+*CAP
+1 n1:1 2
+2 n1:1 n3:1 1
+*END
+
+*D_NET n2 8
+*CAP
+1 n2:1 5
+2 n2:1 n3:1 3
+*END
+
+*D_NET n3 6
+*CAP
+1 n3:1 4
+2 n3:1 n1:1 2
+*END

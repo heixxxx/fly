@@ -1,0 +1,29 @@
+*SPEF "IEEE 1481-1998"
+*DESIGN "wf_blk_top"
+*DIVIDER /
+*DELIMITER :
+*T_UNIT 1 NS
+*C_UNIT 1 FF
+*R_UNIT 1 OHM
+
+// 块实例绑定文件（block_inst = u_blk_a）：网名是块内局部名。
+// n_a1 / n_a2 / n_out 与顶层文件里的 u_blk_a/n_a1 等是同一张网——不同
+// 作用域的互补寄生，合并时相加。
+
+*D_NET n_a1 5
+*CAP
+1 n_a1:1 3
+2 n_a1:1 n_out:1 2
+*END
+
+*D_NET n_a2 7
+*CAP
+1 n_a2:1 4
+2 n_a2:1 n_a1:1 3
+*END
+
+*D_NET n_out 9
+*CAP
+1 n_out:1 5
+2 n_out:1 n_a1:1 4
+*END

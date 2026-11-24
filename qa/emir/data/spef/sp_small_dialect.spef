@@ -1,0 +1,131 @@
+*SPEF "ieee 1481-1999"
+*DESIGN "wf_small"
+*DATE "Tue Nov 24 00:00:00 2026"
+*DESIGN_FLOW "NAME_SCOPE LOCAL" "PIN_CAP NONE"
+*DIVIDER /
+*DELIMITER :
+*BUS_DELIMITER []
+*T_UNIT 1 NS
+*C_UNIT 1.0 PF
+*R_UNIT 1 KOHM
+*L_UNIT 1 HENRY
+
+*NAME_MAP
+*1 u_cnt3
+*2 u_xor_c3
+*3 u_and1
+*4 count[3]
+*5 n_cnt3_d
+
+*PORTS
+count[0] I
+count[1] I
+count[2] I
+count[3] I
+clk I
+rn I
+clk_div2 O
+n_and O
+n_xor O
+
+/* 布局布线工具的写出器形态：名字映射、电容记录不带编号、
+   小写版本串、带小数的单位刻度。下面 count[3] 全部走映射索引。 */
+
+*D_NET *4 0.027
+*CONN
+*I *2:B I *D XOR2_X1
+*I *1:Q O *D DFFR_X1
+*I *3:A1 I *D AND2_X1
+*P count[3] I
+*CAP
+*2:B 0.008
+*4:14 0.010
+*4:14 n_cnt3_d:9 0.009
+*RES
+1 *2:B *4:14 12.5
+*END
+
+// 多值形态（单位皮法）：三个值取第 1 个（n_b2：24 = 16 + 8），两个值
+// 取第 0 个（n_and：45 = 30 + 15）。
+*D_NET n_b2 0.014:0.024:0.030
+*CONN
+*I u_and_c3a:ZN O
+*I u_xor_c3:A I
+*CAP
+u_and_c3a:ZN 0.007:0.009:0.010
+n_b2:6 0.003:0.007:0.008
+n_b2:6 n_cnt3_d:5 0.004:0.008:0.009
+*END
+*D_NET n_and 0.045:0.050
+*CAP
+u_and1:ZN 0.030:0.032
+n_and:3 u_xor1:A 0.015:0.016
+*END
+
+// 零耦合：对地两条即全部。
+*D_NET clk_div2 0.002
+*CONN
+*I u_div:Q O *D DFFR_X1
+*I u_inv_div:A I *D INV_X1
+*P clk_div2 O
+*CAP
+u_div:Q 0.001
+u_inv_div:A 0.001
+*END
+
+orphan_token_between_nets
+
+// *V 是路由置信度（正整数），位置在网段头总电容之后、*CONN 之前。
+*D_NET n_div_d 0.004 *V 90 // 行尾注释
+*CONN
+*I u_inv_div:ZN O *D INV_X1 *L 0.0022 *C 22000 2000 *S 0.012:0.015:0.019 0.010:0.012:0.016
+*I u_div:D I *D DFFR_X1
+*N u_div:D *C 24000 2000
+*CAP
+u_inv_div:ZN 0.001
+n_div_d:5
+   0.001
+n_div_d:6 0.002
+*RES
+1 u_inv_div:ZN n_div_d:5 0.8
+*END
+
+// n_cnt0_d：10 = 对地 6 + 2 + 1 + 耦合 1；没有 *CONN 段；一条记录跨行；
+// 一行两条记录。
+*D_NET n_cnt0_d
+   0.010
+*CAP
+1 u_inv_c0:ZN
+  0.006
+2 n_cnt0_d:3 0.002 3 n_cnt0_d:4 0.001
+4 n_cnt0_d:4 count[0]:5 0.001
+*END
+
+// n_b1：没有 *CONN 段、没有耦合（10 = 对地 10）；网段头、*CAP、记录、
+// *END 写在一行；网段关键字出现在行中间（*END 之后紧接下一个网）。
+*D_NET n_b1 0.010 *CAP u_and_c2:ZN 0.010 *END
+*D_NET count[1] 0.009 *CAP u_cnt1:Q 0.006 u_cnt1:Q count[0]:7 0.003 *END
+
+// 引用了未登记的映射索引：整网跳过。
+*D_NET *999 0.001
+*CAP
+1 x:1 0.001
+*END
+
+// 段级破损：耦合记录缺值，紧跟 *END——该网跳过，其它网不受影响。
+*D_NET n_xor 0.010
+*CAP
+1 n_xor:1 u_xor1:Z
+*END
+
+// 物理网段：整段跳过并计数。
+*D_PNET VDD_SHAPE 0.100
+*CONN
+*P VPWR1 B *L 0
+*CAP
+1 VPWR1:1 0.100
+*END
+*R_PNET VSS_SHAPE 0.200
+*CONN
+*P VPWR0 B *L 0
+*END

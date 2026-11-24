@@ -1,0 +1,225 @@
+*SPEF "IEEE 1481-1998"
+*DESIGN "wf_small"
+*DATE "Tue Nov 24 00:00:00 2026"
+*VENDOR "fly QA"
+*PROGRAM "gen_spef.py"
+*VERSION "1.0"
+*DESIGN_FLOW "PIN_CAP NONE"
+*DIVIDER /
+*DELIMITER :
+*BUS_DELIMITER [ ]
+*T_UNIT 1 NS
+*C_UNIT 1 FF
+*R_UNIT 1 OHM
+*L_UNIT 1 HENRY
+
+// 基础样张：对齐 wf_small（16 个网里写 15 个，n_xor 不写）。
+// 单位 1 FF——数值即飞法，期望值可精确断言。
+// rn 是缩减网；clk_div2 / n_div_d 全零；n_and 行首值比明细合计大 1
+// （行首 46，对地 30 + 耦合 15 = 45）；ghost_net 是设计里没有的网。
+
+*D_NET count[0] 3
+*CONN
+*I u_cnt0:Q O *D DFFR_X1
+*I u_inv_c0:A I *D INV_X1
+*I u_xor_c1:A I *D XOR2_X1
+*I u_and_c2:A1 I *D AND2_X1
+*I u_xor1:B I *D XOR2_X1
+*P count[0] I
+*CAP
+1 u_cnt0:Q 1
+2 count[0]:14 1
+3 count[0]:14 u_inv_c0:ZN 1
+*RES
+1 u_cnt0:Q count[0]:14 0.3
+*END
+
+*D_NET n_cnt0_d 6
+*CONN
+*I u_inv_c0:ZN O *D INV_X1
+*I u_cnt0:D I *D DFFR_X1
+*CAP
+1 u_inv_c0:ZN 1
+2 n_cnt0_d:14 3
+3 n_cnt0_d:14 u_cnt0:Q 2
+*RES
+1 u_inv_c0:ZN n_cnt0_d:14 0.6
+*END
+
+*D_NET count[1] 9
+*CONN
+*I u_cnt1:Q O *D DFFR_X1
+*I u_xor_c1:B I *D XOR2_X1
+*I u_and_c2:A2 I *D AND2_X1
+*I u_xor1:A I *D XOR2_X1
+*P count[1] I
+*CAP
+1 u_cnt1:Q 2
+2 count[1]:14 4
+3 count[1]:14 u_xor_c1:Z 3
+*RES
+1 u_cnt1:Q count[1]:14 0.9
+*END
+
+*D_NET n_cnt1_d 12
+*CONN
+*I u_xor_c1:Z O *D XOR2_X1
+*I u_cnt1:D I *D DFFR_X1
+*CAP
+1 u_xor_c1:Z 3
+2 n_cnt1_d:14 5
+3 n_cnt1_d:14 u_cnt1:Q 4
+*RES
+1 u_xor_c1:Z n_cnt1_d:14 1.2
+*END
+
+*D_NET n_b1 15
+*CONN
+*I u_and_c2:ZN O *D AND2_X1
+*I u_xor_c2:A I *D XOR2_X1
+*I u_and_c3a:A1 I *D AND2_X1
+*CAP
+1 u_and_c2:ZN 4
+2 n_b1:14 6
+3 n_b1:14 u_xor_c2:Z 5
+*RES
+1 u_and_c2:ZN n_b1:14 1.5
+*END
+
+*D_NET count[2] 18
+*CONN
+*I u_cnt2:Q O *D DFFR_X1
+*I u_xor_c2:B I *D XOR2_X1
+*I u_and_c3a:A2 I *D AND2_X1
+*I u_and1:A2 I *D AND2_X1
+*P count[2] I
+*CAP
+1 u_cnt2:Q 5
+2 count[2]:14 7
+3 count[2]:14 u_xor_c2:Z 6
+*RES
+1 u_cnt2:Q count[2]:14 1.8
+*END
+
+*D_NET n_cnt2_d 21
+*CONN
+*I u_xor_c2:Z O *D XOR2_X1
+*I u_cnt2:D I *D DFFR_X1
+*CAP
+1 u_xor_c2:Z 6
+2 n_cnt2_d:14 8
+3 n_cnt2_d:14 u_cnt2:Q 7
+*RES
+1 u_xor_c2:Z n_cnt2_d:14 2.1
+*END
+
+*D_NET n_b2 24
+*CONN
+*I u_and_c3a:ZN O *D AND2_X1
+*I u_xor_c3:A I *D XOR2_X1
+*CAP
+1 u_and_c3a:ZN 7
+2 n_b2:14 9
+3 n_b2:14 u_xor_c3:Z 8
+*RES
+1 u_and_c3a:ZN n_b2:14 2.4
+*END
+
+*D_NET count[3] 27
+*CONN
+*I u_xor_c3:B I *D XOR2_X1
+*I u_cnt3:Q O *D DFFR_X1
+*I u_and1:A1 I *D AND2_X1
+*P count[3] I
+*CAP
+1 u_xor_c3:B 8
+2 count[3]:14 10
+3 count[3]:14 u_xor_c3:Z 9
+*RES
+1 u_xor_c3:B count[3]:14 2.7
+*END
+
+*D_NET n_cnt3_d 30
+*CONN
+*I u_xor_c3:Z O *D XOR2_X1
+*I u_cnt3:D I *D DFFR_X1
+*CAP
+1 u_xor_c3:Z 9
+2 n_cnt3_d:14 11
+3 n_cnt3_d:14 u_cnt3:Q 10
+*RES
+1 u_xor_c3:Z n_cnt3_d:14 3
+*END
+
+*D_NET clk 33
+*CONN
+*I u_cnt0:CK I *D DFFR_X1
+*I u_cnt1:CK I *D DFFR_X1
+*I u_cnt2:CK I *D DFFR_X1
+*I u_cnt3:CK I *D DFFR_X1
+*I u_div:CK I *D DFFR_X1
+*P clk I
+*CAP
+1 u_cnt0:CK 10
+2 clk:14 12
+3 clk:14 u_cnt0:RN 11
+*RES
+1 u_cnt0:CK clk:14 3.3
+*END
+
+*R_NET rn 36.0
+*CONN
+*I u_cnt0:RN I *D DFFR_X1
+*I u_cnt1:RN I *D DFFR_X1
+*I u_cnt2:RN I *D DFFR_X1
+*I u_cnt3:RN I *D DFFR_X1
+*I u_div:RN I *D DFFR_X1
+*P rn I
+*DRV rn *CELL PAD_IN *C2_R1_C1 2.0 25.0 3.0
+*LOADS
+*RC u_cnt0:RN 0.010
+*RC u_cnt1:RN 0.011
+*RC u_cnt2:RN 0.012
+*RC u_cnt3:RN 0.013
+*RC u_div:RN 0.014
+*END
+
+// 零电容：clk_div2 没有 *CAP / *RES 段；n_div_d 的 *CAP 段只有一条
+// 零值记录。两者使 u_inv_div（只连这两个网）成为零电容实例。
+*D_NET clk_div2 0
+*CONN
+*I u_inv_div:A I *D INV_X1
+*I u_div:Q O *D DFFR_X1
+*P clk_div2 O
+*END
+
+*D_NET n_div_d 0
+*CONN
+*I u_inv_div:ZN O *D INV_X1
+*I u_div:D I *D DFFR_X1
+*CAP
+1 u_div:D 0
+*RES
+1 u_div:D n_div_d:2 5.0
+*END
+
+*D_NET n_and 46
+*CONN
+*I u_and1:ZN O *D AND2_X1
+*P n_and O
+*CAP
+1 u_and1:ZN 10
+2 n_and:3 20
+3 n_and:3 u_xor1:A 15
+*RES
+1 u_and1:ZN n_and:14 4.6
+*END
+
+*D_NET ghost_net 5
+*CAP
+1 ghost_net:1 2
+2 ghost_net:1 1
+3 ghost_net:1 n_xor:9 2
+*RES
+1 ghost_net:1 ghost_net:2 0.5
+*END

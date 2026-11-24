@@ -1,0 +1,28 @@
+*SPEF "IEEE 1481-1998"
+*DESIGN "wf_blk_top"
+*DIVIDER /
+*DELIMITER :
+*T_UNIT 1 NS
+*C_UNIT 1 FF
+*R_UNIT 1 OHM
+
+// 第二个顶层文件：与第一个顶层文件同作用域。n_top 与 u_blk_a/n_a2 重合
+// （保留首份，本文件的值丢弃）；u_blk_b/n_out 是新贡献。
+
+*D_NET n_top 999
+*CAP
+1 n_top:1 600
+2 n_top:1 n_top2:1 399
+*END
+
+*D_NET u_blk_a/n_a2 888
+*CAP
+1 u_blk_a/n_a2:1 500
+2 u_blk_a/n_a2:1 u_blk_a/clk:1 388
+*END
+
+*D_NET u_blk_b/n_out 33
+*CAP
+1 u_blk_b/n_out:1 20
+2 u_blk_b/n_out:1 u_blk_b/n_b1:1 13
+*END

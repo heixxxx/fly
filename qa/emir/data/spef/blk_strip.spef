@@ -1,0 +1,34 @@
+*SPEF "IEEE 1481-1998"
+*DESIGN "wf_blk_top"
+*DIVIDER /
+*DELIMITER :
+*T_UNIT 1 NS
+*C_UNIT 1 FF
+*R_UNIT 1 OHM
+
+// 块实例绑定 + 前缀剥离（block_inst = u_blk_a，strip_prefix = tb/u_dut）。
+// 前两条剥除后是块内局部名，与 blk_a_inst.spef 同作用域重合（丢弃）；
+// 后两条前缀未命中（含剥后余空），条目跳过并计数。
+
+*D_NET tb/u_dut/n_a1 77
+*CAP
+1 tb/u_dut/n_a1:1 40
+2 tb/u_dut/n_a1:1 n_out:1 37
+*END
+
+*D_NET tb/u_dut/n_out 66
+*CAP
+1 tb/u_dut/n_out:1 30
+2 tb/u_dut/n_out:1 n_a1:1 36
+*END
+
+*D_NET other/n_a2 55
+*CAP
+1 other/n_a2:1 30
+2 other/n_a2:1 n_a1:1 25
+*END
+
+*D_NET tb/u_dut/ 44.0
+*CAP
+1 tb/u_dut/:1 44.0
+*END

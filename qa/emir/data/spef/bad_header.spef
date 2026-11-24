@@ -1,0 +1,10 @@
+*SPEF "IEEE 1481-1998"
+*DESIGN "wf_small"
+*DIVIDER /
+*T_UNIT 1 NS
+*R_UNIT 1 OHM
+
+*D_NET clk 33.0
+*CAP
+1 u_cnt0:CK 33.0
+*END

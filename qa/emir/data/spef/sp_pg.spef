@@ -1,0 +1,42 @@
+*SPEF "IEEE 1481-1998"
+*DESIGN "wf_small"
+*DATE "Tue Nov 24 00:00:00 2026"
+*VENDOR "fly QA"
+*PROGRAM "gen_spef.py"
+*VERSION "1.0"
+*DESIGN_FLOW "PIN_CAP NONE"
+*DIVIDER /
+*DELIMITER :
+*BUS_DELIMITER [ ]
+*T_UNIT 1 NS
+*C_UNIT 1 FF
+*R_UNIT 1 OHM
+*L_UNIT 1 HENRY
+
+// 配 wf_small 的带电源网派生设计（VDD / VSS 两个电源网）。电源网的网段
+// 跳过并计数；clk 是普通信号网，照常收录（33 = 对地 22 + 耦合 11）。
+
+*D_NET VDD 1000.0
+*CONN
+*P VDD B
+*CAP
+1 VDD:1 1000.0
+*END
+*D_NET VSS 800.0
+*CONN
+*P VSS B
+*CAP
+1 VSS:1 800.0
+*END
+*D_NET clk 33
+*CONN
+*I u_cnt0:CK I *D DFFR_X1
+*I u_cnt1:CK I *D DFFR_X1
+*I u_cnt2:CK I *D DFFR_X1
+*I u_cnt3:CK I *D DFFR_X1
+*I u_div:CK I *D DFFR_X1
+*P clk I
+*CAP
+1 u_cnt0:CK 22
+2 u_cnt0:CK u_cnt0:RN 11
+*END

@@ -1,0 +1,29 @@
+*SPEF "IEEE 1481-1998"
+*DESIGN "wf_blk_top"
+*DIVIDER .
+*DELIMITER :
+*T_UNIT 1 NS
+*C_UNIT 1 FF
+*R_UNIT 1 OHM
+
+// 文件头声明的层次分隔符是点：u_blk_a.n_a1 即设计库里的 u_blk_a/n_a1。
+// 第二张网用转义的斜杠写（部分工具不合规转义的宽容口径），去转义后命中。
+// 数值与 blk_top.spef 的同名网相同。
+
+*D_NET u_blk_a.n_a1 10
+*CAP
+1 u_blk_a.n_a1:1 6
+2 u_blk_a.n_a1:1 u_blk_a.n_a2:1 4
+*END
+
+*D_NET u_blk_a\/n_a2 20
+*CAP
+1 u_blk_a\/n_a2:1 12
+2 u_blk_a\/n_a2:1 u_blk_a\/n_a1:1 8
+*END
+
+*D_NET u_blk_a.u_sub.n1 40
+*CAP
+1 u_blk_a.u_sub.n1:1 24
+2 u_blk_a.u_sub.n1:1 u_blk_a.u_sub.n3:1 16
+*END
