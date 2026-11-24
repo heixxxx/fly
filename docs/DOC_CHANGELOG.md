@@ -2,6 +2,42 @@
 
 ---
 
+## 2026-11-25: 真实布局布线设计的端到端用例（gcd，数据来自子模块）+ 含填充单元的单元库文件入库
+
+**依据**：用户的要求——要有能贯通后续流程的真实设计数据；设计数据单独
+建仓、fly 仅作引用；需要这些数据的用例在子模块未初始化时必须明确失败
+（`AGENTS.md`）。
+
+**落地**：
+
+- 新增 `qa/emir/test_emir_real_gcd.py`：按路径读 `designs/` 子模块里的
+  gcd（0.46 纳秒版），设计库 → 寄生库 + 时序库 + 波形库整条链建库并断
+  言，约 3 秒。子模块未初始化时在起 worker 之前明确失败并提示
+  `git submodule update --init designs`。
+- 寄生库的逐网期望值由用例内的独立小解析器（标准库）从 DEF 与 SPEF 现
+  场算出，不依赖被测的 C++ 解析器；472 张已布线信号网的三个电容值逐
+  一相等。gcd 的许可状态不明确，派生数值不进 fly 仓库——只有汇总层面
+  的计数是字面量。
+- `qa/emir/data/timing/NangateOpenCellLibrary.macro.mod.lef` 入库（取自
+  OpenROAD 流程仓库的平台目录，Apache 2.0；135 个宏，比同目录的
+  `NangateOpenCellLibrary.macro.lef` 多一个填充单元 `TAPCELL_X1`——真实
+  DEF 用到了它）。目录说明的文件表已登记。
+
+**顺带澄清**（`AGENTS.md`）：
+
+- 子模块根下还有一层 `designs/`，在 fly 仓库里的实际路径是
+  `designs/designs/<设计名>/…`（原文写法有歧义）。
+- 不带脚本的调用（例如 `./build/bin/fly --version`）同样会在当前目录
+  建 `fly_log/`——确认二进制可运行要在 `.work/` 下的空目录里做。
+- 读子模块数据的用例，存在性检查要放在任何读文件的动作之前（评审
+  发现独立解析抢在检查前面时，缺失场景抛的是不带提示的
+  `FileNotFoundError`）。
+- 推送钩子的全量端到端现在会运行 `test_emir_real_gcd.py`，所以推送前子
+  模块必须已初始化（原文写的是「推送钩子的构建与端到端测试不读取它」）。
+
+**文档同步**：[spef-db-plan.md](emir/spef-db-plan.md) §9.5 增加「真实设计
+的端到端用例」；`qa/emir/data/timing/README.md` 文件表；`AGENTS.md`。
+
 ## 2026-11-25: spef db 阶段三——端到端测试落地（三个用例）+ 测试数据入库
 
 寄生数据库（⑤）的方案三段实施收尾：解析层、换算合并层、绑定与建库

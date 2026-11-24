@@ -686,6 +686,17 @@ power db）与电压降计算（⑪ analysis db）。这是跨数据库的测试
   Nangate45 单元库与该平台同源（许可文件的校验值一致）。
 - 综合需要 Yosys，本机没有，Ubuntu 20.04 软件源里的版本也太旧——用
   OpenROAD 仓库里现成的已综合网表跳过综合。
+- **真实设计的端到端用例**（2026-11-25，`qa/emir/test_emir_real_gcd.py`）：按路径读 `designs/` 子模块里的 gcd（0.46 纳秒版：`6_final.def`、
+  `6_final.spef`、`routed_with_spef.twf`、`gcd_period0.46_raw.vcd`），把设计
+  库 → 寄生库 + 时序库 + 波形库整条链建出来（约 3 秒）。子模块未初始化
+  时明确失败并提示 `git submodule update --init designs`。寄生库的逐网
+  期望值由用例内的独立小解析器从 DEF 与 SPEF 现场算出（不依赖被测的
+  C++ 解析器；gcd 的许可状态不明确，派生数值不进 fly 仓库），472 张已
+  布线信号网的三个电容值逐一相等；汇总层面的计数是字面量并与独立解
+  析交叉印证：已布线信号网 472、电容记录 8513（耦合 6794）、电阻 1247；
+  时序库条目 506、命中 472、悬空 34（= 未布线的网）；波形库网名未匹配
+  0、翻转事件 18661。真实 DEF 用到的填充单元所在的
+  `NangateOpenCellLibrary.macro.mod.lef` 已放进 `qa/emir/data/timing/`。
 - **时序窗口不是缺口**（2026-11-24 更正此前的判断）：fly 的时序数据库
   读的是 Cadence Innovus `write_timing_windows` 命令产出的格式，而项目里
   已有从 OpenSTA 生成这个格式的脚本 `qa/emir/data/timing/twf_gen.tcl`

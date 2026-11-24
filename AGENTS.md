@@ -42,7 +42,7 @@ bash qa/run_qa_tests.sh        # Legacy wrapper, same thing
 
 ### 手动跑 fly 烟测/脚本的日志落点（禁止污染仓库根）
 
-`fly script.py` 不传 `--log-dir` 时默认在 **cwd** 建 `fly_log/`（已存在则 `.N` 递增——每跑一次进程多一个目录）。手动烟测必须在 `.work/` 下跑并显式指定：
+`fly script.py` 不传 `--log-dir` 时默认在 **cwd** 建 `fly_log/`（已存在则 `.N` 递增——每跑一次进程多一个目录）。**不带脚本的调用（例如 `./build/bin/fly --version`）同样会在当前目录建 `fly_log/`**——确认二进制可运行时在 `.work/` 下的空目录里执行，跑完删除。手动烟测必须在 `.work/` 下跑并显式指定：
 
 ```bash
 ./build/bin/fly --log-dir .work/<name>_log .work/<script>.py   # 不要裸跑
@@ -55,10 +55,10 @@ bash qa/run_qa_tests.sh        # Legacy wrapper, same thing
 用户裁定（2026-11-24）：**设计文件单独用 git 仓库管理，fly 仅作引用。** 用开源工具跑出的已完成布局布线的设计数据（DEF、SPEF、网表、时序窗口、翻转活动等）放在独立仓库里，fly 以 git 子模块引用；fly 仓库自带的只有手写的小型测试设计（`qa/emir/data/`）。理由是体积（约 176 MB）与许可（各设计不同，逐项写明在设计数据仓库里）。
 
 - **首次检出**：新克隆用 `git clone --recurse-submodules`；已有检出用 `git submodule update --init designs`。
-- **目录约定**：`designs/<设计名>/<工艺>/<时钟周期>ns/` 下有 `results/`（布局布线产出）、`twf/`（时序窗口）、`vcd/`（翻转活动）、`reports/`、`stats.json`；输入网表与约束在 `designs/inputs/`；各来源许可原文在 `designs/LICENSES/`。规模、已知局限、下游该用哪些文件，见 `designs/README.md`。
-- **用例写法**：按路径读取。需要这些数据的用例在子模块未初始化时必须**明确失败并提示上面的命令**，不得静默跳过。
+- **目录约定**（以下相对数据仓库自己的根；子模块挂在 fly 仓库根的 `designs/`，而数据仓库根下还有一层 `designs/`——所以在 fly 仓库里的实际路径是 `designs/designs/<设计名>/…`）：`designs/<设计名>/<工艺>/<时钟周期>ns/` 下有 `results/`（布局布线产出）、`twf/`（时序窗口）、`vcd/`（翻转活动）、`reports/`、`stats.json`；输入网表与约束在 `designs/inputs/`；各来源许可原文在 `designs/LICENSES/`。规模、已知局限、下游该用哪些文件，见 `designs/README.md`。
+- **用例写法**：按路径读取。需要这些数据的用例在子模块未初始化时必须**明确失败并提示上面的命令**，不得静默跳过；存在性检查要放在任何读文件的动作之前（否则抛出的是不带提示的 `FileNotFoundError`）。
 - **更新指向**：子模块内容的改动在它自己的仓库里提交推送（复现脚本需要的外部位置经环境变量传入，见其 `scripts/env.sh`）；然后在 fly 仓库根 `git add designs` 提交新的指向。
-- 推送钩子的构建与端到端测试不读取它；bazel 不构建它。
+- 构建与 bazel 不读取它；端到端测试里读它的只有 `qa/emir/test_emir_real_gcd.py`（真实 gcd 设计的四库链用例），它在推送钩子的全量端到端里运行——所以推送前子模块必须已初始化。
 
 ---
 

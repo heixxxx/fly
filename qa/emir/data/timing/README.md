@@ -11,7 +11,8 @@ Liberty/LEF 工艺库 + 小型确定性设计 + 真实静态时序引擎计算�
 |------|------|-----------|
 | `NangateOpenCellLibrary_typical.lib` | Nangate45 工艺库 Liberty（typical 角落） | lib db（`build_lib_db`） |
 | `NangateOpenCellLibrary.tech.lef` | 工艺 LEF（层定义） | design db（`build_design_db`） |
-| `NangateOpenCellLibrary.macro.lef` | 单元 LEF | design db |
+| `NangateOpenCellLibrary.macro.lef` | 单元 LEF（134 个宏） | design db |
+| `NangateOpenCellLibrary.macro.mod.lef` | 单元 LEF 的流程仓库修改版（135 个宏——多一个填充单元 `TAPCELL_X1`；取自 OpenROAD 流程仓库 `flow/platforms/nangate45/lef/`，提交 `8ae3ae36`，许可同 `NangateOpenCellLibrary_LICENSE`）。真实布局布线设计的 DEF 里用了填充单元，建 design db 必须用这一份 | design db（真实设计用例 `test_emir_real_gcd.py`） |
 | `tm_design.v` | 确定性小型设计网表（5 单元：时钟缓冲 + 反相器 + 与非门 + 2 D 触发器） | OpenSTA 时序引擎输入 |
 | `tm_design.sdc` | 时序约束（时钟周期 1.0ns + 输入/输出延迟） | OpenSTA 时序引擎输入 |
 | `tm_design.def` | 同网表的物理实现（放置 + 网连接；引脚/网名与网表一致） | design db |
