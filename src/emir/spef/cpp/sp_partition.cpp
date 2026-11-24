@@ -249,9 +249,10 @@ CMSharedPtr<const DSNet> find_net_any_partition(const SPDesignContext& ctx,
     return nullptr;
 }
 
-// 单网路由（T2 步骤 3-6）：定位网 → 可挂连接条目（driver / receiver）
-// → 连接位实例 primary 分区各放一条（同分区同网只产一条；值取自 SPNet，
-// R_NET 标缩减形态〔裁定 5〕）。至少一条产出 = true。
+// 单网路由（T2 步骤 3-6）：定位网 → 可挂连接条目（driver / receiver；
+// 端口条目不是实例——排除，不计未放置）→ 连接位实例 primary 分区各放
+// 一条（同分区同网只产一条；值取自 SPNet，R_NET 标缩减形态〔裁定 5〕）。
+// 至少一条产出 = true。
 bool route_net(ConvertEnv& env, CMNetId net_id, const SPNet& src) {
     const CMSharedPtr<const DSNet> net =
         find_net_any_partition(*env.ctx, net_id);
@@ -263,6 +264,14 @@ bool route_net(ConvertEnv& env, CMNetId net_id, const SPNet& src) {
     }
     CMVector<const DSNetConnEntry*> attachable;
     for (const DSNetConnEntry& conn : net->connections_) {
+        // 端口条目不是实例（实例编号 = 块自身占位值，根块为 0——查不
+        // 到分区），路由只认实例连接位，直接跳过、不计未放置实例。判
+        // 定只看 is_port()，不看驱动/接收标记（设计库对端口条目标记的
+        // 口径后续会调整——输入端口将标成它所在网的驱动者，依赖标记判
+        // 端口的代码到时会被带坏）
+        if (conn.is_port()) {
+            continue;
+        }
         if (conn.is_driver() || conn.is_receiver()) {
             attachable.push_back(&conn);
         }
@@ -409,6 +418,13 @@ void SPDesignContext::add_partition_nets(CMSharedPtr<DSPartitionNets> nets) {
     }
 }
 
+void SPDesignContext::add_partition_inst_connections(
+    CMPartitionId pid, CMSharedPtr<DSPartInstConnections> conns) {
+    if (conns) {
+        inst_conns_[pid.value()] = std::move(conns);
+    }
+}
+
 CMPartitionId SPDesignContext::locate_instance_partition(
     CMInstanceId inst_id) const {
     if (!inst_index_) {
@@ -467,7 +483,9 @@ SPEntrySlice sp_convert_chunk(const SPDesignContext& ctx,
     fstats.multi_value_net_count_ = parsed.multi_value_net_count_;
     fstats.value_count_max_ = parsed.value_count_max_;
     fstats.value_index_fallback_count_ = parsed.value_index_fallback_count_;
+    fstats.cap_count_ = parsed.cap_count_;
     fstats.coupling_cap_count_ = parsed.coupling_cap_count_;
+    fstats.res_count_ = parsed.res_count_;
 
     // 绑定定位（一次性）。定位失败 = 入口校验后环境漂移的防御场景：按
     // 块失败兜底（failed_chunk_count 计 1）、网全部不处理、空分片照常
@@ -655,33 +673,49 @@ SPPartitionNetLoad sp_merge_partition(
                   return x.net_id_ < y.net_id_;
               });
 
-    // 覆盖率统计（裁定 10）：材料 = 本区 NETS 对象（上下文按 part id 直
-    // 接查表；分母口径见 sp_partition.h 文件头注释——本区 NETS 里的信
-    // 号网与出现在其连接条目里的单元实例；NETS 对象缺失时全部记 0，不
-    // 报错）
-    const auto nets_it = ctx.all_partition_nets().find(pid.value());
-    if (nets_it != ctx.all_partition_nets().end()) {
-        const DSPartitionNets& nets = *nets_it->second;
-        st.routed_signal_net_count_ = nets.nets_.size();
+    // 覆盖率统计（裁定 10；分母口径见 sp_partition.h 文件头注释——
+    // 2026-11-24 实施期修正：材料 = 本区实例连接对象 INST_CONNECTIONS
+    // + 已布线信号网 id 集合〔上下文全部分区 NETS 对象的网 id 并集〕，
+    // 不是本区 NETS——NETS 按布线几何归属分区而寄生条目按连接位实例
+    // 归属分区，两者可以不同）。本区实例连接对象缺失时各项记 0 直接
+    // 返回（不建并集），不报错（同「NETS 对象缺失」的既有口径）
+    const auto conns_it = ctx.all_inst_connections().find(pid.value());
+    if (conns_it != ctx.all_inst_connections().end()) {
+        CMUnorderedSet<CMNetId> routed_nets;
+        for (const auto& nets_entry : ctx.all_partition_nets()) {
+            for (const auto& [net_id, net] : nets_entry.second->nets_) {
+                routed_nets.insert(net_id);
+            }
+        }
+        const DSPartInstConnections& conns = *conns_it->second;
+        // 网分母：本区实例连接里出现的、属于已布线信号网集合的不同网数。
+        // 键 0 = root 设计级端口连接——root 非实体实例，端口外的片外负
+        // 载也不在 SPEF 里，整键排除（既不进网分母也不进实例集合）。
+        // 实例 → 所连已布线信号网；同实例同网多条连接不去重（覆盖/零
+        // 电容判定幂等）
+        CMUnorderedSet<CMNetId> part_routed;
+        CMUnorderedMap<CMInstanceId, CMVector<CMNetId>> inst_nets;
+        for (const auto& [inst, items] : conns.items_) {
+            if (inst == CMInstanceId{0}) {
+                continue;   // 键 0 = root 设计级端口连接——整键排除
+            }
+            for (const DSPartConnection& conn : items) {
+                if (!routed_nets.contains(conn.net_global_id_)) {
+                    continue;   // pg 网等不在信号网 NETS 里——自然排除
+                }
+                part_routed.insert(conn.net_global_id_);
+                inst_nets[inst].push_back(conn.net_global_id_);
+            }
+        }
+        st.routed_signal_net_count_ = part_routed.size();
         CMUnorderedSet<CMNetId> covered;
         covered.reserve(out.items_.size());
         for (const SPNetLoad& e : out.items_) {
             covered.insert(e.net_id_);
         }
-        // 实例 → 所连信号网（本区 NETS 连接条目反查）。纯端口位条目的
-        // 实例 id = 块实例自身（design db 语义），不是单元实例——不进
-        // 实例集合；电源/地/时钟位条目的实例是单元实例，保留
-        CMUnorderedMap<CMInstanceId, CMVector<CMNetId>> inst_nets;
-        for (const auto& [net_id, net] : nets.nets_) {
+        for (const CMNetId net_id : part_routed) {
             if (covered.contains(net_id)) {
                 ++st.covered_net_count_;
-            }
-            for (const DSNetConnEntry& conn : net->connections_) {
-                if (conn.is_port() && !conn.is_driver() &&
-                    !conn.is_receiver()) {
-                    continue;
-                }
-                inst_nets[conn.inst_id_].push_back(net_id);
             }
         }
         st.uncovered_net_count_ =
@@ -751,7 +785,9 @@ SPSummary sp_merge_summary(const CMVector<const SPStatsDelta*>& deltas,
             acc.value_count_max_ =
                 std::max(acc.value_count_max_, f.value_count_max_);
             acc.value_index_fallback_count_ += f.value_index_fallback_count_;
+            acc.cap_count_ += f.cap_count_;
             acc.coupling_cap_count_ += f.coupling_cap_count_;
+            acc.res_count_ += f.res_count_;
             acc.hit_count_ += f.hit_count_;
             acc.net_name_miss_count_ += f.net_name_miss_count_;
             acc.pg_net_skip_count_ += f.pg_net_skip_count_;

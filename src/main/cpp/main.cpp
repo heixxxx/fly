@@ -172,6 +172,7 @@ static void setup_sys_path() {
         ps += "sys.path.insert(0, '" + (build_dir / "src" / "emir" / "lib" / "export").string() + "')\n";
         ps += "sys.path.insert(0, '" + (build_dir / "src" / "emir" / "timing" / "export").string() + "')\n";
         ps += "sys.path.insert(0, '" + (build_dir / "src" / "emir" / "waveform" / "export").string() + "')\n";
+        ps += "sys.path.insert(0, '" + (build_dir / "src" / "emir" / "spef" / "export").string() + "')\n";
         auto project_root = build_dir.parent_path();
         ps += "sys.path.insert(0, '" + (project_root / "src").string() + "')\n";
         ps += "sys._fly_binary = '" + (build_dir / "src" / "main" / "cpp" / "fly").string() + "'\n";
@@ -193,6 +194,8 @@ static void setup_sys_path() {
     ps += "import _fly_emir_timing\n";
     // waveform 依赖 _fly_emir_design（快照消费 DSDesign/DesignDb），design 须在前
     ps += "import _fly_emir_waveform\n";
+    // spef 依赖 _fly_emir_design（快照消费 DSDesign/DesignDb），design 须在前
+    ps += "import _fly_emir_spef\n";
     // 注意：_fly_network 有意不预加载——加载后进程退出期触发
     // libfly_core 静态配置表 double free（HEAD 既有缺陷，2026-09-07
     // HEAD 工作树复现实锤，与 Python 侧加载路径无关，待 C++ 构建层

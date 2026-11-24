@@ -28,6 +28,7 @@ py_test(
         "../../lib/export",
                "../../timing/export",
                "../../waveform/export",
+               "../../spef/export",
            ],
     deps = [
         "//src/emir:emir_pkg",
@@ -35,6 +36,7 @@ py_test(
         "//src/emir/lib/export:_fly_emir_lib.so",
         "//src/emir/timing/export:_fly_emir_timing.so",
         "//src/emir/waveform/export:_fly_emir_waveform.so",
+        "//src/emir/spef/export:_fly_emir_spef.so",
         "//src/fly:fly_py",
         "//src/log/export:_fly_log.so",
     ],

@@ -340,6 +340,26 @@ void add_nets(SPDesignContext& ctx, CMPartitionId pid, DSPartitionNets nets) {
     ctx.add_partition_nets(std::make_shared<DSPartitionNets>(std::move(nets)));
 }
 
+// 实例连接条目（inst 全局 id, net 全局 id）列表 → 本分区实例连接对象
+//（第 H 节第 4 条的覆盖率材料；键 0 = root 设计级端口连接）
+DSPartInstConnections build_inst_conns(
+    const CMVector<std::pair<uint64_t, uint64_t>>& inst_nets) {
+    DSPartInstConnections conns;
+    for (const auto& [inst, net] : inst_nets) {
+        DSPartConnection c;
+        c.inst_id_ = CMInstanceId{inst};
+        c.net_global_id_ = CMNetId{net};
+        conns.items_[CMInstanceId{inst}].push_back(std::move(c));
+    }
+    return conns;
+}
+
+void add_inst_conns(SPDesignContext& ctx, CMPartitionId pid,
+                    DSPartInstConnections conns) {
+    ctx.add_partition_inst_connections(
+        pid, std::make_shared<DSPartInstConnections>(std::move(conns)));
+}
+
 FlatCtx make_blk_ctx(const BlkEnv& env) {
     auto ctx = std::make_shared<SPDesignContext>();
     ctx->set_design(env.design);
@@ -467,6 +487,35 @@ TEST(SpPartitionTest, RouteAndCopy) {
 }
 
 // ── 2. 跳过与计数（每项一个断言）────────────────────────────────────
+
+// ── 2b. 端口条目不是实例（路由层排除——不计未放置实例）──────────────
+
+TEST(SpPartitionTest, PortEntriesNotRoutedAsInstances) {
+    // 端口条目的实例编号是块自身占位值（根块为 0），不是真实实例——
+    // 路由跳过端口条目、不计未放置实例；排除端口后没有任何连接位的网
+    //（只连端口的 n_p）按「未布线 / 无可挂连接位」计（既有口径）。
+    // n_a=1 连 u_x=1（receiver）+ 端口；n_p=2 只连端口。
+    const FlatEnv env("top", {"u_x"}, {"n_a", "n_p"});
+    const FlatCtx fc = make_flat_ctx(env);
+    add_nets(*fc.ctx, kPid0,
+             build_nets(kPid0, {{1, 1, false, true},
+                                {1, 0, false, false, true},
+                                {2, 0, false, false, true}},
+                        env));
+    const CMString text = spef_text(
+        "*D_NET n_a 5.0\n*END\n"
+        "*D_NET n_p 3.0\n*END\n");
+    const SPEntrySlice slice = convert_text(*fc.ctx, text);
+    // n_a 条目落在真实连接位实例所在分区（端口条目不产生分区条目）
+    ASSERT_TRUE(find_entry(slice, kPid0, CMNetId{1}) != nullptr);
+    // 只连端口的网：无实例连接位 → 未布线计数、无条目
+    ASSERT_TRUE(find_entry(slice, kPid0, CMNetId{2}) == nullptr);
+    ASSERT_EQ(slice.stats_.files_.size(), 1u);
+    const SPFileStats& fs = slice.stats_.files_[0];
+    EXPECT_EQ(fs.unrouted_net_count_, 1u);
+    EXPECT_EQ(fs.unplaced_instance_count_, 0u);   // 端口条目不计未放置
+    EXPECT_EQ(fs.hit_count_, 1u);
+}
 
 TEST(SpPartitionTest, SkipCounters) {
     // 实例：u_d_a=1 u_r_a=2 u_d_b=3 u_r_b=4 u_d_c=5 u_r_c=6 u_late=7；
@@ -831,9 +880,12 @@ TEST(SpPartitionTest, CoverageStats) {
     // 分区 0 的 NETS 五个信号网：n1=1（有 SPEF 非零）、n2=2（有 SPEF
     // 非零）、n3=3（有 SPEF 三值全零）、n4=4（没有 SPEF）、n5=5（没有
     // SPEF，唯一连接条目是纯端口位）；I1=1 连 n1/n4，I2=2 只连 n3，
-    // I3=3 连 n1/n2。覆盖率口径（2026-11-24 评审裁定）：各项按「分区 ×
-    // 网」统计后逐分区求和——本用例单分区即本区值；跨分区的网与它的
-    // 连接实例在多个分区各计一次，绝对数不做全局去重
+    // I3=3 连 n1/n2。覆盖率口径（2026-11-24 评审裁定 + 第 H 节第 4 条
+    // 分母修正）：材料 = 本区实例连接对象 + 已布线信号网 id 集合（全部
+    // NETS 对象网 id 并集）。键 0（root 设计级端口连接）整键排除——
+    // n5 只出现在键 0 条目里，不进网分母（smoke_small 的多分区期望
+    // 12/11/23 逐实例核对同口径）；各项按「分区 × 网」统计后逐分区求
+    // 和——本用例单分区即本区值
     const FlatEnv env("top", {"I1", "I2", "I3"},
                       {"n1", "n2", "n3", "n4", "n5"});
     const FlatCtx fc = make_flat_ctx(env);
@@ -846,6 +898,9 @@ TEST(SpPartitionTest, CoverageStats) {
                          {4, 1, false, true},
                          {5, 0, false, false, true}},
                         env));
+    add_inst_conns(*fc.ctx, kPid0,
+                   build_inst_conns({{1, 1}, {1, 4}, {3, 1}, {3, 2},
+                                     {2, 3}, {0, 5}}));
     const CMString text = spef_text(
         "*D_NET n1 10.0\n*CAP\n1 n1:1 6.0\n2 n1:2 n2:1 4.0\n*END\n"
         "*D_NET n2 5.0\n*CAP\n1 n2:1 5.0\n*END\n"
@@ -855,14 +910,64 @@ TEST(SpPartitionTest, CoverageStats) {
     SPMergeStats st;
     const SPPartitionNetLoad merged =
         sp_merge_partition(*fc.ctx, {&slice}, kPid0, st);
-    EXPECT_EQ(st.routed_signal_net_count_, 5u);    // NETS 里的信号网数
+    EXPECT_EQ(st.routed_signal_net_count_, 4u);    // n1..n4（n5 键 0 排除）
     EXPECT_EQ(st.covered_net_count_, 3u);          // n1/n2/n3 有条目
-    EXPECT_EQ(st.uncovered_net_count_, 2u);        // n4/n5
-    // 纯端口位条目（n5 的连接条目，实例 id = 块实例自身）不进实例集合
-    // ——否则会产出「连 n5 的幻影实例」把未覆盖实例数抬到 2
+    EXPECT_EQ(st.uncovered_net_count_, 1u);        // n4
+    // 键 0 不进实例集合——无「连 n5 的幻影实例」
     EXPECT_EQ(st.uncovered_instance_count_, 1u);   // I1（连了未覆盖的 n4）
     EXPECT_EQ(st.zero_cap_instance_count_, 1u);    // I2（只连全零已覆盖 n3）
     ASSERT_EQ(merged.items_.size(), 3u);
+}
+
+// ── 11b. 覆盖率分母口径（第 H 节第 4 条）：网几何所在分区 ≠ 连接位实
+//    例所在分区——分母材料是本区实例连接对象，不是本区 NETS ──────────
+
+TEST(SpPartitionTest, CoverageDenominatorUsesInstConnections) {
+    // 网 n_a=1 的布线几何全在分区 0（NETS 对象归分区 0），但它的连接位
+    // 实例 u_x=1 在分区 1；网 n_p=2 只有纯端口位条目（键 0 = root 设计
+    // 级端口连接）。断言：分区 0 的分母不含 n_a（本区无它的连接位实
+    // 例）；分区 1 的分母含 n_a 且按条目有无计覆盖；键 0 整键排除——
+    // n_p 不进网分母、也不产生幻影实例（root 非实体实例）
+    const FlatEnv env("top", {"u_x"}, {"n_a", "n_p"});
+    const FlatCtx fc = make_flat_ctx(env);
+    // 实例 u_x（global id 1）primary 分区 = 1
+    fc.seg->pids_.assign(32, kPid1);
+    // 分区 0：NETS 含 n_a（几何载体）与 n_p（纯端口位条目）；无实例连
+    // 接对象（本区没有连接位实例）
+    add_nets(*fc.ctx, kPid0,
+             build_nets(kPid0, {{1, 1, false, true},
+                                {2, 0, false, false, true}},
+                        env));
+    // 分区 1：实例连接含 u_x→n_a 与键 0→n_p；无 NETS 对象（n_a 几何不
+    // 在本区）
+    add_inst_conns(*fc.ctx, kPid1,
+                   build_inst_conns({{1, 1}, {0, 2}}));
+    // SPEF 只覆盖 n_a：路由按连接位实例分区落分区 1
+    const CMString text = spef_text("*D_NET n_a 5.0\n*END\n");
+    const SPEntrySlice slice = convert_text(*fc.ctx, text);
+    ASSERT_TRUE(find_entry(slice, kPid1, CMNetId{1}) != nullptr);
+    ASSERT_FALSE(find_entry(slice, kPid0, CMNetId{1}) != nullptr);
+
+    // 分区 0：本区实例连接对象缺失 → 覆盖率各项记 0（n_a 不因几何在
+    // 本区而进分母）
+    SPMergeStats st0;
+    sp_merge_partition(*fc.ctx, {&slice}, kPid0, st0);
+    EXPECT_EQ(st0.routed_signal_net_count_, 0u);
+    EXPECT_EQ(st0.covered_net_count_, 0u);
+    EXPECT_EQ(st0.uncovered_net_count_, 0u);
+    EXPECT_EQ(st0.uncovered_instance_count_, 0u);
+    EXPECT_EQ(st0.zero_cap_instance_count_, 0u);
+
+    // 分区 1：分母 = 本区实例连接里的已布线信号网 {n_a}（键 0 的 n_p
+    // 整键排除）；n_a 有条目 = 覆盖、零未覆盖；实例集合只含 u_x——
+    // u_x 所连已布线网 n_a 已覆盖且非零
+    SPMergeStats st1;
+    sp_merge_partition(*fc.ctx, {&slice}, kPid1, st1);
+    EXPECT_EQ(st1.routed_signal_net_count_, 1u);
+    EXPECT_EQ(st1.covered_net_count_, 1u);
+    EXPECT_EQ(st1.uncovered_net_count_, 0u);
+    EXPECT_EQ(st1.uncovered_instance_count_, 0u);
+    EXPECT_EQ(st1.zero_cap_instance_count_, 0u);
 }
 
 // ── 12. 空结果 ──────────────────────────────────────────────────────
@@ -872,6 +977,7 @@ TEST(SpPartitionTest, EmptyMerge) {
     const FlatCtx fc = make_flat_ctx(env);
     add_nets(*fc.ctx, kPid0,
              build_nets(kPid0, {{1, 1, true, false}}, env));
+    add_inst_conns(*fc.ctx, kPid0, build_inst_conns({{1, 1}}));
 
     // 没有任何分片 → 空对象（part_id_ 置位、条目为空）；本区有 NETS 对
     // 象时覆盖率照常统计（全未覆盖）
@@ -886,7 +992,8 @@ TEST(SpPartitionTest, EmptyMerge) {
     EXPECT_EQ(st.uncovered_instance_count_, 1u);   // u_g_a 所连 n_a 未覆盖
     EXPECT_EQ(st.zero_cap_instance_count_, 0u);
 
-    // 本区没有 NETS 对象时覆盖率五项全 0（不报错）
+    // 本区没有实例连接对象与 NETS 对象时覆盖率五项全 0（不报错——第 H
+    // 节第 4 条口径：实例连接对象缺失同「NETS 对象缺失」）
     SPMergeStats st1;
     const SPPartitionNetLoad m1 = sp_merge_partition(*fc.ctx, {}, kPid1, st1);
     EXPECT_EQ(m1.part_id_, kPid1);

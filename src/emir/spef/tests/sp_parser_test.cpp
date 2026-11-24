@@ -4,7 +4,8 @@
 // 映射与未登记处置（裁定 11）、节点分类与合计口径、方言容忍（§2.5
 // 清单）、跳过项（裁定 5/12）、注释、文件级与段级错误边界（dev-rules
 // §7.2 两类）、切块计划（网段边界 + 单网不拆分）、整文件与分段解析
-// 等价、真实工具样张回归（GPL 许可样张不入仓库——文件存在才跑）。
+// 等价、真实工具样张回归（GPL 许可样张不入仓库——唯一开关是环境变量
+// FLY_SPEF_REAL_SAMPLE，未设置即跳过；设置了但文件不存在是显式失败）。
 //
 // 手写样张 data/*.spef 的期望值全部按文件逐行手工推导（C_UNIT 1 FF
 // 时数值直读；1 PF 时 x1000）；参数化变体（分隔符四种、多值下标组合、
@@ -1238,6 +1239,144 @@ TEST(RealSampleTest, RealToolSample) {
               << " res=" << r.res_count_
               << " dropped=" << r.dropped_record_count_
               << " map_miss=" << r.name_map_miss_count_ << std::endl;
+}
+
+// ── 矩阵条目 10 补充（第 H 节第 1 条）：进入合计的值判文件数值 ──────
+
+TEST(SegmentErrorTest, NegativeSubnormalCapRecordIsBroken) {
+    // 对地/耦合电容的符号校验判文件数值（第 H 节第 1 条修正）：原判乘
+    // 过换算系数后的飞法值，「负的次正规数 × 小于 1 的换算系数」下溢成
+    // -0.0（-1e-323 × 0.001 = -0.0），-0.0 < 0.0 为假，负值漏判。修正后
+    // 三处（行首/对地/耦合）统一判文件数值再乘系数——本复现输入应为段
+    // 级破损
+    const CMString text =
+        "*SPEF \"IEEE 1481-1998\"\n*C_UNIT 0.001 FF\n*R_UNIT 1 OHM\n"
+        "*D_NET n_a 2.0\n*CAP\n1 n_a:1 -1e-323\n*END\n";
+    SPFileHeader h;
+    const SPChunkResult r = sp_parse_spef_text(text, h, 0, false, "t");
+    EXPECT_EQ(r.nets_.size(), 0u);
+    EXPECT_EQ(r.broken_net_count_, 1u);
+    // 耦合电容同口径：负的次正规数（0.001 FF 档换算后为 -0.0）→ 破损
+    const CMString coupling_text =
+        "*SPEF \"IEEE 1481-1998\"\n*C_UNIT 0.001 FF\n*R_UNIT 1 OHM\n"
+        "*D_NET n_a 2.0\n*CAP\n1 n_a:1 n_a:2 -1e-323\n*END\n";
+    SPFileHeader h2;
+    const SPChunkResult r2 =
+        sp_parse_spef_text(coupling_text, h2, 0, false, "t");
+    EXPECT_EQ(r2.nets_.size(), 0u);
+    EXPECT_EQ(r2.broken_net_count_, 1u);
+}
+
+TEST(SegmentErrorTest, NegativeZeroStoredAsPositiveZero) {
+    // 存储值不得出现负零（第 H 节第 1 条顺带修正）：-0.0 字面量是合法
+    // 数值（-0.0 < 0.0 为假，正常收录），乘换算系数后结果 -0.0 归 0.0
+    const CMString text = std_header(
+        "*D_NET n_a -0.0\n*CAP\n1 n_a:1 -0.0\n2 n_a:2 n_a:3 -0.0\n*END\n");
+    SPFileHeader h;
+    const SPChunkResult r = sp_parse_spef_text(text, h, 0, false, "t");
+    ASSERT_EQ(r.nets_.size(), 1u);
+    EXPECT_EQ(r.nets_[0].total_cap_reported_ff_, 0.0);
+    EXPECT_EQ(r.nets_[0].ground_cap_ff_, 0.0);
+    EXPECT_EQ(r.nets_[0].coupling_cap_ff_, 0.0);
+    EXPECT_FALSE(std::signbit(r.nets_[0].total_cap_reported_ff_));
+    EXPECT_FALSE(std::signbit(r.nets_[0].ground_cap_ff_));
+    EXPECT_FALSE(std::signbit(r.nets_[0].coupling_cap_ff_));
+}
+
+// ── 第 H 节第 3 条：本轮放宽位置的值位残缺回归（关键字放回语义不被
+//    改回去）────────────────────────────────────────────────────────
+
+TEST(SegmentErrorTest, TruncatedNonConsumedValueKeepsFollowingNet) {
+    // 本轮放宽的六处（只要求合法数值、值不消费：*L、*S、*RES / *INDUC
+    // 值、缩减网 *C2_R1_C1、*RC）的值位缺失且紧跟网段关键字——残缺记
+    // 录所在网按段级破损计数，但被读到的网段关键字必须留在流里，紧随
+    // 的网照常收录、不无声丢失（stray 为 0——关键字属于网边界而非杂料）
+    SPFileHeader h;
+    // 1) *L 值位缺失（CONN 属性）
+    {
+        const CMString text = std_header(
+            "*D_NET n_a 1.0\n*CONN\n*I u_x:P O *L\n*D_NET n_b 2.0\n*END\n");
+        const SPChunkResult r = sp_parse_spef_text(text, h, 0, false, "t");
+        ASSERT_EQ(r.nets_.size(), 1u);
+        EXPECT_EQ(r.nets_[0].name_, "n_b");
+        EXPECT_EQ(r.broken_net_count_, 1u);
+        EXPECT_EQ(r.stray_content_count_, 0u);
+    }
+    // 2) *S 值位缺失（转换时间两值）
+    {
+        const CMString text = std_header(
+            "*D_NET n_a 1.0\n*CONN\n*I u_x:P O *S\n*D_NET n_b 2.0\n*END\n");
+        const SPChunkResult r = sp_parse_spef_text(text, h, 0, false, "t");
+        ASSERT_EQ(r.nets_.size(), 1u);
+        EXPECT_EQ(r.nets_[0].name_, "n_b");
+        EXPECT_EQ(r.broken_net_count_, 1u);
+        EXPECT_EQ(r.stray_content_count_, 0u);
+    }
+    // 3) *RES 值位缺失
+    {
+        const CMString text = std_header(
+            "*D_NET n_a 1.0\n*RES\n1 n_a:1 n_a:2\n*D_NET n_b 2.0\n*END\n");
+        const SPChunkResult r = sp_parse_spef_text(text, h, 0, false, "t");
+        ASSERT_EQ(r.nets_.size(), 1u);
+        EXPECT_EQ(r.nets_[0].name_, "n_b");
+        EXPECT_EQ(r.broken_net_count_, 1u);
+        EXPECT_EQ(r.stray_content_count_, 0u);
+    }
+    // 4) *INDUC 值位缺失
+    {
+        const CMString text = std_header(
+            "*D_NET n_a 1.0\n*INDUC\n1 n_a:1 n_a:2\n*D_NET n_b 2.0\n*END\n");
+        const SPChunkResult r = sp_parse_spef_text(text, h, 0, false, "t");
+        ASSERT_EQ(r.nets_.size(), 1u);
+        EXPECT_EQ(r.nets_[0].name_, "n_b");
+        EXPECT_EQ(r.broken_net_count_, 1u);
+        EXPECT_EQ(r.stray_content_count_, 0u);
+    }
+    // 5) 缩减网 *C2_R1_C1 值位缺失
+    {
+        const CMString text = std_header(
+            "*R_NET n_a 1.0\n*DRV n_a:1 *CELL D *C2_R1_C1\n"
+            "*D_NET n_b 2.0\n*END\n");
+        const SPChunkResult r = sp_parse_spef_text(text, h, 0, false, "t");
+        ASSERT_EQ(r.nets_.size(), 1u);
+        EXPECT_EQ(r.nets_[0].name_, "n_b");
+        EXPECT_EQ(r.broken_net_count_, 1u);
+        EXPECT_EQ(r.stray_content_count_, 0u);
+    }
+    // 6) 缩减网 *RC 值位缺失
+    {
+        const CMString text = std_header(
+            "*R_NET n_a 1.0\n*RC\n*D_NET n_b 2.0\n*END\n");
+        const SPChunkResult r = sp_parse_spef_text(text, h, 0, false, "t");
+        ASSERT_EQ(r.nets_.size(), 1u);
+        EXPECT_EQ(r.nets_[0].name_, "n_b");
+        EXPECT_EQ(r.broken_net_count_, 1u);
+        EXPECT_EQ(r.stray_content_count_, 0u);
+    }
+}
+
+// ── 字节区间读取（第 H 节 C1：块任务把切块计划的字节区间读成文本）──
+
+TEST(ByteRangeTest, ReadsMiddleRange) {
+    const fs::path p = write_temp("spef_range.spef",
+                                  std_header("*D_NET n_a 1.0\n*END\n"));
+    const CMString whole = read_all(p);
+    const CMString part = sp_read_byte_range(p.string(), 5, 20);
+    ASSERT_EQ(part.size(), 15u);
+    EXPECT_EQ(whole.substr(5, 15), part);
+}
+
+TEST(ByteRangeTest, OutOfRangeOrUnreadableThrows) {
+    const fs::path p = write_temp("spef_range_oob.spef", "0123456789");
+    // 区间终点越出文件大小
+    EXPECT_THROW(sp_read_byte_range(p.string(), 0, 11), std::runtime_error);
+    EXPECT_THROW(sp_read_byte_range(p.string(), 100, 200),
+                 std::runtime_error);
+    // 文件不可读
+    EXPECT_THROW(sp_read_byte_range("no_such_file_anywhere.spef", 0, 1),
+                 std::runtime_error);
+    // 空区间合法（start == end）
+    EXPECT_EQ(sp_read_byte_range(p.string(), 4, 4).size(), 0u);
 }
 
 }  // namespace

@@ -242,6 +242,13 @@ bool expand_ref(const CMString& tok, const SPFileHeader& header,
     return true;
 }
 
+// 乘换算系数并归负零（存储值不得出现负零）：-0.0 字面量是合法数值
+//（-0.0 < 0.0 为假，正常收录），乘系数后仍是 -0.0——归成 0.0
+double scaled_nonneg_cap(double file_value, double scale) {
+    const double ff = file_value * scale;
+    return ff == 0.0 ? 0.0 : ff;
+}
+
 // 读一个数值 token（真关键字形态或非数值 = false）。读到真关键字时
 // 先放回流再返回 false——调用方的段级破损跳扫（skip_to_next_net）必
 // 须能命中该关键字，否则紧随的网段被整体跳过（无声丢网）
@@ -735,14 +742,16 @@ private:
         acc_.kind_ = kind;
         acc_.value_count_ = static_cast<uint32_t>(vals.size());
         // 行首总电容进入合计：符号校验只看选中参与合计的那个值（多值
-        // 形态下未选中的值不触发校验——裁定），为负 = 段级破损
+        // 形态下未选中的值不触发校验——裁定），判**文件数值**（乘换算
+        // 系数之前——第 H 节第 1 条：负的次正规数 × 小于 1 的系数会下
+        // 溢成 -0.0，判换算后值漏判），为负 = 段级破损
         const double selected = select_value(vals);
         if (selected < 0.0) {
             ++out_.broken_net_count_;
             skip_to_next_net();
             return;
         }
-        acc_.total_ff_ = selected * header_.cap_scale_ff_;
+        acc_.total_ff_ = scaled_nonneg_cap(selected, header_.cap_scale_ff_);
         // 可选行尾 *V <置信度>（语法消费；残缺 = 段级破损）
         SpToken nxt;
         if (!lex_->next(nxt)) {
@@ -1031,13 +1040,15 @@ private:
             }
             CMVector<double> vals;
             if (sp_parse_value(second.text_, vals)) {
-                // 对地电容（进入合计：符号校验只看选中的值，负 = 段级
-                // 破损——负值不能进入合计）
-                const double ff =
-                    select_value(vals) * header_.cap_scale_ff_;
-                if (ff < 0.0) {
+                // 对地电容（进入合计：符号校验只看选中的值，判**文件数
+                // 值**——第 H 节第 1 条同口径，负 = 段级破损——负值不能
+                // 进入合计）
+                const double selected = select_value(vals);
+                if (selected < 0.0) {
                     return Step::kBroken;
                 }
+                const double ff =
+                    scaled_nonneg_cap(selected, header_.cap_scale_ff_);
                 const NodeClass c1 = resolve_node(n1.text_);
                 if (!c1.ok) {
                     ++acc_.dropped_;
@@ -1052,17 +1063,19 @@ private:
                 continue;
             }
             // 耦合电容（两个节点）——值读入独立 token，second 保持节点 2；
-            // 进入合计：选中值为负 = 段级破损
+            // 进入合计：选中值为负（判文件数值——第 H 节第 1 条同口径）
+            // = 段级破损
             CMVector<double> cap_vals;
             SpToken val_tok;
             if (!next_value(*lex_, val_tok, cap_vals)) {
                 return Step::kBroken;
             }
-            const double ff =
-                select_value(cap_vals) * header_.cap_scale_ff_;
-            if (ff < 0.0) {
+            const double cap_selected = select_value(cap_vals);
+            if (cap_selected < 0.0) {
                 return Step::kBroken;
             }
+            const double ff =
+                scaled_nonneg_cap(cap_selected, header_.cap_scale_ff_);
             const NodeClass c1 = resolve_node(n1.text_);
             const NodeClass c2 = resolve_node(second.text_);
             if (!c1.ok || !c2.ok) {
@@ -1343,6 +1356,38 @@ SPChunkResult sp_parse_spef_file(const CMString& path,
 SPChunkResult sp_parse_spef_file(const CMString& path) {
     SPFileHeader header;
     return sp_parse_spef_file(path, header, 0, false);
+}
+
+CMString sp_read_byte_range(const CMString& path, uint64_t start,
+                            uint64_t end) {
+    if (start > end) {
+        throw std::runtime_error(
+            "SPEF: invalid byte range [" + std::to_string(start) + ", " +
+            std::to_string(end) + "): start > end: " + path);
+    }
+    std::ifstream in(path, std::ios::binary);
+    if (!in) {
+        throw std::runtime_error("SPEF: file not readable: " + path);
+    }
+    in.seekg(0, std::ios::end);
+    const auto size = in.tellg();
+    if (size < 0 || end > static_cast<uint64_t>(size)) {
+        throw std::runtime_error(
+            "SPEF: byte range [" + std::to_string(start) + ", " +
+            std::to_string(end) + ") exceeds file size " +
+            std::to_string(size) + ": " + path);
+    }
+    in.seekg(static_cast<std::streamoff>(start));
+    CMString out;
+    out.resize(static_cast<size_t>(end - start));
+    if (!out.empty()) {
+        in.read(out.data(), static_cast<std::streamsize>(out.size()));
+        if (in.gcount() != static_cast<std::streamsize>(out.size())) {
+            throw std::runtime_error("SPEF: short read on byte range: " +
+                                     path);
+        }
+    }
+    return out;
 }
 
 }  // namespace fly

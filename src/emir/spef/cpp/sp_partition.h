@@ -45,13 +45,22 @@
 // 本层只把它记进分片供合并判定），同作用域重合保留首份（按文件序、
 // 块序最先出现的）。
 //
-// 覆盖率统计口径（§2.4/裁定 10）：分母 = 本分区 NETS 对象里的信号网与
-// 出现在其连接条目里的单元实例（纯端口位条目的实例 id = 块实例自身，
-// 不是单元实例，不计入）。完全未布线的实例不会出现在 NETS 里（无连接
-// 位即无条目），不计入分母——本统计覆盖「已布线部分」的完整性，未布
-// 线设计的漏计是口径的固有边界，不报错。各项按「分区 × 网」统计后逐
-// 分区求和（跨分区的网与连接实例在多个分区各计一次；比率可用，绝对
-// 数不做全局去重——2026-11-24 评审裁定）。
+// 覆盖率统计口径（§2.4/裁定 10；分母材料 2026-11-24 实施期修正）：分
+// 子分母材料 = design db 的**本分区实例连接对象**（
+// PART_{xp}_{yp}.INST_CONNECTIONS——寄生条目按连接位实例归属分区）+
+// **已布线信号网 id 集合**（上下文全部分区 NETS 对象里出现过的网 id
+// 并集——信号网 NETS 全量补全，任一副本即全集）。已布线信号网数 =
+// 本区实例连接里出现的、属于该集合的不同网数；实例集合 = 本区实例
+// 连接里出现过的实例，且至少有一条连接落在已布线信号网上。**键 0**
+//（root 块自身的设计级端口连接）整键排除——root 非实体实例，端口外
+// 的片外负载也不在 SPEF 里（设计级端口连接既不进网分母也不进实例集
+// 合）。NETS 对象按**布线几何**归属分区而寄生条目按**连接位实例**归
+// 属分区，两者可以不同——几何落在本区、本区却没有它的连接位实例的
+// 网（纯粹穿过的网）不计入本区分母（本区的负载消费者用不到它）。本
+// 区实例连接对象缺失时各项记 0，不报错（同「NETS 对象缺失」口径）。
+// 各项按「分区 × 网」统计后逐分区求和（跨分区的网与连接实例在多个
+// 分区各计一次；比率可用，绝对数不做全局去重——2026-11-24 评审裁
+// 定）。
 //
 // id 体系：全部 CM 族强类型（emir_ids.h）。确定性：分片条目与合并产物
 // 均按 net id 升序，不依赖无序容器迭代序。
@@ -133,28 +142,48 @@ struct SPFileStats {
     uint64_t multi_value_net_count_ = 0;        // 多值网数（裁定 6）
     uint32_t value_count_max_ = 0;              // 收录网的最大值个数
     uint64_t value_index_fallback_count_ = 0;   // 取值下标回退数
+    uint64_t cap_count_ = 0;                    // 电容记录条数（对地 + 耦合
+                                                //——解析层 SPChunkResult 原
+                                                // 样带入；阶段二补字段：
+                                                // summary 逐文件统计的「电
+                                                // 容记录数」断言面）
     uint64_t coupling_cap_count_ = 0;           // 耦合电容条数
+    uint64_t res_count_ = 0;                    // 电阻记录条数（阶段二补字
+                                                // 段——summary 逐文件统计
+                                                // 的「电阻记录数」断言面）
     // —— 换算层计数（本层累加）——
     uint64_t hit_count_ = 0;                    // 至少路由到一个分区的网数
     uint64_t net_name_miss_count_ = 0;          // 网名未匹配跳过（SPMG::0001）
     uint64_t pg_net_skip_count_ = 0;            // pg 网跳过（SPMG::0003）
     uint64_t unrouted_net_count_ = 0;           // 未布线/无可挂连接位
-                                                //（SPMG::0011）
+                                                //（SPMG::0011；含排除端口
+                                                // 条目后无连接位的网——
+                                                // 端口不是实例，不进路由）
     uint64_t strip_miss_count_ = 0;             // strip_prefix 未命中
                                                 //（SPMG::0002，含剥后余空）
-    uint64_t unplaced_instance_count_ = 0;      // 未放置实例跳过（汇总计数
-                                                //——本方案无对应消息）
+    uint64_t unplaced_instance_count_ = 0;      // 未放置实例跳过（非端口的
+                                                // 连接位实例查不到分区——
+                                                // 端口条目不是实例，不计此
+                                                // 处；汇总计数——本方案无对
+                                                // 应消息）
     // 块任务失败数（流程层传入的 0 值占位字段，保留；本层绑定目标未命
     // 中的防御兜底也计此处——同 timing 先例）
     uint64_t failed_chunk_count_ = 0;
+    // 切块数（该文件切块计划里的块数；纯头部文件为 0——第 H 节第 5
+    // 条）：流程层的已知事实，由汇总任务在 sp_merge_summary 之后按文
+    // 件清单填入（多块路径的可观测量——端到端测试断言「文件确实被切成
+    // 多块」的依据）
+    uint64_t chunk_count_ = 0;
 
     FLY_SERIALIZE(source_file_, c_unit_ff_per_unit_, net_count_, rnet_count_,
                   pnet_skip_count_, broken_net_count_, name_map_miss_count_,
                   dropped_record_count_, multi_value_net_count_,
                   value_count_max_, value_index_fallback_count_,
-                  coupling_cap_count_, hit_count_, net_name_miss_count_,
-                  pg_net_skip_count_, unrouted_net_count_, strip_miss_count_,
-                  unplaced_instance_count_, failed_chunk_count_)
+                  cap_count_, coupling_cap_count_, res_count_, hit_count_,
+                  net_name_miss_count_, pg_net_skip_count_,
+                  unrouted_net_count_, strip_miss_count_,
+                  unplaced_instance_count_, failed_chunk_count_,
+                  chunk_count_)
 };
 
 // 统计片段（T2 每块产出；T4 聚合进 SPSummary。逐文件条目通常单条——
@@ -220,12 +249,12 @@ struct SPMergeStats {
     // SPMG::0013，只观测不改数值）
     uint64_t cap_mismatch_count_ = 0;
     double cap_mismatch_max_rel_ = 0.0;
-    // 覆盖率统计（裁定 10；分母口径见文件头注释——本区 NETS 信号网与
-    // 其连接条目里的单元实例）。统计口径（2026-11-24 评审裁定）：各项
-    // 按「分区 × 网」在本区统计后逐分区求和——跨分区的网与它的连接
-    // 实例在多个分区各计一次；比率可用，绝对数不做全局去重（需要全局
-    // 绝对数时演进为汇总阶段按全局 id 去重）
-    uint64_t routed_signal_net_count_ = 0;    // 本区 NETS 里的信号网数
+    // 覆盖率统计（裁定 10；分母口径见文件头注释——本区实例连接对象 +
+    // 已布线信号网 id 集合，2026-11-24 实施期修正）。统计口径（
+    // 2026-11-24 评审裁定）：各项按「分区 × 网」在本区统计后逐分区求
+    // 和——跨分区的网与它的连接实例在多个分区各计一次；比率可用，绝
+    // 对数不做全局去重（需要全局绝对数时演进为汇总阶段按全局 id 去重）
+    uint64_t routed_signal_net_count_ = 0;    // 本区连接里的已布线信号网数
     uint64_t covered_net_count_ = 0;          // 其中合并产物有条目的
     uint64_t uncovered_net_count_ = 0;        // 未覆盖信号网数
     uint64_t uncovered_instance_count_ = 0;   // 所连信号网含未覆盖网的实例数
@@ -313,6 +342,10 @@ public:
     void set_pg_nets(CMSharedPtr<DSPgNetSet> pg_nets);
     // 分区 NETS 对象（网连接表定位；键取对象 part_id_）
     void add_partition_nets(CMSharedPtr<DSPartitionNets> nets);
+    // 分区实例连接对象（覆盖率统计材料——第 H 节第 4 条：本区连接位
+    // 实例分母；对象无 part_id_ 字段，注入口显式携带 pid）
+    void add_partition_inst_connections(
+        CMPartitionId pid, CMSharedPtr<DSPartInstConnections> conns);
 
     const DSDesign& design() const { return *design_; }
     const DSInstanceNameMapper& inst_mapper() const { return inst_mapper_; }
@@ -326,6 +359,12 @@ public:
     const CMUnorderedMap<uint32_t, CMSharedPtr<DSPartitionNets>>&
     all_partition_nets() const {
         return part_nets_;
+    }
+    // 全部快照分区实例连接对象（覆盖率统计材料遍历口——按注入口 pid 索
+    // 引）
+    const CMUnorderedMap<uint32_t, CMSharedPtr<DSPartInstConnections>>&
+    all_inst_connections() const {
+        return inst_conns_;
     }
     const DSPgNetSet* pg_nets() const {
         return pg_nets_ == nullptr ? nullptr : pg_nets_.get();
@@ -347,6 +386,7 @@ private:
     CMUnorderedMap<uint64_t, CMSharedPtr<DSIdPartitionSegment>> inst_segments_;
     CMSharedPtr<DSPgNetSet> pg_nets_;
     CMUnorderedMap<uint32_t, CMSharedPtr<DSPartitionNets>> part_nets_;
+    CMUnorderedMap<uint32_t, CMSharedPtr<DSPartInstConnections>> inst_conns_;
 
     // —— 运行时构件（不序列化；set_design/rebuild_mappers 重建）——
     DSInstanceNameMapper inst_mapper_;
@@ -393,8 +433,10 @@ SPEntrySlice sp_convert_chunk(const SPDesignContext& ctx,
 //     max(total, ground + coupling)，差额 > max(1e-3 fF, 1e-4 × 基准)
 //     时计 cap_mismatch_count 并更新最大相对偏差（差额 ÷ 基准；基准为
 //     0 时相对偏差记 0）——SPMG::0013；
-//   - 覆盖率统计（裁定 10）：材料 = 本区 NETS 对象（分母口径见文件头
-//     注释）；NETS 对象缺失时全部覆盖率项记 0，不报错。
+//   - 覆盖率统计（裁定 10；分母口径见文件头注释——材料 = 本区实例连
+//     接对象 PART_{xp}_{yp}.INST_CONNECTIONS + 已布线信号网 id 集合
+//    〔上下文全部分区 NETS 对象里出现过的网 id 的并集〕；键 0 整键排
+//     除）；本区实例连接对象缺失时各项记 0，不报错。
 //
 // 结果按 net id 升序；没有分片时产出空对象（part_id_ 置位、条目为空）。
 SPPartitionNetLoad sp_merge_partition(const SPDesignContext& ctx,

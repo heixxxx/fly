@@ -108,4 +108,10 @@ SPChunkResult sp_parse_spef_file(const CMString& path,
 // 解析 SPEF 文件（整读，头部产物不外送——单测与整文件回归用）。
 SPChunkResult sp_parse_spef_file(const CMString& path);
 
+// 读文件的字节区间 [start, end)（切块链路的块任务口：把切块计划的字
+// 节区间读成文本再交给 sp_parse_chunk_text）。文件不可读、或区间越出
+// 文件大小 → 抛 std::runtime_error；start == end 合法（空文本）。
+CMString sp_read_byte_range(const CMString& path, uint64_t start,
+                            uint64_t end);
+
 }  // namespace fly

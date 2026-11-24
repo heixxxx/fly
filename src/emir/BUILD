@@ -10,6 +10,7 @@ py_library(
         "//src/emir/design:design_pkg",
         "//src/emir/lib:lib_pkg",
         "//src/emir/project:project_pkg",
+        "//src/emir/spef:spef_pkg",
         "//src/emir/timing:timing_pkg",
         "//src/emir/waveform:waveform_pkg",
     ],
