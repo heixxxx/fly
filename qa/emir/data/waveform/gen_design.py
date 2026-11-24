@@ -263,18 +263,28 @@ def build_small(name, dump_file=None, finish_ns=201, rn_release_ns=23,
 
 
 def build_blk_sub():
-    """wf_sub 块定义：DFF + XOR + INV（D = ~(Q ^ n_in)）"""
+    """wf_sub 块定义：DFF + XOR + INV（D = ~(Q ^ n_in)）。
+
+    端口声明（clk/rn/n_in，与 block_ports() 同名同向）——块级 DEF 声明
+    对外端口是层次化连接成立的前提：design db 的跨块并查集（net_union）
+    只沿 port 相连网归并，无端口则跨层连接全部被丢弃。add_pin 在
+    add_inst 之后调用（端口条目追加到网连接表尾部，网键插入序不变
+    ——NETS 段网序与既有产物逐字节对齐）。
+    """
     d = Design("wf_sub")
     d.wires = ["wire n1", "wire n2", "wire n3"]
     d.add_inst("DFFR_X1", "u_dff_s", {"D": "n2", "CK": "clk", "RN": "rn",
                                       "Q": "n1", "QN": None})
     d.add_inst("XOR2_X1", "u_xor_s", {"A": "n1", "B": "n_in", "Z": "n3"})
     d.add_inst("INV_X1", "u_inv_s", {"A": "n3", "ZN": "n2"})
+    d.add_pin("clk", "clk", "INPUT", "CLOCK")
+    d.add_pin("rn", "rn", "INPUT")
+    d.add_pin("n_in", "n_in", "INPUT")
     return d
 
 
 def build_blk_a():
-    """wf_blk_a 块定义：T-FF + 输出反相 + 子块 wf_sub"""
+    """wf_blk_a 块定义：T-FF + 输出反相 + 子块 wf_sub（端口声明同上）"""
     d = Design("wf_blk_a")
     d.wires = ["wire n_a1", "wire n_a2"]
     d.add_inst("DFFR_X1", "u_dff_a", {"D": "n_a2", "CK": "clk", "RN": "rn",
@@ -282,17 +292,24 @@ def build_blk_a():
     d.add_inst("INV_X1", "u_inv1", {"A": "n_a1", "ZN": "n_a2"})
     d.add_inst("INV_X1", "u_inv_out", {"A": "n_a1", "ZN": "n_out"})
     d.add_inst("wf_sub", "u_sub", {"clk": "clk", "rn": "rn", "n_in": "n_a1"})
+    d.add_pin("clk", "clk", "INPUT", "CLOCK")
+    d.add_pin("rn", "rn", "INPUT")
+    d.add_pin("n_out", "n_out", "OUTPUT")
     return d
 
 
 def build_blk_b():
-    """wf_blk_b 块定义：T-FF（BUF 反馈）+ 输出反相——与 A 结构刻意不同"""
+    """wf_blk_b 块定义：T-FF（BUF 反馈）+ 输出反相——与 A 结构刻意不同
+    （端口声明同上）"""
     d = Design("wf_blk_b")
     d.wires = ["wire n_b1", "wire n_b2"]
     d.add_inst("DFFR_X1", "u_dff_b1", {"D": "n_b2", "CK": "clk", "RN": "rn",
                                        "Q": "n_b1", "QN": None})
     d.add_inst("BUF_X1", "u_buf_b", {"A": "n_b1", "Z": "n_b2"})
     d.add_inst("INV_X1", "u_inv_b", {"A": "n_b1", "ZN": "n_out"})
+    d.add_pin("clk", "clk", "INPUT", "CLOCK")
+    d.add_pin("rn", "rn", "INPUT")
+    d.add_pin("n_out", "n_out", "OUTPUT")
     return d
 
 

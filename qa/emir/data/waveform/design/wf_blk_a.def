@@ -12,15 +12,27 @@ COMPONENTS 4 ;
     - u_sub wf_sub + PLACED ( 8000 2000 ) N ;
 END COMPONENTS
 
-PINS 0 ;
+PINS 3 ;
+    - clk + NET clk
+      + DIRECTION INPUT + USE CLOCK
+      + LAYER metal1 ( -50 -50 ) ( 50 50 )
+      + FIXED ( 2000 11000 ) N ;
+    - rn + NET rn
+      + DIRECTION INPUT + USE SIGNAL
+      + LAYER metal1 ( -50 -50 ) ( 50 50 )
+      + FIXED ( 6000 11000 ) N ;
+    - n_out + NET n_out
+      + DIRECTION OUTPUT + USE SIGNAL
+      + LAYER metal1 ( -50 -50 ) ( 50 50 )
+      + FIXED ( 10000 11000 ) N ;
 END PINS
 
 NETS 5 ;
     - n_a2 ( u_dff_a D ) ( u_inv1 ZN ) ;
-    - clk ( u_dff_a CK ) ( u_sub clk ) ;
-    - rn ( u_dff_a RN ) ( u_sub rn ) ;
+    - clk ( u_dff_a CK ) ( u_sub clk ) ( PIN clk ) ;
+    - rn ( u_dff_a RN ) ( u_sub rn ) ( PIN rn ) ;
     - n_a1 ( u_dff_a Q ) ( u_inv1 A ) ( u_inv_out A ) ( u_sub n_in ) ;
-    - n_out ( u_inv_out ZN ) ;
+    - n_out ( u_inv_out ZN ) ( PIN n_out ) ;
 END NETS
 
 END DESIGN

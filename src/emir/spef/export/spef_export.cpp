@@ -5,7 +5,8 @@
 // EXSPNetLoad / EXSPPartitionNetLoad / EXSPMergeStats / EXSPSummary）+
 // 绑定描述（EXSPFileBinding，同 EXWFFileBinding 形态）+
 // EXSPDesignContext（design db 快照共享注入上下文；含覆盖率统计的分区
-// 实例连接对象注入口——第 H 节第 4 条）+ 执行函数（sp_plan_file_chunks
+// 实例连接对象注入口——第 H 节第 4 条 + 跨块连接归并结果注入口——电
+// 气网分组依据，2026-11-24 用户裁定）+ 执行函数（sp_plan_file_chunks
 // / sp_read_byte_range / sp_parse_* / sp_convert_chunk /
 // sp_merge_partition / sp_merge_summary）。
 // 类型纪律（DEVELOPMENT_GUIDELINES §16）：强类型 id / enum class 成员禁
@@ -346,6 +347,8 @@ FLY_EXPORT_CLASS(fly::SPSummary, "EXSPSummary")
                              &fly::SPSummary::source_mask_overflow_count_)
     FLY_EXPORT_READONLY_ATTR("invalid_binding_count",
                              &fly::SPSummary::invalid_binding_count_)
+    FLY_EXPORT_READONLY_ATTR("electrical_net_count",
+                             &fly::SPSummary::electrical_net_count_)
     FLY_EXPORT_READONLY_ATTR("internal_cap_unit_ff",
                              &fly::SPSummary::internal_cap_unit_ff_)
     FLY_EXPORT_READONLY_ATTR("internal_res_unit_ohm",
@@ -393,6 +396,17 @@ FLY_EXPORT_CLASS(fly::SPDesignContext, "EXSPDesignContext")
                       std::shared_ptr<fly::DSPartInstConnections> conns) {
         c.add_partition_inst_connections(fly::CMPartitionId{pid},
                                          std::move(conns));
+    })
+    // 跨块连接归并结果注入口（电气网分组依据——2026-11-24 用户裁定）
+    FLY_EXPORT_DEF("set_net_union",
+                   [](fly::SPDesignContext& c,
+                      std::shared_ptr<fly::DSNetUnion> net_union) {
+        c.set_net_union(std::move(net_union));
+    })
+    // 并查集观察口（结构测试断言「注入了」；未注入返回 None）
+    FLY_EXPORT_READONLY_PROPERTY("net_union",
+                                 [](const fly::SPDesignContext& c) {
+        return c.net_union_share();
     });
 
 // 绑定描述（三形态 + strip_prefix 的 C++ 侧；字段可写 + 随任务参数传
@@ -512,11 +526,12 @@ m.def("sp_merge_partition",
 
 // T4：summary 聚合（deltas = EXSPStatsDelta 列表；merge_stats =
 // EXSPMergeStats 列表；invalid_binding_count = 绑定目标未命中被跳过的
-// 文件数——flow 侧判定传入；chunk_count 由流程层在返回后按文件清单填
-// 入〔第 H 节第 5 条〕）
+// 文件数——flow 侧判定传入；electrical_net_count = 多成员电气网数——
+// 设计级，flow 根任务读并查集对象的组数传入；chunk_count 由流程层在
+// 返回后按文件清单填入〔第 H 节第 5 条〕）
 m.def("sp_merge_summary",
       [](nb::list deltas, uint64_t invalid_binding_count,
-         nb::list merge_stats) {
+         nb::list merge_stats, uint64_t electrical_net_count) {
           fly::CMVector<const fly::SPStatsDelta*> delta_ptrs;
           for (nb::handle item : deltas) {
               delta_ptrs.push_back(
@@ -528,7 +543,7 @@ m.def("sp_merge_summary",
                   nb::cast<const fly::SPMergeStats&>(item));
           }
           return fly::sp_merge_summary(delta_ptrs, invalid_binding_count,
-                                       stats);
+                                       stats, electrical_net_count);
       });
 
 }  // FLY_EXPORT_MODULE

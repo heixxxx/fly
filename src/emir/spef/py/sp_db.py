@@ -123,8 +123,18 @@ class SpefDb(Database):
             design = self._design_db().read_object(DesignDb.DESIGN_OBJ)
             xy = [(design.partition_at(i).xp, design.partition_at(i).yp)
                   for i in range(design.partition_count)]
-            xy = self._lru_put("_design_cache", 1, "partitions", xy)
+            xy = self._lru_put("_design_cache", 2, "partitions", xy)
         return xy
+
+    def _design_net_union(self):
+        """design db 跨块连接归并结果（EXDSNetUnion；单条目缓存）——
+        get_net_load 的电气网成员口径来源（2026-11-24 用户裁定）。"""
+        union = self._lru_get("_design_cache", "net_union")
+        if union is None:
+            from emir.design import DesignDb
+            union = self._design_db().read_object(DesignDb.NET_UNION_OBJ)
+            union = self._lru_put("_design_cache", 2, "net_union", union)
+        return union
 
     def _load_partition_obj(self, xp: int, yp: int):
         """分区网负载对象按需加载 + LRU（键 = (xp, yp)）。"""
@@ -143,9 +153,13 @@ class SpefDb(Database):
         回 None：全部分区对象都无该网条目）。
 
         同一网在各分区的副本数值相同（按连接位分区复制、每区自足），
-        任取一份。返回 dict：net id + 三电容（行首自报总电容/对地合计/
-        耦合合计，飞法）+ 贡献来源位图 + 缩减形态标记（布尔）+ 该网在
-        哪些分区有副本（[(xp, yp), …] 行主序）。
+        任取一份。数值 = 电气网合计（跨层次电气网口径——同一张电气网各
+        段的负载在合并层已相加，2026-11-24 用户裁定）：任一段的网编号查
+        到的都是整张电气网的负载。返回 dict：net id + 三电容（行首自报
+        总电容/对地合计/耦合合计，飞法）+ 贡献来源位图 + 缩减形态标记
+        （布尔）+ 该网在哪些分区有副本（[(xp, yp), …] 行主序）+
+        electrical_members——同一张电气网的全部成员网编号（升序，含自
+        己；并查集不在表的网 = [自己]）。
         """
         if isinstance(net_id_or_name, str):
             from emir.design import DesignDb
@@ -165,6 +179,13 @@ class SpefDb(Database):
                     entry = found
         if entry is None:
             return None
+        union = self._design_net_union()
+        root = union.find(gid)
+        members = sorted(int(m) for m in union.members(root))
+        if not members:
+            # 不在并查集表（未参与跨块连接——平展常态）：自身即单成员
+            # 电气网（find 恒一步返回自身，members 对非组根未命中）
+            members = [gid]
         return {
             "net_id": gid,
             "total_cap_reported_ff": entry.total_cap_reported_ff,
@@ -173,6 +194,7 @@ class SpefDb(Database):
             "source_mask": entry.source_mask,
             "reduced": bool(entry.flags & 0x1),
             "partitions": partitions,
+            "electrical_members": members,
         }
 
 

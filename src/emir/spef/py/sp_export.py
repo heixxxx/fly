@@ -20,7 +20,10 @@
                                          （"summary"）
   EXSPDesignContext                      design db 快照共享注入上下文
                                          （worker 端组装；含分区实例连
-                                         接对象注入口——覆盖率材料）
+                                         接对象注入口——覆盖率材料 +
+                                         跨块连接归并结果注入口——电气
+                                         网分组依据，2026-11-24 用户裁
+                                         定）
   EXSPFileBinding                        绑定描述（三形态 + strip_prefix）
 执行函数面（plan §6 任务链的 C++ 底座）：
   sp_plan_file_chunks                    T1 切块扫描（返回 (计划, 文件头)

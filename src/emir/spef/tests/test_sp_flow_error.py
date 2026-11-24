@@ -227,7 +227,7 @@ def test_all_files_failed_fatals_exit_80():
         "'block_cell': 'ghost', 'strip_prefix': ''}]\n"
         "run_direct(sp_flow._sp_merge_summary_task, Db(), files, [0], "
         "['__spg__chunk_0_0'], ['__spg__counts_0'], ['__spg__manifest_0'], "
-        "['__spg__header_0'], [], [], 'summary')\n"
+        "['__spg__header_0'], [], [], 0, 'summary')\n"
     )
     env = dict(os.environ)
     env["PYTHONPATH"] = os.pathsep.join(p for p in sys.path if p)

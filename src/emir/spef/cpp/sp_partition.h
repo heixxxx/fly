@@ -74,6 +74,7 @@
 #include <emir/design/cpp/ds_name_hasher.h>
 #include <emir/design/cpp/ds_name_mapper.h>
 #include <emir/design/cpp/ds_types.h>
+#include <emir/design/cpp/ds_union.h>
 #include <emir/spef/cpp/sp_types.h>
 
 #include <cstdint>
@@ -302,6 +303,12 @@ public:
     uint64_t source_mask_overflow_count_ = 0;
     // 绑定目标未命中被跳过的文件数（flow 侧判定传入，原样落字段）
     uint64_t invalid_binding_count_ = 0;
+    // 多成员电气网数（2026-11-24 评审修正：设计级的数——含两个及以上
+    // 成员的电气网数 = 设计库并查集对象的 class_count − dangling_count
+    //（等价类总数减去悬空的单成员类数——class_count 含悬空 port 网的
+    // 单成员类），整个设计一个数。flow 根任务读并查集对象后随参数传
+    // 入，汇总任务原样落字段——不经合并统计聚合）
+    uint64_t electrical_net_count_ = 0;
     // 内部单位基准声明（裁定 7：1 内部电容单位 = 1 fF、1 内部电阻单位
     // = 1 ohm——文件数值已按头档位换算，消费侧无需二次换算）
     double internal_cap_unit_ff_ = 1.0;
@@ -312,8 +319,8 @@ public:
                   zero_cap_instance_count_, rnet_count_, cap_mismatch_count_,
                   cap_mismatch_max_rel_, same_scope_overlap_count_,
                   cross_scope_sum_count_, source_mask_overflow_count_,
-                  invalid_binding_count_, internal_cap_unit_ff_,
-                  internal_res_unit_ohm_)
+                  invalid_binding_count_, electrical_net_count_,
+                  internal_cap_unit_ff_, internal_res_unit_ohm_)
 };
 
 // ── T2 换算上下文（design db 快照组装；TMDesignContext 同构）────────
@@ -346,6 +353,9 @@ public:
     // 实例分母；对象无 part_id_ 字段，注入口显式携带 pid）
     void add_partition_inst_connections(
         CMPartitionId pid, CMSharedPtr<DSPartInstConnections> conns);
+    // 跨块连接归并结果（design db 的 "net_union" 对象——电气网分组依
+    // 据，2026-11-24 用户裁定；每分区合并任务注入）
+    void set_net_union(CMSharedPtr<DSNetUnion> net_union);
 
     const DSDesign& design() const { return *design_; }
     const DSInstanceNameMapper& inst_mapper() const { return inst_mapper_; }
@@ -369,6 +379,13 @@ public:
     const DSPgNetSet* pg_nets() const {
         return pg_nets_ == nullptr ? nullptr : pg_nets_.get();
     }
+    // 电气网分组依据（跨块连接归并结果；未注入返回 nullptr——调用方按
+    // 「不在表 = 单成员组」的平展常态处理）
+    const DSNetUnion* net_union() const {
+        return net_union_ == nullptr ? nullptr : net_union_.get();
+    }
+    // 注入对象共享拷贝（Python 观察口——引用计数共享，生命周期自持）
+    CMSharedPtr<DSNetUnion> net_union_share() const { return net_union_; }
     // 块定义 instance/net hasher（按 block cell id；未注入返回空）
     CMSharedPtr<const DSInstanceNameHasher> inst_hasher_of(
         CMCellId block_cell_id) const;
@@ -387,6 +404,7 @@ private:
     CMSharedPtr<DSPgNetSet> pg_nets_;
     CMUnorderedMap<uint32_t, CMSharedPtr<DSPartitionNets>> part_nets_;
     CMUnorderedMap<uint32_t, CMSharedPtr<DSPartInstConnections>> inst_conns_;
+    CMSharedPtr<DSNetUnion> net_union_;
 
     // —— 运行时构件（不序列化；set_design/rebuild_mappers 重建）——
     DSInstanceNameMapper inst_mapper_;
@@ -428,6 +446,21 @@ SPEntrySlice sp_convert_chunk(const SPDesignContext& ctx,
 //   - 不同作用域的贡献：三个电容值相加、贡献来源位图按位或，计
 //     cross_scope_sum_count（计数单位 = 参与的额外贡献条数）；缩减形态
 //     标记 = 全部贡献都是缩减形态时才置位；
+//   - 电气网分组合并（2026-11-24 用户裁定：flatten 后经层次端口逻辑相
+//     连的各段网是同一张电气网）：单网编号内合并（前两条）之后，再把
+//     同一张电气网里不同网编号（各段）的贡献相加——做法 = 先从全部
+//     分片的全部条目（全部分区）算出「全局的逐网编号负载表」（同作用
+//     域保留首份、跨作用域相加；同作用域的跨分区复制是同一贡献的分区
+//     副本，保留首份无损），再按并查集组（上下文注入的 DSNetUnion）
+//     求和。条目落点（2026-11-24 评审修正）：凡本区网表（分区 NETS 对
+//     象——信号网全量补全副本）里有的信号网，只要它所在的电气网有负
+//     载，本区就有这张电气网的条目（按成员网编号各存一份、数值同为一
+//     张电气网的合计——下游按手里任意一段的网编号查到的都是整张网的
+//     负载；成员网自己有没有被寄生文件描述不影响）。电源地网在 NETS_PG
+//     对象、不在本表，天然排除。单成员组（平展常态）不进组求和，条目
+//     的数值与分层合并逐位一致（浮点相加顺序不重排）；但补全条目那
+//     一步不依赖并查集——平展设计里布线几何落在本区网表、连接位实例
+//     全在别的分区的网在本区也会多出一条补全条目；
 //   - 行首值与明细合计的一致性（只观测，不改数值）：对合并后非缩减形
 //     态的网，差额 = |total − (ground + coupling)|、基准 =
 //     max(total, ground + coupling)，差额 > max(1e-3 fF, 1e-4 × 基准)
@@ -436,7 +469,9 @@ SPEntrySlice sp_convert_chunk(const SPDesignContext& ctx,
 //   - 覆盖率统计（裁定 10；分母口径见文件头注释——材料 = 本区实例连
 //     接对象 PART_{xp}_{yp}.INST_CONNECTIONS + 已布线信号网 id 集合
 //    〔上下文全部分区 NETS 对象里出现过的网 id 的并集〕；键 0 整键排
-//     除）；本区实例连接对象缺失时各项记 0，不报错。
+//     除）；一张网「已覆盖」= 它所在的电气网有负载（组任一成员被描述
+//     即在组求和表——不受「本区条目只含本区成员编号」限制）。本区实
+//     例连接对象缺失时各项记 0，不报错。
 //
 // 结果按 net id 升序；没有分片时产出空对象（part_id_ 置位、条目为空）。
 SPPartitionNetLoad sp_merge_partition(const SPDesignContext& ctx,
@@ -448,9 +483,12 @@ SPPartitionNetLoad sp_merge_partition(const SPDesignContext& ctx,
 // 汇总任务（T4）：全部块统计片段按文件名归并逐文件表（同文件多块：计
 // 数累加、value_count_max 取最大、首条建档）+ 全局计数（覆盖率四项合
 // 计 / 缩减网数 / 不一致观测 / 同作用域重合 / 跨作用域相加）+ 绑定目
-// 标未命中被跳过的文件数（flow 侧判定传入）+ 内部单位基准声明。
+// 标未命中被跳过的文件数（flow 侧判定传入）+ 多成员电气网数（设计级：
+// flow 根任务读并查集对象的组数随参传入，原样落字段）+ 内部单位基准
+// 声明。
 SPSummary sp_merge_summary(const CMVector<const SPStatsDelta*>& deltas,
                            uint64_t invalid_binding_count,
-                           const CMVector<SPMergeStats>& merge_stats);
+                           const CMVector<SPMergeStats>& merge_stats,
+                           uint64_t electrical_net_count);
 
 }  // namespace fly

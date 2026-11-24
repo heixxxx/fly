@@ -14,7 +14,11 @@
 //      序结果逐字段相等）；9. 缩减形态（R_NET 收录 / R_NET + D_NET 合并）；
 //   10. 行首值与明细合计不一致观测（容差内外两态）；
 //   11. 覆盖率统计四项（裁定 10）；12. 空结果放行 + 无 NETS 对象；
-//   13. 汇总（逐文件按名归并 + 全局计数）；14. 序列化 round-trip。
+//   13. 汇总（逐文件按名归并 + 全局计数）；14. 序列化 round-trip；
+//   15. 电气网分组合并（并查集注入：组内各段负载相加、组内未被描述的
+//       成员网也按合计补条目〔条目跟随本区 NETS 集合〕/ 缩减标记与运
+//       算〔含补条目路径〕/ 单成员组与现状一致 / 覆盖率按电气网口径）；
+//       多成员电气网数 = 设计级参数（汇总任务原样落字段）。
 //
 // 合成场景 id 备忘：
 //   FlatEnv（顶层块 design_name；实例 local 从 1 起 = global；网 local
@@ -369,6 +373,24 @@ void add_inst_conns(SPDesignContext& ctx, CMPartitionId pid,
                     DSPartInstConnections conns) {
     ctx.add_partition_inst_connections(
         pid, std::make_shared<DSPartInstConnections>(std::move(conns)));
+}
+
+// 并查集替身构造（等价类组表 → 两层树 + root 规范形态——同
+// ds_build_net_union 产物：root_of_ 全员指向组首（root）、members_of_
+// 升序含 root 自身）
+std::shared_ptr<DSNetUnion> make_union(
+    const CMVector<CMVector<uint64_t>>& groups) {
+    auto u = std::make_shared<DSNetUnion>();
+    for (const CMVector<uint64_t>& group : groups) {
+        const CMNetId root{group[0]};
+        auto members = std::make_shared<CMVector<CMNetId>>();
+        for (const uint64_t id : group) {
+            members->push_back(CMNetId{id});
+            u->root_of_[CMNetId{id}] = root;
+        }
+        u->members_of_[root] = std::move(members);
+    }
+    return u;
 }
 
 FlatCtx make_blk_ctx(const BlkEnv& env) {
@@ -1065,7 +1087,7 @@ TEST(SpPartitionTest, SummaryMerge) {
     m2.uncovered_instance_count_ = 0;
     m2.zero_cap_instance_count_ = 1;
 
-    const SPSummary s = sp_merge_summary({&d1, &d2}, 7, {m1, m2});
+    const SPSummary s = sp_merge_summary({&d1, &d2}, 7, {m1, m2}, 9);
 
     // 逐文件按文件名归并（计数相加、不重复建条目、value_count_max 取最大）
     ASSERT_EQ(s.files_.size(), 2u);
@@ -1091,6 +1113,8 @@ TEST(SpPartitionTest, SummaryMerge) {
     EXPECT_EQ(s.uncovered_net_count_, 2u);
     EXPECT_EQ(s.uncovered_instance_count_, 4u);
     EXPECT_EQ(s.zero_cap_instance_count_, 7u);
+    // 多成员电气网数 = 设计级参数原样落字段（不聚合合并统计）
+    EXPECT_EQ(s.electrical_net_count_, 9u);
     // 缩减网数 = Σ 逐文件
     EXPECT_EQ(s.rnet_count_, 1u);
     // 绑定目标未命中文件数原样落字段；内部单位基准声明
@@ -1141,8 +1165,296 @@ TEST(SpPartitionTest, SourceMaskOverflowCount) {
     EXPECT_EQ(st2.source_mask_overflow_count_, 0u);
 
     // 溢出文件数进汇总（SPSummary 求和聚合）
-    const SPSummary s = sp_merge_summary({}, 0, {st});
+    const SPSummary s = sp_merge_summary({}, 0, {st}, 0);
     EXPECT_EQ(s.source_mask_overflow_count_, 2u);
+}
+
+// ── 15. 电气网分组合并（并查集注入；2026-11-24 用户裁定：flatten 后
+//    经层次端口逻辑相连的各段网是同一张电气网）────────────────────────
+
+TEST(SpPartitionTest, ElectricalGroupSumBothMembersInPartition) {
+    // 组 {1, 2}（root 1）：文件 1（scope 0）描述 n1（10/7/3）、文件 2
+    // （scope 1）描述 n2（5/4/1）——两段负载相加后本区两个网编号下都是
+    // 合计 15/11/4、来源位图按位或
+    const FlatEnv env("top", {"u_d_n1", "u_r_n1", "u_d_n2", "u_r_n2"},
+                      {"n1", "n2"});
+    const FlatCtx fc = make_flat_ctx(env);
+    fc.ctx->set_net_union(make_union({{1, 2}}));
+    const CMVector<TestConn> conns = {
+        {1, 1, true, false}, {1, 2, false, true},
+        {2, 3, true, false}, {2, 4, false, true},
+    };
+    add_nets(*fc.ctx, kPid0, build_nets(kPid0, conns, env));
+    const CMString t1 = spef_text("*D_NET n1 10.0\n*CAP\n1 n1:1 7.0\n"
+                                  "2 n1:2 n2:1 3.0\n*END\n");
+    const CMString t2 = spef_text("*D_NET n2 5.0\n*CAP\n1 n2:1 4.0\n"
+                                  "2 n2:2 n1:1 1.0\n*END\n");
+    const SPEntrySlice s1 = convert_text(*fc.ctx, t1, 0, 0);
+    const SPEntrySlice s2 = convert_text(*fc.ctx, t2, 1, 1);
+
+    SPMergeStats st;
+    const SPPartitionNetLoad merged =
+        sp_merge_partition(*fc.ctx, {&s1, &s2}, kPid0, st);
+    ASSERT_EQ(merged.items_.size(), 2u);
+    for (const SPNetLoad& e : merged.items_) {
+        EXPECT_DOUBLE_EQ(e.total_cap_reported_ff_, 15.0);
+        EXPECT_DOUBLE_EQ(e.ground_cap_ff_, 11.0);
+        EXPECT_DOUBLE_EQ(e.coupling_cap_ff_, 4.0);
+        EXPECT_EQ(e.source_mask_, uint64_t{0b11});
+        EXPECT_EQ(e.flags_, 0u);
+    }
+    // 成员网编号各一份（升序保持——find_net 二分可用）
+    EXPECT_EQ(merged.items_[0].net_id_, CMNetId{1});
+    EXPECT_EQ(merged.items_[1].net_id_, CMNetId{2});
+    EXPECT_NE(merged.find_net(CMNetId{2}), nullptr);
+    // 跨段相加不属于单网编号内的跨作用域贡献
+    EXPECT_EQ(st.cross_scope_sum_count_, 0u);
+    EXPECT_EQ(st.same_scope_overlap_count_, 0u);
+}
+
+TEST(SpPartitionTest, ElectricalGroupReducedFlagAnd) {
+    // 缩减形态标记 = 全部成员都是缩减形态时才置位：两段 R_NET → 置位；
+    // 一段换 D_NET → 与运算清零、明细合计取 D_NET 段
+    const FlatEnv env("top", {"u_d_n1", "u_r_n1", "u_d_n2", "u_r_n2"},
+                      {"n1", "n2"});
+    const FlatCtx fc = make_flat_ctx(env);
+    fc.ctx->set_net_union(make_union({{1, 2}}));
+    const CMVector<TestConn> conns = {
+        {1, 1, true, false}, {1, 2, false, true},
+        {2, 3, true, false}, {2, 4, false, true},
+    };
+    add_nets(*fc.ctx, kPid0, build_nets(kPid0, conns, env));
+    const CMString r1 = spef_text(
+        "*R_NET n1 10.0\n*DRV u_d_n1:ZN\n*CELL DCELL\n"
+        "*C2_R1_C1 5.0 3.0 2.0\n*LOADS\n*RC u_r_n1:A 0.5\n*END\n");
+    const CMString r2 = spef_text(
+        "*R_NET n2 5.0\n*DRV u_d_n2:ZN\n*CELL DCELL\n"
+        "*C2_R1_C1 2.0 1.0 1.0\n*LOADS\n*RC u_r_n2:A 0.5\n*END\n");
+    const SPEntrySlice rr1 = convert_text(*fc.ctx, r1, 0, 0);
+    const SPEntrySlice rr2 = convert_text(*fc.ctx, r2, 1, 1);
+    SPMergeStats st;
+    const SPPartitionNetLoad merged =
+        sp_merge_partition(*fc.ctx, {&rr1, &rr2}, kPid0, st);
+    ASSERT_EQ(merged.items_.size(), 2u);
+    for (const SPNetLoad& e : merged.items_) {
+        EXPECT_NE(e.flags_ & kSpFlagReduced, 0u);
+        EXPECT_DOUBLE_EQ(e.total_cap_reported_ff_, 15.0);   // 10 + 5
+    }
+
+    // 第二段换 D_NET（5/3/2 明细）→ 缩减位被与运算清零；明细合计取
+    // D_NET 段（R_NET 的 π 模型明细不入库〔裁定 5〕——明细合计 0）
+    const CMString d2 = spef_text("*D_NET n2 5.0\n*CAP\n1 n2:1 3.0\n"
+                                  "2 n2:2 n1:1 2.0\n*END\n");
+    const SPEntrySlice dd2 = convert_text(*fc.ctx, d2, 1, 1);
+    SPMergeStats st2;
+    const SPPartitionNetLoad merged2 =
+        sp_merge_partition(*fc.ctx, {&rr1, &dd2}, kPid0, st2);
+    ASSERT_EQ(merged2.items_.size(), 2u);
+    for (const SPNetLoad& e : merged2.items_) {
+        EXPECT_EQ(e.flags_ & kSpFlagReduced, 0u);
+        EXPECT_DOUBLE_EQ(e.total_cap_reported_ff_, 15.0);   // 10 + 5
+        EXPECT_DOUBLE_EQ(e.ground_cap_ff_, 3.0);   // R_NET 段无明细 + 3.0
+        EXPECT_DOUBLE_EQ(e.coupling_cap_ff_, 2.0);
+    }
+
+    // 补条目路径：组里只有 n1 被描述（R_NET）→ 未被描述的 n2 照常补
+    // 条目，来源位图与缩减标记同组一致（组只有缩减贡献 → 补条目同为
+    // 缩减形态、明细合计无效值 0）
+    SPMergeStats st3;
+    const SPPartitionNetLoad merged3 =
+        sp_merge_partition(*fc.ctx, {&rr1}, kPid0, st3);
+    ASSERT_EQ(merged3.items_.size(), 2u);
+    for (const SPNetLoad& e : merged3.items_) {
+        EXPECT_NE(e.flags_ & kSpFlagReduced, 0u);
+        EXPECT_EQ(e.source_mask_, uint64_t{0b1});
+        EXPECT_DOUBLE_EQ(e.total_cap_reported_ff_, 10.0);
+        EXPECT_DOUBLE_EQ(e.ground_cap_ff_, 0.0);
+        EXPECT_DOUBLE_EQ(e.coupling_cap_ff_, 0.0);
+    }
+    EXPECT_EQ(merged3.items_[0].net_id_, CMNetId{1});
+    EXPECT_EQ(merged3.items_[1].net_id_, CMNetId{2});
+}
+
+TEST(SpPartitionTest, ElectricalGroupMemberAbsentFromPartition) {
+    // 成员网只落在它自己出现的分区（2026-11-24 评审修正口径：补条目只
+    // 跟随本区 NETS 对象的网集合，不因电气网合并而外溢）：组 {1, 2}，
+    // 文件 1（scope 0）描述 n1、文件 2（scope 1）描述 n2；分区 0 的
+    // NETS 含 n1+n2（全量副本形态）、分区 1 的 NETS 只含 n2（防御形
+    // 态——本区网表没有的网不补）。电气网合计要包含落在别的分区的段
+    // ——全局逐网编号负载表从全部分片算
+    const FlatEnv env("top", {"u_d_n1", "u_r_n1", "u_d_n2", "u_r_n2"},
+                      {"n1", "n2"});
+    const FlatCtx fc = make_flat_ctx(env);
+    fc.ctx->set_net_union(make_union({{1, 2}}));
+    fc.seg->pids_[3] = kPid1;
+    fc.seg->pids_[4] = kPid1;
+    const CMVector<TestConn> conns = {
+        {1, 1, true, false}, {1, 2, false, true},
+        {2, 3, true, false}, {2, 4, false, true},
+    };
+    add_nets(*fc.ctx, kPid0, build_nets(kPid0, conns, env));
+    // 分区 1：NETS 只含 n2（防御形态——n1 不在本区网表）
+    add_nets(*fc.ctx, kPid1,
+             build_nets(kPid1, {{2, 3, true, false}, {2, 4, false, true}},
+                        env));
+    const CMString t1 = spef_text("*D_NET n1 10.0\n*CAP\n1 n1:1 7.0\n"
+                                  "2 n1:2 n2:1 3.0\n*END\n");
+    const CMString t2 = spef_text("*D_NET n2 5.0\n*CAP\n1 n2:1 4.0\n"
+                                  "2 n2:2 n1:1 1.0\n*END\n");
+    const SPEntrySlice s1 = convert_text(*fc.ctx, t1, 0, 0);
+    const SPEntrySlice s2 = convert_text(*fc.ctx, t2, 1, 1);
+    ASSERT_NE(find_entry(s1, kPid0, CMNetId{1}), nullptr);
+    ASSERT_EQ(find_entry(s1, kPid0, CMNetId{2}), nullptr);
+    ASSERT_EQ(find_entry(s2, kPid0, CMNetId{2}), nullptr);
+    ASSERT_NE(find_entry(s2, kPid1, CMNetId{2}), nullptr);
+
+    // 分区 0：n1 原始条目 + n2 补条目，都是电气网合计 15/11/4（含落在
+    // 分区 1 的 n2 段）
+    SPMergeStats st0;
+    const SPPartitionNetLoad m0 =
+        sp_merge_partition(*fc.ctx, {&s1, &s2}, kPid0, st0);
+    ASSERT_EQ(m0.items_.size(), 2u);
+    for (const SPNetLoad& e : m0.items_) {
+        EXPECT_DOUBLE_EQ(e.total_cap_reported_ff_, 15.0);
+        EXPECT_DOUBLE_EQ(e.ground_cap_ff_, 11.0);
+        EXPECT_DOUBLE_EQ(e.coupling_cap_ff_, 4.0);
+        EXPECT_EQ(e.source_mask_, uint64_t{0b11});
+    }
+    EXPECT_EQ(m0.items_[0].net_id_, CMNetId{1});
+    EXPECT_EQ(m0.items_[1].net_id_, CMNetId{2});
+    // 分区 1：只有 n2 一份（本区 NETS 没有 n1——不补），值相同
+    SPMergeStats st1;
+    const SPPartitionNetLoad m1 =
+        sp_merge_partition(*fc.ctx, {&s1, &s2}, kPid1, st1);
+    ASSERT_EQ(m1.items_.size(), 1u);
+    EXPECT_EQ(m1.items_[0].net_id_, CMNetId{2});
+    EXPECT_DOUBLE_EQ(m1.items_[0].total_cap_reported_ff_, 15.0);
+    EXPECT_EQ(m1.items_[0].source_mask_, uint64_t{0b11});
+}
+
+// 组内未被描述的成员网也有条目（2026-11-24 评审修正）：组 {1, 2} 只有
+// n1 被描述——本区 NETS 里有的 n2 照常拿到电气网合计（下游按手里任
+// 意一段的网编号查到的都是整张网的负载；来源位图与缩减标记同组一致）
+TEST(SpPartitionTest, ElectricalGroupUndescribedMemberGetsEntry) {
+    const FlatEnv env("top", {"u_d_n1", "u_r_n1", "u_d_n2", "u_r_n2"},
+                      {"n1", "n2"});
+    const FlatCtx fc = make_flat_ctx(env);
+    fc.ctx->set_net_union(make_union({{1, 2}}));
+    const CMVector<TestConn> conns = {
+        {1, 1, true, false}, {1, 2, false, true},
+        {2, 3, true, false}, {2, 4, false, true},
+    };
+    add_nets(*fc.ctx, kPid0, build_nets(kPid0, conns, env));
+    const CMString t1 = spef_text("*D_NET n1 10.0\n*CAP\n1 n1:1 7.0\n"
+                                  "2 n1:2 n2:1 3.0\n*END\n");
+    const SPEntrySlice s1 = convert_text(*fc.ctx, t1, 0, 0);
+
+    SPMergeStats st;
+    const SPPartitionNetLoad merged =
+        sp_merge_partition(*fc.ctx, {&s1}, kPid0, st);
+    ASSERT_EQ(merged.items_.size(), 2u);
+    for (const SPNetLoad& e : merged.items_) {
+        EXPECT_DOUBLE_EQ(e.total_cap_reported_ff_, 10.0);
+        EXPECT_DOUBLE_EQ(e.ground_cap_ff_, 7.0);
+        EXPECT_DOUBLE_EQ(e.coupling_cap_ff_, 3.0);
+        EXPECT_EQ(e.source_mask_, uint64_t{0b1});
+        EXPECT_EQ(e.flags_, 0u);
+    }
+    EXPECT_EQ(merged.items_[0].net_id_, CMNetId{1});
+    EXPECT_EQ(merged.items_[1].net_id_, CMNetId{2});
+    EXPECT_NE(merged.find_net(CMNetId{2}), nullptr);
+}
+
+TEST(SpPartitionTest, ElectricalGroupSingleMemberUnchanged) {
+    // 单成员组与现状一致：并查集注入但被描述网不在表（未参与 union——
+    // 平展常态）或组是单成员悬空类时，数值 = 本区合并值（跨作用域相加
+    // 照旧、来源位图照旧）
+    const FlatEnv env("top", {"u_d_n1", "u_r_n1"}, {"n1", "n2"});
+    const FlatCtx fc = make_flat_ctx(env);
+    // 组 {5, 6}（root 5）与被描述网无关 + 单成员悬空类 {4}——覆盖「组
+    // 结构存在但不影响本网」的两个形态
+    fc.ctx->set_net_union(make_union({{5, 6}, {4}}));
+    add_nets(*fc.ctx, kPid0,
+             build_nets(kPid0,
+                        {{1, 1, true, false}, {1, 2, false, true}}, env));
+    const CMString t1 = spef_text("*D_NET n1 10.0\n*CAP\n1 n1:1 7.0\n"
+                                  "2 n1:2 n2:1 3.0\n*END\n");
+    const CMString t2 = spef_text("*D_NET n1 5.0\n*CAP\n1 n1:1 4.0\n"
+                                  "2 n1:2 n2:1 1.0\n*END\n");
+    const SPEntrySlice s1 = convert_text(*fc.ctx, t1, 0, 0);
+    const SPEntrySlice s2 = convert_text(*fc.ctx, t2, 1, 1);
+
+    SPMergeStats st;
+    const SPPartitionNetLoad merged =
+        sp_merge_partition(*fc.ctx, {&s1, &s2}, kPid0, st);
+    ASSERT_EQ(merged.items_.size(), 1u);
+    EXPECT_DOUBLE_EQ(merged.items_[0].total_cap_reported_ff_, 15.0);
+    EXPECT_DOUBLE_EQ(merged.items_[0].ground_cap_ff_, 11.0);
+    EXPECT_EQ(merged.items_[0].source_mask_, uint64_t{0b11});
+    EXPECT_EQ(st.cross_scope_sum_count_, 1u);
+}
+
+TEST(SpPartitionTest, CoverageByElectricalNet) {
+    // 覆盖率按电气网口径：组 {1, 2}——n1 有 SPEF、n2 无 SPEF；分母不变
+    // （本区实例连接里的已布线信号网 {n1, n2}），一张网「已覆盖」= 它
+    // 所在的电气网有负载 → n2 算已覆盖；I1/I2 所连电气网负载非零 → 无
+    // 零电容实例
+    const FlatEnv env("top", {"I1", "I2"}, {"n1", "n2"});
+    const FlatCtx fc = make_flat_ctx(env);
+    fc.ctx->set_net_union(make_union({{1, 2}}));
+    add_nets(*fc.ctx, kPid0,
+             build_nets(kPid0,
+                        {{1, 1, false, true},
+                         {1, 2, false, true},
+                         {2, 2, false, true}},
+                        env));
+    add_inst_conns(*fc.ctx, kPid0, build_inst_conns({{1, 1}, {2, 2}}));
+    const CMString text = spef_text("*D_NET n1 10.0\n*CAP\n1 n1:1 10.0\n"
+                                    "*END\n");
+    const SPEntrySlice slice = convert_text(*fc.ctx, text);
+
+    SPMergeStats st;
+    const SPPartitionNetLoad merged =
+        sp_merge_partition(*fc.ctx, {&slice}, kPid0, st);
+    EXPECT_EQ(st.routed_signal_net_count_, 2u);    // 分母不变：n1 + n2
+    EXPECT_EQ(st.covered_net_count_, 2u);          // n2 经电气网口径覆盖
+    EXPECT_EQ(st.uncovered_net_count_, 0u);
+    EXPECT_EQ(st.uncovered_instance_count_, 0u);
+    EXPECT_EQ(st.zero_cap_instance_count_, 0u);
+    // 未被描述的成员网 n2 也有条目（电气网合计——2026-11-24 评审修正）
+    ASSERT_EQ(merged.items_.size(), 2u);
+    for (const SPNetLoad& e : merged.items_) {
+        EXPECT_DOUBLE_EQ(e.total_cap_reported_ff_, 10.0);
+        EXPECT_DOUBLE_EQ(e.ground_cap_ff_, 10.0);
+        EXPECT_DOUBLE_EQ(e.coupling_cap_ff_, 0.0);
+    }
+    EXPECT_EQ(merged.items_[0].net_id_, CMNetId{1});
+    EXPECT_EQ(merged.items_[1].net_id_, CMNetId{2});
+
+    // 对照：电气网负载全零（n1 自报/明细全 0）→ 两实例都是零电容实例
+    const CMString zero_text = spef_text("*D_NET n1 0.0\n*END\n");
+    const SPEntrySlice zero_slice = convert_text(*fc.ctx, zero_text);
+    SPMergeStats st_zero;
+    sp_merge_partition(*fc.ctx, {&zero_slice}, kPid0, st_zero);
+    EXPECT_EQ(st_zero.routed_signal_net_count_, 2u);
+    EXPECT_EQ(st_zero.covered_net_count_, 2u);
+    EXPECT_EQ(st_zero.uncovered_net_count_, 0u);
+    EXPECT_EQ(st_zero.zero_cap_instance_count_, 2u);   // I1 + I2
+    // 并查集未注入（平展常态）→ 现状口径：n2 未被描述即未覆盖
+    const FlatCtx fc_plain = make_flat_ctx(env);
+    add_nets(*fc_plain.ctx, kPid0,
+             build_nets(kPid0,
+                        {{1, 1, false, true},
+                         {1, 2, false, true},
+                         {2, 2, false, true}},
+                        env));
+    add_inst_conns(*fc_plain.ctx, kPid0, build_inst_conns({{1, 1}, {2, 2}}));
+    SPMergeStats st_plain;
+    sp_merge_partition(*fc_plain.ctx, {&slice}, kPid0, st_plain);
+    EXPECT_EQ(st_plain.routed_signal_net_count_, 2u);
+    EXPECT_EQ(st_plain.covered_net_count_, 1u);
+    EXPECT_EQ(st_plain.uncovered_net_count_, 1u);
+    EXPECT_EQ(st_plain.uncovered_instance_count_, 1u);   // I2 只连 n2
 }
 
 // ── 14. 序列化 round-trip ───────────────────────────────────────────
@@ -1201,7 +1513,7 @@ TEST(SpPartitionTest, SerializationRoundTrip) {
     EXPECT_EQ(merged_back.find_net(CMNetId{2})->flags_, kSpFlagReduced);
 
     // SPSummary
-    const SPSummary summary = sp_merge_summary({&slice.stats_}, 4, {st});
+    const SPSummary summary = sp_merge_summary({&slice.stats_}, 4, {st}, 3);
     CMString blob3;
     FLY_ENCODE(summary, blob3);
     SPSummary summary_back;
@@ -1211,6 +1523,7 @@ TEST(SpPartitionTest, SerializationRoundTrip) {
     EXPECT_EQ(summary_back.files_[0].hit_count_,
               summary.files_[0].hit_count_);
     EXPECT_EQ(summary_back.invalid_binding_count_, 4u);
+    EXPECT_EQ(summary_back.electrical_net_count_, 3u);
     EXPECT_EQ(summary_back.rnet_count_, summary.rnet_count_);
     EXPECT_DOUBLE_EQ(summary_back.internal_cap_unit_ff_, 1.0);
 }

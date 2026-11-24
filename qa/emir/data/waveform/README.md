@@ -59,6 +59,36 @@ BUF_X1/CLKBUF_X1: A/Z；TBUF_X1: A/EN/Z）；`rtl/cells_sim.v` 是这些单元
 | `instpin.vcd` | 形态②直配：`$dumpvars(1, u_blk_a.u_inv1)`——var 名 = cell 端口名（= LEF pin 名） |
 | `big.vcd` | 大规模：100×100 个 T-FF 单元 = 20000 实例（DEF 同规模） |
 
+## 块级 DEF 的端口声明与层次化连接（2026-11-24 补全）
+
+三个块级 DEF（`wf_sub` / `wf_blk_a` / `wf_blk_b`）声明对外端口引脚
+（PINS 段）并在端口所在网语句里带 `( PIN 名字 )` 条目（生成器
+`gen_design.py` 的 `add_pin` 调用，与 `block_ports()` 端口表同名同向）：
+
+| 块定义 | 端口 |
+|--------|------|
+| `wf_sub` | `clk`（INPUT、USE CLOCK）、`rn`（INPUT）、`n_in`（INPUT） |
+| `wf_blk_a` | `clk`（INPUT、USE CLOCK）、`rn`（INPUT）、`n_out`（OUTPUT） |
+| `wf_blk_b` | `clk`（INPUT、USE CLOCK）、`rn`（INPUT）、`n_out`（OUTPUT） |
+
+端口声明是层次化连接成立的前提：design db 只沿 port 相连网归并跨块
+连接，端口（与网语句端口条目）缺一即该连接被丢弃。补全后层次化连接
+在 design db 里成立——顶层网的连接表带块实例引脚条目、子网的连接表
+带端口条目（输入端口标所在网的驱动者、输出端口标负载）、块实例自身
+有连接条目；跨块并查集（`load_design_net_union`）把同一张电气网的各
+段网归为一组，五个组（网编号为 wf_blk_top 库实测）：
+
+| 电气网 | 成员网编号（root 在前） | 成员 |
+|--------|------------------------|------|
+| 时钟 | {1, 7, 13, 20} | 顶层 `clk`、`u_blk_a/clk`、`u_blk_a/u_sub/clk`、`u_blk_b/clk` |
+| 复位 | {2, 8, 14, 21} | 顶层 `rn`、`u_blk_a/rn`、`u_blk_a/u_sub/rn`、`u_blk_b/rn` |
+| `n_top` | {3, 10} | 顶层 `n_top`、`u_blk_a/n_out` |
+| `n_top2` | {4, 23} | 顶层 `n_top2`、`u_blk_b/n_out` |
+| `u_blk_a/n_a1` | {9, 16} | `u_blk_a/n_a1`、`u_blk_a/u_sub/n_in` |
+
+`class_count = 5`、悬空 0。其余网（各块内部网）不参与并查集（不在表 =
+自身单成员组）。
+
 ## 再生成方法
 
 ```bash

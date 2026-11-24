@@ -11,15 +11,27 @@ COMPONENTS 3 ;
     - u_inv_s INV_X1 + PLACED ( 6000 2000 ) N ;
 END COMPONENTS
 
-PINS 0 ;
+PINS 3 ;
+    - clk + NET clk
+      + DIRECTION INPUT + USE CLOCK
+      + LAYER metal1 ( -50 -50 ) ( 50 50 )
+      + FIXED ( 2000 7000 ) N ;
+    - rn + NET rn
+      + DIRECTION INPUT + USE SIGNAL
+      + LAYER metal1 ( -50 -50 ) ( 50 50 )
+      + FIXED ( 6000 7000 ) N ;
+    - n_in + NET n_in
+      + DIRECTION INPUT + USE SIGNAL
+      + LAYER metal1 ( -50 -50 ) ( 50 50 )
+      + FIXED ( 10000 7000 ) N ;
 END PINS
 
 NETS 6 ;
     - n2 ( u_dff_s D ) ( u_inv_s ZN ) ;
-    - clk ( u_dff_s CK ) ;
-    - rn ( u_dff_s RN ) ;
+    - clk ( u_dff_s CK ) ( PIN clk ) ;
+    - rn ( u_dff_s RN ) ( PIN rn ) ;
     - n1 ( u_dff_s Q ) ( u_xor_s A ) ;
-    - n_in ( u_xor_s B ) ;
+    - n_in ( u_xor_s B ) ( PIN n_in ) ;
     - n3 ( u_xor_s Z ) ( u_inv_s A ) ;
 END NETS
 

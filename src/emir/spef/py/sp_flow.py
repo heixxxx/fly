@@ -36,8 +36,10 @@ gzip 压缩 SPEF（waveform 裁定 IV-1 同款）：文件入口任务读头两�
 另读本区 INST_CONNECTIONS 对象注入（键 = 本区 pid）——覆盖率分母 =
 本区实例连接 + 已布线信号网 id 集合（全部 NETS 对象），不是本区 NETS
 （NETS 按布线几何归属分区而寄生条目按连接位实例归属分区，两者可以不
-同）。合并分片读取顺序 = 「文件序 × 块序」（slice_keys 序——「同作用
-域保留首份」依赖它）。
+同）；另读 design db "net_union" 对象注入（跨块连接归并结果——电气网
+分组依据，2026-11-24 用户裁定：组内各段负载合并、条目按成员网编号各
+存一份）。合并分片读取顺序 = 「文件序 × 块序」（slice_keys 序——「同
+作用域保留首份」依赖它）。
 
 freeze _freeze_spef_task（build_spef_db 第③段顶层提交）：依赖固定标记
 summary（蕴含链：summary ⟸ 汇总 inputs 含全部切片/清单/文件头/分区计
@@ -175,20 +177,30 @@ def _assemble_design_context(design_db, names_count, inst_seg_indexes,
     design_db.get_full_name(DesignDb.PG_NETS_OBJ),
     design_db.get_full_name(DesignDb.id_map_index_obj_name("INST")),
     design_db.get_full_name(DesignDb.BUILD_META_OBJ),
+    design_db.get_full_name(DesignDb.NET_UNION_OBJ),
     db.get_full_name(SpefDb.ALPHA_SETTINGS_OBJ),
 ])
 def _spef_flow_task(db, design_db, files, chunk_size, value_index,
                     value_index_given):
     """绑定校验 → 文件入口任务族 + 合并链编排任务；体内目录见模块
     docstring。锚集证明见 design-db 文档——DESIGN_OBJ 锚即伴生对象全
-    集，GLOBAL_DENSITY 锚即分区表，INST 段表锚即分区正式对象。design
-    db 数据零搬运（§21）。"""
+    集，GLOBAL_DENSITY 锚即分区表，INST 段表锚即分区正式对象，NET_
+    UNION 锚即多成员电气网数（设计级汇总统计的来源）。design db 数据
+    零搬运（§21）。"""
     design = design_db.read_object(DesignDb.DESIGN_OBJ)
     # 分区表（行主序，DESIGN_OBJ 锚即分区表——§21 跨 db 直读，无快照搬运）
     partitions = []
     for p in range(design.partition_count):
         part = design.partition_at(p)
         partitions.append((part.partition_id, part.xp, part.yp))
+
+    # 多成员电气网数（设计级：并查集等价类总数 − 悬空的单成员类数——
+    # class_count 含悬空 port 网的单成员类〔块的端口网在父层没有连接时
+    # 自己成一个悬空类〕，悬空类都是单成员类，差值 = 含两个及以上成员
+    # 的电气网数；2026-11-24 用户裁定 + 评审修正。随合并链编排传给汇总
+    # 任务原样落 summary）
+    net_union = design_db.read_object(DesignDb.NET_UNION_OBJ)
+    electrical_net_count = net_union.class_count - net_union.dangling_count
 
     # ── 名字伴生对象全集（数量锚 build_meta.def_count——确定性循环
     #    读取）+ 绑定校验（条目级兜底 timing/waveform 同款：单文件无
@@ -269,7 +281,8 @@ def _spef_flow_task(db, design_db, files, chunk_size, value_index,
                               [entry[0] for entry in valid_entries],
                               [entry[2] for entry in valid_entries],
                               partitions, manifest_keys, invalid_indexes,
-                              names_count, inst_seg_indexes)
+                              names_count, inst_seg_indexes,
+                              electrical_net_count)
 
     from log import INFO
     INFO(f"spef flow: {len(valid_entries)}/{len(files)} file(s) valid, "
@@ -388,12 +401,12 @@ def _sp_convert_chunk_task(db, design_db, parse_path, chunk, header_key,
 
 @as_task(inputs=lambda db, design_db, files, valid_orig_indexes,
          valid_scopes, partitions, manifest_keys, invalid_indexes,
-         names_count, inst_seg_indexes: [
+         names_count, inst_seg_indexes, electrical_net_count: [
              db.get_full_name(k) for k in manifest_keys])
 def _sp_plan_merge_chain_task(db, design_db, files, valid_orig_indexes,
                               valid_scopes, partitions, manifest_keys,
                               invalid_indexes, names_count,
-                              inst_seg_indexes):
+                              inst_seg_indexes, electrical_net_count):
     """合并链编排：读全部清单对象推导切片键集与文件头键集（序 = 文件
     序 × 块序——sp_merge_partition 入参约定，「同作用域保留首份」依此
     序；manifest_keys 序 = 有效文件重编号序 0..k-1，切片键按 (文件序,
@@ -434,6 +447,7 @@ def _sp_plan_merge_chain_task(db, design_db, files, valid_orig_indexes,
                            header_keys=header_keys,
                            scratch_dirs=scratch_dirs,
                            invalid_file_indexes=invalid_indexes,
+                           electrical_net_count=electrical_net_count,
                            summary_key=SpefDb.SUMMARY_OBJ)
     from log import INFO
     INFO(f"spef merge chain: {len(slice_keys)} slice(s), "
@@ -448,8 +462,9 @@ def _sp_plan_merge_chain_task(db, design_db, files, valid_orig_indexes,
     [db.get_full_name(k) for k in slice_keys]
     + _design_enum_anchors(design_db, names_count, inst_seg_indexes,
                            partitions)
-    + [design_db.get_full_name(
-        DesignDb.partition_obj_name(xp, yp, "INST_CONNECTIONS"))]))
+    + [design_db.get_full_name(DesignDb.NET_UNION_OBJ),
+       design_db.get_full_name(
+           DesignDb.partition_obj_name(xp, yp, "INST_CONNECTIONS"))]))
 def _sp_merge_partition_task(db, design_db, slice_keys, pid, xp, yp,
                              net_load_key, counts_key, names_count,
                              inst_seg_indexes, partitions):
@@ -458,13 +473,16 @@ def _sp_merge_partition_task(db, design_db, slice_keys, pid, xp, yp,
     Context（覆盖率判定材料，见 _assemble_design_context）+ 本区实
     例连接对象注入（PART_{xp}_{yp}.INST_CONNECTIONS——覆盖率统计材料，
     第 H 节第 4 条；取法同 waveform 每分区合并任务读本区 INSTANCES）
-    → sp_merge_partition（按来源作用域合并 + 覆盖率统计 + 行首值不一
-    致观测）→ PART_{xp}_{yp}.NET_LOAD 正式对象唯一写定 + 合并统计
-    temp（SPMG::0007/0013 由汇总聚合）。"""
+    + 电气网分组依据注入（design db "net_union" 对象——跨块连接归并
+    结果，2026-11-24 用户裁定：组内各段负载合并，条目按成员网编号各存
+    一份）→ sp_merge_partition（按来源作用域合并 + 电气网分组合并 +
+    覆盖率统计 + 行首值不一致观测）→ PART_{xp}_{yp}.NET_LOAD 正式对
+    象唯一写定 + 合并统计 temp（SPMG::0007/0013 由汇总聚合）。"""
     slices = [db.read_object(k) for k in slice_keys]
     ctx = _assemble_design_context(design_db, names_count,
                                    inst_seg_indexes, partitions)
     from emir.design import DesignDb
+    ctx.set_net_union(design_db.read_object(DesignDb.NET_UNION_OBJ))
     ctx.add_partition_inst_connections(
         pid, design_db.read_object(
             DesignDb.partition_obj_name(xp, yp, "INST_CONNECTIONS")))
@@ -482,25 +500,29 @@ def _sp_merge_partition_task(db, design_db, slice_keys, pid, xp, yp,
 
 @as_task(inputs=lambda db, files, valid_orig_indexes, slice_keys,
          counts_keys, manifest_keys, header_keys, scratch_dirs,
-         invalid_file_indexes, summary_key: (
+         invalid_file_indexes, electrical_net_count, summary_key: (
     [db.get_full_name(k) for k in slice_keys + counts_keys]
     + [db.get_full_name(k) for k in manifest_keys + header_keys]))
 def _sp_merge_summary_task(db, files, valid_orig_indexes, slice_keys,
                            counts_keys, manifest_keys, header_keys,
-                           scratch_dirs, invalid_file_indexes, summary_key):
-    """汇总：summary 聚合 + 逐文件切块数按清单填入（第 H 节第 5 条——
-    多块路径的可观测量）+ SPMG 消息族一次汇总透出（每个族只在计数大
+                           scratch_dirs, invalid_file_indexes,
+                           electrical_net_count, summary_key):
+    """汇总：summary 聚合 + 逐文件切块数按文件清单填入（第 H 节第 5 条——
+    多块文件的可观测量）+ SPMG 消息族一次汇总透出（每个族只在计数大
     于 0 时发一次）+ 全部文件失败 fatal（SPMG::0008，范式 (a) 防御面
     ——绑定校验后正常情况下到不了）+ 运行时规模临时对象与 gzip 解压副
     本目录自清理（文件头/切片/分区计数/清单/解压目录——本任务为全链
-    最后读者，清理责任单点）。"""
+    最后读者，清理责任单点）。electrical_net_count = 多成员电气网数
+    （设计级——根任务读并查集对象的等价类总数减悬空的单成员类数随参
+    透传，原样落 summary）。"""
     import shutil
     from log import INFO
     invalid_set = set(invalid_file_indexes)
     deltas = [db.read_object(k).stats for k in slice_keys]
     merge_stats = [db.read_object(k) for k in counts_keys]
 
-    summary = sp_merge_summary(deltas, len(invalid_set), merge_stats)
+    summary = sp_merge_summary(deltas, len(invalid_set), merge_stats,
+                               electrical_net_count)
 
     # 逐文件切块数按文件清单填入（第 H 节第 5 条）：清单 source_name =
     # 块任务统计的归并键（summary.files.source_file 同源；按名显式配

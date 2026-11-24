@@ -425,6 +425,10 @@ void SPDesignContext::add_partition_inst_connections(
     }
 }
 
+void SPDesignContext::set_net_union(CMSharedPtr<DSNetUnion> net_union) {
+    net_union_ = std::move(net_union);
+}
+
 CMPartitionId SPDesignContext::locate_instance_partition(
     CMInstanceId inst_id) const {
     if (!inst_index_) {
@@ -642,31 +646,168 @@ SPPartitionNetLoad sp_merge_partition(
     }
     st.source_mask_overflow_count_ = overflow_files.size();
 
+    // ── 电气网分组合并（2026-11-24 用户裁定：flatten 后经层次端口逻辑
+    //    相连的各段网是同一张电气网）────────────────────────────────
+    // 全局逐网编号负载表：从全部分片的**全部条目**（全部分区——电气网
+    // 合计要包含落在别的分区的段）按同一规则合并：同作用域保留首份（同
+    // 作用域的跨分区复制是同一贡献的分区副本，保留首份无损；同作用域
+    // 多文件描述同一网照裁定 8 保留首份），跨作用域相加。不产生计数
+    // ——same_scope/cross_scope 的计数语义只属于本分区合并（上面的第
+    // 一遍）。分区内遍历按分区 id 升序（slice->partitions_ 是无序容器
+    // ——排序保证全局表相加顺序与分片序 × 分区序唯一确定，同网的跨作
+    // 用域相加顺序不依赖无序容器迭代序）
+    CMUnorderedMap<CMNetId, Acc> global_acc;
+    for (const SPEntrySlice* slice : slices) {
+        uint64_t bit = 0;
+        if (slice->file_index_ < 64) {
+            bit = uint64_t{1} << slice->file_index_;
+        }
+        CMVector<uint32_t> pids;
+        pids.reserve(slice->partitions_.size());
+        for (const auto& [slice_pid, part] : slice->partitions_) {
+            pids.push_back(slice_pid.value());
+        }
+        std::sort(pids.begin(), pids.end());
+        for (const uint32_t pid_value : pids) {
+            const SPPartitionSlice& part =
+                slice->partitions_.at(CMPartitionId{pid_value});
+            for (const SPNetEntry& e : part.entries_) {
+                auto [fit, inserted] = global_acc.emplace(e.net_id_, Acc{});
+                if (inserted) {
+                    fit->second.total = e.total_cap_reported_ff_;
+                    fit->second.ground = e.ground_cap_ff_;
+                    fit->second.coupling = e.coupling_cap_ff_;
+                    fit->second.mask = bit;
+                    fit->second.flags = e.flags_;
+                    fit->second.scopes.push_back(slice->scope_index_);
+                    continue;
+                }
+                if (std::find(fit->second.scopes.begin(),
+                              fit->second.scopes.end(),
+                              slice->scope_index_) !=
+                    fit->second.scopes.end()) {
+                    continue;   // 同作用域重复——保留首份（无损/裁定 8）
+                }
+                fit->second.total += e.total_cap_reported_ff_;
+                fit->second.ground += e.ground_cap_ff_;
+                fit->second.coupling += e.coupling_cap_ff_;
+                fit->second.mask |= bit;
+                fit->second.flags &= e.flags_;
+                fit->second.scopes.push_back(slice->scope_index_);
+            }
+        }
+    }
+
+    // 并查集组员数（组 = 上下文注入的 DSNetUnion；未注入/网不在表/单
+    // 成员悬空类 → 1——平展常态）
+    const DSNetUnion* union_ptr = ctx.net_union();
+    auto member_count = [union_ptr](CMNetId root) -> size_t {
+        if (union_ptr == nullptr) {
+            return 1;
+        }
+        const auto m = union_ptr->members(root).lock();
+        return m != nullptr ? m->size() : 1;
+    };
+
+    // 按组求和：root → 电气网合计（三值相加、位图或、缩减标记与——首
+    // 条建档）。任一被描述网的组根的合计必然在表（组求和遍历全局表全
+    // 部条目）。遍历按网 id 升序（global_acc 是无序容器——排序保证同
+    // 组多成员的相加顺序确定，不依赖无序容器迭代序）
+    CMVector<CMNetId> global_ids;
+    global_ids.reserve(global_acc.size());
+    for (const auto& [net_id, a] : global_acc) {
+        global_ids.push_back(net_id);
+    }
+    std::sort(global_ids.begin(), global_ids.end());
+    CMUnorderedMap<CMNetId, Acc> group_sum;
+    for (const CMNetId net_id : global_ids) {
+        const Acc& a = global_acc.at(net_id);
+        const CMNetId root =
+            union_ptr != nullptr ? union_ptr->find(net_id) : net_id;
+        auto [fit, inserted] = group_sum.emplace(root, a);
+        if (inserted) {
+            fit->second.scopes.clear();
+            continue;
+        }
+        fit->second.total += a.total;
+        fit->second.ground += a.ground;
+        fit->second.coupling += a.coupling;
+        fit->second.mask |= a.mask;
+        fit->second.flags &= a.flags;
+    }
+
     // 提取 + 按 net id 升序（确定性）+ 行首值与明细合计一致性观测
     //（SPMG::0013，只观测不改数值——对合并后非缩减形态的网；差额 =
     // |total − (ground + coupling)|、基准 = max(total, ground + coupling)，
     // 超过 max(1e-3 fF, 1e-4 × 基准) 计一次并更新最大相对偏差）
+    // 条目落点（两步）：① 本区有原始条目的网编号——数值 = 电气网合计
+    //（多成员组取组求和表——下游按手里任一段的网编号查到的都是整张电
+    // 气网的负载）；单成员组不进组求和、取本区合并值——数值与分层合
+    // 并逐位一致（浮点相加顺序不重排）。② 组内未被描述的成员网
+    //（2026-11-24 评审修正）：凡本区网表（分区 NETS 对象）里有的信号
+    // 网，只要它所在的电气网有负载（组求和表命中），就补一条电气网合
+    // 计条目——来源位图与缩减标记同组一致；补全条目那一步不依赖并查
+    // 集——平展设计里布线几何落在本区网表、连接位实例全在别的分区的
+    // 网在本区也会多出这条补全条目。信号网对象是全量补全副本（每分区
+    // 含全部信号网），每区自足；电源地网在 NETS_PG 对象、不在本表，
+    // 天然排除。本区网表缺失时不补（无网编号可查——同「NETS 对象缺
+    // 失」既有口径）
+    auto observe_mismatch = [&st](const SPNetLoad& e) {
+        if (e.flags_ & kSpFlagReduced) {
+            return;
+        }
+        const double detail = e.ground_cap_ff_ + e.coupling_cap_ff_;
+        const double diff = std::fabs(e.total_cap_reported_ff_ - detail);
+        const double base = std::max(e.total_cap_reported_ff_, detail);
+        if (diff > std::max(1e-3, 1e-4 * base)) {
+            ++st.cap_mismatch_count_;
+            const double rel = base > 0.0 ? diff / base : 0.0;
+            st.cap_mismatch_max_rel_ = std::max(st.cap_mismatch_max_rel_, rel);
+        }
+    };
     out.items_.reserve(acc.size());
     for (const auto& [net_id, a] : acc) {
+        const CMNetId root =
+            union_ptr != nullptr ? union_ptr->find(net_id) : net_id;
+        const bool multi = member_count(root) >= 2;
+        const Acc& src = multi ? group_sum.at(root) : a;
         SPNetLoad e;
         e.net_id_ = net_id;
-        e.total_cap_reported_ff_ = a.total;
-        e.ground_cap_ff_ = a.ground;
-        e.coupling_cap_ff_ = a.coupling;
-        e.source_mask_ = a.mask;
-        e.flags_ = a.flags;
-        if (!(e.flags_ & kSpFlagReduced)) {
-            const double detail = e.ground_cap_ff_ + e.coupling_cap_ff_;
-            const double diff = std::fabs(e.total_cap_reported_ff_ - detail);
-            const double base = std::max(e.total_cap_reported_ff_, detail);
-            if (diff > std::max(1e-3, 1e-4 * base)) {
-                ++st.cap_mismatch_count_;
-                const double rel = base > 0.0 ? diff / base : 0.0;
-                st.cap_mismatch_max_rel_ =
-                    std::max(st.cap_mismatch_max_rel_, rel);
-            }
-        }
+        e.total_cap_reported_ff_ = src.total;
+        e.ground_cap_ff_ = src.ground;
+        e.coupling_cap_ff_ = src.coupling;
+        e.source_mask_ = src.mask;
+        e.flags_ = src.flags;
+        observe_mismatch(e);
         out.items_.push_back(std::move(e));
+    }
+    const auto part_nets_it = ctx.all_partition_nets().find(pid.value());
+    if (part_nets_it != ctx.all_partition_nets().end()) {
+        CMUnorderedSet<CMNetId> present;
+        present.reserve(out.items_.size());
+        for (const SPNetLoad& e : out.items_) {
+            present.insert(e.net_id_);
+        }
+        for (const auto& [net_id, net] : part_nets_it->second->nets_) {
+            if (present.contains(net_id)) {
+                continue;   // ① 已有原始条目
+            }
+            const CMNetId root =
+                union_ptr != nullptr ? union_ptr->find(net_id) : net_id;
+            const auto gs = group_sum.find(root);
+            if (gs == group_sum.end()) {
+                continue;   // 所在电气网无负载（没有任何成员被描述）
+            }
+            SPNetLoad e;
+            e.net_id_ = net_id;
+            e.total_cap_reported_ff_ = gs->second.total;
+            e.ground_cap_ff_ = gs->second.ground;
+            e.coupling_cap_ff_ = gs->second.coupling;
+            e.source_mask_ = gs->second.mask;
+            e.flags_ = gs->second.flags;
+            observe_mismatch(e);
+            out.items_.push_back(std::move(e));
+        }
     }
     std::sort(out.items_.begin(), out.items_.end(),
               [](const SPNetLoad& x, const SPNetLoad& y) {
@@ -678,7 +819,10 @@ SPPartitionNetLoad sp_merge_partition(
     // + 已布线信号网 id 集合〔上下文全部分区 NETS 对象的网 id 并集〕，
     // 不是本区 NETS——NETS 按布线几何归属分区而寄生条目按连接位实例
     // 归属分区，两者可以不同）。本区实例连接对象缺失时各项记 0 直接
-    // 返回（不建并集），不报错（同「NETS 对象缺失」的既有口径）
+    // 返回（不建并集），不报错（同「NETS 对象缺失」的既有口径）。
+    // 覆盖判定按电气网口径（2026-11-24 用户裁定）：一张网「已覆盖」=
+    // 它所在的电气网有负载——组求和表命中即已覆盖（组任一成员被描述
+    // 即入表；不受「本区条目只含本区成员编号」限制）
     const auto conns_it = ctx.all_inst_connections().find(pid.value());
     if (conns_it != ctx.all_inst_connections().end()) {
         CMUnorderedSet<CMNetId> routed_nets;
@@ -708,13 +852,17 @@ SPPartitionNetLoad sp_merge_partition(
             }
         }
         st.routed_signal_net_count_ = part_routed.size();
-        CMUnorderedSet<CMNetId> covered;
-        covered.reserve(out.items_.size());
-        for (const SPNetLoad& e : out.items_) {
-            covered.insert(e.net_id_);
-        }
+        // 组负载点查（网 → 所在电气网的组求和条目；未命中 = 电气网无
+        // 负载——没有任何成员被描述）
+        auto group_load_of = [&group_sum,
+                              union_ptr](CMNetId net_id) -> const Acc* {
+            const CMNetId root =
+                union_ptr != nullptr ? union_ptr->find(net_id) : net_id;
+            const auto it = group_sum.find(root);
+            return it == group_sum.end() ? nullptr : &it->second;
+        };
         for (const CMNetId net_id : part_routed) {
-            if (covered.contains(net_id)) {
+            if (group_load_of(net_id) != nullptr) {
                 ++st.covered_net_count_;
             }
         }
@@ -724,19 +872,19 @@ SPPartitionNetLoad sp_merge_partition(
             bool all_covered = true;
             bool all_zero = true;
             for (const CMNetId id : ids) {
-                const SPNetLoad* e = out.find_net(id);
-                if (e == nullptr) {
+                const Acc* g = group_load_of(id);
+                if (g == nullptr) {
                     all_covered = false;
                     all_zero = false;
                     continue;
                 }
-                // 零电容口径：非缩减 = 三值全 0；缩减形态只看行首值
-                //（两个明细合计值无效）
-                const bool zero = (e->flags_ & kSpFlagReduced) != 0
-                                      ? e->total_cap_reported_ff_ == 0.0
-                                      : e->total_cap_reported_ff_ == 0.0 &&
-                                            e->ground_cap_ff_ == 0.0 &&
-                                            e->coupling_cap_ff_ == 0.0;
+                // 零电容口径（对电气网合计）：非缩减 = 三值全 0；缩减
+                // 形态只看行首值（两个明细合计值无效）
+                const bool zero = (g->flags & kSpFlagReduced) != 0
+                                      ? g->total == 0.0
+                                      : g->total == 0.0 &&
+                                            g->ground == 0.0 &&
+                                            g->coupling == 0.0;
                 if (!zero) {
                     all_zero = false;
                 }
@@ -755,10 +903,14 @@ SPPartitionNetLoad sp_merge_partition(
 
 SPSummary sp_merge_summary(const CMVector<const SPStatsDelta*>& deltas,
                            uint64_t invalid_binding_count,
-                           const CMVector<SPMergeStats>& merge_stats) {
+                           const CMVector<SPMergeStats>& merge_stats,
+                           uint64_t electrical_net_count) {
     SPSummary s;
     // 绑定目标未命中被跳过的文件数（flow 侧判定，原样落字段）
     s.invalid_binding_count_ = invalid_binding_count;
+    // 多成员电气网数（设计级：flow 根任务读并查集对象的组数，原样落字
+    // 段——不经合并统计聚合，2026-11-24 评审修正）
+    s.electrical_net_count_ = electrical_net_count;
     // 内部单位基准声明（裁定 7：文件数值已按头档位换算成 fF / ohm）
     s.internal_cap_unit_ff_ = 1.0;
     s.internal_res_unit_ohm_ = 1.0;

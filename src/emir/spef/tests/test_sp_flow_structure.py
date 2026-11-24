@@ -116,13 +116,28 @@ class _FakeNamesObj:
     """DSBlockNames_<i> 占位（名字 mapper 已打桩，不消费内容）。"""
 
 
+class _FakeNetUnion:
+    """EXDSNetUnion 面（class_count/dangling_count 属性替身——根任务
+    体读这两个数算多成员电气网数；结构断言不消费组表内容）。"""
+
+    def __init__(self, class_count, dangling_count):
+        self.class_count = class_count
+        self.dangling_count = dangling_count
+
+
 class _RootDesignDb:
     """根任务体直跑的 design db 面：read_object 按名分派 + build_meta
-    锚（§19 确定性消费——def_count=2）。"""
+    锚（§19 确定性消费——def_count=2）。net_union 分支默认返回真实
+    C++ 空对象（根任务体读 class_count 属性——结构断言不消费组表内
+    容）；构造可注入替身（悬空类扣减用例，_FakeNetUnion）。"""
 
     DESIGN_OBJ = "DSDesign"
     BUILD_META_OBJ = "build_meta"
+    NET_UNION_OBJ = "net_union"
     DEF_COUNT = 2
+
+    def __init__(self, net_union=None):
+        self._net_union = net_union
 
     def get_full_name(self, name):
         return f"{DESIGN_PATH}:{name}"
@@ -135,6 +150,11 @@ class _RootDesignDb:
             return _FakeDesignObj()
         if name == "id_partition_map.INST":
             return _FakeInstIndex()
+        if name == "net_union":
+            if self._net_union is not None:
+                return self._net_union
+            from emir.design import EXDSNetUnion
+            return EXDSNetUnion()
         return _FakeNamesObj()
 
 
@@ -195,10 +215,11 @@ def _build(spef_files):
     return db, agent.submitted
 
 
-def _run_root_body(files, mapper=None):
+def _run_root_body(files, mapper=None, net_union=None):
     """直跑根任务函数体（绕过 as_task 提交——体内嵌套任务仍经捕获
     agent 提交），返回 (spef db, submitted)。名字 mapper 打桩（默认
-    get_global_id 返回 None）。"""
+    get_global_id 返回 None）；net_union 可注入替身（None = 真实 C++
+    空对象）。"""
     import fly.runtime
     from emir.spef.py import sp_flow
 
@@ -212,7 +233,8 @@ def _run_root_body(files, mapper=None):
                                else _StubMapper())
     try:
         sp_flow._spef_flow_task._fly_original_func(
-            db, _RootDesignDb(), files, 256 * 1024 * 1024, 0, False)
+            db, _RootDesignDb(net_union), files, 256 * 1024 * 1024, 0,
+            False)
     finally:
         fly.runtime.get_agent = original_agent
         sp_flow.ds_make_instance_name_mapper = original_mapper
@@ -243,6 +265,7 @@ def test_root_task_inputs_anchor_design_db():
         design.get_full_name("pg_nets"),
         design.get_full_name("id_partition_map.INST"),
         design.get_full_name("build_meta"),
+        design.get_full_name("net_union"),
         f"{DB_PATH}:alpha_settings",
     ]
     assert root_inputs == expected, root_inputs
@@ -334,6 +357,44 @@ def test_root_task_partial_invalid_binding_skips():
     # 只为有效文件提交文件入口任务（1 个）+ 合并链编排任务
     assert names == ["_sp_file_entry_task", "_sp_plan_merge_chain_task"], \
         names
+
+
+def test_root_task_electrical_net_count_excludes_dangling():
+    """多成员电气网数（设计级）= 并查集等价类总数 − 悬空的单成员类数
+    （class_count 含悬空 port 网的单成员类——块的端口网在父层没有连
+    接时自己成一个悬空类，直接取 class_count 会多算）：6 − 1 = 5、
+    5 − 0 = 5（无悬空时与 class_count 一致——平展/完整连接常态）。
+    断言根任务算出后随合并链编排任务透传（汇总任务原样落字段的断言
+    见 test_summary_task_emits_each_message_once——不经合并统计聚合
+    的链尾不变）。"""
+    import fly.runtime
+    from emir.spef.py import sp_flow
+
+    seen = {}
+    real_chain = sp_flow._sp_plan_merge_chain_task
+
+    def recording_chain(db, design_db, files, valid_orig_indexes,
+                        valid_scopes, partitions, manifest_keys,
+                        invalid_indexes, names_count, inst_seg_indexes,
+                        electrical_net_count):
+        seen["electrical_net_count"] = electrical_net_count
+
+    sp_flow._sp_plan_merge_chain_task = recording_chain
+    try:
+        _, submitted = _run_root_body(
+            [_make_file("f0.spef")], net_union=_FakeNetUnion(6, 1))
+        assert seen["electrical_net_count"] == 5, \
+            (seen, "class_count - dangling_count expected")
+        # 文件入口任务照常提交（合并链编排被替身截住——链尾不再提交）
+        names = [name for name, _ in submitted]
+        assert names == ["_sp_file_entry_task"], names
+
+        _, _ = _run_root_body(
+            [_make_file("f0.spef")], net_union=_FakeNetUnion(5, 0))
+        assert seen["electrical_net_count"] == 5, \
+            (seen, "no dangling must equal class_count")
+    finally:
+        sp_flow._sp_plan_merge_chain_task = real_chain
 
 
 def test_assign_scope_indexes():
@@ -592,7 +653,7 @@ def test_file_entry_task_gzip_decompresses_to_scratch():
 class _DesignCtxDb:
     """合并任务直跑的 design db 面：真实 C++ 空对象供 EXSPDesignContext
     注入（结构断言不消费换算面）；读面对象名记录——本区 INST_
-    CONNECTIONS 枚举源断言用。"""
+    CONNECTIONS 与 net_union 枚举源断言用。"""
 
     DESIGN_OBJ = "DSDesign"
     PARTITIONS = [(7, 1, 2)]
@@ -605,12 +666,15 @@ class _DesignCtxDb:
 
     def read_object(self, name):
         from emir.design import (EXDSDesign, EXDSIdPartitionIndex,
-                                 EXDSPartitionNets, EXDSPgNetSet)
+                                 EXDSNetUnion, EXDSPartitionNets,
+                                 EXDSPgNetSet)
         self.read_names.append(name)
         if name == self.DESIGN_OBJ:
             return EXDSDesign()
         if name == "pg_nets":
             return EXDSPgNetSet()
+        if name == "net_union":
+            return EXDSNetUnion()
         if name == "id_partition_map.INST":
             # ctx 组装读段表注入（EXSPDesignContext.set_inst_id_map 要
             # 求真实 C++ 对象；空段号集不消费段对象）
@@ -626,8 +690,9 @@ class _DesignCtxDb:
 def test_merge_partition_task_reads_slices_in_order():
     """每分区合并任务体：读全部分片且顺序 = 文件序 × 块序（记录型替
     身断言传给 C++ 函数的顺序——「同作用域保留首份」依赖它）+ 正式对
-    象落盘 + 计数写 temp + 上下文读全部分区 NETS 与本区 INST_
-    CONNECTIONS（第 H 节第 4 条）。"""
+    象落盘 + 计数写 temp + 上下文读全部分区 NETS、本区 INST_
+    CONNECTIONS（第 H 节第 4 条）与电气网分组依据 net_union（2026-11-24
+    用户裁定的并查集注入口）。"""
     import fly.runtime
     from emir.spef.py import sp_flow
 
@@ -647,6 +712,8 @@ def test_merge_partition_task_reads_slices_in_order():
     def recording_merge(ctx, slices, pid):
         seen["order"] = [s.tag for s in slices]
         seen["pid"] = pid
+        # 上下文注入：电气网分组依据（EXDSNetUnion 真实对象——夹具注入）
+        seen["net_union_injected"] = ctx.net_union is not None
         obj, stats = real_merge(ctx, [], pid)
         return obj, stats
 
@@ -664,15 +731,40 @@ def test_merge_partition_task_reads_slices_in_order():
     # 分片顺序 = slice_keys 序（文件序 × 块序）
     assert seen["order"] == slice_keys, seen
     assert seen["pid"] == 7, seen
+    assert seen["net_union_injected"] is True, seen
     assert db.formal == ["PART_1_2.NET_LOAD"], db.formal
     assert "__spg__counts_7" in db.temp, db.temp
     # 上下文材料：全部分区 NETS（夹具单分区 = 1 个）+ 本区 INST_
-    # CONNECTIONS（第 H 节第 4 条覆盖率材料；read_names 记录对象短名
-    # ——任务体内经 DesignDb.partition_obj_name 构造）
+    # CONNECTIONS（第 H 节第 4 条覆盖率材料）+ 电气网分组依据 net_union
+    #（read_names 记录对象短名——任务体内经 DesignDb 属性构造）
     nets_reads = [n for n in design_db.read_names if n.endswith(".NETS")]
     assert nets_reads == ["PART_1_2.NETS"], nets_reads
     assert "PART_1_2.INST_CONNECTIONS" in design_db.read_names, \
         design_db.read_names
+    assert "net_union" in design_db.read_names, design_db.read_names
+
+
+def test_merge_partition_task_inputs_anchor_net_union():
+    """每分区合并任务 inputs：电气网分组依据（design db "net_union" 对
+    象全名）+ 本区 INST_CONNECTIONS 都在锚集（读取时序由依赖系统保
+    证——装饰后提交面直跑断言）。"""
+    import fly.runtime
+    from emir.spef.py.sp_flow import _sp_merge_partition_task
+
+    agent = _CaptureAgent()
+    original = fly.runtime.get_agent
+    fly.runtime.get_agent = lambda: agent
+    try:
+        _sp_merge_partition_task(_FakeSpefDb(), _RootDesignDb(), [], 7, 1,
+                                 2, "PART_1_2.NET_LOAD", "__spg__counts_7",
+                                 0, [], [(7, 1, 2)])
+    finally:
+        fly.runtime.get_agent = original
+    assert len(agent.submitted) == 1, agent.submitted
+    name, inputs = agent.submitted[0]
+    assert name == "_sp_merge_partition_task", name
+    assert f"{DESIGN_PATH}:net_union" in inputs, inputs
+    assert f"{DESIGN_PATH}:PART_1_2.INST_CONNECTIONS" in inputs, inputs
 
 
 def _make_stats(**overrides):
@@ -697,7 +789,8 @@ def _make_delta(files):
 def test_summary_task_emits_each_message_once():
     """汇总任务体：SPMG 消息族按计数逐条一次透出（计数 > 0 发一次、
     0 不发——SPMG::0008 fatal 由 test_sp_flow_error 的子进程用例覆
-    盖）；计数为零时一条不发。"""
+    盖）；计数为零时一条不发；多成员电气网数（设计级参数）原样落
+    summary 字段。"""
     import fly.runtime
     from emir.spef import EXSPMergeStats
     from emir.spef.py import sp_flow
@@ -727,16 +820,18 @@ def test_summary_task_emits_each_message_once():
                 db, [_make_file("a.spef")], [0], ["__spg__chunk_0_0"],
                 [f"__spg__counts_{i}" for i in range(len(merge_stats))],
                 ["__spg__manifest_0"], ["__spg__header_0"], [],
-                list(range(invalid)), "summary")
+                list(range(invalid)), 5, "summary")
         finally:
             fly.runtime.get_agent = original
             sp_flow.message = original_msg
         return db, msgs
 
-    # 有命中、其余计数全零：一条不发
-    _, msgs = _run([_make_stats(net_count=1, hit_count=1)],
-                   [EXSPMergeStats()])
+    # 有命中、其余计数全零：一条不发；设计级组数参数原样落字段
+    db0, msgs = _run([_make_stats(net_count=1, hit_count=1)],
+                     [EXSPMergeStats()])
     assert msgs == [], msgs
+    assert db0.formal_objs["summary"].electrical_net_count == 5, \
+        db0.formal_objs["summary"].electrical_net_count
 
     # 逐条非零：13 条 WARN/ERROR 消息各发一次（0004 因 hit > 0 不发）
     m = EXSPMergeStats()
@@ -816,7 +911,7 @@ def test_summary_task_fills_chunk_count_and_cleans():
             ["__spg__counts_7"],
             ["__spg__manifest_0", "__spg__manifest_1"],
             ["__spg__header_0", "__spg__header_1"], [scratch], [],
-            "summary")
+            7, "summary")
     finally:
         fly.runtime.get_agent = original
     # 切块数进逐文件统计（清单里的块数）
@@ -833,8 +928,8 @@ def test_summary_task_fills_chunk_count_and_cleans():
 
 def test_partition_obj_name_and_get_net_load():
     """读库面：分区对象名格式（PART_{xp}_{yp}.NET_LOAD）；get_net_load
-    的返回结构（三电容 + 来源位图 + 缩减标记 + 副本分区表）与未命中
-    None（任取一份副本数值）。"""
+    的返回结构（三电容 + 来源位图 + 缩减标记 + 副本分区表 + 电气网成
+    员表）与未命中 None（任取一份副本数值——电气网合计口径）。"""
     from emir.spef import SpefDb
     assert SpefDb.SUMMARY_OBJ == "summary"
     assert SpefDb.ALPHA_SETTINGS_OBJ == "alpha_settings"
@@ -855,6 +950,16 @@ def test_partition_obj_name_and_get_net_load():
 
         def find_net(self, net_id):
             return self._entry if net_id == self._entry.net_id else None
+
+    class _FakeUnion:
+        """EXDSNetUnion 面（find 恒一步 + members 升序含自己——组
+        {11, 12}，root 11）。"""
+
+        def find(self, gid):
+            return 11 if gid in (11, 12) else gid
+
+        def members(self, root):
+            return [11, 12] if root == 11 else [root]
 
     class _FakeDesignObj:
         partition_count = 2
@@ -880,6 +985,9 @@ def test_partition_obj_name_and_get_net_load():
         def _design_partitions(self):
             return [(0, 0), (1, 0)]
 
+        def _design_net_union(self):
+            return _FakeUnion()
+
         def _load_partition_obj(self, xp, yp):
             if (xp, yp) not in self._parts:
                 self._parts[(xp, yp)] = _FakePartitionObj(_FakeEntry())
@@ -895,6 +1003,8 @@ def test_partition_obj_name_and_get_net_load():
     assert loaded["source_mask"] == 5
     assert loaded["reduced"] is True
     assert loaded["partitions"] == [(0, 0), (1, 0)]   # 各分区副本任取
+    # 电气网成员表（升序含自己——同一张电气网的全部成员网编号）
+    assert loaded["electrical_members"] == [11, 12], loaded
     # 未命中（网 id 无条目）→ None
     assert SpefDb.get_net_load(db, 999) is None
     print("[OK] partition_obj_name + get_net_load")
@@ -965,12 +1075,14 @@ if __name__ == "__main__":
     test_root_task_chain_shape()
     test_root_task_all_invalid_binding_raises()
     test_root_task_partial_invalid_binding_skips()
+    test_root_task_electrical_net_count_excludes_dangling()
     test_assign_scope_indexes()
     test_scope_index_reaches_chunk_conversion()
     test_chunk_task_inputs_anchor_design_db()
     test_file_entry_task_header_temp_and_manifest()
     test_file_entry_task_gzip_decompresses_to_scratch()
     test_merge_partition_task_reads_slices_in_order()
+    test_merge_partition_task_inputs_anchor_net_union()
     test_summary_task_emits_each_message_once()
     test_summary_task_fills_chunk_count_and_cleans()
     test_partition_obj_name_and_get_net_load()
