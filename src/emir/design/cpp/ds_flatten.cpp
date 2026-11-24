@@ -159,9 +159,11 @@ void DSPartitionProduct::merge_from(const DSPartitionProduct& src) {
     for (const auto& [gid, inst] : src.instances_.items_) {
         instances_.items_[gid] = inst;
     }
+    // 连接表合并 = DSConnList::append（构建期追加；源表已封存——分片
+    // 产出时已封存。2026-11-24 连接表唯一性裁定：唯一性由封存统一保证
+    // ——不同分片各带一份同一条目时由合并任务末尾的封存去重）
     for (const auto& [gid, conns] : src.inst_connections_.items_) {
-        CMVector<DSPartConnection>& dst = inst_connections_.items_[gid];
-        dst.insert(dst.end(), conns.begin(), conns.end());
+        inst_connections_.items_[gid].append(conns);
     }
     // 两侧 NETS 分别合并：同键 DSNet 连接条目追加；use/net_id 同键覆盖
     //（同 global net 只属一个 block 定义，use 同源——重放幂等）
@@ -172,9 +174,7 @@ void DSPartitionProduct::merge_from(const DSPartitionProduct& src) {
         }
         dst->net_id_ = net->net_id_;
         dst->use_ = net->use_;
-        dst->connections_.insert(dst->connections_.end(),
-                                 net->connections_.begin(),
-                                 net->connections_.end());
+        dst->connections_.append(net->connections_);
     }
     for (const auto& [nid, net] : src.nets_pg_.nets_) {
         auto& dst = nets_pg_.nets_[nid];
@@ -183,9 +183,7 @@ void DSPartitionProduct::merge_from(const DSPartitionProduct& src) {
         }
         dst->net_id_ = net->net_id_;
         dst->use_ = net->use_;
-        dst->connections_.insert(dst->connections_.end(),
-                                 net->connections_.begin(),
-                                 net->connections_.end());
+        dst->connections_.append(net->connections_);
     }
     // part_id_ 分片归属回填（未回填 = kInvalid 哨兵——CMPartitionId 默
     // 认值；is_valid 判定对合法 pid 0 / 空分片 / 重放均幂等，同分区 id
@@ -216,6 +214,19 @@ void DSPartitionProduct::merge_from(const DSPartitionProduct& src) {
     }
     for (const CMNetId nid : src.geometry_pg_.crossing_nets_) {
         geometry_pg_.mark_crossing(nid);
+    }
+}
+
+// —— 封存三处连接表（封存点 2；见头文件方法注释）——幂等
+void DSPartitionProduct::seal_connection_lists() {
+    for (auto& [gid, list] : inst_connections_.items_) {
+        list.seal();
+    }
+    for (auto& [nid, net] : nets_.nets_) {
+        net->connections_.seal();
+    }
+    for (auto& [nid, net] : nets_pg_.nets_) {
+        net->connections_.seal();
     }
 }
 
@@ -345,10 +356,11 @@ CMVector<std::pair<CMPartitionId, DSPartitionProduct>> ds_flatten_block(
                     std::move(copy);
                 const auto bit = conn_bucket.find(local_id);
                 if (bit != conn_bucket.end()) {
-                    CMVector<DSPartConnection>& dst =
+                    DSConnList<DSPartConnection>& dst =
                         product_for(pid).inst_connections_.items_[global_id];
-                    dst.insert(dst.end(), bit->second.begin(),
-                               bit->second.end());
+                    for (DSPartConnection& pc : bit->second) {
+                        dst.add(std::move(pc));
+                    }
                 }
             }
         }
@@ -356,11 +368,12 @@ CMVector<std::pair<CMPartitionId, DSPartitionProduct>> ds_flatten_block(
         const auto self_conn = conn_bucket.find(CMInstanceId{0});
         if (self_conn != conn_bucket.end()) {
             for (const uint32_t pid : self_assign.copies) {
-                CMVector<DSPartConnection>& dst =
+                DSConnList<DSPartConnection>& dst =
                     product_for(pid).inst_connections_.items_
                         [node.get_self_global_id()];
-                dst.insert(dst.end(), self_conn->second.begin(),
-                           self_conn->second.end());
+                for (DSPartConnection& pc : self_conn->second) {
+                    dst.add(std::move(pc));
+                }
             }
         }
 
@@ -559,12 +572,17 @@ CMVector<std::pair<CMPartitionId, DSPartitionProduct>> ds_flatten_block(
                 full.push_back(std::move(e));
                 entry_pids.push_back(std::move(pids));
             }
+            // 从已封存的 S5b 表派生各分区子集后经 DSConnList 逐条 add
+            // 交出（封存在本函数尾部统一执行——交出去的表都已封存，
+            // 2026-09-13 连接表唯一性裁定的派生封存要求）
             const auto make_net =
                 [&](CMVector<DSNetConnEntry>&& entries) -> CMSharedPtr<DSNet> {
                 auto net = std::make_shared<DSNet>();
                 net->net_id_ = global_net;
                 net->use_ = use;
-                net->connections_ = std::move(entries);
+                for (DSNetConnEntry& e : entries) {
+                    net->connections_.add(std::move(e));
+                }
                 return net;
             };
             if (net_is_pg) {
@@ -620,6 +638,14 @@ CMVector<std::pair<CMPartitionId, DSPartitionProduct>> ds_flatten_block(
         WARN("ds_flatten_block: {} geometry/obstruction entrie(s) out of "
              "int32 domain dropped (block {})", out_of_domain_count,
              block.get_block_name());
+    }
+    // 分片交出去之前统一封存三处连接表（2026-11-24 连接表唯一性裁定：
+    // 从已封存的 S5b 表派生的子集也要经过封存再交出去——合并任务与校验
+    // 任务、下游读到的一切分片/正式对象表都已封存）。升序派生自已封存
+    // 源表，重复为 0（幂等封存）；封存使 merge_from 的 append 契约成立。
+    for (auto& [pid, product] : out) {
+        (void)pid;
+        product.seal_connection_lists();
     }
     return out;
 }

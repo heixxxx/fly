@@ -94,6 +94,10 @@ public:
     uint64_t geometry_entry_count_ = 0;
     // 两类连接条目总数
     uint64_t connection_count_ = 0;
+    // 连接表结构不变量（S10 损坏类，2026-11-24 连接表唯一性裁定）：
+    // 三处连接表（两侧 DSNet::connections_ + INST_CONNECTIONS 每实例表）
+    // 升序且无重复；非空 = 首个违规描述（DSGN::0027 fatal 数据源）
+    CMString conn_list_corruption_;
     // —— 全局校验素材（升序去重；review 2026-09-13 量级声明：id 级
     //    8B/条 ×4 向量，百万级实例副本设计为数十 MB 级临时对象，
     //    freeze 后随 temp 清理释放——当前阶段可接受，后续可区间化）——
@@ -107,8 +111,8 @@ public:
     FLY_SERIALIZE(partition_id_, xp_, yp_, primary_instance_count_,
                   instance_count_, net_count_, crossing_net_count_,
                   geometry_entry_count_, connection_count_,
-                  primary_instance_ids_, instance_ids_, net_ids_,
-                  crossing_net_ids_)
+                  conn_list_corruption_, primary_instance_ids_,
+                  instance_ids_, net_ids_, crossing_net_ids_)
 };
 
 // 全局校验报告（S10 正式对象 "verify_report"，冻结后下游可读）。损坏类
@@ -123,6 +127,9 @@ public:
     CMString coverage_gap_;
     // namemap 双向不一致（DSGN::0021）
     CMString namemap_inconsistency_;
+    // 连接表结构不变量破坏——升序且无重复被违反 = 程序缺陷产生的损坏
+    // 数据（DSGN::0027，2026-11-24 连接表唯一性裁定）
+    CMString conn_list_corruption_;
     // —— 观测类（warn；空串 = 通过）——
     DSIdDomain instance_ids_;
     DSIdDomain net_ids_;
@@ -146,7 +153,8 @@ public:
     uint32_t partition_count_ = 0;
 
     FLY_SERIALIZE(union_inconsistency_, coverage_gap_,
-                  namemap_inconsistency_, instance_ids_, net_ids_, via_ids_,
+                  namemap_inconsistency_, conn_list_corruption_,
+                  instance_ids_, net_ids_, via_ids_,
                   density_variance_, expected_instances_, expected_nets_,
                   expected_vias_, total_primary_, total_instances_,
                   total_nets_, total_connections_, total_geometry_entries_,

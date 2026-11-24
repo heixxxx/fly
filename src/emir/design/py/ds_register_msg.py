@@ -62,6 +62,13 @@ import 本模块完成注册。仅注册过的 id 才会被 MSG 打印/发送，
 - DSGN::0026: S5b 网 USE 语句未知值（2026-09-13 USE 全量补收裁定：DEF
   USE 规范八值 SIGNAL/POWER/GROUND/CLOCK/TIEOFF/ANALOG/RESET/SCAN 之外
   的值 → SIGNAL 兜底 + unknown_use_count 计数；不 raise）
+- DSGN::0027: S10 汇总校验损坏类——连接表结构不变量破坏（2026-11-24
+  连接表唯一性裁定：三处连接表按排序键升序且无重复，被破坏 = 封存流程
+  缺陷产生的损坏数据；fatal message 码 80 退出 + master 联动，同
+  DSGN::0019 族）
+- DSGN::0028: DEF 源数据存在重复的连接条目（2026-11-24 连接表唯一性
+  裁定：连接表封存时去重，duplicate_connection_count 统计；数据质量
+  信号，user warn 提醒不拦截）
 """
 
 from fly import register_message_id
@@ -92,3 +99,5 @@ register_message_id("DSGN::0023", "WARN")
 register_message_id("DSGN::0024", "INFO")
 register_message_id("DSGN::0025", "WARN")
 register_message_id("DSGN::0026", "WARN")
+register_message_id("DSGN::0027", "FATAL")
+register_message_id("DSGN::0028", "WARN")

@@ -264,8 +264,21 @@ bool convert_pin_entry(EntryConvertEnv& env, const CMString& name,
     return hit;
 }
 
-// 网条目 driver 定位与分片累积（pg 已过；多驱动网挂全部 driver 位条目
-// ——裁定 4 不取首个；无 driver/悬空 → TIMG::0003 计数返回 false）。
+// 网条目驱动者定位与分片累积（pg 已过）。驱动者 = 带驱动标记的条目
+//（2026-11-24 连接表唯一性与端口角色裁定后：输入端口条目也是驱动者），
+// 分两种：
+//   实例驱动者：照旧——条目挂到驱动者所在分区的 (实例, 引脚)。
+//   端口驱动者：端口条目不是实例（条目实例编号 = 端口所属块的自身实
+//   例编号，根块为 0）——条目挂到「块自身实例编号」下的端口引脚，写进
+//   该网**全部可定位负载**所在的各个分区，每分区一份；负载 = 带接收标
+//   记、非端口、能定位到分区的条目。
+// 计数口径：
+//   网不在分区网表里 / 没有任何驱动者（实例 + 端口都无）/ 有驱动者但
+//   没有任何可定位的负载（端口驱动者无处可挂）→ 悬空 TIMG::0003；
+//   驱动者多于一个 → 多驱动网（端口驱动者计入——输入端口与某个实例
+//   输出同时驱动一张网是真多驱动）；
+//   「未放置实例」（TIMG::0008）只统计真实的实例条目——端口条目一律
+//   跳过，判定只看 is_port()，不用驱动/接收标记推断「是不是端口」。
 // 分区定位 = 遍历快照分区 NETS 对象取首个含此网者（信号网 NETS 全量
 // 补全——任一副本都有该网完整连接表；plan §7 不经 NET id map 路由——
 // 该映射是 design db debug 专用辅助索引且无几何网不入段）
@@ -283,29 +296,65 @@ bool attach_net_drivers(EntryConvertEnv& env, CMNetId net_id,
         ++env.file_stats->dangling_net_count_;  // TIMG::0003（悬浮网）
         return false;
     }
-    CMVector<const DSNetConnEntry*> drivers;
+    CMVector<const DSNetConnEntry*> inst_drivers;
+    CMVector<const DSNetConnEntry*> port_drivers;
     for (const DSNetConnEntry& conn : net->connections_) {
-        if (conn.is_driver()) {
-            drivers.push_back(&conn);
+        if (!conn.is_driver()) {
+            continue;
         }
+        // 端口条目不是实例——按 is_port() 分流（不用驱动标记推断）
+        (conn.is_port() ? port_drivers : inst_drivers).push_back(&conn);
     }
-    if (drivers.empty()) {
-        ++env.file_stats->dangling_net_count_;  // 0003（无驱动/仅端口）
+    if (inst_drivers.empty() && port_drivers.empty()) {
+        ++env.file_stats->dangling_net_count_;  // 0003（无驱动者）
         return false;
     }
-    if (drivers.size() > 1) {
-        ++env.stats->multi_driver_net_count_;  // 裁定 4
+    if (inst_drivers.size() + port_drivers.size() > 1) {
+        ++env.stats->multi_driver_net_count_;  // 裁定 4（端口驱动者计入）
     }
-    for (const DSNetConnEntry* d : drivers) {
+    bool attached = false;
+    // 实例驱动者：条目挂驱动者所在分区的 (实例, 引脚)
+    for (const DSNetConnEntry* d : inst_drivers) {
         const CMPartitionId dpid =
             env.ctx->locate_instance_partition(d->inst_id_);
         if (!dpid.is_valid()) {
-            // 防御：design db driver 恒已放置——环境不一致时计数
+            // 防御：design db 实例驱动者恒已放置——环境不一致时计数
             ++env.file_stats->unplaced_instance_count_;
             continue;
         }
         accumulate_pin(env, dpid, d->inst_id_, make_pin_timing(e, d->pin_id_),
                        e.clock_id_);
+        attached = true;
+    }
+    // 端口驱动者：写进全部可定位负载所在的各个分区（每分区一份）；
+    // 负载 = 带接收标记、非端口、能定位到分区的条目（负载定位失败只
+    // 是没这个落点，不计未放置）
+    if (!port_drivers.empty()) {
+        CMVector<CMPartitionId> load_pids;
+        for (const DSNetConnEntry& conn : net->connections_) {
+            if (!conn.is_receiver() || conn.is_port()) {
+                continue;
+            }
+            const CMPartitionId pid =
+                env.ctx->locate_instance_partition(conn.inst_id_);
+            if (!pid.is_valid() ||
+                std::find(load_pids.begin(), load_pids.end(), pid) !=
+                    load_pids.end()) {
+                continue;
+            }
+            load_pids.push_back(pid);
+        }
+        for (const CMPartitionId pid : load_pids) {
+            for (const DSNetConnEntry* d : port_drivers) {
+                accumulate_pin(env, pid, d->inst_id_,
+                               make_pin_timing(e, d->pin_id_), e.clock_id_);
+            }
+            attached = true;
+        }
+    }
+    if (!attached) {
+        ++env.file_stats->dangling_net_count_;  // 0003（驱动者无处可挂）
+        return false;
     }
     return true;
 }

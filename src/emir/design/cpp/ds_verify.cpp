@@ -19,6 +19,27 @@ void sort_unique(CMVector<T>& v) {
     v.erase(std::unique(v.begin(), v.end()), v.end());
 }
 
+// 连接表结构不变量检查（损坏类，2026-11-24 连接表唯一性裁定）：任何对
+// 外可读的连接表按排序键升序且无重复——被破坏说明封存流程有缺陷（程
+// 序错误产生的损坏数据），非业务数据问题。经 invariant_check_view 检
+// 查（绕开封存断言——被检表可能正是未封存的破坏形态）；首例定位到
+// label；空串 = 通过。label 形如 "NETS[12]" / "INST_CONNECTIONS[5]"。
+template <typename Entry>
+CMString ds_check_conn_list(const fly::DSConnList<Entry>& list,
+                            const CMString& label) {
+    const CMVector<Entry>& entries = list.invariant_check_view();
+    for (size_t i = 1; i < entries.size(); ++i) {
+        const auto prev = ds_conn_key(entries[i - 1]);
+        const auto cur = ds_conn_key(entries[i]);
+        if (!(prev < cur)) {
+            return label + ": connection list invariant broken at index " +
+                   std::to_string(i - 1) + " (entries out of order or "
+                   "duplicated)";
+        }
+    }
+    return CMString{};
+}
+
 
 // 并查集自洽校验（损坏类）：两层不变式（root_of_[root] 恒自映射）+
 // 双向一致（members_of_ 的每个成员映射回该 root、root 键自映射、成员列
@@ -246,19 +267,29 @@ DSPartitionCheckResult ds_verify_partition(
 
     // 连接表：条目计数 + 网覆盖素材（跟随网副本的键 + 跟随实例副本条目
     // 的端点网 id；NETS / NETS_PG 两侧同口径——素材取表键 = 网 id，
-    // 2026-09-14 拆分裁定两侧合计）。
+    // 2026-09-14 拆分裁定两侧合计）+ 结构不变量检查（S10 损坏类，
+    // 2026-11-24 连接表唯一性裁定——升序且无重复被破坏 = 封存流程缺陷）
     for (const DSPartitionNets* side : {&nets, &nets_pg}) {
         for (const auto& [net_id, net] : side->nets_) {
-            (void)net_id;
-            r.connection_count_ += net->connections_.size();
+            r.connection_count_ +=
+                net->connections_.invariant_check_view().size();
             r.net_ids_.push_back(net_id);
+            if (r.conn_list_corruption_.empty()) {
+                r.conn_list_corruption_ = ds_check_conn_list(
+                    net->connections_,
+                    "NETS[" + std::to_string(net_id.value()) + "]");
+            }
         }
     }
     for (const auto& [id, conns] : inst_connections.items_) {
-        (void)id;
-        r.connection_count_ += conns.size();
-        for (const DSPartConnection& c : conns) {
+        const CMVector<DSPartConnection>& view = conns.invariant_check_view();
+        r.connection_count_ += view.size();
+        for (const DSPartConnection& c : view) {
             r.net_ids_.push_back(c.net_global_id_);
+        }
+        if (r.conn_list_corruption_.empty()) {
+            r.conn_list_corruption_ = ds_check_conn_list(
+                conns, "INST_CONNECTIONS[" + std::to_string(id.value()) + "]");
         }
     }
 
@@ -310,6 +341,10 @@ DSDesignCheckReport ds_verify_design(
         r.total_instances_ += c->instance_count_;
         r.total_connections_ += c->connection_count_;
         r.total_geometry_entries_ += c->geometry_entry_count_;
+        // 连接表结构不变量（损坏类，首个非空描述上报——fatal 单点）
+        if (r.conn_list_corruption_.empty()) {
+            r.conn_list_corruption_ = c->conn_list_corruption_;
+        }
         instance_set.insert(c->instance_ids_.begin(), c->instance_ids_.end());
         net_set.insert(c->net_ids_.begin(), c->net_ids_.end());
         crossing_set.insert(c->crossing_net_ids_.begin(),
@@ -407,7 +442,8 @@ DSDesignCheckReport ds_verify_design(
         static_cast<uint64_t>(global_density.metal_total());
     r.density_via_total_ = static_cast<uint64_t>(global_density.via_total());
 
-    // 损坏类（并查集 / 分区覆盖 / namemap；树-def 对齐缺失并入 namemap）
+    // 损坏类（并查集 / 分区覆盖 / namemap / 连接表结构不变量；树-def
+    // 对齐缺失并入 namemap）
     r.union_inconsistency_ = ds_check_net_union(net_union);
     r.coverage_gap_ = ds_check_partition_coverage(design.partitions_,
                                                   global_density);
@@ -441,6 +477,12 @@ void ds_verify_report_or_fatal(const DSDesignCheckReport& report) {
                        "design verify: name map inconsistent (corrupt "
                        "data) — {}",
                        report.namemap_inconsistency_);
+    }
+    if (!report.conn_list_corruption_.empty()) {
+        MSG_FATAL_EXIT("DSGN::0027", 0, 80,
+                       "design verify: connection list invariant broken "
+                       "(corrupt data) — {}",
+                       report.conn_list_corruption_);
     }
 }
 

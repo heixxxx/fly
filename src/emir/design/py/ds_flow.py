@@ -551,6 +551,7 @@ def _parse_nets_task(db, path, stack_key, snapshot_key, block_key, names_key,
         "skipped_invalid_connection": stats.skipped_invalid_connection_count,
         "wildcard_entry": stats.wildcard_entry_count,
         "wildcard_connection": stats.wildcard_connection_count,
+        "duplicate_connection": stats.duplicate_connection_count,
         "batch": stats.batch_count,
     }, save_to_db=False)
     if stats.skipped_via_count or stats.skipped_net_count or \
@@ -568,11 +569,13 @@ def _parse_nets_task(db, path, stack_key, snapshot_key, block_key, names_key,
     db.get_full_name(k) for k in stats_keys
 ])
 def _merge_net_stats_task(db, stats_keys):
-    """网内容统计合并 → DSGN::0009（网数/几何/via instance 数）。"""
+    """网内容统计合并 → DSGN::0009（网数/几何/via instance 数）+ 去重
+    统计（重复条数 > 0 时 DSGN::0028 warn——数据质量信号，不拦截）。"""
     total = {"net": 0, "connection": 0, "wire": 0, "rect": 0,
              "via_instance": 0, "skipped_via": 0, "skipped_net": 0,
              "skipped_invalid_connection": 0, "wildcard_entry": 0,
-             "wildcard_connection": 0, "batch": 0}
+             "wildcard_connection": 0, "duplicate_connection": 0,
+             "batch": 0}
     for key in stats_keys:
         stats = db.read_object(key)
         for name in total:
@@ -587,7 +590,14 @@ def _merge_net_stats_task(db, stats_keys):
             f"{total['wildcard_connection']} connections, "
             f"{total['skipped_via']} undefined vias skipped, "
             f"{total['skipped_invalid_connection']} invalid connections "
-            f"skipped")
+            f"skipped, {total['duplicate_connection']} duplicate "
+            f"connections removed")
+    # 重复连接条目（DEF 数据质量信号——连接表封存时已去重，提醒不拦截）
+    if total["duplicate_connection"] > 0:
+        message("DSGN::0028", 0,
+                f"{total['duplicate_connection']} duplicate connection "
+                f"entries in DEF source data — deduplicated by sealed "
+                f"connection lists")
 
 
 # ── S8：全局密度合并 + 分区决策（core/extend 双区域裁定 2026-09-12/13）─
@@ -813,17 +823,26 @@ def _flatten_group_task(db, design_key, hier_key, block_names_key,
     tree = db.read_object(hier_key)
     block_info = db.read_object(block_names_key)
     block_names = block_info["names"]
-    products = {}
+    # 按分区收集组内各 def 的分片，最后并入新建工作形态（ds_flatten_block
+    # 产出的分片已封存——append 契约要求合并目标未封存，不能直接以首个
+    # 分片为累积形态；2026-11-24 连接表唯一性裁定）
+    slices = {}
     for i, block_key, net_key in zip(group, block_keys, net_keys):
         if not block_info["is_first"][i]:
             continue  # 重名保留首份（plan 分组已排除，防御再判）
         block = db.read_object(block_key)
         nets = db.read_object(net_key)
         for pid, product in ds_flatten_block(tree, block, nets, design):
-            if pid in products:
-                products[pid].merge_from(product)
-            else:
-                products[pid] = product
+            slices.setdefault(pid, []).append(product)
+    products = {}
+    for pid, plist in slices.items():
+        acc = EXDSPartitionProduct()
+        for product in plist:
+            acc.merge_from(product)
+        # 封存三处连接表（2026-11-24 连接表唯一性裁定：分片写盘前封存
+        # ——合并任务的 append 契约要求源表已封存）
+        acc.seal_connection_lists()
+        products[pid] = acc
     for pid in range(n_parts):
         db.write_object(f"{slice_prefix}{pid}",
                         products.get(pid, EXDSPartitionProduct()),
@@ -848,6 +867,10 @@ def _merge_partition_task(db, slice_prefix, n_groups, pid, xp, yp,
     slice_keys = [f"{slice_prefix}{g}_{pid}" for g in range(n_groups)]
     for key in slice_keys:
         product.merge_from(db.read_object(key))
+    # 封存三处连接表（2026-11-24 连接表唯一性裁定的封存点 2：merge_from
+    # 全部做完之后、写成正式对象之前——跨分片合并产生的重复条目在此去掉，
+    # 任何下游读到的正式对象表都升序无重复）
+    product.seal_connection_lists()
     db.write_object(DesignDb.partition_obj_name(xp, yp, "GEOMETRY"),
                     product.geometry(), save_to_db=True)
     db.write_object(DesignDb.partition_obj_name(xp, yp, "GEOMETRY_PG"),

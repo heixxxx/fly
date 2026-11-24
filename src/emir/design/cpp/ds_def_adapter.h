@@ -146,7 +146,9 @@ struct DSDefNetsStats {
                                  // 2026-09-13 USE 全量补收裁定）
     int wildcard_entry_count = 0;   // 通配连接条目数（( * 引脚 ) 原始条目，
                                     // 2026-11-24 真实数据兼容裁定）
-    int wildcard_connection_count = 0;  // 通配展开产生的连接数
+    int wildcard_connection_count = 0;  // 通配展开产生的连接数（封存前）
+    int duplicate_connection_count = 0;  // 封存时去掉的重复连接条数
+                                         //（2026-11-24 连接表唯一性裁定）
     int batch_count = 0;         // 分批批次数（③ 分批落批可观测）
 };
 

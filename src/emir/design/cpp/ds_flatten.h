@@ -104,7 +104,8 @@ namespace fly {
 // pin 跨 cell 共享 id，名字反查经容器 pin 名字空间）。flags 六位
 // （port/driver/receiver/power/ground/clock）自 S5b
 // 条目直存，hybrid = driver+receiver 同置（第三分类命名，统计口径互斥
-// 单列——见 DSNetConnection 注释）。
+// 单列——见 DSNetConnection 注释；端口条目的 driver/receiver 按条目
+// 在网里的角色——2026-11-24 用户裁定）。
 class DSNetConnEntry {
 public:
     // 端点实例 global id（⑧ local 0 映射目标；port 位条目 = 块实例自身）
@@ -118,6 +119,11 @@ public:
 
     FLY_SERIALIZE(inst_id_, pin_id_, flags_)
 };
+
+// DSConnList<DSNetConnEntry> 的排序键：(实例全局 id, 引脚 id)
+inline std::pair<CMInstanceId, CMPinId> ds_conn_key(const DSNetConnEntry& e) {
+    return {e.inst_id_, e.pin_id_};
+}
 
 // INST_CONNECTIONS 侧连接条目（instance 维度）：与 DSNetConnEntry 同款
 // 字段（inst_id/pin_id/flags 六位，2026-09-13 重组裁定对齐更名）+ 端点
@@ -133,11 +139,17 @@ public:
     // 换算完成，直存）
     CMPinId pin_id_;
     // port / driver / receiver / power / ground / clock 位（S5b 直存；
-    // hybrid = driver+receiver 同置）
+    // hybrid = driver+receiver 同置；端口条目的 driver/receiver 按条目
+    // 在网里的角色——2026-11-24 用户裁定）
     CM_FLAGS(uint8_t, port, driver, receiver, power, ground, clock)
 
     FLY_SERIALIZE(inst_id_, net_global_id_, pin_id_, flags_)
 };
+
+// DSConnList<DSPartConnection> 的排序键：(端点网全局 id, 引脚 id)
+inline std::pair<CMNetId, CMPinId> ds_conn_key(const DSPartConnection& c) {
+    return {c.net_global_id_, c.pin_id_};
+}
 
 // 分区几何条目（net wire/rect 图形 + via instance 展开图形 + DEF
 // obstruction 统一形态；「geometry 以 net 组织」总形态的最小单元）。
@@ -247,21 +259,25 @@ public:
 };
 
 // /INST_CONNECTIONS：instance global id → 连接项列表（跟随 instance 副本
-// ——每个持有该实例副本的分区一份；条目携带端点网 global id）。
+// ——每个持有该实例副本的分区一份；条目携带端点网 global id。列表 =
+// DSConnList<DSPartConnection>——2026-11-24 连接表唯一性裁定：构建期追
+// 加、封存后 (网, 引脚) 升序无重复）。
 // **边界语义（review 2026-09-13 标注）**：键 0 = root 块自身的设计级
 // port 连接（root self_global_id_ = 0，⑧ local 0 映射）——INSTANCES
 // 永无 global id 0 条目（root 无实体副本），下游按键取实例前须排除 0
 // 或用带默认值的查询，勿以 items_.at(0) 取实例。
 class DSPartInstConnections {
 public:
-    CMUnorderedMap<CMInstanceId, CMVector<DSPartConnection>> items_;
+    CMUnorderedMap<CMInstanceId, DSConnList<DSPartConnection>> items_;
 
     size_t size() const { return items_.size(); }
 
     FLY_SERIALIZE(items_)
 };
 
-// 单网聚合（2026-09-13 重组裁定）：id + use + 连接条目集。几何不进本
+// 单网聚合（2026-09-13 重组裁定）：id + use + 连接条目集（DSConnList
+// ——2026-11-24 连接表唯一性裁定：构建期追加、封存后 (实例, 引脚) 升序
+// 无重复）。几何不进本
 // 结构——仍在分区 GEOMETRY 对象按 net 组织。use = DSNetUse 枚举定型存储
 // （2026-09-16 裁定：领域枚举禁止裸整型；S5b net_uses_ 全量补收裁定随
 // 网写入；缺省 SIGNAL——S5b 只记非 SIGNAL 条目，缺省读取口径一致）。
@@ -269,7 +285,7 @@ class DSNet {
 public:
     CMNetId net_id_;
     DSNetUse use_ = DSNetUse::SIGNAL;
-    CMVector<DSNetConnEntry> connections_;
+    DSConnList<DSNetConnEntry> connections_;
 
     // use 读取
     DSNetUse use() const { return use_; }
@@ -362,6 +378,11 @@ public:
     DSPartitionGeometry geometry_pg_;
 
     void merge_from(const DSPartitionProduct& src);
+
+    // 封存三处连接表（2026-11-24 连接表唯一性裁定的封存点 2：展平任务
+    // 写分片之前 + 每分区合并任务写成正式对象之前——任何持久化对象、
+    // 任何下游读到的表都是封存后的；跨分片合并产生的重复条目在此去掉）。
+    void seal_connection_lists();
 
     FLY_SERIALIZE(instances_, inst_connections_, nets_, nets_pg_, geometry_,
                   geometry_pg_)

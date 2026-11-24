@@ -300,7 +300,11 @@ DSPartitionNets build_nets(CMPartitionId pid,
         if (c.port) {
             e.set_port();
         }
-        it->second->connections_.push_back(std::move(e));
+        it->second->connections_.add(std::move(e));
+    }
+    // 2026-11-24 连接表唯一性裁定：下游读封存后的表——构造后封存
+    for (auto& [nid, n] : nets.nets_) {
+        n->connections_.seal();
     }
     return nets;
 }
@@ -330,7 +334,11 @@ DSPartitionNets build_nets(CMPartitionId pid,
         if (c.port) {
             e.set_port();
         }
-        it->second->connections_.push_back(std::move(e));
+        it->second->connections_.add(std::move(e));
+    }
+    // 2026-11-24 连接表唯一性裁定：下游读封存后的表——构造后封存
+    for (auto& [nid, n] : nets.nets_) {
+        n->connections_.seal();
     }
     return nets;
 }
@@ -349,7 +357,10 @@ DSPartInstConnections build_inst_conns(
         DSPartConnection c;
         c.inst_id_ = CMInstanceId{inst};
         c.net_global_id_ = CMNetId{net};
-        conns.items_[CMInstanceId{inst}].push_back(std::move(c));
+        conns.items_[CMInstanceId{inst}].add(std::move(c));
+    }
+    for (auto& [iid, list] : conns.items_) {
+        list.seal();
     }
     return conns;
 }

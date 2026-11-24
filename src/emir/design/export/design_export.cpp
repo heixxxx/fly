@@ -314,6 +314,10 @@ FLY_EXPORT_CLASS(fly::DSNetStats, "EXDSNetStats")
                              &fly::DSNetStats::wildcard_entry_count)
     FLY_EXPORT_READONLY_ATTR("wildcard_connection_count",
                              &fly::DSNetStats::wildcard_connection_count)
+    // 封存时去掉的重复连接条数（2026-11-24 连接表唯一性裁定，
+    // DSGN::0028 数据源）
+    FLY_EXPORT_READONLY_ATTR("duplicate_connection_count",
+                             &fly::DSNetStats::duplicate_connection_count)
     FLY_EXPORT_SERIALIZE_PICKLE(fly::DSNetStats);
 
 FLY_EXPORT_CLASS(fly::DSNetBuildData, "EXDSNetBuildData")
@@ -900,6 +904,8 @@ FLY_EXPORT_CLASS(fly::DSDefNetsStats, "EXDSDefNetsStats")
                              &fly::DSDefNetsStats::wildcard_entry_count)
     FLY_EXPORT_READONLY_ATTR("wildcard_connection_count",
                              &fly::DSDefNetsStats::wildcard_connection_count)
+    FLY_EXPORT_READONLY_ATTR("duplicate_connection_count",
+                             &fly::DSDefNetsStats::duplicate_connection_count)
     FLY_EXPORT_READONLY_ATTR("batch_count", &fly::DSDefNetsStats::batch_count);
 
 FLY_EXPORT_CLASS(fly::DSDesign, "EXDSDesign")
@@ -1584,6 +1590,12 @@ FLY_EXPORT_CLASS(fly::DSPartitionProduct, "EXDSPartitionProduct")
     FLY_EXPORT_DEF("merge_from", [](fly::DSPartitionProduct& p,
                                     const fly::DSPartitionProduct& src) {
         p.merge_from(src);
+    })
+    // 封存三处连接表（2026-11-24 连接表唯一性裁定的封存点 2：展平任务
+    // 写分片前 + 每分区合并任务写成正式对象前调用）
+    FLY_EXPORT_DEF("seal_connection_lists",
+                   [](fly::DSPartitionProduct& p) {
+        p.seal_connection_lists();
     })
     // 六类成员只读访问（merge 任务按类拆写六类正式对象；引用零拷贝）
     FLY_EXPORT_DEF("geometry", [](const fly::DSPartitionProduct& p)

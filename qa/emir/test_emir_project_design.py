@@ -250,7 +250,10 @@ assert block1.density.total_count == 1
 # 1 via（VIA12 → ⑫ block_child::VIA12 前缀名解析）@ (500,200)。
 # 连接 id 形态（2026-09-13 裁定，全局 pin id 手算：S2 汇总 INV_X1 的
 # A=0/ZN=1/VDD=2，S4 汇总 port PIN_IN=3/PIN_OUT=4/TOP_IN=5；port 引用
-# = local 0 + port 位；位口径 A/INPUT→receiver、ZN/OUTPUT→driver）
+# = local 0 + port 位；位口径（2026-11-24 用户裁定）：实例引脚条目按
+# 引脚方向（A/INPUT→receiver、ZN/OUTPUT→driver）；端口条目按网的角色
+# 反向标（PIN_IN/INPUT 端口→driver、PIN_OUT/OUTPUT 端口→receiver）；
+# 连接表封存后按 (实例, 引脚) 升序——端口条目（local 0）在前）
 net0 = design_db.read_object(design_db.net_obj_name(0))
 assert net0.block_name == "block_child"
 assert net0.stats.net_count == 2
@@ -258,18 +261,21 @@ assert net0.stats.connection_count == 4 and net0.stats.wire_count == 1
 assert net0.stats.via_instance_count == 1
 assert net0.stats.skipped_via_count == 0 and net0.stats.skipped_net_count == 0
 assert net0.stats.skipped_invalid_connection_count == 0
-# 连接表（S7 并查集输入）：n1 = (u1 A) + (PIN PIN_IN)
+# 连接表（S7 并查集输入）：n1 = (u1 A) + (PIN PIN_IN)；升序端口在前
 conns_n1 = net0.connections_of(1)
-assert [(c.instance_local_id, c.pin_id) for c in conns_n1] == [(1, 0), (0, 3)]
-assert [c.is_port for c in conns_n1] == [False, True]
-assert [c.is_receiver for c in conns_n1] == [True, True]   # A、PIN_IN 均 INPUT
-assert [c.is_driver for c in conns_n1] == [False, False]
+assert [(c.instance_local_id, c.pin_id) for c in conns_n1] == [(0, 3), (1, 0)]
+assert [c.is_port for c in conns_n1] == [True, False]
+# PIN_IN 是 INPUT 端口 = 它所在网的驱动者（driver 位）；u1/A INPUT → receiver
+assert [c.is_receiver for c in conns_n1] == [False, True]
+assert [c.is_driver for c in conns_n1] == [True, False]
 assert not any(c.is_driver and c.is_receiver for c in conns_n1)  # 无 hybrid
-# n2 = (u1 ZN) + (PIN PIN_OUT)：OUTPUT → driver 位
+# n2 = (u1 ZN) + (PIN PIN_OUT)：PIN_OUT 是 OUTPUT 端口 = 负载（receiver
+# 位）；u1/ZN OUTPUT → driver 位
 conns_n2 = net0.connections_of(2)
-assert [(c.instance_local_id, c.pin_id) for c in conns_n2] == [(1, 1), (0, 4)]
-assert [c.is_port for c in conns_n2] == [False, True]
-assert [c.is_driver for c in conns_n2] == [True, True]
+assert [(c.instance_local_id, c.pin_id) for c in conns_n2] == [(0, 4), (1, 1)]
+assert [c.is_port for c in conns_n2] == [True, False]
+assert [c.is_receiver for c in conns_n2] == [True, False]
+assert [c.is_driver for c in conns_n2] == [False, True]
 wires = net0.wires_of(1)
 assert len(wires) == 1, f"n1 wires={wires}"
 assert wires[0][0] == 0 and wires[0][1] == 70  # M1 + 缺省宽回填
@@ -289,13 +295,16 @@ assert net0.density.layer_total(1, True) == 1    # VIA1 通孔
 net1 = design_db.read_object(design_db.net_obj_name(1))
 assert net1.block_name == "block_parent"
 # S7 跨块连接数据（block_parent.def 的 n_top 增 ( top3 PIN_IN )）：
-# 连接 3 项 = 叶实例 + 子块实例 port + 顶层引脚（TOP_IN = pin 5，INPUT
-# → receiver 位）
+# 连接 3 项 = 叶实例 + 子块实例 port + 顶层引脚（TOP_IN = pin 5）。
+# 升序 [(0,5), (1,0), (3,3)]；TOP_IN 是 INPUT 端口 = 驱动者（driver
+# 位）；top3/PIN_IN 是实例引脚条目（top3 = block_child 的实例）——按
+# 引脚方向 INPUT → receiver，与端口口径相反（2026-11-24 用户裁定）
 conns_top = net1.connections_of(1)
 assert [(c.instance_local_id, c.pin_id) for c in conns_top] == \
-    [(1, 0), (3, 3), (0, 5)]
-assert [c.is_port for c in conns_top] == [False, False, True]
-assert [c.is_receiver for c in conns_top] == [True, True, True]
+    [(0, 5), (1, 0), (3, 3)]
+assert [c.is_port for c in conns_top] == [True, False, False]
+assert [c.is_receiver for c in conns_top] == [False, True, True]
+assert [c.is_driver for c in conns_top] == [True, False, False]
 assert net1.stats.wire_count == 0 and net1.stats.via_instance_count == 0
 assert net1.stats.skipped_invalid_connection_count == 0
 INFO("[OK] S5b: net content (connections/wires/via instances, per-layer "
@@ -685,13 +694,16 @@ assert nets_p.size == 1 and sorted(nets_p.ids) == [3]
 n1_net = nets_p.net_of(3)
 assert n1_net is not None, "n1 must be reachable via net_of (signal side)"
 assert n1_net.net_id == 3 and n1_net.use == "SIGNAL"
+# 封存后按 (端点实例 global id, 引脚) 升序——端口条目（inst 3）在前
 assert [(c.inst_id, c.pin_id, c.is_port) for c in n1_net.connections] == [
-    (5, 0, False), (3, 3, True)]
+    (3, 3, True), (5, 0, False)]
 assert nets_pg_p.size == 0 and list(nets_pg_p.ids) == []
-# 位直存（S9 flags 六位自 S5b 条目拷贝）：n1 两端点 u1.A / top3 的
-# PIN_IN 均 INPUT → receiver 位、无 driver（port 位另见上断言）
+# 位直存（S9 flags 六位自 S5b 条目拷贝；2026-11-24 端口角色裁定）：n1
+# 的 ( PIN PIN_IN ) 端口条目 = INPUT 端口 = 它所在网的驱动者 → driver
+# 位（旧口径按引脚方向标 receiver）；u1.A 实例条目按引脚方向 INPUT →
+# receiver 不变
 assert [(c.is_receiver, c.is_driver) for c in n1_net.connections] == [
-    (True, False), (True, False)]
+    (False, True), (True, False)]
 # 全局 pg 网 id 集（2026-09-13 重组裁定："pg_nets" 正式对象）：本数据无
 # pg 网 → 空集
 db_pg = load_design_pg_nets(design_db)
@@ -710,12 +722,13 @@ assert sorted((c.net_global_id, c.pin_id) for c in t3c if c.is_port) == \
 u1c = iconn_p.connections_of(5)
 assert sorted((c.net_global_id, c.pin_id) for c in u1c) == \
     [(3, 0), (4, 1)]
-# 位直存（S9 flags 六位自 S5b 条目拷贝）：n1 端点 u1.A receiver、top3
-# 的 PIN_IN port 条目 receiver、PIN_OUT port 条目 driver
+# 位直存（S9 flags 六位自 S5b 条目拷贝；2026-11-24 端口角色裁定）：n1
+# 端点 u1.A 实例条目 receiver、n2 的 PIN_OUT 端口条目 = OUTPUT 端口 =
+# 负载 → receiver 位（旧口径按引脚方向标 driver）
 assert [(c.is_receiver, c.is_driver) for c in u1c if c.net_global_id == 3] \
     == [(True, False)]
 assert [(c.is_port, c.is_receiver, c.is_driver)
-        for c in t3c if c.net_global_id == 4] == [(True, False, True)]
+        for c in t3c if c.net_global_id == 4] == [(True, True, False)]
 INFO("[OK] S9 connections: non-pg net completion follows net copies "
      "(NETS object, NETS_PG empty by split ruling), inst connections "
      "follow instance copies (pg n2 reachable via instance dimension)")
@@ -832,15 +845,18 @@ assert design_db.get_instance("ghost") is None
 
 # get_net：非 pg 明细（端点实例名 + pin 名 name 化；port 条目 = 块实例
 # 层级名 + port 名）；无几何网查不到；id 0 = OBS 专属位非真网 → None
+# n1 的 ( PIN PIN_IN ) 端口条目：PIN_IN 是 INPUT 端口 = 它所在网的驱动
+# 者（2026-11-24 端口角色裁定）→ 驱动 1、接收 1（旧口径按引脚方向标
+# receiver：驱动 0、接收 2）；连接表 (实例, 引脚) 升序——端口条目在前
 n1 = design_db.get_net("top3/n1")
 assert n1["id"] == 3 and n1["use"] == "SIGNAL" and n1["is_pg"] is False
 assert n1["connection_count"] == 2
-assert n1["receiver_count"] == 2 and n1["driver_count"] == 0 \
+assert n1["receiver_count"] == 1 and n1["driver_count"] == 1 \
     and n1["hybrid_count"] == 0
 assert [(c["instance_id"], c["instance_name"], c["pin_name"], c["is_port"])
         for c in n1["connections"]] == [
-    (5, "top3/u1", "A", False),
-    (3, "top3", "PIN_IN", True)]
+    (3, "top3", "PIN_IN", True),
+    (5, "top3/u1", "A", False)]
 # n_top 有连接但无几何（block_parent.def 的 n_top 无 wire/rect）→ 无
 # 分区副本、NETS 无 DSNet 记录 → 显式 None（2026-09-13 review 修正：
 # 旧兜底曾静默降级为空概要——丢失连接信息且误导；其真实连接在 S5b
@@ -928,20 +944,22 @@ assert dbg_net0.net_use_of(4) == "POWER"
 INFO("[OK] S5b USE collection: eight-value enum, non-SIGNAL recorded, "
      "string-ized export")
 
-# get_net 手算：sig1（global 1）连接 3 条 = h1.BIDIR（INOUT → hybrid）+
-# h2.A（INPUT → receiver）+ PIN DBG_IN（port 位 + INPUT → receiver）——
-# driver 0 / receiver 2 / hybrid 1 / port 1（三分类互斥单列口径）
+# get_net 手算：sig1（global 1）连接 3 条 = h1.BIDIR（INOUT 实例引脚 →
+# hybrid）+ h2.A（INPUT 实例引脚 → receiver）+ PIN DBG_IN（port 位 +
+# INPUT 端口 = 它所在网的驱动者，2026-11-24 端口角色裁定 → driver）——
+# driver 1 / receiver 1 / hybrid 1 / port 1（三分类互斥单列口径；连接表
+# (实例, 引脚) 升序——端口条目 local 0 在前）
 sig1 = debug_db.get_net("sig1")
 assert sig1["id"] == 1 and sig1["use"] == "SIGNAL"
 assert sig1["connection_count"] == 3
 assert sig1["hybrid_count"] == 1, "INOUT endpoint = hybrid (third class)"
-assert sig1["driver_count"] == 0 and sig1["receiver_count"] == 2
+assert sig1["driver_count"] == 1 and sig1["receiver_count"] == 1
 assert sig1["port_count"] == 1
 assert [(c["instance_name"], c["pin_name"], c["is_port"])
         for c in sig1["connections"]] == [
+    (None, "DBG_IN", True),  # 裁定 2：root 块实例路径 = 空串（绑定层空名转 None）
     ("h1", "BIDIR", False),
-    ("h2", "A", False),
-    (None, "DBG_IN", True)]  # 裁定 2：root 块实例路径 = 空串（绑定层空名转 None）
+    ("h2", "A", False)]
 # tie1（global 2）/weird（global 3）：USE 八值语义；VDD0（global 4）：pg
 # 网（USE POWER）无 connections 明细、计数概要数位（VDDP INPUT POWER →
 # receiver 1 + power 1）

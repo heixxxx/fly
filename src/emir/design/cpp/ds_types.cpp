@@ -397,10 +397,23 @@ int64_t DSDensityGrid::channel_total(bool via_channel) const {
 void DSNetBuildData::add_connection(CMNetId net_id, DSNetConnection&& conn) {
     auto& vec = connections_[net_id];
     if (!vec) {
-        vec = std::make_shared<CMVector<DSNetConnection>>();
+        vec = std::make_shared<DSConnList<DSNetConnection>>();
     }
-    vec->push_back(std::move(conn));
+    vec->add(std::move(conn));
     ++stats_.connection_count;
+}
+
+uint64_t DSNetBuildData::seal_all_connections() {
+    uint64_t removed = 0;
+    for (auto& [net_id, list] : connections_) {
+        (void)net_id;
+        removed += list->seal();
+    }
+    // 统计口径：connection_count = 封存后最终收录数（去重同步扣除）；
+    // duplicate_connection_count = 去掉的重复条数（DSGN::0028 数据源）
+    stats_.duplicate_connection_count += removed;
+    stats_.connection_count -= removed;
+    return removed;
 }
 
 void DSNetBuildData::add_wire(CMNetId net_id, DSNetWire&& wire) {
@@ -434,11 +447,12 @@ CMViaInstanceId DSNetBuildData::add_via_instance(CMNetId net_id,
     return id;
 }
 
-CMWeakPtr<const CMVector<DSNetConnection>> DSNetBuildData::connections_of(
+CMWeakPtr<const DSConnList<DSNetConnection>> DSNetBuildData::connections_of(
     CMNetId net_id) const {
     auto it = connections_.find(net_id);
-    return it == connections_.end() ? CMWeakPtr<const CMVector<DSNetConnection>>{}
-                                    : CMWeakPtr<const CMVector<DSNetConnection>>{it->second};
+    return it == connections_.end()
+               ? CMWeakPtr<const DSConnList<DSNetConnection>>{}
+               : CMWeakPtr<const DSConnList<DSNetConnection>>{it->second};
 }
 
 CMWeakPtr<const CMVector<DSNetWire>> DSNetBuildData::wires_of(

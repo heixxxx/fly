@@ -254,25 +254,31 @@ TEST(DSNetConnectionParseNodeTest, AlignsLocalIdAndConvertsConnectionIds) {
 
     DSNetConnectionParseNode node;
     node.handle(ctx);
+    // 2026-11-24 连接表唯一性裁定：读前封存（模拟生产解析入口尾部封存点）
+    net_data.seal_all_connections();
 
     // ⑨ local net id 沿用 S5a 网名扫描分配（n1 = 1）
     EXPECT_EQ(ctx.local_net_id, 1u);
     ASSERT_EQ(net_data.connections_.at(CMNetId{1})->size(), 2u);
     // 连接项 id 形态（2026-09-13 裁定）：(instance local id, 全局 pin id)
-    // + flags 位——(u1 A)：local 1、pin A = 0、INPUT → receiver 位
+    // + flags 位；封存后按 (实例, 引脚) 升序——端口条目（local 0 占位）
+    // 排最前。("PIN" PIN_A)：local 0 占位（⑧）、port pin = 5、port 位 +
+    // INPUT 端口 = 它所在网的驱动者（2026-11-24 用户裁定：端口条目按网
+    // 的角色反向标——driver 位）
     const DSNetConnection& c0 = (*net_data.connections_.at(CMNetId{1}))[0];
-    EXPECT_EQ(c0.instance_local_id_, 1u);
-    EXPECT_EQ(c0.pin_id_, 0u);
-    EXPECT_FALSE(c0.is_port());
-    EXPECT_TRUE(c0.is_receiver());
-    EXPECT_FALSE(c0.is_driver());
-    // ("PIN" PIN_A)：local 0 占位（⑧）、port pin = 3、port 位 + INPUT
-    // → receiver 位
+    EXPECT_EQ(c0.instance_local_id_, 0u);
+    EXPECT_EQ(c0.pin_id_, 5u);
+    EXPECT_TRUE(c0.is_port());
+    EXPECT_TRUE(c0.is_driver());
+    EXPECT_FALSE(c0.is_receiver());
+    // (u1 A)：local 1、pin A = 0、INPUT → receiver 位（实例引脚条目不变
+    // ——按引脚方向 = 在网里的角色）
     const DSNetConnection& c1 = (*net_data.connections_.at(CMNetId{1}))[1];
-    EXPECT_EQ(c1.instance_local_id_, 0u);
-    EXPECT_EQ(c1.pin_id_, 5u);
-    EXPECT_TRUE(c1.is_port());
+    EXPECT_EQ(c1.instance_local_id_, 1u);
+    EXPECT_EQ(c1.pin_id_, 0u);
+    EXPECT_FALSE(c1.is_port());
     EXPECT_TRUE(c1.is_receiver());
+    EXPECT_FALSE(c1.is_driver());
     EXPECT_EQ(net_data.stats_.net_count, 1u);
     EXPECT_EQ(net_data.stats_.connection_count, 2u);
     EXPECT_EQ(net_data.stats_.skipped_invalid_connection_count, 0u);
@@ -280,8 +286,9 @@ TEST(DSNetConnectionParseNodeTest, AlignsLocalIdAndConvertsConnectionIds) {
 
 TEST(DSNetConnectionParseNodeTest, FillsDriverReceiverPowerFlags) {
     // 方向/类型位（2026-09-13 裁定变更 + 补充）：OUTPUT → driver、INOUT
-    // → driver+receiver 同置（hybrid）、POWER type → power 位；port 条目
-    // 方向随 block cell 的 port pin（POUT = OUTPUT → driver）
+    // → driver+receiver 同置（hybrid）、POWER type → power 位；端口条目
+    // 按网的角色反向标（2026-11-24 用户裁定）：POUT = OUTPUT 端口 → 负载
+    // （receiver 位），不再沿用引脚方向的 driver
     TestEnv env;
     DSBlockBuildData block_data = env.make_block_data();
     DSNetBuildData net_data;
@@ -289,31 +296,34 @@ TEST(DSNetConnectionParseNodeTest, FillsDriverReceiverPowerFlags) {
     DSNetContext ctx = make_ctx(env, block_data, net_data, "VDD");
     ctx.is_special = true;
     ctx.connections.push_back({"u1", "VDD"});   // INOUT POWER → hybrid+power
-    ctx.connections.push_back({"PIN", "POUT"});  // port + OUTPUT → driver
+    ctx.connections.push_back({"PIN", "POUT"});  // port + OUTPUT → receiver
     ctx.connections.push_back({"u1", "ZN"});     // OUTPUT → 仅 driver
     ctx.connections.push_back({"u1", "VSS"});    // INPUT GROUND → receiver+ground
     ctx.connections.push_back({"u1", "CLK"});    // INPUT CLOCK → receiver+clock
 
     DSNetConnectionParseNode node;
     node.handle(ctx);
+    net_data.seal_all_connections();  // 封存后 (实例, 引脚) 升序
 
     ASSERT_EQ(net_data.connections_.at(CMNetId{2})->size(), 5u);
-    const DSNetConnection& hybrid = (*net_data.connections_.at(CMNetId{2}))[0];
+    // 升序：端口条目 (0, POUT=6) 最前，随后 (1, ZN=1)、(1, VDD=2)、
+    // (1, VSS=3)、(1, CLK=4)
+    const DSNetConnection& port = (*net_data.connections_.at(CMNetId{2}))[0];
+    EXPECT_EQ(port.instance_local_id_, 0u);
+    EXPECT_EQ(port.pin_id_, 6u);  // nets_blk/POUT
+    EXPECT_TRUE(port.is_port() && port.is_receiver());
+    EXPECT_FALSE(port.is_driver());
+    const DSNetConnection& drv = (*net_data.connections_.at(CMNetId{2}))[1];
+    EXPECT_EQ(drv.pin_id_, 1u);  // INV_X1/ZN
+    EXPECT_TRUE(drv.is_driver());
+    EXPECT_FALSE(drv.is_receiver());
+    EXPECT_FALSE(drv.is_driver() && drv.is_receiver());  // 非 hybrid
+    const DSNetConnection& hybrid = (*net_data.connections_.at(CMNetId{2}))[2];
     EXPECT_EQ(hybrid.instance_local_id_, 1u);
     EXPECT_EQ(hybrid.pin_id_, 2u);  // INV_X1/VDD
     EXPECT_TRUE(hybrid.is_driver() && hybrid.is_receiver());  // hybrid
     EXPECT_TRUE(hybrid.is_power());
     EXPECT_FALSE(hybrid.is_ground());
-    const DSNetConnection& port = (*net_data.connections_.at(CMNetId{2}))[1];
-    EXPECT_EQ(port.instance_local_id_, 0u);
-    EXPECT_EQ(port.pin_id_, 6u);  // nets_blk/POUT
-    EXPECT_TRUE(port.is_port() && port.is_driver());
-    EXPECT_FALSE(port.is_receiver());
-    const DSNetConnection& drv = (*net_data.connections_.at(CMNetId{2}))[2];
-    EXPECT_EQ(drv.pin_id_, 1u);  // INV_X1/ZN
-    EXPECT_TRUE(drv.is_driver());
-    EXPECT_FALSE(drv.is_receiver());
-    EXPECT_FALSE(drv.is_driver() && drv.is_receiver());  // 非 hybrid
     // ground 位（INPUT GROUND → receiver + ground，与 power 互斥）
     const DSNetConnection& gnd = (*net_data.connections_.at(CMNetId{2}))[3];
     EXPECT_EQ(gnd.pin_id_, 3u);  // INV_X1/VSS
@@ -324,6 +334,36 @@ TEST(DSNetConnectionParseNodeTest, FillsDriverReceiverPowerFlags) {
     EXPECT_EQ(clk.pin_id_, 4u);  // INV_X1/CLK
     EXPECT_TRUE(clk.is_receiver() && clk.is_clock());
     EXPECT_FALSE(clk.is_power() || clk.is_ground() || clk.is_driver());
+}
+
+// 端口条目三向标志位（2026-11-24 用户裁定）：输入端口 → 驱动者、输出
+// 端口 → 负载、双向端口 → 两者（hybrid）；实例引脚条目不变（Aligns/
+// Fills 两例已锁 INPUT/OUTPUT 引脚与 INPUT/OUTPUT 端口，本例补双向端口）
+TEST(DSNetConnectionParseNodeTest, InoutPortMarksBothRoles) {
+    TestEnv env;
+    // block cell 补双向端口 PIN_IO（INOUT；id 8——同轮 INOUT 引脚语义与
+    // 既有「INOUT = driver+receiver 同置 = hybrid」一致）
+    DSCell& blk = env.design.get_cell(env.design.cell_names_.get_id("nets_blk"));
+    DSPin pin_io;
+    pin_io.set_port();
+    pin_io.direction_ = DSPinDirection::INOUT;
+    env.design.register_pin("PIN_IO");
+    pin_io.set_pin_id(env.design.pin_names_.get_id("PIN_IO"));
+    blk.add_pin(std::move(pin_io));
+
+    DSBlockBuildData block_data = env.make_block_data();
+    DSNetBuildData net_data;
+
+    DSNetContext ctx = make_ctx(env, block_data, net_data, "n1");
+    ctx.connections.push_back({"PIN", "PIN_IO"});
+    DSNetConnectionParseNode node;
+    node.handle(ctx);
+    net_data.seal_all_connections();
+
+    const auto conns = net_data.connections_.at(CMNetId{1});
+    ASSERT_EQ(conns->size(), 1u);
+    EXPECT_TRUE((*conns)[0].is_port());
+    EXPECT_TRUE((*conns)[0].is_driver() && (*conns)[0].is_receiver());  // 两者
 }
 
 TEST(DSNetConnectionParseNodeTest, InvalidConnectionsSkippedAndCounted) {
@@ -342,6 +382,7 @@ TEST(DSNetConnectionParseNodeTest, InvalidConnectionsSkippedAndCounted) {
 
     DSNetConnectionParseNode node;
     node.handle(ctx);
+    net_data.seal_all_connections();
 
     EXPECT_FALSE(ctx.error);
     ASSERT_EQ(net_data.connections_.at(CMNetId{1})->size(), 1u);
@@ -349,6 +390,85 @@ TEST(DSNetConnectionParseNodeTest, InvalidConnectionsSkippedAndCounted) {
     EXPECT_EQ((*net_data.connections_.at(CMNetId{1}))[0].pin_id_, 0u);
     EXPECT_EQ(net_data.stats_.skipped_invalid_connection_count, 3u);
     EXPECT_EQ(net_data.stats_.connection_count, 1u);
+}
+
+// 连接顺序（2026-11-24 连接表唯一性裁定）：解析产物封存后按 (实例局部
+// id, 引脚 id) 升序——DEF 书写顺序不再保留；端口条目（local 0 占位）
+// 自然排在最前
+TEST(DSNetConnectionParseNodeTest, ConnectionsSealedAscending) {
+    TestEnv env;
+    DSBlockBuildData block_data = env.make_block_data();
+    DSNetBuildData net_data;
+
+    DSNetContext ctx = make_ctx(env, block_data, net_data, "n1");
+    // 乱序书写：u1/ZN(pin 1) → PIN/PIN_A(local 0) → u1/A(pin 0)
+    ctx.connections.push_back({"u1", "ZN"});
+    ctx.connections.push_back({"PIN", "PIN_A"});
+    ctx.connections.push_back({"u1", "A"});
+    DSNetConnectionParseNode node;
+    node.handle(ctx);
+    net_data.seal_all_connections();
+
+    const auto conns = net_data.connections_.at(CMNetId{1});
+    ASSERT_EQ(conns->size(), 3u);
+    EXPECT_EQ((*conns)[0].instance_local_id_, CMInstanceId{0});  // PIN_A
+    EXPECT_EQ((*conns)[0].pin_id_, CMPinId{5});
+    EXPECT_EQ((*conns)[1].instance_local_id_, CMInstanceId{1});  // u1/A
+    EXPECT_EQ((*conns)[1].pin_id_, CMPinId{0});
+    EXPECT_EQ((*conns)[2].instance_local_id_, CMInstanceId{1});  // u1/ZN
+    EXPECT_EQ((*conns)[2].pin_id_, CMPinId{1});
+}
+
+// 两条完全相同的显式条目 → 一条（2026-11-24 连接表唯一性裁定：显式条目
+// 间的重复不再「照常收录」，由封存统一去重 + duplicate_connection_count
+// 计数）
+TEST(DSNetConnectionParseNodeTest, DuplicateExplicitEntriesDeduplicated) {
+    TestEnv env;
+    DSBlockBuildData block_data = env.make_block_data();
+    DSNetBuildData net_data;
+
+    DSNetContext ctx = make_ctx(env, block_data, net_data, "n1");
+    ctx.connections.push_back({"u1", "A"});
+    ctx.connections.push_back({"u1", "A"});  // 与前一条完全相同
+    DSNetConnectionParseNode node;
+    node.handle(ctx);
+    const uint64_t removed = net_data.seal_all_connections();
+
+    const auto conns = net_data.connections_.at(CMNetId{1});
+    ASSERT_EQ(conns->size(), 1u);
+    EXPECT_EQ((*conns)[0].instance_local_id_, CMInstanceId{1});
+    EXPECT_EQ((*conns)[0].pin_id_, CMPinId{0});
+    EXPECT_EQ(removed, 1u);
+    EXPECT_EQ(net_data.stats_.duplicate_connection_count, 1u);
+    // connection_count = 封存后最终收录数（去重同步扣除）
+    EXPECT_EQ(net_data.stats_.connection_count, 1u);
+}
+
+// 同名网合并（网名扫描保留首份——第二张同名网的连接并入首张网）带来
+// 的重复 → 封存后一条
+TEST(DSNetConnectionParseNodeTest, SameNameNetMergeDeduplicates) {
+    TestEnv env;
+    DSBlockBuildData block_data = env.make_block_data();
+    DSNetBuildData net_data;
+
+    DSNetConnectionParseNode node;
+    // 第一张 VDD 网：u1/VDD
+    DSNetContext ctx1 = make_ctx(env, block_data, net_data, "VDD");
+    ctx1.connections.push_back({"u1", "VDD"});
+    node.handle(ctx1);
+    // 第二张同名 VDD 网（register_net 重名保留首份 → 同一 local id）：
+    // 再写一条 u1/VDD → 并入首张网的连接表，构成解析期重复
+    DSNetContext ctx2 = make_ctx(env, block_data, net_data, "VDD");
+    ctx2.connections.push_back({"u1", "VDD"});
+    node.handle(ctx2);
+    const uint64_t removed = net_data.seal_all_connections();
+
+    const auto conns = net_data.connections_.at(CMNetId{2});
+    ASSERT_EQ(conns->size(), 1u);   // 合并重复被去掉，恰一条
+    EXPECT_EQ((*conns)[0].instance_local_id_, CMInstanceId{1});
+    EXPECT_EQ((*conns)[0].pin_id_, CMPinId{2});
+    EXPECT_EQ(removed, 1u);
+    EXPECT_EQ(net_data.stats_.duplicate_connection_count, 1u);
 }
 
 TEST(DSNetConnectionParseNodeTest, UnknownNetCountedAndSkipped) {
@@ -559,6 +679,8 @@ TEST(DSNetBuildDataTest, SerializeRoundTrip) {
     ctx.vias.push_back({"VIA12", 1000, 600, 1, 1, 0, 0});
     ctx.use = DSNetUse::SCAN;  // use 收录（非 SIGNAL 才落存储）
     ds_make_nets_pipeline().run(ctx);
+    net_data.seal_all_connections();  // 封存后再落盘（生产路径解析入口尾部
+                                      // 封存——往返后的表直接可读）
 
     CMString blob;
     FLY_ENCODE(net_data, blob);
@@ -567,10 +689,12 @@ TEST(DSNetBuildDataTest, SerializeRoundTrip) {
 
     EXPECT_EQ(back.get_block_name(), "");
     ASSERT_EQ(back.connections_.at(CMNetId{1})->size(), 2u);
-    EXPECT_EQ((*back.connections_.at(CMNetId{1}))[0].instance_local_id_, 1u);
-    EXPECT_EQ((*back.connections_.at(CMNetId{1}))[0].pin_id_, 0u);
-    EXPECT_TRUE((*back.connections_.at(CMNetId{1}))[1].is_port());
-    EXPECT_EQ((*back.connections_.at(CMNetId{1}))[1].pin_id_, 5u);
+    // 升序：端口条目 (0, PIN_A=5) 在前、u1 (1, A=0) 在后
+    EXPECT_EQ((*back.connections_.at(CMNetId{1}))[0].instance_local_id_, 0u);
+    EXPECT_TRUE((*back.connections_.at(CMNetId{1}))[0].is_port());
+    EXPECT_EQ((*back.connections_.at(CMNetId{1}))[0].pin_id_, 5u);
+    EXPECT_EQ((*back.connections_.at(CMNetId{1}))[1].instance_local_id_, 1u);
+    EXPECT_EQ((*back.connections_.at(CMNetId{1}))[1].pin_id_, 0u);
     ASSERT_EQ(back.wires_.at(CMNetId{1})->size(), 1u);
     EXPECT_EQ((*back.wires_.at(CMNetId{1}))[0].layer_id_, 0u);
     EXPECT_EQ((*back.wires_.at(CMNetId{1}))[0].width_, 140);
@@ -776,7 +900,8 @@ struct WildcardConnKey {
     }
 };
 
-CMVector<WildcardConnKey> sorted_keys(const CMVector<DSNetConnection>& conns) {
+CMVector<WildcardConnKey> sorted_keys(
+    const DSConnList<DSNetConnection>& conns) {
     CMVector<WildcardConnKey> keys;
     for (const DSNetConnection& c : conns) {
         keys.push_back({c.instance_local_id_.value(), c.pin_id_.value(),
@@ -803,6 +928,7 @@ TEST(DSNetWildcardConnectionTest, ExpandsToEveryInstanceOwningThePin) {
 
     DSNetConnectionParseNode node;
     node.handle(ctx);
+    net_data.seal_all_connections();
 
     const auto conns = net_data.connections_.at(CMNetId{2});
     // u1/u2 INV_X1 有 VDD/VSS/ZN；u3 BUF_X1 无电源地、Z≠ZN → 各 2 条
@@ -855,6 +981,7 @@ TEST(DSNetWildcardConnectionTest, MixedCellsExpandOnlyOwningInstances) {
 
     DSNetConnectionParseNode node;
     node.handle(ctx);
+    net_data.seal_all_connections();
 
     const auto conns = net_data.connections_.at(CMNetId{1});
     // VDD 2 条（u1/u2）+ A 3 条（u1/u2/u3）
@@ -936,6 +1063,7 @@ TEST(DSNetWildcardConnectionTest, SignalNetWildcardExpandsToo) {
     ctx.connections.push_back({"*", "ZN"});
     DSNetConnectionParseNode node;
     node.handle(ctx);
+    net_data.seal_all_connections();
 
     const auto conns = net_data.connections_.at(CMNetId{1});
     ASSERT_EQ(conns->size(), 2u);  // u1/u2 的 ZN
@@ -945,7 +1073,9 @@ TEST(DSNetWildcardConnectionTest, SignalNetWildcardExpandsToo) {
 }
 
 // 通配 + 显式混写：同一 (实例, 引脚) 只保留一条——显式在前与在后两种
-// 顺序都只出现一份显式条目
+// 顺序都只出现一份显式条目（2026-11-24 连接表唯一性裁定：展开不再做
+// 集合预判——通配对所有拥有者照常展开，重复由封存统一去掉；
+// wildcard_connection_count = 封存前的展开条目数）
 TEST(DSNetWildcardConnectionTest, ExplicitWinsNoDuplicate) {
     TestEnv env;
     DSBlockBuildData block_data = env.make_multi_block_data();
@@ -957,22 +1087,26 @@ TEST(DSNetWildcardConnectionTest, ExplicitWinsNoDuplicate) {
     ctx.connections.push_back({"*", "VDD"});
     DSNetConnectionParseNode node;
     node.handle(ctx);
+    net_data.seal_all_connections();
     const auto conns = net_data.connections_.at(CMNetId{2});
-    ASSERT_EQ(conns->size(), 2u);  // u1（显式）+ u2（通配展开）
+    ASSERT_EQ(conns->size(), 2u);  // u1（显式 + 通配重复去重）+ u2（展开）
     size_t u1_vdd = 0;
     for (const DSNetConnection& c : *conns) {
         if (c.instance_local_id_ == CMInstanceId{1}) ++u1_vdd;
     }
     EXPECT_EQ(u1_vdd, 1u);
     EXPECT_EQ(net_data.stats_.connection_count, 2u);
-    EXPECT_EQ(net_data.stats_.wildcard_connection_count, 1u);
+    EXPECT_EQ(net_data.stats_.wildcard_entry_count, 1u);
+    EXPECT_EQ(net_data.stats_.wildcard_connection_count, 2u);  // 封存前
+    EXPECT_EQ(net_data.stats_.duplicate_connection_count, 1u);
 
-    // 通配在前、显式在后（去重集合保证不重复）
+    // 通配在前、显式在后（唯一性由封存保证，与顺序无关）
     DSNetBuildData net_data2;
     DSNetContext ctx2 = make_ctx(env, block_data, net_data2, "VDD");
     ctx2.connections.push_back({"*", "VDD"});
     ctx2.connections.push_back({"u1", "VDD"});
     node.handle(ctx2);
+    net_data2.seal_all_connections();
     const auto conns2 = net_data2.connections_.at(CMNetId{2});
     ASSERT_EQ(conns2->size(), 2u);
     size_t u1_vdd2 = 0;
@@ -981,13 +1115,15 @@ TEST(DSNetWildcardConnectionTest, ExplicitWinsNoDuplicate) {
     }
     EXPECT_EQ(u1_vdd2, 1u);
     EXPECT_EQ(net_data2.stats_.connection_count, 2u);
-    EXPECT_EQ(net_data2.stats_.wildcard_connection_count, 1u);
+    EXPECT_EQ(net_data2.stats_.wildcard_connection_count, 2u);
+    EXPECT_EQ(net_data2.stats_.duplicate_connection_count, 1u);
 }
 
-// 同一张网写两条同引脚通配（2026-11-24 评审修订，上游实证：连接按集合
-// 处理——OpenROAD 对 `( * VDD )` 写两条的变体日志记 1504 条语句、网上的
-// 实例引脚连接仍 752 条）：每实例仍只有一条连接；条目计数按原始条目数
-// 计 2，连接计数只计实际展开条数
+// 同一张网写两条同引脚通配（2026-11-24 评审修订 + 连接表唯一性裁定，
+// 上游实证：连接按集合处理——OpenROAD 对 `( * VDD )` 写两条的变体日志
+// 记 1504 条语句、网上的实例引脚连接仍 752 条）：两条通配各自展开（封
+// 存前 4 条），封存去重后每实例仍只有一条连接；duplicate_connection_
+// count = 封存时去掉的重复条数
 TEST(DSNetWildcardConnectionTest, DuplicateWildcardEntriesDeduplicated) {
     TestEnv env;
     DSBlockBuildData block_data = env.make_multi_block_data();
@@ -998,6 +1134,7 @@ TEST(DSNetWildcardConnectionTest, DuplicateWildcardEntriesDeduplicated) {
     ctx.connections.push_back({"*", "VDD"});
     DSNetConnectionParseNode node;
     node.handle(ctx);
+    const uint64_t removed = net_data.seal_all_connections();
 
     const auto conns = net_data.connections_.at(CMNetId{2});
     ASSERT_EQ(conns->size(), 2u);  // u1/u2 各一条
@@ -1011,7 +1148,9 @@ TEST(DSNetWildcardConnectionTest, DuplicateWildcardEntriesDeduplicated) {
     EXPECT_EQ(u2_vdd, 1u);
     EXPECT_EQ(net_data.stats_.connection_count, 2u);
     EXPECT_EQ(net_data.stats_.wildcard_entry_count, 2u);
-    EXPECT_EQ(net_data.stats_.wildcard_connection_count, 2u);
+    EXPECT_EQ(net_data.stats_.wildcard_connection_count, 4u);  // 封存前
+    EXPECT_EQ(net_data.stats_.duplicate_connection_count, 2u);
+    EXPECT_EQ(removed, 2u);
 }
 
 // 含伪单元实例（cell 引用快照表外）：通配路径静默跳过（与显式路径的
@@ -1030,6 +1169,7 @@ TEST(DSNetWildcardConnectionTest, FakeCellInstanceSkippedSilently) {
     ctx.connections.push_back({"*", "VDD"});
     DSNetConnectionParseNode node;
     node.handle(ctx);
+    net_data.seal_all_connections();
 
     const auto conns = net_data.connections_.at(CMNetId{2});
     ASSERT_EQ(conns->size(), 2u);  // u1/u2 展开、ghost 跳过

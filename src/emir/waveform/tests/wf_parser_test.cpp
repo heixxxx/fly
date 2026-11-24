@@ -183,6 +183,76 @@ TEST_F(WfBasicTest, IdReuseAliases) {
     EXPECT_EQ(out_.tracks_[clk_track].bits_[0].size(), 7u);
 }
 
+// ── 转义标识符（2026-11-24 真实数据兼容裁定）────────────────────────
+
+// Verilog 转义标识符以反斜杠起头、以空白结尾，名字本身不含那个反斜杠
+//——仿真器（Icarus Verilog）在 $var/$scope 行原样写出「反斜杠 + 名
+// 字」（gcd 实测 460 个变量里 38 个此形态）。解析边界去掉开头的一个：
+// 标量转义名、向量转义名（位区间 token 不动）、转义的作用域名
+TEST(WfEscapedNameTest, LeadingBackslashStrippedOnScalarVectorAndScope) {
+    const CMString vcd =
+        "$timescale 1ns $end\n"
+        "$scope module \\wf_top $end\n"           // 转义的作用域名
+        "$var wire 1 ! \\n_xor $end\n"            // 标量转义名
+        "$var wire 4 * \\count [3:0] $end\n"      // 向量转义名 + 位区间
+        "$scope module \\u_and1 $end\n"           // 嵌套转义作用域
+        "$var wire 1 ) \\ZN $end\n"
+        "$upscope $end\n"
+        "$upscope $end\n"
+        "$enddefinitions $end\n"
+        "#0\n0!\nz\")\n#10\n1!\n";
+    const WFVcdFile r = wf_parse_vcd_text(vcd, "t");
+    // 转义作用域 → 全路径名的 scope 段无反斜杠
+    const WFVar* scalar = r.vars_.find_by_name("wf_top/n_xor");
+    ASSERT_NE(scalar, nullptr);
+    EXPECT_EQ(scalar->id_code_, "!");
+    EXPECT_EQ(scalar->width_, 1u);
+    EXPECT_FALSE(scalar->has_range_);
+    // 向量转义名：去转义 + 位区间照旧解析（[3:0]）
+    const WFVar* vector_var = r.vars_.find_by_name("wf_top/count");
+    ASSERT_NE(vector_var, nullptr);
+    EXPECT_EQ(vector_var->width_, 4u);
+    EXPECT_TRUE(vector_var->has_range_);
+    EXPECT_EQ(vector_var->range_left_, 3);
+    EXPECT_EQ(vector_var->range_right_, 0);
+    // 嵌套转义作用域内的引脚
+    const WFVar* pin = r.vars_.find_by_name("wf_top/u_and1/ZN");
+    ASSERT_NE(pin, nullptr);
+    EXPECT_EQ(pin->id_code_, ")");
+    // 事件段按 id 码正常落到轨道（转义处理不影响事件解析；1ns = 1e6 fs，
+    // #10 = 1e7 fs）
+    const size_t track = r.vars_.find_track("!");
+    ASSERT_NE(track, WFVarTable::kNoTrack);
+    ASSERT_EQ(r.tracks_[track].bits_[0].size(), 2u);
+    EXPECT_EQ(r.tracks_[track].bits_[0][0].time_fs_, 0u);
+    EXPECT_EQ(r.tracks_[track].bits_[0][1].time_fs_, 10000000u);
+}
+
+// 只去开头一个；名字中间的反斜杠属于名字本身，不动（`\a\b` → "a\b"，
+// 开头去了、中间保留；非转义形态的 "a\b" 原样保留——两形态放不同
+// scope 便于区分）
+TEST(WfEscapedNameTest, MidNameBackslashUntouched) {
+    const CMString vcd =
+        "$timescale 1ns $end\n"
+        "$scope module t $end\n"
+        "$var wire 1 ! \\a\\b $end\n"      // 转义开头 + 中间反斜杠
+        "$scope module s $end\n"
+        "$var wire 1 \" a\\b $end\n"       // 非转义形态（不以反斜杠开头）
+        "$upscope $end\n"
+        "$upscope $end\n"
+        "$enddefinitions $end\n"
+        "#0\n0!\n0\"\n";
+    const WFVcdFile r = wf_parse_vcd_text(vcd, "t");
+    // 转义开头去掉、中间反斜杠保留
+    const WFVar* esc = r.vars_.find_by_name("t/a\\b");
+    ASSERT_NE(esc, nullptr);
+    EXPECT_EQ(esc->id_code_, "!");
+    // 非转义形态原样（中间反斜杠本就属于名字）
+    const WFVar* plain = r.vars_.find_by_name("t/s/a\\b");
+    ASSERT_NE(plain, nullptr);
+    EXPECT_EQ(plain->id_code_, "\"");
+}
+
 // 事件段全形态：标量 0/1 + x/z 大小写、向量最高位在前/短值补 0/含 x/z
 // 位（plan §11.2 事件段矩阵；期望值按 basic.vcd 逐行手工推导）
 TEST_F(WfBasicTest, ScalarAndVectorEvents) {

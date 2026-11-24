@@ -74,6 +74,9 @@ DSNetBuildData make_nets(
             n.add_connection(CMNetId{net_id}, std::move(c));
         }
     }
+    // 2026-11-24 连接表唯一性裁定：S7 读已封存的 S5b 产物（模拟生产解
+    // 析入口尾部的封存点）
+    n.seal_all_connections();
     return n;
 }
 

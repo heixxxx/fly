@@ -3,13 +3,16 @@
 // get_cell 指针注入零拷贝（⑰）、fake cell 结构就位（⑲/⑳）、
 // namemap 双向一致性（②）、R4 pin 三字段按 pin 维度组织（DSPin 全局
 // pin_id_/placement_status_、表/几何按全局 pin id 检索、cell 维度便利
-// 聚合）。
+// 聚合）+ DSConnList（三处连接表统一容器，2026-11-24 连接表唯一性裁
+// 定：构建期追加、封存排序去重、封存后只读）。
+#include <emir/design/cpp/ds_flatten.h>
 #include <emir/design/cpp/ds_types.h>
 
 #include <gtest/gtest.h>
 
 #include <algorithm>
 #include <stdexcept>
+#include <utility>
 
 namespace {
 
@@ -747,8 +750,10 @@ TEST(DSWeakObservationTest, LifetimeSemanticsAndByteIdenticalRoundTrip) {
     // 双向验证（2026-09-16 裁定 ②b）：①宿主存活期内 lock 成功且共享视
     // 图可用；②共享视图持有者使值对象脱离宿主独立存活（宿主析构后仍可
     // 读）；③weak 观察口在宿主亡后 lock 失败（类型级安全，不悬空）。
+    // （2026-11-24 连接表唯一性裁定：只读接口断言封存——读前先
+    // seal_all_connections()，模拟生产解析入口尾部的封存点。）
     CMString blob;
-    CMSharedPtr<const CMVector<DSNetConnection>> leaked_view;
+    CMSharedPtr<const DSConnList<DSNetConnection>> leaked_view;
     {
         DSNetBuildData net;
         net.set_block_name("blk");
@@ -756,6 +761,7 @@ TEST(DSWeakObservationTest, LifetimeSemanticsAndByteIdenticalRoundTrip) {
         c.instance_local_id_ = CMInstanceId{1};
         c.pin_id_ = CMPinId{2};
         net.add_connection(CMNetId{1}, std::move(c));
+        net.seal_all_connections();
         blob = [&] {
             CMString out;
             FLY_ENCODE(net, out);
@@ -774,7 +780,7 @@ TEST(DSWeakObservationTest, LifetimeSemanticsAndByteIdenticalRoundTrip) {
     EXPECT_EQ(leaked_view->size(), 1u);
 
     // ③ 新宿主亡后观察口 lock 失败
-    CMWeakPtr<const CMVector<DSNetConnection>> observation;
+    CMWeakPtr<const DSConnList<DSNetConnection>> observation;
     {
         DSNetBuildData net;
         net.add_connection(CMNetId{1}, DSNetConnection{});
@@ -791,6 +797,133 @@ TEST(DSWeakObservationTest, LifetimeSemanticsAndByteIdenticalRoundTrip) {
     ASSERT_NE(conns, nullptr);
     EXPECT_EQ(conns->size(), 1u);
     EXPECT_EQ((*conns)[0].pin_id_, 2u);
+}
+
+// —— 2026-11-24 连接表唯一性裁定：DSConnList（三处连接表统一容器）——
+
+// 构造 DSNetConnection（实例局部 id + 引脚 id）
+DSNetConnection make_net_conn(uint64_t inst, uint32_t pin) {
+    DSNetConnection c;
+    c.instance_local_id_ = CMInstanceId{inst};
+    c.pin_id_ = CMPinId{pin};
+    return c;
+}
+
+// 封存后 (实例, 引脚) 升序且无重复；返回值 = 去掉条数；幂等
+TEST(DSConnListTest, SealSortsDedupesAndCounts) {
+    DSConnList<DSNetConnection> list;
+    list.add(make_net_conn(2, 5));
+    list.add(make_net_conn(1, 3));
+    list.add(make_net_conn(2, 5));   // 与第 1 条键相同（重复）
+    list.add(make_net_conn(1, 9));
+    list.add(make_net_conn(1, 3));   // 与第 2 条键相同（重复）
+    EXPECT_FALSE(list.sealed());
+    EXPECT_EQ(list.seal(), 2u);      // 去掉两条重复
+    EXPECT_TRUE(list.sealed());
+    ASSERT_EQ(list.size(), 3u);      // (1,3) (1,9) (2,5) 升序
+    EXPECT_EQ(list[0].instance_local_id_, CMInstanceId{1});
+    EXPECT_EQ(list[0].pin_id_, CMPinId{3});
+    EXPECT_EQ(list[1].instance_local_id_, CMInstanceId{1});
+    EXPECT_EQ(list[1].pin_id_, CMPinId{9});
+    EXPECT_EQ(list[2].instance_local_id_, CMInstanceId{2});
+    EXPECT_EQ(list[2].pin_id_, CMPinId{5});
+    // 幂等：已封存的表再封存无副作用
+    EXPECT_EQ(list.seal(), 0u);
+    EXPECT_EQ(list.size(), 3u);
+    // 按键二分查找（命中 + 未命中 nullptr）
+    EXPECT_NE(list.find(std::make_pair(CMInstanceId{1}, CMPinId{9})),
+              nullptr);
+    EXPECT_EQ(list.find(std::make_pair(CMInstanceId{1}, CMPinId{4})),
+              nullptr);
+}
+
+// 三种条目类型各自实例化并各跑一遍排序去重（DSNetConnection 已在上；
+// DSNetConnEntry = (实例全局 id, 引脚)；DSPartConnection = (网全局 id,
+// 引脚)）
+TEST(DSConnListTest, AllThreeEntryTypesSortDedupe) {
+    DSConnList<DSNetConnEntry> net_entries;
+    DSNetConnEntry e1;
+    e1.inst_id_ = CMInstanceId{7};
+    e1.pin_id_ = CMPinId{2};
+    DSNetConnEntry e2;
+    e2.inst_id_ = CMInstanceId{3};
+    e2.pin_id_ = CMPinId{9};
+    DSNetConnEntry e3;
+    e3.inst_id_ = CMInstanceId{7};
+    e3.pin_id_ = CMPinId{2};   // 与 e1 重复
+    net_entries.add(std::move(e1));
+    net_entries.add(std::move(e2));
+    net_entries.add(std::move(e3));
+    EXPECT_EQ(net_entries.seal(), 1u);
+    ASSERT_EQ(net_entries.size(), 2u);
+    EXPECT_EQ(net_entries[0].inst_id_, CMInstanceId{3});   // (3,9) < (7,2)
+    EXPECT_EQ(net_entries[1].inst_id_, CMInstanceId{7});
+
+    DSConnList<DSPartConnection> part_conns;
+    DSPartConnection p1;
+    p1.net_global_id_ = CMNetId{4};
+    p1.pin_id_ = CMPinId{1};
+    DSPartConnection p2;
+    p2.net_global_id_ = CMNetId{2};
+    p2.pin_id_ = CMPinId{8};
+    DSPartConnection p3;
+    p3.net_global_id_ = CMNetId{4};
+    p3.pin_id_ = CMPinId{1};   // 与 p1 重复
+    part_conns.add(std::move(p1));
+    part_conns.add(std::move(p2));
+    part_conns.add(std::move(p3));
+    EXPECT_EQ(part_conns.seal(), 1u);
+    ASSERT_EQ(part_conns.size(), 2u);
+    EXPECT_EQ(part_conns[0].net_global_id_, CMNetId{2});   // (2,8) < (4,1)
+    EXPECT_EQ(part_conns[1].net_global_id_, CMNetId{4});
+}
+
+// append(已封存的表) 之后封存，重复被去掉（分区产物合并的形态）
+TEST(DSConnListTest, AppendSealedThenSealDedupes) {
+    DSConnList<DSNetConnection> src;
+    src.add(make_net_conn(1, 3));
+    src.add(make_net_conn(2, 5));
+    src.seal();
+    DSConnList<DSNetConnection> dst;
+    dst.add(make_net_conn(1, 3));   // 与 src 首条键相同（合并期重复）
+    dst.append(src);
+    EXPECT_EQ(dst.seal(), 1u);
+    ASSERT_EQ(dst.size(), 2u);
+    EXPECT_EQ(dst[0].instance_local_id_, CMInstanceId{1});
+    EXPECT_EQ(dst[1].instance_local_id_, CMInstanceId{2});
+}
+
+// 序列化往返：sealed 标志与条目序保持（任何持久化对象都是封存后的——
+// 往返后只读接口直接可用）
+TEST(DSConnListTest, SerializeRoundTripKeepsSealedState) {
+    DSConnList<DSNetConnection> list;
+    list.add(make_net_conn(2, 5));
+    list.add(make_net_conn(1, 3));
+    list.seal();
+    CMString blob;
+    FLY_ENCODE(list, blob);
+    DSConnList<DSNetConnection> back;
+    FLY_DECODE(blob, DSConnList<DSNetConnection>, back);
+    EXPECT_TRUE(back.sealed());
+    ASSERT_EQ(back.size(), 2u);
+    EXPECT_EQ(back[0].pin_id_, CMPinId{3});
+    EXPECT_EQ(back[1].pin_id_, CMPinId{5});
+}
+
+// 未封存的表调用只读接口是编程错误（类注释的契约，assert 在调试构建
+// 生效）。仓库没有 death-test 先例（gtest 断言设施与 fork + SIGABRT 的
+// 组合在既有测试中未出现——fatal 类用例的 expect_fatal_exit_code 断言
+// 「正常退出 + 退出码」，SIGABRT 是异常终止，无法复用），本用例只验证
+// 行为契约的可观察面：sealed() 标志在 add 后为假、seal 后为真——断言
+// 本身由 DSConnList 方法体内的 assert 保证（NDEBUG 未定义的构建生效），
+// 不在本用例触发。
+TEST(DSConnListTest, ReadOnlyContractDocumentedBySealedFlag) {
+    DSConnList<DSNetConnection> list;
+    EXPECT_FALSE(list.sealed());
+    list.add(make_net_conn(1, 3));
+    EXPECT_FALSE(list.sealed());
+    list.seal();
+    EXPECT_TRUE(list.sealed());
 }
 
 }  // namespace

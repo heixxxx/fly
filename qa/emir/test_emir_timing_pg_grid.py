@@ -5,10 +5,15 @@ OpenROAD 布图/布局/CTS/布线 → OpenSTA 产出 pg_grid.twf，双跑逐字�
 见 data/timing/README.md）。design db 以 alpha target_partitions='2x1'
 直切两分区（裁定 8：pg_grid 断言 ≥2 分区不锁死数量，数据落定后收紧）。
 
-断言（12943 条网络维度 TWF）：
-  - hit=12878（精确回归锚：全部有连接的网条目挂到 driver 引脚所在分区）
-  - dangling=65（无连接记录的网——design db NETS 表不含的合法兜底口径）
-  - unplaced=1（无 primary 分区副本）
+断言（12943 条网络维度 TWF；2026-11-24 端口角色裁定后的新锚）：
+  - hit=12880（精确回归锚：全部有连接的网条目挂到驱动者所在分区——
+    实例驱动者挂驱动者分区，输入端口驱动者〔新口径：INPUT 端口 = 它所
+    在网的驱动者〕挂块自身编号下的端口引脚、写进全部负载所在分区。
+    旧锚 12878 + 2 = 两张由顶层输入端口驱动且有布线的网〔clk 主网与复
+    位主网〕旧口径被判「无 driver 位条目」悬空、新口径命中）
+  - dangling=63（无连接记录的网 65 − 上述 2 张端口驱动网）
+  - unplaced=0（旧锚 1 = 端口条目被计成未放置实例的误报——端口条目不
+    是实例，2026-11-24 裁定后不再计入；pg_grid 无未放置实例）
   - net_name_miss=0（pg_grid 网名与 DEF 全量对齐）
   - 分区路由：两分区均有实例时序数据、并集覆盖命中实例
 """
@@ -64,10 +69,10 @@ INFO("[WAIT] timing frozen (pg_grid 12943 entries)")
 
 s = timing_db.load_timing_summary_obj()
 assert s.total_entry_count == 12943, s.total_entry_count
-assert s.total_hit_count == 12878, s.total_hit_count
-assert s.dangling_net_count == 65, s.dangling_net_count
+assert s.total_hit_count == 12880, s.total_hit_count
+assert s.dangling_net_count == 63, s.dangling_net_count
 assert s.net_name_miss_count == 0, s.net_name_miss_count
-assert s.unplaced_instance_count == 1, s.unplaced_instance_count
+assert s.unplaced_instance_count == 0, s.unplaced_instance_count
 assert s.cross_file_conflict_count == 0
 assert len(s.files) == 1
 assert s.files[0].failed_chunk_count == 0
@@ -90,9 +95,13 @@ for xp, yp in parts:
     assert part.size > 0, f"PART({xp},{yp}) unexpectedly empty"
     total += part.size
     INFO(f"[OK] PART({xp},{yp}): {part.size} instances with timing")
-assert total == s.total_hit_count, (total, s.total_hit_count)
+# hit − total = 1：两张端口驱动网（clk/复位主网）的条目挂 root 块自身
+# 实例编号 0 下的两个端口引脚——hit 按条目计（+2），分区实例槽按 distinct
+# 实例 id 计（root 0 一个槽，+1）
+assert total == 12879, (total, s.total_hit_count)
 INFO(f"[OK] partition routing: {total} instances across {len(parts)} "
-     f"partitions (primary exactly-one)")
+     f"partitions (primary exactly-one; hit-1 = two port-driven nets "
+     f"sharing the root self slot)")
 
 # 点查抽查：分区 0 的首个实例（遍历面 → debug API 一致性）
 part0 = load_partition_timing(timing_db, 0, 0)

@@ -300,7 +300,10 @@ class DesignDb(Database):
 
     def _conn_summary(self, conn, want_detail):
         """连接 flags 概要（统计数位口径：driver/receiver/hybrid 三分类
-        互斥单列，power/ground/clock 端点直接数位——零推导）。"""
+        互斥单列，power/ground/clock 端点直接数位——零推导。driver/
+        receiver 是条目在网里的角色：实例引脚条目按引脚方向；端口条目
+        按网的角色反向标——输入端口 = 驱动者、输出端口 = 负载，2026-11-24
+        用户裁定）。"""
         summary = {
             "is_port": conn.is_port, "is_driver": conn.is_driver,
             "is_receiver": conn.is_receiver, "is_power": conn.is_power,
@@ -366,7 +369,9 @@ class DesignDb(Database):
         返回 dict：instance id/层级全路径名/全局坐标 pos 与 orient/
         placement_status/primary partition id/来源 cell（id + name）/
         instance connections（端点 net id + 层级名 + flags 概要——跟随
-        本分区 INST_CONNECTIONS 副本）。
+        本分区 INST_CONNECTIONS 副本；条目 driver/receiver = 在网里的
+        角色：本实例的引脚条目按引脚方向；root 块自身端口条目〔键 0〕
+        按网的角色反向标——见 get_net docstring，2026-11-24 用户裁定）。
         """
         design, inst_mapper, net_mapper = self._ensure_mappers()
         gid = self._to_id("inst", inst)
@@ -419,7 +424,11 @@ class DesignDb(Database):
         SIGNAL——2026-09-13 重组裁定随 DSNet.use_ 直取）/connections 数
         量/driver/receiver/hybrid 数（三分类互斥单列）与 power/ground/
         clock/port 端点计数——统计直接数连接 flags 位（展平分区已存
-        位，零推导）。**pg 网（全局 pg 网 id 集命中）不返回 connections 明细**
+        位，零推导）。driver/receiver = 条目在网里的角色（2026-11-24
+        用户裁定）：实例引脚条目按引脚方向；**端口条目按网的角色反向
+        标**——块的输入端口是它所在网的驱动者（driver 位）、输出端口
+        是负载（receiver 位）、双向端口两者，与实例引脚口径相反。
+        **pg 网（全局 pg 网 id 集命中）不返回 connections 明细**
         （数据量保护——只返回属性与计数概要）；非 pg 网附 connections 列
         表：端点实例 id + 层级名 + pin id + pin 名 + flags 概要（port 条
         目如实呈现——端点实例 = 块实例层级名 + port 名）。is_pg 判定经

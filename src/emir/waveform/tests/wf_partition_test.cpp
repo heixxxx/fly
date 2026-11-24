@@ -412,7 +412,8 @@ void add_flat_partition_nets(WFDesignContext& ctx, const FlatEnv& env) {
         c.inst_id_ = CMInstanceId{env.gate_globals[i]};
         c.pin_id_ = env.pin_a;
         c.set_receiver();
-        n->connections_.push_back(std::move(c));
+        n->connections_.add(std::move(c));
+        n->connections_.seal();  // 2026-11-24 连接表唯一性裁定：下游读封存后的表
         nets.nets_[n->net_id_] = std::move(n);
     }
     ctx.add_partition_nets(std::make_shared<DSPartitionNets>(std::move(nets)));
@@ -436,7 +437,8 @@ void add_blk_partition_nets(WFDesignContext& ctx, const BlkEnv& env) {
         if (receiver) {
             c.set_receiver();
         }
-        n->connections_.push_back(std::move(c));
+        n->connections_.add(std::move(c));
+        n->connections_.seal();  // 2026-11-24 连接表唯一性裁定
         nets.nets_[n->net_id_] = std::move(n);
     };
     // A#1
@@ -613,12 +615,15 @@ TEST_F(WfPartitionTest, ConvertTwoFormsAndDedup) {
             c.inst_id_ = CMInstanceId{inst};
             c.pin_id_ = pin;
             c.set_receiver();
-            n->connections_.push_back(std::move(c));
+            n->connections_.add(std::move(c));
         };
         const CMSharedPtr<DSNet> nt = add_net(1);
         add_conn(nt, 3, env.pin_a);
         add_conn(nt, 2, env.pin_a);
         add_conn(add_net(2), 4, env.pin_a);
+        for (auto& [nid, n] : nets.nets_) {
+            n->connections_.seal();  // 2026-11-24 连接表唯一性裁定
+        }
         ctx->add_partition_nets(
             std::make_shared<DSPartitionNets>(std::move(nets)));
     }
@@ -674,6 +679,52 @@ TEST_F(WfPartitionTest, ConvertTwoFormsAndDedup) {
     EXPECT_EQ(nt_pin2->rise_count_, nt_pin->rise_count_);
     // 波形 id = 容器数组下标（裁定 4）
     EXPECT_EQ(merged.waveform.waveforms_[1].waveform_id_, 1u);
+}
+
+// 端口条目不是实例（2026-11-24 端口角色裁定）：attach_net 收集连接位与
+// 数驱动者时排除端口条目——端口不计未放置（WFMG::0008 恒 0）、不产统计
+// 条目；实例条目照常挂载
+TEST_F(WfPartitionTest, AttachNetExcludesPortEntries) {
+    const FlatEnv env("top", {"nt"});
+    const auto ctx = make_flat_ctx(env);
+    // 分区 NETS：网 nt = root 端口条目（inst 0 = root 块自身、port +
+    // driver/receiver——端口条目形态与解析产物同构）+ 门实例 receiver
+    // 条目（u_g_nt = 3）
+    {
+        DSPartitionNets nets;
+        nets.part_id_ = kPid;
+        auto n = std::make_shared<DSNet>();
+        n->net_id_ = CMNetId{1};
+        DSNetConnEntry port;
+        port.inst_id_ = CMInstanceId{0};   // root 块自身（设计级端口）
+        port.pin_id_ = env.pin_a;
+        port.set_port();
+        port.set_driver();   // 输入端口 = 它所在网的驱动者
+        port.set_receiver();
+        n->connections_.add(std::move(port));
+        DSNetConnEntry inst;
+        inst.inst_id_ = CMInstanceId{3};
+        inst.pin_id_ = env.pin_a;
+        inst.set_receiver();
+        n->connections_.add(std::move(inst));
+        n->connections_.seal();  // 2026-11-24 连接表唯一性裁定
+        nets.nets_[CMNetId{1}] = std::move(n);
+        ctx->add_partition_nets(
+            std::make_shared<DSPartitionNets>(std::move(nets)));
+    }
+    write_file("portnet.vcd",
+               wrap_vcd("top", {"$var wire 1 ! nt $end"},
+                        "#0\n$dumpvars\n0!\n$end\n#10\n1!\n"));
+    const FileSlices file =
+        convert_file(*ctx, file_path("portnet.vcd"), WFFileBinding{}, 0);
+    const WFFileStats& fs = file.slices.at(0).stats_.files_.at(0);
+    EXPECT_EQ(fs.hit_count_, 1u);
+    EXPECT_EQ(fs.dangling_net_count_, 0u);
+    EXPECT_EQ(fs.unplaced_instance_count_, 0u);  // 端口条目不计未放置
+    const MergeResult merged = merge_files(*ctx, {&file}, kPid);
+    // 统计条目只挂实例连接位（门 3/A）；端口条目（inst 0）无条目
+    ASSERT_NE(find_pin(merged.activity, 3, env.pin_a), nullptr);
+    EXPECT_EQ(find_pin(merged.activity, 0, env.pin_a), nullptr);
 }
 
 // 双未命中：形态①未命中（0001）+ 形态②未命中（0002）分别计数
@@ -946,7 +997,8 @@ TEST_F(WfPartitionTest, BlockPortBindingAndPgPort) {
         c.inst_id_ = CMInstanceId{3};  // u_d = BLKP 区间 [2,4) local 1
         c.pin_id_ = CMPinId{1};
         c.set_driver();
-        n->connections_.push_back(std::move(c));
+        n->connections_.add(std::move(c));
+        n->connections_.seal();  // 2026-11-24 连接表唯一性裁定
         nets.nets_[n->net_id_] = std::move(n);
     }
     ctx->add_partition_nets(std::make_shared<DSPartitionNets>(std::move(nets)));
@@ -1559,7 +1611,7 @@ TEST_F(WfPartitionTest, FourLevelWaveformFallback) {
             } else {
                 c.set_receiver();
             }
-            n->connections_.push_back(std::move(c));
+            n->connections_.add(std::move(c));
         };
         CMSharedPtr<DSNet> na = add_net(1);
         conn(na, 1, env.pin_zn, true);
@@ -1576,6 +1628,10 @@ TEST_F(WfPartitionTest, FourLevelWaveformFallback) {
         CMSharedPtr<DSNet> nd = add_net(4);
         conn(nd, 10, env.pin_zn, true);
         conn(nd, 11, env.pin_a, false);
+        // 2026-11-24 连接表唯一性裁定：下游读封存后的表——构造后封存
+        for (auto& [nid, n] : nets.nets_) {
+            n->connections_.seal();
+        }
         ctx->add_partition_nets(
             std::make_shared<DSPartitionNets>(std::move(nets)));
     }
@@ -1685,12 +1741,13 @@ TEST_F(WfPartitionTest, PinFragmentCopiedToNetPartitions) {
         d.inst_id_ = CMInstanceId{1};       // x1/ZN driver（pid 0）
         d.pin_id_ = env.pin_zn;
         d.set_driver();
-        n->connections_.push_back(std::move(d));
+        n->connections_.add(std::move(d));
         DSNetConnEntry r;
         r.inst_id_ = CMInstanceId{2};       // 门/A receiver（pid 1）
         r.pin_id_ = env.pin_a;
         r.set_receiver();
-        n->connections_.push_back(std::move(r));
+        n->connections_.add(std::move(r));
+        n->connections_.seal();  // 2026-11-24 连接表唯一性裁定
         nets.nets_[n->net_id_] = std::move(n);
         ctx->add_partition_nets(
             std::make_shared<DSPartitionNets>(std::move(nets)));

@@ -416,15 +416,20 @@ TEST(DsDefUnescapeTest, AdapterStoresRealNamesForAllFourKinds) {
                       test::borrow(net_data), net_stats, 0, 1000);
     EXPECT_EQ(net_stats.net_count, 1);
     ASSERT_EQ(net_data.connections_.at(CMNetId{1})->size(), 2u);
-    const DSNetConnection& inst_conn =
+    // 封存后按 (实例, 引脚) 升序——端口条目（local 0 占位）在前；top[0]
+    // 是 INPUT 端口 → 按网的角色标 driver（2026-11-24 用户裁定，不再沿
+    // 用引脚方向的 receiver）
+    const DSNetConnection& port_conn =
         (*net_data.connections_.at(CMNetId{1}))[0];
+    EXPECT_TRUE(port_conn.is_port());
+    EXPECT_EQ(port_conn.pin_id_, port_pin_id);  // top[0]
+    EXPECT_TRUE(port_conn.is_driver());
+    EXPECT_FALSE(port_conn.is_receiver());
+    const DSNetConnection& inst_conn =
+        (*net_data.connections_.at(CMNetId{1}))[1];
     EXPECT_EQ(inst_conn.instance_local_id_, 1u);  // inst[0]
     EXPECT_EQ(inst_conn.pin_id_, 0u);             // A
     EXPECT_TRUE(inst_conn.is_receiver());
-    const DSNetConnection& port_conn =
-        (*net_data.connections_.at(CMNetId{1}))[1];
-    EXPECT_TRUE(port_conn.is_port());
-    EXPECT_EQ(port_conn.pin_id_, port_pin_id);  // top[0]
     EXPECT_EQ(net_stats.skipped_invalid_connection_count, 0);
 
 }

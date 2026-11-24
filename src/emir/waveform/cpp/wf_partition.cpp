@@ -644,7 +644,9 @@ void mount_stats(ConvertEnv& env, CMPartitionId pid, CMInstanceId inst_id,
 // 引脚身份波形分区复制（§8 扩展范围，裁定 V-5）：自身实例 primary 分区
 // 已挂载，此处补挂所连网全部连接位实例的 primary 分区（§7.3 四级回落
 // 3/4 级候选波形实体必在本区的每区自足保证）。同分区去重；未放置连接
-// 位静默跳过（网侧挂载已计数，此处不重复计 0008）。
+// 位静默跳过（网侧挂载已计数，此处不重复计 0008）。端口条目不是实例
+//（实例编号 = 块自身占位值）——排除，不计未放置（2026-11-24 端口角色
+// 裁定：判定只看 is_port()，不用驱动/接收标记推断「是不是端口」）。
 void copy_pin_fragments(ConvertEnv& env, CMPartitionId own_pid,
                         const WFWaveformKey& key, size_t track,
                         const CMVector<uint32_t>& bits) {
@@ -661,6 +663,9 @@ void copy_pin_fragments(ConvertEnv& env, CMPartitionId own_pid,
     }
     CMVector<CMPartitionId> pids{own_pid};
     for (const DSNetConnEntry& conn : net->connections_) {
+        if (conn.is_port()) {
+            continue;
+        }
         if (!(conn.is_driver() || conn.is_receiver())) {
             continue;
         }
@@ -678,7 +683,10 @@ void copy_pin_fragments(ConvertEnv& env, CMPartitionId own_pid,
 // 单网挂载：网 → 全部连接位（driver + receiver；§7 形态①——事件侧去重
 // 为一份波形 + 全部连接位引脚各一条统计）。pg 已由调用方判定。连接位分
 // 属多区时每区各存本区一份波形片段。命中 ≥1 引脚返回 true（身份键经
-// key_out 回传——§7.2 轨道归并材料）。
+// key_out 回传——§7.2 轨道归并材料）。端口条目不是实例（实例编号 = 块
+// 自身占位值）——收集连接位与数驱动者时排除、不计未放置实例
+//（2026-11-24 端口角色裁定：判定只看 is_port()，不用驱动/接收标记推断
+// 「是不是端口」）。
 bool attach_net(ConvertEnv& env, CMNetId net_id, size_t track,
                 const CMVector<uint32_t>& bits, WFWaveformKey& key_out) {
     const WFWaveformKey key{true, net_id, CMInstanceId{}, CMPinId{}};
@@ -692,6 +700,9 @@ bool attach_net(ConvertEnv& env, CMNetId net_id, size_t track,
     CMVector<const DSNetConnEntry*> attachable;
     size_t drivers = 0;
     for (const DSNetConnEntry& conn : net->connections_) {
+        if (conn.is_port()) {
+            continue;  // 端口条目不是实例：排除
+        }
         if (conn.is_driver() || conn.is_receiver()) {
             attachable.push_back(&conn);
             if (conn.is_driver()) {

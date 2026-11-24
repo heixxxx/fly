@@ -16,9 +16,17 @@ pg_pin 组声明电源地引脚（Nangate45 形态——DSGN::0004 比对认 pg_
     对应电源网；
   - 名字还原：get_net("ctl.st[0]")/("ctl.st[1]") 命中且转义原文形态返
     回 None；端口 convert 双向按真实名字（转义原文查不到）；
+  - 端口条目按网的角色标记（2026-11-24 用户裁定）：ctl.st[0] 连着输入
+    端口 st[0]（= 它所在网的驱动者，driver 位）+ u1/A（receiver）→
+    驱动 1、接收 1；ctl.st[1] 连着输出端口 st[1]（= 负载，receiver
+    位）+ u2/ZN（driver）→ 驱动 1、接收 1；连接表按 (实例, 引脚) 升序
+    ——端口条目（块自身编号 0）在前，连接顺序断言不变；
   - 日志：无 DSGN::0004（pg_pin 组命中）、无 DSGN::0025（通配展开后连
     接全有效）、DSGN::0009 汇总行含「2 wildcard entries expanded to
     4 connections」；
+  - 重复连接条目（连接表唯一性裁定）：case 内派生一个网写两条完全相同
+    显式条目的 DEF 副本建库——连接数不变（数据结构保证唯一）、DSGN::
+    0028 发一次、DSGN::0009 汇总行末尾「1 duplicate connections removed」；
   - 校验报告：2 实例 / 4 网 / 连接 16（NETS 4 + NETS_PG 4 +
     INST_CONNECTIONS 8 = u1 3 + u2 3 + root 自身 port 条目 2）/
     图形 4（信号 2 wire + pg 2 wire）。
@@ -138,18 +146,31 @@ for name, sig_net, sig_pin in (("u1", 1, "A"), ("u2", 2, "ZN")):
 INFO("[OK] get_instance: u1/u2 VDD→VDD net (power bit), VSS→VSS net "
      "(ground bit), signal pin intact")
 
-# ── 名字还原：真实名字命中、转义原文查不到（网 + 端口）───────────────
+# ── 名字还原 + 端口条目按网的角色标记（2026-11-24 用户裁定）─────────
+# ctl.st[0]：输入端口 st[0]（= 它所在网的驱动者，driver 位）+ u1/A
+# （receiver）→ 驱动 1、接收 1；ctl.st[1]：输出端口 st[1]（= 负载，
+# receiver 位）+ u2/ZN（driver）→ 驱动 1、接收 1。连接表按 (实例, 引
+# 脚) 升序——端口条目（块自身编号 0）在前，顺序断言与改造前一致。
 n0 = design_db.get_net("ctl.st[0]")
 assert n0 is not None and n0["id"] == 1 and n0["use"] == "SIGNAL"
-assert n0["connection_count"] == 2 and n0["receiver_count"] == 2 \
-    and n0["driver_count"] == 0
+assert n0["connection_count"] == 2 and n0["receiver_count"] == 1 \
+    and n0["driver_count"] == 1, n0
 assert [(c["pin_name"], c["is_port"]) for c in n0["connections"]] == [
     ("st[0]", True), ("A", False)], n0["connections"]
+assert n0["connections"][0]["is_driver"] \
+    and not n0["connections"][0]["is_receiver"], n0["connections"][0]
+assert n0["connections"][1]["is_receiver"] \
+    and not n0["connections"][1]["is_driver"], n0["connections"][1]
 n1 = design_db.get_net("ctl.st[1]")
 assert n1 is not None and n1["id"] == 2
-assert n1["connection_count"] == 2 and n1["driver_count"] == 2
+assert n1["connection_count"] == 2 and n1["driver_count"] == 1 \
+    and n1["receiver_count"] == 1, n1
 assert [(c["pin_name"], c["is_port"]) for c in n1["connections"]] == [
-    ("st[1]", True), ("ZN", False)]
+    ("st[1]", True), ("ZN", False)], n1["connections"]
+assert n1["connections"][0]["is_receiver"] \
+    and not n1["connections"][0]["is_driver"], n1["connections"][0]
+assert n1["connections"][1]["is_driver"] \
+    and not n1["connections"][1]["is_receiver"], n1["connections"][1]
 assert design_db.get_net("ctl\\.st\\[0\\]") is None, \
     "escaped source form must not be stored"
 assert design_db.get_net("ctl\\.st\\[1\\]") is None
@@ -199,6 +220,44 @@ assert "2 wildcard entries expanded to 4 connections" in msgs, \
     "DSGN::0009 must report wildcard stats"
 INFO("[OK] messages: no DSGN::0004 / DSGN::0025, wildcard stats in "
      "DSGN::0009")
+
+# ── 重复连接条目（连接表唯一性裁定）：派生副本网写两条相同显式条目 ────
+# ctl.st[0] 网重复写一条 ( u1 A )（DEF 重复显式条目——上游工具当集合处
+# 理）：连接数不变（DSConnList 封存去重，数据结构保证唯一）、DSGN::0028
+# 发一次（数据质量信号）、DSGN::0009 行末尾 duplicate 计数 1。
+DUP_DIR = os.path.join(LOG_DIR, "emir_design_pg_wild_dup")
+os.makedirs(DUP_DIR, exist_ok=True)
+DUP_DEF = os.path.join(DUP_DIR, "pg_wild_dup.def")
+with open(os.path.join(DATA, "pg_wild.def")) as f:
+    dup_text = f.read()
+OLD_NET = ("    - ctl\\.st\\[0\\] ( PIN st\\[0\\] ) ( u1 A )\n"
+           "      + ROUTED M1 ( 100 100 ) ( 500 500 ) ;\n")
+NEW_NET = ("    - ctl\\.st\\[0\\] ( PIN st\\[0\\] ) ( u1 A ) ( u1 A )\n"
+           "      + ROUTED M1 ( 100 100 ) ( 500 500 ) ;\n")
+assert OLD_NET in dup_text, "pg_wild.def net statement shape drifted"
+with open(DUP_DEF, "w") as f:
+    f.write(dup_text.replace(OLD_NET, NEW_NET))
+
+dup_db = proj.build_design_db(
+    name="wild_design_dup",
+    def_paths=[DUP_DEF],
+    lef_paths=[os.path.join(DATA, "tech.lef"), os.path.join(DATA,
+                                                           "cells.lef")],
+    lib_db=lib_db,
+)
+assert proj.wait_frozen("wild_design_dup", timeout=180), "dup design freeze"
+dup_n0 = dup_db.get_net("ctl.st[0]")
+assert dup_n0 is not None and dup_n0["connection_count"] == 2 \
+    and dup_n0["driver_count"] == 1 and dup_n0["receiver_count"] == 1, dup_n0
+with open(os.path.join(LOG_DIR, "message.log"), errors="replace") as f:
+    dup_msgs = f.read()
+assert dup_msgs.count("DSGN::0028") == 1, \
+    "DSGN::0028 (duplicate connections) must be emitted exactly once"
+assert "1 duplicate connections removed" in dup_msgs, \
+    "DSGN::0009 must carry the duplicate-connection count"
+INFO("[OK] duplicate explicit entries: connection count unchanged, "
+     "DSGN::0028 once, DSGN::0009 duplicate count")
+shutil.rmtree(DUP_DIR, ignore_errors=True)
 
 get_agent().stop()
 print("[PASS] test_emir_design_pg_wildcard")

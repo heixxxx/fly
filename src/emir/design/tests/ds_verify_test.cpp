@@ -193,14 +193,17 @@ struct PartitionPair {
 
 PartitionPair make_products() {
     PartitionPair pp;
+    // 连接表构造 = DSConnList add + seal（2026-11-24 连接表唯一性裁定：
+    // 校验的不变量建立在封存形态上——测试产物模拟生产封存后的分区对象）
     DSPartConnection c1;
     c1.inst_id_ = CMInstanceId{1};
     c1.net_global_id_ = CMNetId{1};
-    pp.p0.inst_connections_.items_[CMInstanceId{1}].push_back(c1);
+    pp.p0.inst_connections_.items_[CMInstanceId{1}].add(c1);
     DSPartConnection c2;
     c2.inst_id_ = CMInstanceId{1};
     c2.net_global_id_ = CMNetId{2};
-    pp.p0.inst_connections_.items_[CMInstanceId{1}].push_back(c2);
+    pp.p0.inst_connections_.items_[CMInstanceId{1}].add(c2);
+    pp.p0.inst_connections_.items_[CMInstanceId{1}].seal();
     // NETS 信号侧对象（键 1；条目 = DSNetConnEntry——2026-09-13 重组裁定）
     DSPartitionNets& n0 = pp.p0.nets_;
     auto& net1 = n0.nets_[CMNetId{1}];
@@ -208,10 +211,11 @@ PartitionPair make_products() {
     net1->net_id_ = CMNetId{1};
     DSNetConnEntry e1;
     e1.inst_id_ = CMInstanceId{1};
-    net1->connections_.push_back(e1);
+    net1->connections_.add(e1);
     DSNetConnEntry e2;
     e2.inst_id_ = CMInstanceId{2};
-    net1->connections_.push_back(e2);
+    net1->connections_.add(e2);
+    net1->connections_.seal();
     DSGeomEntry g0;
     g0.layer_id_ = CMLayerId{0};
     g0.rect_ = GEORect(0, 100, 500, 140);
@@ -242,18 +246,20 @@ PartitionPair make_products() {
     DSPartConnection c3;
     c3.inst_id_ = CMInstanceId{5};
     c3.net_global_id_ = CMNetId{5};
-    pp.p1.inst_connections_.items_[CMInstanceId{5}].push_back(c3);
+    pp.p1.inst_connections_.items_[CMInstanceId{5}].add(c3);
     DSPartConnection c4;
     c4.inst_id_ = CMInstanceId{5};
     c4.net_global_id_ = CMNetId{6};
-    pp.p1.inst_connections_.items_[CMInstanceId{5}].push_back(c4);
+    pp.p1.inst_connections_.items_[CMInstanceId{5}].add(c4);
+    pp.p1.inst_connections_.items_[CMInstanceId{5}].seal();
     DSPartitionNets& n1 = pp.p1.nets_;
     auto& net5 = n1.nets_[CMNetId{5}];
     if (!net5) net5 = std::make_shared<DSNet>();
     net5->net_id_ = CMNetId{5};
     DSNetConnEntry e3;
     e3.inst_id_ = CMInstanceId{5};
-    net5->connections_.push_back(e3);
+    net5->connections_.add(e3);
+    net5->connections_.seal();
     DSGeomEntry g3;
     g3.layer_id_ = CMLayerId{0};
     g3.rect_ = GEORect(1100, 100, 1500, 140);
@@ -693,6 +699,122 @@ TEST(DSVerifyTest, CleanReportDoesNotFatal) {
     const DSDesignCheckReport report = verify_env_design(env,
                                                          check_products(pp));
     ds_verify_report_or_fatal(report);  // 干净报告正常返回（进程存活）
+}
+
+// ── 9. 连接表结构不变量（损坏类 DSGN::0027，2026-11-24 连接表唯一性
+//    裁定）────────────────────────────────────────────────────────────
+
+// 分区产物里人为注入违反不变量的连接表（构建期 add 不封存——升序无重
+// 复被破坏）→ 分区校验检出，全局汇总后 fatal 退出码 80
+TEST(DSVerifyTest, BrokenConnListDetectedByPartitionCheck) {
+    DSPartitionGeometry geometry;
+    DSPartitionGeometry geometry_pg;
+    DSPartInstances instances;
+    DSPartInstConnections iconns;
+    DSPartitionNets nconns;
+    DSPartitionNets nconns_pg;
+    // NETS 键 7 的连接表：两条相同键条目 + 乱序（未封存——封存会修复，
+    // 正是「不变量被破坏」的注入形态）
+    auto net7 = std::make_shared<DSNet>();
+    net7->net_id_ = CMNetId{7};
+    DSNetConnEntry e1;
+    e1.inst_id_ = CMInstanceId{4};
+    e1.pin_id_ = CMPinId{2};
+    DSNetConnEntry e2 = e1;  // 与 e1 同键（重复）
+    net7->connections_.add(e1);
+    net7->connections_.add(e2);
+    nconns.nets_[CMNetId{7}] = net7;
+    const DSPartitionCheckResult r = ds_verify_partition(
+        CMPartitionId{0}, 0, 0, geometry, geometry_pg, instances, iconns,
+        nconns, nconns_pg);
+    EXPECT_NE(r.conn_list_corruption_, "");
+    // 描述定位到表（NETS[7]）
+    EXPECT_NE(r.conn_list_corruption_.find("NETS[7]"), CMString::npos);
+}
+
+TEST(DSVerifyTest, BrokenInstConnListDetectedByPartitionCheck) {
+    DSPartitionGeometry geometry;
+    DSPartitionGeometry geometry_pg;
+    DSPartInstances instances;
+    DSPartInstConnections iconns;
+    DSPartitionNets nconns;
+    DSPartitionNets nconns_pg;
+    // INST_CONNECTIONS 实例 5 的表：同键两条（网 3 pin 哨兵）
+    DSPartConnection c1;
+    c1.inst_id_ = CMInstanceId{5};
+    c1.net_global_id_ = CMNetId{3};
+    DSPartConnection c2 = c1;  // 同键（重复）
+    iconns.items_[CMInstanceId{5}].add(c1);
+    iconns.items_[CMInstanceId{5}].add(c2);
+    const DSPartitionCheckResult r = ds_verify_partition(
+        CMPartitionId{0}, 0, 0, geometry, geometry_pg, instances, iconns,
+        nconns, nconns_pg);
+    EXPECT_NE(r.conn_list_corruption_, "");
+    EXPECT_NE(r.conn_list_corruption_.find("INST_CONNECTIONS[5]"),
+              CMString::npos);
+}
+
+TEST(DSVerifyTest, SortedConnListPassesPartitionCheck) {
+    DSPartitionGeometry geometry;
+    DSPartitionGeometry geometry_pg;
+    DSPartInstances instances;
+    DSPartInstConnections iconns;
+    DSPartitionNets nconns;
+    DSPartitionNets nconns_pg;
+    // 升序无重复的封存表 → 检查通过（空描述）
+    auto net8 = std::make_shared<DSNet>();
+    net8->net_id_ = CMNetId{8};
+    DSNetConnEntry a;
+    a.inst_id_ = CMInstanceId{1};
+    DSNetConnEntry b;
+    b.inst_id_ = CMInstanceId{2};
+    net8->connections_.add(b);
+    net8->connections_.add(a);
+    net8->connections_.seal();  // 封存排序 → 升序无重复
+    nconns.nets_[CMNetId{8}] = net8;
+    const DSPartitionCheckResult r = ds_verify_partition(
+        CMPartitionId{0}, 0, 0, geometry, geometry_pg, instances, iconns,
+        nconns, nconns_pg);
+    EXPECT_EQ(r.conn_list_corruption_, "");
+}
+
+// 损坏类处置：conn_list_corruption_ 非空 → DSGN::0027 fatal、退出码 80
+TEST(DSVerifyTest, ConnListCorruptionFatalsWithCode80) {
+    DSDesignCheckReport bad;
+    bad.conn_list_corruption_ =
+        "NETS[7]: connection list invariant broken at index 0";
+    fly::test::expect_fatal_exit_code([&] { ds_verify_report_or_fatal(bad); },
+                                      80);
+}
+
+// 分区校验检出 → 全局汇总 → fatal 全链（分区素材进报告 → 处置退出）
+TEST(DSVerifyTest, BrokenConnListFatalsEndToEnd) {
+    DSPartitionGeometry geometry;
+    DSPartitionGeometry geometry_pg;
+    DSPartInstances instances;
+    DSPartInstConnections iconns;
+    DSPartitionNets nconns;
+    DSPartitionNets nconns_pg;
+    auto net9 = std::make_shared<DSNet>();
+    net9->net_id_ = CMNetId{9};
+    DSNetConnEntry e1;
+    e1.inst_id_ = CMInstanceId{4};
+    DSNetConnEntry e2 = e1;  // 重复
+    net9->connections_.add(e1);
+    net9->connections_.add(e2);
+    nconns.nets_[CMNetId{9}] = net9;
+    const DSPartitionCheckResult check = ds_verify_partition(
+        CMPartitionId{0}, 0, 0, geometry, geometry_pg, instances, iconns,
+        nconns, nconns_pg);
+    ASSERT_NE(check.conn_list_corruption_, "");
+    CMVector<CMSharedPtr<const DSPartitionCheckResult>> checks;
+    checks.push_back(test::borrow(check));
+    const DSDesignCheckReport report = ds_verify_design(
+        DSHierTree{}, DSDesign{}, DSStack{}, DSDensityGrid{}, DSNetUnion{},
+        {}, {}, {}, checks);
+    EXPECT_NE(report.conn_list_corruption_, "");
+    fly::test::expect_fatal_exit_code(
+        [&] { ds_verify_report_or_fatal(report); }, 80);
 }
 
 }  // namespace

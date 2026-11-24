@@ -306,7 +306,11 @@ private:
 
     void parse_scope(size_t line) {
         // $scope <type> <name> $end；type 值不消费（module 等仅观测），
-        // 名字 token 序拼接（转义标识符空格容差）
+        // 名字 token 序拼接（转义标识符空格容差）。转义标识符去转义：
+        // Verilog 转义标识符以反斜杠起头、以空白结尾，名字本身不含那个
+        // 反斜杠——仿真器在 $scope 行原样写出「反斜杠 + 名字」，解析边
+        // 界去掉开头的一个（只去开头；名字中间的反斜杠属于名字本身，
+        // 不动。2026-11-24 真实数据兼容裁定，同 $var）
         CMString tok;
         CMString name;
         bool have_type = false;
@@ -329,6 +333,9 @@ private:
         }
         if (!have_type || name.empty()) {
             stream_error("$scope missing name", line);
+        }
+        if (name[0] == '\\') {
+            name.erase(0, 1);
         }
         scope_stack_.push_back(std::move(name));
     }
@@ -392,6 +399,22 @@ private:
         if (name.empty()) {
             ++out_.bad_record_count_;
             return;
+        }
+        // 转义标识符去转义（2026-11-24 真实数据兼容裁定）：Verilog 转
+        // 义标识符以反斜杠起头、以空白结尾，名字本身不含那个反斜杠——
+        // 仿真器（Icarus Verilog）在 $var 行原样写出「反斜杠 + 名字」
+        //（如 `\dpath.a_lt_b$in1[9]`；向量声明是 `\count [3:0]`——位区
+        // 间那一个 token 不动，已在上方收集）。解析边界去掉开头的一个；
+        // 名字中间的反斜杠属于名字本身，不动。与 design db 名字空间
+        //（真实名字）对齐的边界处理——换算层无去转义回退。
+        if (name[0] == '\\') {
+            name.erase(0, 1);
+            if (name.empty()) {
+                // 整名恰为一个反斜杠（病态形态）：去转义后为空 = 破损
+                // 声明（与缺名同处置）
+                ++out_.bad_record_count_;
+                return;
+            }
         }
         if (!wf_var_kind_supported(kind)) {
             // real/event 不支持功耗语义：跳过 + 计数（WFMG::0012）

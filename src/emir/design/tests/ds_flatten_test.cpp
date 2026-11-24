@@ -19,6 +19,7 @@
 // 期望值全部按实现口径手工推导（分区/坐标常数见 FlattenEnv），锁定行为。
 #include <emir/design/cpp/ds_flatten.h>
 #include <emir/design/cpp/ds_types.h>
+#include <emir/design/cpp/ds_verify.h>
 
 #include <gtest/gtest.h>
 
@@ -229,6 +230,11 @@ struct FlattenEnv {
         // sub obstruction（DEF BLOCKAGE 等价物；全局 (1010,510,1060,560)）
         sub.obstructions_.push_back(DSShapeRef{CMLayerId{2}, GEORect(10, 10, 60, 60)});
 
+        // 2026-11-24 连接表唯一性裁定：ds_flatten_block 读已封存的 S5b
+        // 产物（DSConnList 只读接口断言封存）——测试环境模拟生产解析入
+        // 口尾部的封存点
+        top_nets.seal_all_connections();
+        sub_nets.seal_all_connections();
     }
 };
 
@@ -474,27 +480,30 @@ TEST(DSFlattenTest, NonPgNetConnectionsFullyCompleted) {
 
     // n_top(global 1, 非 pg) 四条连接（la/lb/csub/PIN）跨分区也全量保
     // 存——两分区各一份完整列表（pin id + flags 位直存；2026-09-13 重
-    // 组裁定：条目 = DSNetConnEntry，net id 由 DSNet 键承载）
+    // 组裁定：条目 = DSNetConnEntry，net id 由 DSNet 键承载）。封存后
+    // 按 (实例, 引脚) 升序（2026-11-24 连接表唯一性裁定）：端口条目
+    // （inst 0 = root 自身）排最前，随后 la(1)/lb(2)/csub(3)
     for (const DSPartitionProduct* p : {p0, p1}) {
         auto it = p->nets_.nets_.find(CMNetId{1});
         ASSERT_NE(it, p->nets_.nets_.end());
         EXPECT_EQ(it->second->net_id_, 1u);
         ASSERT_EQ(it->second->connections_.size(), 4u);
-        const CMVector<DSNetConnEntry>& conns = it->second->connections_;
-        EXPECT_EQ(conns[0].inst_id_, 1u);
-        EXPECT_EQ(conns[0].pin_id_, 1u);
-        EXPECT_FALSE(conns[0].is_port());
+        const DSConnList<DSNetConnEntry>& conns = it->second->connections_;
+        EXPECT_TRUE(conns.sealed());
+        EXPECT_EQ(conns[0].inst_id_, 0u);
+        EXPECT_EQ(conns[0].pin_id_, 20u);
+        EXPECT_TRUE(conns[0].is_port());
         EXPECT_TRUE(conns[0].is_receiver());
-        EXPECT_EQ(conns[1].inst_id_, 2u);
+        EXPECT_EQ(conns[1].inst_id_, 1u);
+        EXPECT_EQ(conns[1].pin_id_, 1u);
+        EXPECT_FALSE(conns[1].is_port());
+        EXPECT_TRUE(conns[1].is_receiver());
+        EXPECT_EQ(conns[2].inst_id_, 2u);
         // csub 端点 = 块实例 global id 3；PIN 端点 = root 自身 global id
         // 0 + port 位（⑧ local 0 映射）；flags 位整体直存
-        EXPECT_EQ(conns[2].inst_id_, 3u);
-        EXPECT_EQ(conns[2].pin_id_, 10u);
-        EXPECT_FALSE(conns[2].is_port());
-        EXPECT_TRUE(conns[2].is_receiver());
-        EXPECT_EQ(conns[3].inst_id_, 0u);
-        EXPECT_EQ(conns[3].pin_id_, 20u);
-        EXPECT_TRUE(conns[3].is_port());
+        EXPECT_EQ(conns[3].inst_id_, 3u);
+        EXPECT_EQ(conns[3].pin_id_, 10u);
+        EXPECT_FALSE(conns[3].is_port());
         EXPECT_TRUE(conns[3].is_receiver());
     }
 }
@@ -538,9 +547,9 @@ TEST(DSFlattenTest, InstConnectionsFollowCopies) {
 
     // u1(global 5) 两分区副本各带自身连接端点：n1(global 4) pin 1
     // (receiver) + n2(global 5) pin 2 (driver)（n2 为 pg 无几何——
-    // instance 维度仍可达，拼装口径）。两端点来自不同网（conn_bucket 按
-    // 连接表 unordered 键序累积），按 (net, pin) 集合断言，不依赖桶序。
-    const auto expect_conn_set = [](const CMVector<DSPartConnection>& conns,
+    // instance 维度仍可达，拼装口径）。两端点来自不同网，封存后按 (网,
+    // 引脚) 升序；按 (net, pin) 集合断言，不依赖顺序。
+    const auto expect_conn_set = [](const DSConnList<DSPartConnection>& conns,
                                     std::pair<uint64_t, uint32_t> a,
                                     std::pair<uint64_t, uint32_t> b) {
         ASSERT_EQ(conns.size(), 2u);
@@ -599,10 +608,62 @@ TEST(DSFlattenTest, MergeIsIdempotentForSameSlice) {
     EXPECT_TRUE(merged.nets_pg_.nets_.empty());
     EXPECT_TRUE(merged.geometry_pg_.nets_.empty());
     EXPECT_EQ(merged.nets_pg_.part_id_, merged.nets_.part_id_);
-    // 连接列表拼接（同源重放会重复条目——重放仅发生在同任务重投语义，
-    // 正常编排每 slice 只合并一次；此处锁定 merge 的追加语义）
-    EXPECT_EQ(merged.inst_connections_.items_.at(CMInstanceId{5}).size(),
-              2 * p1->inst_connections_.items_.at(CMInstanceId{5}).size());
+    // 连接表合并（2026-11-24 连接表唯一性裁定口径更新）：构建期 append
+    // 追加（同源重放会重复条目——重放仅发生在同任务重投语义，正常编排
+    // 每 slice 只合并一次），但追加中间态不可观察（DSConnList 只读接口
+    // 断言封存）——锁定「合并任务末尾封存去重后与单份分片等量」：唯一
+    // 性由数据结构保证，重放不再放大连接表
+    for (auto& [gid, list] : merged.inst_connections_.items_) {
+        list.seal();
+    }
+    for (auto& [nid, net] : merged.nets_.nets_) {
+        net->connections_.seal();
+    }
+    for (const auto& [gid, list] : merged.inst_connections_.items_) {
+        EXPECT_EQ(list.size(),
+                  p1->inst_connections_.items_.at(gid).size());
+    }
+    for (const auto& [nid, net] : merged.nets_.nets_) {
+        EXPECT_EQ(net->connections_.size(),
+                  p1->nets_.nets_.at(nid)->connections_.size());
+    }
+}
+
+// 分区产物合并带来的重复（2026-11-24 连接表唯一性裁定）：两个分片各带
+// 一份同一条目 → merge 后封存去重，分区对象无重复，S10 校验通过
+TEST(DSFlattenTest, PartitionMergeDedupesAndPassesVerify) {
+    FlattenEnv env;
+    const auto slices =
+        ds_flatten_block(env.tree, env.top, env.top_nets, env.design,
+                         env.parts);
+    const DSPartitionProduct* p0 = product_of(slices, 0);
+    ASSERT_NE(p0, nullptr);
+
+    // 模拟多组（group）分片：同区两份分片各带同一份连接（不同 group 的
+    // 展开任务各产出一份同区条目——分区合并的真实重复来源）
+    DSPartitionProduct merged;
+    merged.merge_from(*p0);
+    merged.merge_from(*p0);
+    for (auto& [gid, list] : merged.inst_connections_.items_) {
+        list.seal();
+    }
+    for (auto& [nid, net] : merged.nets_.nets_) {
+        net->connections_.seal();
+    }
+    for (auto& [nid, net] : merged.nets_pg_.nets_) {
+        net->connections_.seal();
+    }
+    // 合并期重复（构建期 append 追加两份）被封存去掉——与单份分片等量
+    for (const auto& [gid, list] : merged.inst_connections_.items_) {
+        EXPECT_EQ(list.size(),
+                  p0->inst_connections_.items_.at(gid).size());
+    }
+    // S10 结构不变量检查通过（升序且无重复——损坏类素材为空）
+    const auto check = ds_verify_partition(
+        CMPartitionId{0}, 0, 0, merged.geometry_, merged.geometry_pg_,
+        merged.instances_, merged.inst_connections_, merged.nets_,
+        merged.nets_pg_);
+    EXPECT_EQ(check.conn_list_corruption_, "");
 }
 
 // part_id_ 回填哨兵判定回归（2026-09-17）：CMPartitionId 默认 = kInvalid

@@ -9,16 +9,20 @@
 //   5. 落库形态序列化 round-trip。
 // 合成场景（两层树 + block cell 双实例化；net 区间含 local 0 空洞位——
 // 2026-09-14 裁定 count = 真网数 + 1、global = start + local）：
-//   cells: INV(0) + B1(1, block_cell；port pin PIN_IN + VDD[POWER])
-//   pin hasher: A=0 Z=1 PIN_IN=2 VDD=3（全局 pin 名字空间，裁定 3）
-//   defs: top{top1=INV, c1=B1, c2=B1; nt,npg_top} / b1{u1=INV; na,nb,npg}
+//   cells: INV(0) + B1(1, block_cell；port pin PIN_IN[INPUT] + PIN_OUT
+//          [OUTPUT] + VDD[POWER])
+//   pin hasher: A=0 Z=1 PIN_IN=2 PIN_OUT=4 VDD=3（全局 pin 名字空间）
+//   defs: top{top1=INV, c1=B1, c2=B1; nt,npg_top,npd,nod,npo} /
+//         b1{u1=INV; na,nb,npg}
 //   树（DFS 前序）：
-//     #0 top (self 0, inst [0,4), net [0,3))
-//      ├ #1 B1#1 (self 2, inst [4,6), net [3,7))
-//      └ #2 B1#2 (self 3, inst [6,8), net [7,11))
+//     #0 top (self 0, inst [0,4), net [0,6))
+//      ├ #1 B1#1 (self 2, inst [4,6), net [6,10))
+//      └ #2 B1#2 (self 3, inst [6,8), net [10,14))
 //   global: top1=1 c1=2 c2=3 u1#1=5 u1#2=7；nt=1 npg_top=2
-//           na=4 nb=5 npg=6（B1#1）；na=8 nb=9 npg=10（B1#2）
-//   分区：单分区 pid=0（id map 段表/段对象合成）；pg 网 2/6/10 入 power 集
+//           npd=3 nod=4 npo=5（顶层）；na=7 nb=8 npg=9（B1#1）；
+//           na=11 nb=12 npg=13（B1#2）
+//   分区：pid=0 段（id 0..）+ pid=1 段（id 8..，两分区端口驱动场景）；
+//   pg 网 2/9/13 入 power 集
 #include <emir/timing/cpp/tm_parser.h>
 #include <emir/timing/cpp/tm_partition.h>
 
@@ -42,6 +46,7 @@ using namespace fly::test;
 constexpr CMPinId kPinA{0};
 constexpr CMPinId kPinZ{1};
 constexpr CMPinId kPinIn{2};
+constexpr CMPinId kPinOut{4};
 constexpr CMPartitionId kPid{0};
 
 struct SynthEnv {
@@ -68,10 +73,12 @@ struct SynthEnv {
         top_cell.set_name("top");
         top_cell.set_block_cell();
         d->add_cell(std::move(top_cell));
-        // B1：block cell + port pin PIN_IN(INPUT) / VDD(POWER)
+        // B1：block cell + port pin PIN_IN(INPUT) / PIN_OUT(OUTPUT) /
+        // VDD(POWER)——PIN_OUT 供「输出端口不再被计成驱动者」的场景
         DSCell b1;
         b1.set_name("B1");
         b1.set_block_cell();
+        b1.add_pin(DSPin{});
         b1.add_pin(DSPin{});
         b1.add_pin(DSPin{});
         d->add_cell(std::move(b1));
@@ -83,11 +90,15 @@ struct SynthEnv {
         b1_ref.pins_[1].type_ = DSPinType::POWER;
         b1_ref.pins_[1].direction_ = DSPinDirection::INPUT;
         b1_ref.pins_[1].pin_id_ = CMPinId{3};
+        b1_ref.pins_[2].set_port();
+        b1_ref.pins_[2].direction_ = DSPinDirection::OUTPUT;
+        b1_ref.pins_[2].pin_id_ = CMPinId{4};
         // 全局 pin 名字空间（键 = 裸 pin 名，裁定 3）
         d->register_pin("A");
         d->register_pin("Z");
         d->register_pin("PIN_IN");
         d->register_pin("VDD");
+        d->register_pin("PIN_OUT");
 
         // per-DEF 产物（建树输入；实例名 = 树节点名——DSBlockNames 同名）
         auto make_block = [](const char* name,
@@ -108,10 +119,13 @@ struct SynthEnv {
         };
         CMVector<DSBlockBuildData> blocks;
         blocks.push_back(make_block("B1", {{"u1", CMCellId{0}}}, 3));
+        // top 网数 5（nt/npg_top + npd/nod/npo——2026-11-24 端口角色裁定
+        // 的三个端口场景网；top net 区间 [0,6)，B1#1 [6,10)、B1#2
+        // [10,14)——na=7 nb=8 npg=9 / na=11 nb=12 npg=13）
         blocks.push_back(make_block(
             "top",
             {{"top1", CMCellId{0}}, {"c1", CMCellId{2}}, {"c2", CMCellId{2}}},
-            2));
+            5));
         CMVector<DSNetBuildData> nets(2);
         CMVector<CMSharedPtr<const DSBlockBuildData>> block_shares;
         CMVector<CMSharedPtr<const DSNetBuildData>> net_shares;
@@ -143,14 +157,17 @@ struct SynthEnv {
             return n;
         };
         top_names = names("top", {{"top1", 1}, {"c1", 2}, {"c2", 3}},
-                          {{"nt", 1}, {"npg_top", 2}});
+                          {{"nt", 1}, {"npg_top", 2}, {"npd", 3},
+                           {"nod", 4}, {"npo", 5}});
         b1_names = names("B1", {{"u1", 1}},
                          {{"na", 1}, {"nb", 2}, {"npg", 3}});
         design = std::move(d);
     }
 };
 
-// T2 换算上下文组装（快照全量注入；单分区 pid 0）
+// T2 换算上下文组装（快照全量注入；段内 per-id 分区号——id 9 = 合成负
+// 载落 pid 1，其余 id 0..15 落 pid 0；两分区端口驱动场景的负载落点，
+// 既有场景实例 id 全在 pid 0）
 std::shared_ptr<TMDesignContext> make_context(const SynthEnv& env,
                                               const DSPartitionNets& nets) {
     auto ctx = std::make_shared<TMDesignContext>();
@@ -163,11 +180,12 @@ std::shared_ptr<TMDesignContext> make_context(const SynthEnv& env,
     auto seg = std::make_shared<DSIdPartitionSegment>();
     seg->id_start_ = 0;
     seg->pids_.resize(16, kPid);
+    seg->pids_[9] = CMPartitionId{1};  // 合成负载 (9, A) → 第二分区
     ctx->add_inst_segment(seg);
     auto pg = std::make_shared<DSPgNetSet>();
     pg->power_.insert(CMNetId{2});   // npg_top（顶层）
-    pg->power_.insert(CMNetId{6});   // npg（B1#1）
-    pg->power_.insert(CMNetId{10});  // npg（B1#2）
+    pg->power_.insert(CMNetId{9});   // npg（B1#1）
+    pg->power_.insert(CMNetId{13});  // npg（B1#2）
     ctx->set_pg_nets(pg);
     auto nets_shared = std::make_shared<DSPartitionNets>(nets);
     ctx->add_partition_nets(nets_shared);
@@ -175,7 +193,8 @@ std::shared_ptr<TMDesignContext> make_context(const SynthEnv& env,
 }
 
 // 分区 NETS 合成：nt=1 驱动网 / na=4 无驱动 / nb=5 双端 / na=8 无驱动 /
-// nb=9 双端（B1#2 侧）；pg 网 2/6/10 不入库（pg 判定先行）
+// nb=9 双端（B1#2 侧）；pg 网 2/6/10 不入库（pg 判定先行）。连接表 =
+// DSConnList add + seal（2026-11-24 连接表唯一性裁定：下游读封存后的表）
 DSPartitionNets make_partition_nets() {
     DSPartitionNets nets;
     nets.part_id_ = kPid;
@@ -186,7 +205,8 @@ DSPartitionNets make_partition_nets() {
         return nets.nets_[CMNetId{net_id}];
     };
     auto add_conn = [](const CMSharedPtr<DSNet>& n, uint64_t inst,
-                       CMPinId pin, bool driver, bool receiver) {
+                       CMPinId pin, bool driver, bool receiver,
+                       bool port = false) {
         DSNetConnEntry c;
         c.inst_id_ = CMInstanceId{inst};
         c.pin_id_ = pin;
@@ -196,20 +216,49 @@ DSPartitionNets make_partition_nets() {
         if (receiver) {
             c.set_receiver();
         }
-        n->connections_.push_back(std::move(c));
+        if (port) {
+            c.set_port();
+        }
+        n->connections_.add(std::move(c));
+    };
+    auto seal_conn = [](const CMSharedPtr<DSNet>& n) {
+        n->connections_.seal();
     };
     const CMSharedPtr<DSNet> nt = add_net(1);
     add_conn(nt, 1, kPinZ, true, false);     // top1/Z 驱动
-    const CMSharedPtr<DSNet> na1 = add_net(4);
+    seal_conn(nt);
+    const CMSharedPtr<DSNet> na1 = add_net(7);
     add_conn(na1, 5, kPinA, false, true);    // 仅接收 → 无驱动
-    const CMSharedPtr<DSNet> nb1 = add_net(5);
+    seal_conn(na1);
+    const CMSharedPtr<DSNet> nb1 = add_net(8);
     add_conn(nb1, 5, kPinZ, true, false);    // u1#1/Z 驱动
     add_conn(nb1, 1, kPinA, false, true);
-    const CMSharedPtr<DSNet> na2 = add_net(8);
+    seal_conn(nb1);
+    const CMSharedPtr<DSNet> na2 = add_net(11);
     add_conn(na2, 7, kPinA, false, true);    // B1#2 侧无驱动
-    const CMSharedPtr<DSNet> nb2 = add_net(9);
+    seal_conn(na2);
+    const CMSharedPtr<DSNet> nb2 = add_net(12);
     add_conn(nb2, 7, kPinZ, true, false);    // u1#2/Z 驱动
     add_conn(nb2, 1, kPinA, false, true);
+    seal_conn(nb2);
+    // 端口场景网（2026-11-24 端口角色裁定；条目 flags 位与解析产物同构
+    // ——输入端口 = port + driver、输出端口 = port + receiver）：
+    //   npd=3 输入端口驱动网（c1 self=2 端口 + 负载 u1#1(5)@pid0 /
+    //         合成负载(9)@pid1——两分区各一份端口条目的载体）
+    //   nod=4 输出端口网（c1 self=2 端口 = 负载 + u1#1(5)/Z = 驱动者）
+    //   npo=5 仅端口无负载网（悬空场景载体）
+    const CMSharedPtr<DSNet> npd = add_net(3);
+    add_conn(npd, 2, kPinIn, true, false, true);
+    add_conn(npd, 5, kPinA, false, true);
+    add_conn(npd, 9, kPinA, false, true);
+    seal_conn(npd);
+    const CMSharedPtr<DSNet> nod = add_net(4);
+    add_conn(nod, 2, kPinOut, false, true, true);
+    add_conn(nod, 5, kPinZ, true, false);
+    seal_conn(nod);
+    const CMSharedPtr<DSNet> npo = add_net(5);
+    add_conn(npo, 2, kPinIn, true, false, true);
+    seal_conn(npo);
     return nets;
 }
 
@@ -447,6 +496,95 @@ TEST_F(TmPartitionTest, ConvertNetEntriesTopLevelFile) {
     // 时钟表随块产出（T4 输入）
     ASSERT_EQ(slice.stats_.clocks_.size(), 1u);
     EXPECT_EQ(slice.stats_.clocks_[0].name_, "clk");
+}
+
+// ── 2b. 端口条目按网的角色（2026-11-24 用户裁定，attach_net_drivers）──
+
+// 输入端口驱动的网：条目挂「端口所属块的自身实例编号」下的端口引脚
+//（c1 self = 2 → (2, PIN_IN)），写进全部可定位负载所在的各个分区——
+// 负载 u1#1(5)@pid0 与合成负载(9)@pid1 → 两分区各一份。端口驱动者不计
+// 未放置、单驱动者不计多驱动
+TEST_F(TmPartitionTest, PortDrivenNetAttachesToAllLoadPartitions) {
+    write_file("pdrv.twf",
+               "(TIMING_WINDOWS\n"
+               "(HEADER (DELIMITERS \"/\") (TIME_SCALE 1.000E-09))\n"
+               "(WAVEFORM \"clk\" 1.0 (POSEDGE 0.0) (NEGEDGE 0.5))\n"
+               "(CAUSED_BY \"clk\"\n"
+               "(NET \"npd\" 0.1:0.2 0.01 * * 0.3:0.4 0.02 * *)\n"
+               ")\n"
+               ")\n");
+    const SynthEnv env;
+    const auto ctx = make_context(env, make_partition_nets());
+    const TMEntrySlice slice = convert_whole(*ctx, file_path("pdrv.twf"),
+                                             TMFileBinding{}, 0);
+    const TMFileStats& fs = slice.stats_.files_[0];
+    EXPECT_EQ(fs.hit_count_, 1u);
+    EXPECT_EQ(fs.dangling_net_count_, 0u);
+    EXPECT_EQ(fs.unplaced_instance_count_, 0u);  // 端口条目不计未放置
+    EXPECT_EQ(slice.stats_.multi_driver_net_count_, 0u);
+    // pid 0：负载所在分区——端口条目挂 (2, PIN_IN)
+    const TMPartitionTiming& part0 = slice.partitions_.at(kPid);
+    const TMInstanceTiming* c1_p0 = find_inst(part0, 2);
+    ASSERT_NE(c1_p0, nullptr);
+    EXPECT_NE(c1_p0->find_pin(kPinIn), nullptr);
+    // pid 1：第二负载所在分区——同样一份端口条目
+    const TMPartitionTiming& part1 = slice.partitions_.at(CMPartitionId{1});
+    const TMInstanceTiming* c1_p1 = find_inst(part1, 2);
+    ASSERT_NE(c1_p1, nullptr);
+    EXPECT_NE(c1_p1->find_pin(kPinIn), nullptr);
+    // 负载条目自身不挂统计（条目挂驱动者——端口条目取代了负载挂点）
+    EXPECT_EQ(find_inst(part0, 5), nullptr);
+}
+
+// 输出端口不再被计成驱动者（2026-11-24 用户裁定：输出端口 = 负载）
+// ——nod 网驱动者 = 实例 u1#1(5)/Z，条目照旧挂实例驱动者所在分区；端
+// 口条目（(2, PIN_OUT)）不产生条目、不计未放置、不计多驱动
+TEST_F(TmPartitionTest, OutputPortNotDriverAndPortsNotUnplaced) {
+    write_file("nod.twf",
+               "(TIMING_WINDOWS\n"
+               "(HEADER (DELIMITERS \"/\") (TIME_SCALE 1.000E-09))\n"
+               "(WAVEFORM \"clk\" 1.0 (POSEDGE 0.0) (NEGEDGE 0.5))\n"
+               "(CAUSED_BY \"clk\"\n"
+               "(NET \"nod\" 0.1:0.2 0.01 * * 0.3:0.4 0.02 * *)\n"
+               ")\n"
+               ")\n");
+    const SynthEnv env;
+    const auto ctx = make_context(env, make_partition_nets());
+    const TMEntrySlice slice = convert_whole(*ctx, file_path("nod.twf"),
+                                             TMFileBinding{}, 0);
+    const TMFileStats& fs = slice.stats_.files_[0];
+    EXPECT_EQ(fs.hit_count_, 1u);
+    EXPECT_EQ(fs.dangling_net_count_, 0u);
+    EXPECT_EQ(fs.unplaced_instance_count_, 0u);
+    EXPECT_EQ(slice.stats_.multi_driver_net_count_, 0u);
+    const TMPartitionTiming& part = slice.partitions_.at(kPid);
+    const TMInstanceTiming* u1 = find_inst(part, 5);
+    ASSERT_NE(u1, nullptr);
+    EXPECT_NE(u1->find_pin(kPinZ), nullptr);
+    // 输出端口条目（实例编号 = 块自身 2）不产生条目
+    EXPECT_EQ(find_inst(part, 2), nullptr);
+}
+
+// 只有端口没有负载的网 → 悬空（有驱动者但没有任何可定位的负载——条目
+// 无处可挂，TIMG::0003）；端口条目不计未放置
+TEST_F(TmPartitionTest, PortOnlyNetDangles) {
+    write_file("npo.twf",
+               "(TIMING_WINDOWS\n"
+               "(HEADER (DELIMITERS \"/\") (TIME_SCALE 1.000E-09))\n"
+               "(WAVEFORM \"clk\" 1.0 (POSEDGE 0.0) (NEGEDGE 0.5))\n"
+               "(CAUSED_BY \"clk\"\n"
+               "(NET \"npo\" 0.1:0.2 0.01 * * 0.3:0.4 0.02 * *)\n"
+               ")\n"
+               ")\n");
+    const SynthEnv env;
+    const auto ctx = make_context(env, make_partition_nets());
+    const TMEntrySlice slice = convert_whole(*ctx, file_path("npo.twf"),
+                                             TMFileBinding{}, 0);
+    const TMFileStats& fs = slice.stats_.files_[0];
+    EXPECT_EQ(fs.hit_count_, 0u);
+    EXPECT_EQ(fs.dangling_net_count_, 1u);
+    EXPECT_EQ(fs.unplaced_instance_count_, 0u);
+    EXPECT_TRUE(slice.partitions_.empty());
 }
 
 TEST_F(TmPartitionTest, ConvertPinEntriesAndConstantFallback) {

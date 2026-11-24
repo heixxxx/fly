@@ -69,6 +69,9 @@ EMIR（Electro-Migration 与 IR-Drop 分析）工具链的输入是芯片版图�
 | block | 子设计（对应一个子 DEF）作为可实例化的「cell」；block 定义可被多处实例化 |
 | block instance | block 的一次实例化——层级树节点；block **定义**是 DAG（共享引用），block **实例**是树 |
 | net | 电气连接网（引脚集合 + 路由几何） |
+| 连接表 | 一张网（或一个实例）的连接条目表。**不变量（2026-11-24 用户裁定）：同一张网里 (实例, 引脚) 三元组唯一，并按 (实例, 引脚) 升序**——由数据结构 `DSConnList` 保证：构建期只允许追加，封存时排序去重，封存后对外只读；校验任务 S10 逐分区检查该不变量，被破坏按损坏类致命退出（`DSGN::0027`）。DEF 里的重复连接条目（两条相同的显式条目、显式与通配重复、两条通配）在封存时去掉并计数（`DSGN::0028`）。上游工具把连接当集合，同款口径 |
+| 驱动 / 接收标记 | 连接条目在**网里的角色**：驱动者 = 把信号送进这张网的引脚，接收者 = 从这张网取信号的负载。实例引脚条目按引脚方向（输出引脚驱动、输入引脚接收、双向两者）；**端口条目按它在网里的角色**（2026-11-24 用户裁定「按照真实设计进行处理，要求正确性」）：输入端口是它所在网的驱动者，输出端口是负载，双向端口两者——端口是块自己的引脚，方向是从块的角度看的，对块内的网而言角色正好反过来。此前的口径是「按引脚方向」，下游因此把输入端口驱动的网（包括时钟网）判成无驱动 |
+| 电气网 | 展平之后经层次端口逻辑相连的各段网，在顶层视角是**同一张网**（2026-11-24 用户裁定）。库里每一段有自己的网编号，并查集（`net_union` 对象）把同一张电气网的各段归为一组 |
 | via / via cell | 过孔定义（层连接图形模板）；可在 tech lef / cell lef / DEF 三处定义 |
 | via instance | 过孔的放置实例（专用 id 空间、无 name，仅需 via cell id + 位置，裁定 ⑩） |
 | layer / stack | 金属层 / 层堆栈（自底向上顺序、邻接关系）——独立 Stack 类型（裁定 ⑭） |
@@ -214,12 +217,12 @@ EMIR（Electro-Migration 与 IR-Drop 分析）工具链的输入是芯片版图�
 | S3 | lib cell ↔ lef cell merge 检测（引脚集合比对 `DSGN::0004`：「物理库有时序库没有」方向的时序库引脚集合 = 普通引脚 ∪ `pg_pin` 组——2026-11-24 真实数据对齐） | ✅ |
 | S4/S4b | DEF 头扫描（block/port/DEF via 收集；端口名转义还原） | ✅ |
 | S5a | COMPONENTS 责任链 ∥ 网名扫描（实例名、网名转义还原成真实名字） | ✅ |
-| S5b | 网内容责任链（分批控内存峰值）。连接项 id 化（2026-09-13 裁定）：连接 = `(instance_local_id, pin_id)`，解析边界一次换算（pin 组合键 `"cell/pin"`、port 组合键 `"block/port"` + port 位 + local 0 占位）；flags 六位 port/driver/receiver/power/ground/clock 同点填写（INOUT = driver+receiver 同置，显式命名 **hybrid** 第三分类）；未命中兜底跳过 + `skipped_invalid_connection_count` + DSGN::0025。**通配连接**（2026-11-24）：`( * 引脚 )` 展开为本块内所有拥有该引脚的实例各一条连接，与显式写法同构；所属单元是占位或伪单元的实例、引脚名未登记、没有任何实例拥有该引脚——都不报警；同一张网里连接按集合处理——「显式 + 通配」「通配 + 通配」都不重复（上游实证：重复条目不产生重复连接）；两条完全相同的显式条目仍是既有行为，各收录一条；统计 `wildcard_entry_count` / `wildcard_connection_count` 进 DSGN::0009 汇总行 | ✅ |
+| S5b | 网内容责任链（分批控内存峰值）。连接项 id 化（2026-09-13 裁定）：连接 = `(instance_local_id, pin_id)`，解析边界一次换算（pin 组合键 `"cell/pin"`、port 组合键 `"block/port"` + port 位 + local 0 占位）；flags 六位 port/driver/receiver/power/ground/clock 同点填写（INOUT = driver+receiver 同置，显式命名 **hybrid** 第三分类）；未命中兜底跳过 + `skipped_invalid_connection_count` + DSGN::0025。**通配连接**（2026-11-24）：`( * 引脚 )` 展开为本块内所有拥有该引脚的实例各一条连接，与显式写法同构；所属单元是占位或伪单元的实例、引脚名未登记、没有任何实例拥有该引脚——都不报警；同一张网里连接按集合处理——重复由连接表的封存去掉（唯一性由数据结构保证，解析路径上不再有去重逻辑）；统计 `wildcard_entry_count`（通配条目数）/ `wildcard_connection_count`（封存前的展开条数）/ `duplicate_connection_count`（封存去掉的重复条数，不分来源）进 DSGN::0009 汇总行 | ✅ |
 | S6 | 层级树构建 + 起始编号分配 | ✅ |
 | S7 | 并查集 port 连接归并（仅 port 相连网、两层树、root = 层级最高/同级最小 global id、悬空 port root=自身 + DSGN::0018 计数；连接 id 化后对接键 = 同一 port 的全局 pin id 相等，内部零字符串匹配；`ds_union.h/.cpp` + `load_design_net_union`） | ✅ |
 | S8 | 密度图合并 + 分区决策（core/extend 双区域，非边缘扩 2×最高有效层宽、最外围 int32 极值；通道比重 6:2:2；三键优先级 target_partitions > partition_count > partition_target_density 默认 15 万；block instance bbox 不计局部密度） | ✅ |
 | S9 | flatten 展平 + 分区保存（展开任务按 block 定义切分 + 小 DEF 按阈值聚合 + 每分区一合并任务；归属 = 放置点 core 半开区间 primary 恰一 + extend 副本；四类对象 PART_{xp}_{yp}/{GEOMETRY,INSTANCES,INST_CONNECTIONS,NET_CONNECTIONS}——geometry 以 net id 组织（不换算 root）、OBS 入 net 0 + obs 位、非 pg 连接全量补全 / pg 靠 instance 维度拼装；连接条目 id + flags 位自 S5b 直存直拷；复合变换存树节点使每份 DEF 数据只读一次；`ds_flatten.h/.cpp` + `load_partition`/`iter_design_partition`。2026-09-13 裁定翻转：电源引脚预展开（D18）删除——坐标归 ④ 提取按复现原则自取，分区副本不再携带） | ✅ |
-| S10 | 汇总校验 + 冻结前置（2026-09-13 校验分级裁定：**损坏类 fatal**——并查集不自洽 DSGN::0019 / 分区网格未无缝覆盖 DSGN::0020 / namemap 双向不一致 DSGN::0021，码 80 退出 + master 联动阻断冻结；**观测类 warn**——global id 连续性空洞/重复 DSGN::0022、密度守恒 primary 口径偏差 DSGN::0023，不阻断；统计汇总 DSGN::0024 INFO。每分区一校验任务并行读单分区产物（不跨区读）+ 全局汇总校验任务（由 S9 plan 动态提交排在 merge 后 freeze 前）；校验报告 `verify_report` 正式对象挂 freeze final_keys——校验未完成不冻结；密度守恒口径：Σ 各分区 primary 实例计数 = Σ 首份定义 (实例数 − UNPLACED)，副本不计；`ds_verify.h/.cpp` + `load_design_verify_report`） | ✅ |
+| S10 | 汇总校验 + 冻结前置（2026-09-13 校验分级裁定：**损坏类 fatal**——并查集不自洽 DSGN::0019 / 分区网格未无缝覆盖 DSGN::0020 / namemap 双向不一致 DSGN::0021 / **连接表不变量被破坏 DSGN::0027（2026-11-24：逐分区检查两侧网表与实例连接表升序且无重复）**，码 80 退出 + master 联动阻断冻结；**观测类 warn**——global id 连续性空洞/重复 DSGN::0022、密度守恒 primary 口径偏差 DSGN::0023，不阻断；统计汇总 DSGN::0024 INFO。每分区一校验任务并行读单分区产物（不跨区读）+ 全局汇总校验任务（由 S9 plan 动态提交排在 merge 后 freeze 前）；校验报告 `verify_report` 正式对象挂 freeze final_keys——校验未完成不冻结；密度守恒口径：Σ 各分区 primary 实例计数 = Σ 首份定义 (实例数 − UNPLACED)，副本不计；`ds_verify.h/.cpp` + `load_design_verify_report`） | ✅ |
 
 第二阶段重构批次 R1-R9 全部完成（2026-09-12）：R1 geometry 独立模块+GEOTransform、
 R2 layer id 化、R3 CM_FLAGS、R4 pin 三字段按 pin 维度、R5 port/block 复用+VIARULE 删除、

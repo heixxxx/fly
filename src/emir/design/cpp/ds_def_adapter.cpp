@@ -982,8 +982,12 @@ void ds_parse_def_nets(const CMString& path,
                        "nets), file '{}'", path);
     }
 
-    // 尾批冲刷 + 统计镜像（DSDefNetsStats = 产物内 DSNetStats + 批次数）
+    // 尾批冲刷 + 连接表封存（2026-11-24 连接表唯一性裁定：每个 DEF 的
+    // 网内容解析结束时封存全部连接表——封存点 1，任何持久化对象交出去
+    // 之前表已 (实例, 引脚) 升序无重复；去掉的重复条数进统计）+
+    // 统计镜像（DSDefNetsStats = 产物内 DSNetStats + 批次数）
     flush_nets_batch(&ctx);
+    ctx.net_data->seal_all_connections();
     const DSNetBuildData& net_data_ref = *ctx.net_data;
     stats.net_count = static_cast<int>(net_data_ref.stats_.net_count);
     stats.connection_count =
@@ -1004,6 +1008,8 @@ void ds_parse_def_nets(const CMString& path,
         static_cast<int>(net_data_ref.stats_.wildcard_entry_count);
     stats.wildcard_connection_count =
         static_cast<int>(net_data_ref.stats_.wildcard_connection_count);
+    stats.duplicate_connection_count =
+        static_cast<int>(net_data_ref.stats_.duplicate_connection_count);
 }
 
 // ── S4+S4b：DEF 头部一遍读取（原有入口）─────────────────────────────

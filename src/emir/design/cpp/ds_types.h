@@ -41,9 +41,11 @@
 #include <geometry/cpp/geometry_types.h>
 #include <geometry/cpp/transform.h>
 
+#include <algorithm>
 #include <cassert>
 #include <cstdint>
 #include <optional>
+#include <utility>
 
 namespace fly {
 
@@ -584,6 +586,133 @@ public:
                   next_instance_id_, next_net_id_)
 };
 
+// —— 连接表（三处连接表统一容器，2026-11-24 用户裁定：连接三元组唯一
+// 由数据结构保证——不依赖某条解析路径记得去重）——
+//
+// 不变量：任何对外可读的连接表，按「排序键」升序且无重复条目。三处实
+// 例化（键 = 各处条目的身份维度）：
+//   DSNetConnection   键 = (instance_local_id_, pin_id_)（S5b 解析产物，
+//                     局部 id）
+//   DSNetConnEntry    键 = (inst_id_, pin_id_)（分区网表对象 DSNet，全局
+//                     id）
+//   DSPartConnection  键 = (net_global_id_, pin_id_)（分区实例连接对象，
+//                     单个实例的列表）
+//
+// 生命周期两段：
+//   构建期（未封存）：只允许 add（追加）与 append（合并另一张已封存的
+//   表——分区产物合并用）。
+//   封存 seal()：按键升序排序 + 键相同的重复条目去掉（保留排序后第一
+//   条），返回去掉的条数；幂等（对已封存的表无副作用）。
+//   封存后只读：size/empty/下标/迭代/按键二分查找。**未封存的表调用只
+//   读接口是编程错误——assert（调试构建生效）**；封存点保证任何持久化
+//   对象、任何下游读到的表都是封存后的（S5b 解析入口尾部 + 分区产物
+//   写成正式对象前，见 ds_parse_def_nets / ds_flatten_block / 合并任务）。
+template <typename Entry>
+class DSConnList {
+public:
+    using value_type = Entry;
+    using const_iterator = typename CMVector<Entry>::const_iterator;
+
+    // —— 构建期（未封存）——
+    // 追加一条连接（构建期唯一写入口；不去重——唯一性由封存统一保证）。
+    // 已封存的表调用 = 编程错误（assert）
+    void add(Entry&& entry) {
+        assert(!sealed_);
+        entries_.push_back(std::move(entry));
+    }
+    void add(const Entry& entry) {
+        assert(!sealed_);
+        entries_.push_back(entry);
+    }
+    // 合并另一张已封存的表（构建期追加语义——封存时统一去重）。本表未
+    // 封存、源表已封存为调用契约（assert）
+    void append(const DSConnList& other) {
+        assert(!sealed_);
+        assert(other.sealed_);
+        entries_.insert(entries_.end(), other.entries_.begin(),
+                        other.entries_.end());
+    }
+    // 封存：按键升序排序，键相同的重复条目去掉（保留排序后第一条），
+    // 返回去掉的条数。幂等——已封存的表调用直接返回 0
+    uint64_t seal() {
+        if (sealed_) {
+            return 0;
+        }
+        std::sort(entries_.begin(), entries_.end(),
+                  [](const Entry& a, const Entry& b) {
+                      return ds_conn_key(a) < ds_conn_key(b);
+                  });
+        const auto last = std::unique(entries_.begin(), entries_.end(),
+                                      [](const Entry& a, const Entry& b) {
+                                          return ds_conn_key(a) ==
+                                                 ds_conn_key(b);
+                                      });
+        const uint64_t removed =
+            static_cast<uint64_t>(std::distance(last, entries_.end()));
+        entries_.erase(last, entries_.end());
+        sealed_ = true;
+        return removed;
+    }
+
+    // —— 只读（封存后；未封存调用 = 编程错误，assert）——
+    bool sealed() const { return sealed_; }
+    size_t size() const {
+        assert(sealed_);
+        return entries_.size();
+    }
+    bool empty() const {
+        assert(sealed_);
+        return entries_.empty();
+    }
+    const Entry& operator[](size_t i) const {
+        assert(sealed_);
+        assert(i < entries_.size());
+        return entries_[i];
+    }
+    const_iterator begin() const {
+        assert(sealed_);
+        return entries_.cbegin();
+    }
+    const_iterator end() const {
+        assert(sealed_);
+        return entries_.cend();
+    }
+    // 按键二分查找（封存前提；未命中 nullptr）。键 = 条目排序键的值形
+    // 态（如 DSNetConnEntry 的 (CMInstanceId, CMPinId) pair）
+    template <typename Key>
+    const Entry* find(const Key& key) const {
+        assert(sealed_);
+        const auto it = std::lower_bound(
+            entries_.begin(), entries_.end(), key,
+            [](const Entry& a, const Key& k) { return ds_conn_key(a) < k; });
+        if (it == entries_.end() || !(ds_conn_key(*it) == key)) {
+            return nullptr;
+        }
+        return &*it;
+    }
+
+    // S10 校验专用视图（绕开封存断言）：校验器检查的正是可能被程序缺
+    // 陷破坏、未封存的表（不变量破坏 = 损坏类 DSGN::0027 的注入形态）
+    // ——封存断言是「正常消费者」的编程错误防线，校验器不在其列。仅
+    // ds_verify_partition 的不变量检查与条目计数使用；正常消费路径仍走
+    // 上方断言保护的只读接口。const 视图——不可借道修改条目。
+    const CMVector<Entry>& invariant_check_view() const {
+        return entries_;
+    }
+
+    FLY_SERIALIZE(entries_, sealed_)
+
+private:
+    CMVector<Entry> entries_;
+    bool sealed_ = false;
+};
+
+// 条目排序键提取（DSConnList 的三处条目类型适配点；pair 字典序 = 升序
+// 口径——DSNetConnection/DSNetConnEntry 按 (实例, 引脚)、DSPartConnection
+// 按 (网, 引脚)；端口条目的实例编号是块自身的占位值，自然排在相应位置）。
+// 各条目类型的重载定义在类型定义之后（ds_types.h / ds_flatten.h）；
+// DSConnList 经 ADL 在实例化点解析。
+
 // —— 2.4b S5b 网内容（③ 分批解析产物；⑨ local net id；⑩ via instance）——
 // per-DEF 网内容独立对象（⑬ 大体量数据不进 DSDesign）：键 = local net id
 //（与 DSBlockBuildData 的 local net namemap 对齐，⑨ 仅依赖 S5a）。
@@ -598,10 +727,15 @@ public:
 // flags 六位（2026-09-13 裁定 + 同日多次裁定补充，S5b 换 id 时一并填写
 // ——换算 pin id 本就要定位所属 cell 的 pin，direction/type 顺手取得）：
 //   port 位 = block 端口引用（原 instance_name == "PIN" 判别语义移植）；
-//   driver 位 = 端点 pin 方向 OUTPUT（该实例驱动此网）；
-//   receiver 位 = 端点 pin 方向 INPUT；INOUT = 两位同置，显式命名
-//   **hybrid**（混合类型，2026-09-13 裁定：非隐含「两位都置」而是明确
-//   的第三分类）；
+//   driver / receiver 位 = **条目在网里的角色**（2026-11-24 用户裁定：
+//   驱动/接收标记是给下游找「网的驱动者」与「网的负载」用的）——
+//   实例引脚条目按引脚方向填写（输出引脚驱动它所在的网、输入引脚是
+//   负载——「按引脚方向」恰好等于「按网里的角色」）；端口条目按块的
+//   端口方向**反过来**标（块的输入端口把信号送进块里，对块内的网而言
+//   是驱动者；块的输出端口从块内的网取信号，是负载）：输入端口 = 驱动
+//   者置 driver、输出端口 = 负载置 receiver、双向端口 = 两者同置；
+//   INOUT 引脚 = 两位同置，显式命名 **hybrid**（混合类型，2026-09-13
+//   裁定：非隐含「两位都置」而是明确的第三分类）；
 //   power / ground 位 = 端点 pin 的 DSPin type 为 POWER/GROUND（与方向
 //   位正交组合，如电源输入引脚 = receiver + power 双置）；
 //   clock 位 = 端点 pin 的 DSPin type 为 CLOCK（USE CLOCK 补收，见
@@ -620,11 +754,18 @@ public:
     // cell 共享 id；port 引用 = block cell 的 port pin 全局 id）
     CMPinId pin_id_;
     // port / driver / receiver / power / ground / clock 位；driver+
-    // receiver 同置 = hybrid（见类注释）
+    // receiver 同置 = hybrid（见类注释；端口条目的 driver/receiver 按
+    // 条目在网里的角色——2026-11-24 用户裁定）
     CM_FLAGS(uint8_t, port, driver, receiver, power, ground, clock)
 
     FLY_SERIALIZE(instance_local_id_, pin_id_, flags_)
 };
+
+// DSConnList<DSNetConnection> 的排序键：(实例局部 id, 引脚 id)
+inline std::pair<CMInstanceId, CMPinId> ds_conn_key(
+    const DSNetConnection& c) {
+    return {c.instance_local_id_, c.pin_id_};
+}
 
 // wire 段：layer + 宽度 + 路径点列。点 = 全局 DBU（int32，路径顶点按
 // DEF 出现序）；宽度 = 全局 DBU（special net 显式宽度 / 普通 net 回填
@@ -695,15 +836,21 @@ public:
     // 通配连接条目数（( * 引脚 ) 形态的原始条目；2026-11-24 真实数据
     // 兼容裁定——SPECIALNETS/NETS 一视同仁，逐条计数）
     uint64_t wildcard_entry_count = 0;
-    // 通配展开产生的连接数（实际收录的展开连接；显式重复/伪单元/未登记
-    // 引脚的跳过项不计）
+    // 通配展开产生的连接数（**封存前**的展开条目数——显式重复/伪单元/
+    // 未登记引脚的跳过项不计；之后被判重复而去掉的计入
+    // duplicate_connection_count，2026-11-24 连接表唯一性裁定）
     uint64_t wildcard_connection_count = 0;
+    // 封存时去掉的重复连接条数（2026-11-24 连接表唯一性裁定：不分来源
+    // ——DEF 重复显式条目 / 显式与通配重复 / 同名网合并重复，一律在此
+    // 计数；DSGN::0028 数据源）
+    uint64_t duplicate_connection_count = 0;
 
     FLY_SERIALIZE(net_count, connection_count, wire_count, rect_count,
                   via_instance_count, skipped_via_count,
                   skipped_layer_ref_count, skipped_net_count,
                   skipped_invalid_connection_count, unknown_use_count,
-                  wildcard_entry_count, wildcard_connection_count)
+                  wildcard_entry_count, wildcard_connection_count,
+                  duplicate_connection_count)
 };
 
 // per-DEF 网内容产物（③ 分批解析落批追加；⑬ 独立对象）：连接表 + 几何表
@@ -714,9 +861,11 @@ class DSNetBuildData {
 public:
     // block 名（DESIGN 语句；与 DSBlockBuildData 对齐冗余）
     CMString block_name_;
-    // 连接表：local net id → 连接项列表。值 CMSharedPtr 持有（2026-09-16
-    // 裁定：weak 观察化——访问器返回 CMWeakPtr，类型级生命周期安全）
-    CMUnorderedMap<CMNetId, CMSharedPtr<CMVector<DSNetConnection>>>
+    // 连接表：local net id → 连接项列表（DSConnList——2026-11-24 连接表
+    // 唯一性裁定：构建期追加、封存后 (实例, 引脚) 升序无重复）。值
+    // CMSharedPtr 持有（2026-09-16 裁定：weak 观察化——访问器返回
+    // CMWeakPtr，类型级生命周期安全）
+    CMUnorderedMap<CMNetId, CMSharedPtr<DSConnList<DSNetConnection>>>
         connections_;
     // 几何表：local net id → wire 段 / rect 项列表
     CMUnorderedMap<CMNetId, CMSharedPtr<CMVector<DSNetWire>>> wires_;
@@ -764,7 +913,7 @@ public:
     // 查询观察（weak——lock 后持锁期使用：宿主析构后 lock 失败而非悬
     // 空，2026-09-16 裁定；未命中 = 空 weak。使用范式：
     //   if (auto conns = n.connections_of(id).lock()) { conns->... }）
-    CMWeakPtr<const CMVector<DSNetConnection>> connections_of(
+    CMWeakPtr<const DSConnList<DSNetConnection>> connections_of(
         CMNetId net_id) const;
     CMWeakPtr<const CMVector<DSNetWire>> wires_of(CMNetId net_id) const;
     CMWeakPtr<const CMVector<DSNetRect>> rects_of(CMNetId net_id) const;
@@ -780,6 +929,13 @@ public:
     void mark_pg_net(CMNetId local_net_id) {
         pg_nets_.insert(local_net_id);
     }
+
+    // 封存全部网的连接表（S5b 解析入口尾部单点调用——ds_parse_def_nets
+    // 尾部；任何持久化对象交出去之前表已封存，2026-11-24 连接表唯一性
+    // 裁定）。去掉的重复条数累计进 stats_.duplicate_connection_count 并
+    // 从 stats_.connection_count 扣除（= 最终收录数），返回去重总数。
+    // 幂等（重复调用无副作用）。
+    uint64_t seal_all_connections();
 
     // 网 USE 属性收录/读取（S5b 收录、S9 flatten 与 debug 消费；读取
     // 缺省 = SIGNAL——只记录非 SIGNAL 条目，见字段注释）

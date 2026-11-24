@@ -165,10 +165,15 @@ gid_u1 = design_blk.convert_to_id("inst", "top3/u1")
 assert (gid_top3, gid_u1) == (3, 5), (gid_top3, gid_u1)
 
 # 2a. block_inst 块实例绑定（§7.1 局部名偏移换算 + 端口条目归块实例自身）
-# 条目：u1/ZN(5,ZN) ✓ u1/A(5,A) ✓ n2(网→(5,ZN) 同源合一) n1(无 driver)
-# PIN_IN(块端口→归 top3(3) 自身) → entry=5 hit=3。
-# dangling=2 = n1（连接表无 driver 位条目）+ n2（无布线几何不落 design db
-# NETS 表——「NETS 跟随网副本」既定语义，TIMG::0003 合法兜底口径）
+# 条目：u1/ZN(5,ZN) ✓ u1/A(5,A) ✓ n2(网→(5,ZN) 同源合一) n1(输入端口
+# 驱动→挂 top3(3)/PIN_IN) PIN_IN(块端口→归 top3(3) 自身) → entry=5
+# hit=4（2026-11-24 端口角色裁定后 n1 命中：n1 连接表 = (5,A,receiver)
+# + (3,PIN_IN,port+driver)——PIN_IN 是 INPUT 端口 = 它所在网的驱动者，
+# 端口驱动者把条目写进负载 (5,A) 所在分区，与块端口条目路径同键 (3,
+# PIN_IN) 合一）。
+# dangling=1 = n2（无布线几何不落 design db NETS 表——「NETS 跟随网副
+# 本」既定语义，TIMG::0003 合法兜底口径；n1 旧口径悬空因连接表无 driver
+# 位条目，新口径由端口驱动者修复）
 tdb_inst = proj.build_timing_db(
     name="t_blk_inst",
     timing_files=[{"file_name": os.path.join(DATA, "tm_blk_inst.twf"),
@@ -176,13 +181,13 @@ tdb_inst = proj.build_timing_db(
     design_db=design_blk)
 assert proj.wait_frozen("t_blk_inst", timeout=300)
 s = tdb_inst.load_timing_summary_obj()
-assert (s.total_entry_count, s.total_hit_count) == (5, 3), \
+assert (s.total_entry_count, s.total_hit_count) == (5, 4), \
     (s.total_entry_count, s.total_hit_count)
-assert s.dangling_net_count == 2, s.dangling_net_count
+assert s.dangling_net_count == 1, s.dangling_net_count
 assert s.net_name_miss_count == 0 and s.skipped_pin_count == 0
 assert abs(s.files[0].time_scale_sec - 1e-9) < 1e-12
-INFO("[OK] block_inst binding: entry=5 hit=3 dangling=2 (port entry on "
-     "block instance itself)")
+INFO("[OK] block_inst binding: entry=5 hit=4 dangling=1 (input-port "
+     "driven n1 attaches to top3/PIN_IN)")
 
 # 2a-miss. 绑定目标未命中条目级兜底（2026-09-17 裁定：单文件绑定无效 →
 # TIMG::0011 error 消息 + 跳过该文件〔零条目、不进切块链〕+ 计数入
@@ -208,7 +213,7 @@ assert s_mixed.invalid_binding_count == 1, s_mixed.invalid_binding_count
 # 无效文件零条目：不进逐文件统计表，条目全部来自有效绑定（同 2a 口径）
 assert len(s_mixed.files) == 1, \
     f"invalid file must contribute zero files entries: {s_mixed.files}"
-assert (s_mixed.total_entry_count, s_mixed.total_hit_count) == (5, 3), \
+assert (s_mixed.total_entry_count, s_mixed.total_hit_count) == (5, 4), \
     (s_mixed.total_entry_count, s_mixed.total_hit_count)
 # TIMG::0011 error 消息可查（master message.log）
 with open(os.path.join(LOG_DIR, "message.log"), errors="replace") as f:
@@ -250,8 +255,9 @@ tdb_cell = proj.build_timing_db(
     design_db=design_blk)
 assert proj.wait_frozen("t_blk_cell", timeout=300)
 s2 = tdb_cell.load_timing_summary_obj()
-assert s2.total_hit_count == 3, s2.total_hit_count
-INFO("[OK] block_cell binding: definition-level replication hit=3")
+assert s2.total_hit_count == 4, s2.total_hit_count
+INFO("[OK] block_cell binding: definition-level replication hit=4 "
+     "(n1 now driven by input port)")
 
 # 2c. strip_prefix 段级剥离（§7.4：u_dutx 段不匹配防误配 + 剥后余空）
 tdb_strip = proj.build_timing_db(
