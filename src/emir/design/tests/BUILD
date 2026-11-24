@@ -30,7 +30,7 @@ cc_test(
 
 cc_test(
     name = "ds_def_adapter_test",
-    srcs = ["ds_def_adapter_test.cpp"],
+    srcs = ["ds_def_adapter_test.cpp", "borrow_view.h"],
     data = [
         "data/block_synth.def",
         "data/tech_synth.lef",
@@ -80,6 +80,7 @@ cc_test(
     ],
     deps = [
         "@googletest//:gtest_main",
+        "//src/common/testing:fly_common_testing",
         "//src/emir/design/cpp:fly_emir_design_ds_types",
     ],
     linkstatic = True,

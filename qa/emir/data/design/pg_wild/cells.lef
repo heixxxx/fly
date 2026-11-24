@@ -1,0 +1,44 @@
+VERSION 5.8 ;
+UNITS
+   DATABASE MICRONS 1000 ;
+END UNITS
+
+MACRO INV2
+   CLASS CORE ;
+   SIZE 0.7 BY 0.7 ;
+   SITE site1 ;
+   PIN A
+      DIRECTION INPUT ;
+      USE SIGNAL ;
+      PORT
+         LAYER M1 ;
+            RECT 0.0 0.0 0.1 0.1 ;
+      END
+   END A
+   PIN ZN
+      DIRECTION OUTPUT ;
+      USE SIGNAL ;
+      PORT
+         LAYER M2 ;
+            RECT 0.3 0.3 0.5 0.5 ;
+      END
+   END ZN
+   PIN VDD
+      DIRECTION INOUT ;
+      USE POWER ;
+      PORT
+         LAYER M1 ;
+            RECT 0.0 0.6 0.7 0.7 ;
+      END
+   END VDD
+   PIN VSS
+      DIRECTION INOUT ;
+      USE GROUND ;
+      PORT
+         LAYER M1 ;
+            RECT 0.0 0.0 0.7 0.1 ;
+      END
+   END VSS
+END INV2
+
+END LIBRARY

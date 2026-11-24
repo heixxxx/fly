@@ -22,13 +22,23 @@
 #include <emir/design/cpp/ds_lef_adapter.h>
 #include <emir/design/cpp/ds_net_pipeline.h>
 
+#include <common/testing/cpp/test_helpers.h>
+
 #include <gtest/gtest.h>
 
 #include "borrow_view.h"
 
+#include <message/cpp/message_macros.h>
+#include <message/cpp/message_registry.h>
+
+#include <algorithm>
 #include <cstdint>
 #include <filesystem>
+#include <fstream>
 #include <string>
+#include <tuple>
+#include <utility>
+#include <vector>
 
 namespace {
 
@@ -125,6 +135,24 @@ struct TestEnv {
         design.register_pin("POUT");  // id 6
         design.cells_[1].pins_[0].set_pin_id(CMPinId{5});
         design.cells_[1].pins_[1].set_pin_id(CMPinId{6});
+
+        // BUF_X1（通配展开的混合单元对照面：A INPUT / Z OUTPUT，无电源
+        // 地引脚——「谁有谁连」分流依据）。A 与 INV_X1 共享全局 id（裁
+        // 定 3 同名 pin 共享 id），Z 新登记
+        DSCell buf;
+        buf.set_name("BUF_X1");
+        buf.set_lef_cell();
+        buf.set_bbox(GEORect(0, 0, 1400, 1400));
+        DSPin b_a;  // INPUT SIGNAL（共享全局 id 0）
+        b_a.direction_ = DSPinDirection::INPUT;
+        buf.add_pin(std::move(b_a));
+        DSPin b_z;  // OUTPUT SIGNAL → driver 位
+        b_z.direction_ = DSPinDirection::OUTPUT;
+        buf.add_pin(std::move(b_z));
+        design.add_cell(std::move(buf));
+        design.register_pin("Z");  // id 7
+        design.cells_[2].pins_[0].set_pin_id(CMPinId{0});  // BUF A = 共享 0
+        design.cells_[2].pins_[1].set_pin_id(CMPinId{7});  // BUF Z
     }
 
     // 挂好环境的 ctx（local 0 占位 + 实例 u1 = local 1 + 两网名，仿 S5a
@@ -135,6 +163,26 @@ struct TestEnv {
         DSInstance u1;
         u1.set_cell_id(CMCellId{design.cell_names_.get_id("INV_X1")});
         block_data.add_instance(std::move(u1), "u1");
+        block_data.register_net("n1");
+        block_data.register_net("VDD");
+        return block_data;
+    }
+
+    // 通配展开测试的实例环境（仿 S5a 产物形态）：u1/u2 = INV_X1（有
+    // VDD/VSS/A/ZN/CLK）、u3 = BUF_X1（无电源地引脚）。local id 分配序
+    // 1/2/3（add_instance 顺序，⑧ 从 1 起）。
+    DSBlockBuildData make_multi_block_data() const {
+        DSBlockBuildData block_data;
+        block_data.init_placeholder("nets_blk", CMCellId{});
+        DSInstance u1;
+        u1.set_cell_id(CMCellId{design.cell_names_.get_id("INV_X1")});
+        block_data.add_instance(std::move(u1), "u1");
+        DSInstance u2;
+        u2.set_cell_id(CMCellId{design.cell_names_.get_id("INV_X1")});
+        block_data.add_instance(std::move(u2), "u2");
+        DSInstance u3;
+        u3.set_cell_id(CMCellId{design.cell_names_.get_id("BUF_X1")});
+        block_data.add_instance(std::move(u3), "u3");
         block_data.register_net("n1");
         block_data.register_net("VDD");
         return block_data;
@@ -684,6 +732,391 @@ TEST(DsDefNetsTest, UnreadableFileRaises) {
                                   test::borrow(block_data),
                                   test::borrow(net_data), stats, 1000, 1000),
                  std::runtime_error);
+}
+
+// ── 7. 通配条目 ( * 引脚 ) 展开（2026-11-24 真实数据兼容裁定）────────
+
+// DSGN 消息捕获（注册 id + 不限配额——「未发出」断言才可信；析构复位
+// 推送口，仿 master_agent_test 先例）
+class MessageCapture {
+public:
+    explicit MessageCapture(const char* id) {
+        fly::MessageRegistry::instance().register_id(id,
+                                                    fly::LogLevel::WARN);
+        fly::MessageRegistry::instance().set_id_limit(id, -1);
+        fly::set_message_push_func(
+            [this](fly::LogLevel, const CMString& domain, int32_t,
+                   const CMString&) { ids_.push_back(domain); });
+    }
+    ~MessageCapture() { fly::set_message_push_func(nullptr); }
+    MessageCapture(const MessageCapture&) = delete;
+    MessageCapture& operator=(const MessageCapture&) = delete;
+
+    size_t count(const char* id) const {
+        return static_cast<size_t>(std::count(ids_.begin(), ids_.end(),
+                                              CMString(id)));
+    }
+
+private:
+    CMVector<CMString> ids_;
+};
+
+// 通配展开产物的 (实例 local id, pin id, flags 集合) 列表——instances_
+// 为无序容器，展开序不锁死，逐项断言按排序比对
+struct WildcardConnKey {
+    uint64_t inst;
+    uint64_t pin;
+    unsigned flags;
+    bool operator<(const WildcardConnKey& o) const {
+        return std::tie(inst, pin, flags) <
+               std::tie(o.inst, o.pin, o.flags);
+    }
+    bool operator==(const WildcardConnKey& o) const {
+        return inst == o.inst && pin == o.pin && flags == o.flags;
+    }
+};
+
+CMVector<WildcardConnKey> sorted_keys(const CMVector<DSNetConnection>& conns) {
+    CMVector<WildcardConnKey> keys;
+    for (const DSNetConnection& c : conns) {
+        keys.push_back({c.instance_local_id_.value(), c.pin_id_.value(),
+                        c.flags_});
+    }
+    std::sort(keys.begin(), keys.end());
+    return keys;
+}
+
+// 全部实例都有该引脚：每实例一条连接，标志位与显式写法逐位一致（电源
+// 引脚 power 位 + INOUT hybrid、地引脚 ground + receiver、输出引脚
+// driver——方向/类型均按单元定义）
+TEST(DSNetWildcardConnectionTest, ExpandsToEveryInstanceOwningThePin) {
+    TestEnv env;
+    DSBlockBuildData block_data = env.make_multi_block_data();
+    DSNetBuildData net_data;
+
+    DSNetContext ctx = make_ctx(env, block_data, net_data, "VDD");
+    ctx.is_special = true;
+    ctx.is_pg = true;  // 适配层派生口径 = special ∨ USE POWER/GROUND
+    ctx.connections.push_back({"*", "VDD"});
+    ctx.connections.push_back({"*", "VSS"});
+    ctx.connections.push_back({"*", "ZN"});
+
+    DSNetConnectionParseNode node;
+    node.handle(ctx);
+
+    const auto conns = net_data.connections_.at(CMNetId{2});
+    // u1/u2 INV_X1 有 VDD/VSS/ZN；u3 BUF_X1 无电源地、Z≠ZN → 各 2 条
+    ASSERT_EQ(conns->size(), 6u);
+    // VDD（pin 2）：INOUT POWER → hybrid + power；两个 INV 实例
+    size_t vdd_seen = 0;
+    size_t vss_seen = 0;
+    size_t zn_seen = 0;
+    for (const DSNetConnection& c : *conns) {
+        EXPECT_TRUE(c.instance_local_id_ == CMInstanceId{1} ||
+                    c.instance_local_id_ == CMInstanceId{2});
+        if (c.pin_id_ == CMPinId{2}) {
+            ++vdd_seen;
+            EXPECT_TRUE(c.is_power());
+            EXPECT_TRUE(c.is_driver() && c.is_receiver());  // hybrid
+            EXPECT_FALSE(c.is_ground() || c.is_clock() || c.is_port());
+        } else if (c.pin_id_ == CMPinId{3}) {
+            ++vss_seen;
+            EXPECT_TRUE(c.is_ground() && c.is_receiver());
+            EXPECT_FALSE(c.is_power() || c.is_driver() || c.is_port());
+        } else if (c.pin_id_ == CMPinId{1}) {
+            ++zn_seen;
+            EXPECT_TRUE(c.is_driver());
+            EXPECT_FALSE(c.is_receiver() || c.is_power() || c.is_port());
+        }
+    }
+    EXPECT_EQ(vdd_seen, 2u);
+    EXPECT_EQ(vss_seen, 2u);
+    EXPECT_EQ(zn_seen, 2u);
+    EXPECT_EQ(net_data.stats_.connection_count, 6u);
+    EXPECT_EQ(net_data.stats_.skipped_invalid_connection_count, 0u);
+    // 通配统计：3 个通配条目 → 6 条展开连接
+    EXPECT_EQ(net_data.stats_.wildcard_entry_count, 3u);
+    EXPECT_EQ(net_data.stats_.wildcard_connection_count, 6u);
+    // pg 网判定与 USE 收录路径不受通配影响
+    EXPECT_TRUE(net_data.is_pg_net(CMNetId{2}));
+}
+
+// 混合单元：只有拥有该引脚的单元的实例展开（u3 BUF_X1 无电源地引脚 →
+// 不连）；信号引脚跨单元共享全局 id（A = id 0，裁定 3）时按「谁有谁连」
+// 全量展开
+TEST(DSNetWildcardConnectionTest, MixedCellsExpandOnlyOwningInstances) {
+    TestEnv env;
+    DSBlockBuildData block_data = env.make_multi_block_data();
+    DSNetBuildData net_data;
+
+    DSNetContext ctx = make_ctx(env, block_data, net_data, "n1");
+    ctx.connections.push_back({"*", "VDD"});  // 仅 u1/u2（INV）有
+    ctx.connections.push_back({"*", "A"});    // INV/BUF 均有（共享 id 0）
+
+    DSNetConnectionParseNode node;
+    node.handle(ctx);
+
+    const auto conns = net_data.connections_.at(CMNetId{1});
+    // VDD 2 条（u1/u2）+ A 3 条（u1/u2/u3）
+    ASSERT_EQ(conns->size(), 5u);
+    const auto keys = sorted_keys(*conns);
+    CMVector<WildcardConnKey> expect;
+    for (const uint64_t inst : {1u, 2u}) {
+        expect.push_back({inst, 2, 0});  // VDD：hybrid+power 位在下方单独核
+    }
+    for (const uint64_t inst : {1u, 2u, 3u}) {
+        expect.push_back({inst, 0, 0});  // A INPUT → receiver 位
+    }
+    std::sort(expect.begin(), expect.end());
+    // pin/实例配对全对上（flags 位形态已在上例锁定，此处核 id 配对）
+    for (size_t i = 0; i < keys.size(); ++i) {
+        EXPECT_EQ(keys[i].inst, expect[i].inst);
+        EXPECT_EQ(keys[i].pin, expect[i].pin);
+    }
+    // A 条目 receiver 位（INPUT）；含 BUF 的 u3
+    for (const DSNetConnection& c : *conns) {
+        if (c.pin_id_ == CMPinId{0}) {
+            EXPECT_TRUE(c.is_receiver());
+            EXPECT_FALSE(c.is_driver());
+        }
+    }
+    EXPECT_EQ(net_data.stats_.wildcard_entry_count, 2u);
+    EXPECT_EQ(net_data.stats_.wildcard_connection_count, 5u);
+}
+
+// 引脚名全局未登记：零条连接、DSGN::0025 不触发（只计通配条目数）
+TEST(DSNetWildcardConnectionTest, UnregisteredPinSilentZeroConnections) {
+    TestEnv env;
+    DSBlockBuildData block_data = env.make_multi_block_data();
+    DSNetBuildData net_data;
+
+    MessageCapture capture("DSGN::0025");
+    DSNetContext ctx = make_ctx(env, block_data, net_data, "n1");
+    ctx.connections.push_back({"*", "GHOST_PIN"});
+    DSNetConnectionParseNode node;
+    node.handle(ctx);
+
+    EXPECT_TRUE(net_data.connections_.find(CMNetId{1}) ==
+                net_data.connections_.end());
+    EXPECT_EQ(net_data.stats_.skipped_invalid_connection_count, 0u);
+    EXPECT_EQ(capture.count("DSGN::0025"), 0u);
+    EXPECT_EQ(net_data.stats_.wildcard_entry_count, 1u);
+    EXPECT_EQ(net_data.stats_.wildcard_connection_count, 0u);
+}
+
+// 引脚全局已登记但没有任何实例拥有：零条连接、不报警
+TEST(DSNetWildcardConnectionTest, PinUnownedByAnyCellSilent) {
+    TestEnv env;
+    env.design.register_pin("LONELY");  // 全局登记、无单元定义（id 8）
+    DSBlockBuildData block_data = env.make_multi_block_data();
+    DSNetBuildData net_data;
+
+    MessageCapture capture("DSGN::0025");
+    DSNetContext ctx = make_ctx(env, block_data, net_data, "n1");
+    ctx.connections.push_back({"*", "LONELY"});
+    DSNetConnectionParseNode node;
+    node.handle(ctx);
+
+    EXPECT_TRUE(net_data.connections_.find(CMNetId{1}) ==
+                net_data.connections_.end());
+    EXPECT_EQ(net_data.stats_.skipped_invalid_connection_count, 0u);
+    EXPECT_EQ(capture.count("DSGN::0025"), 0u);
+    EXPECT_EQ(net_data.stats_.wildcard_entry_count, 1u);
+}
+
+// 普通信号网（非 special、非 pg）上的通配同样展开（语法层处理，不按
+// 网的类别特判）
+TEST(DSNetWildcardConnectionTest, SignalNetWildcardExpandsToo) {
+    TestEnv env;
+    DSBlockBuildData block_data = env.make_multi_block_data();
+    DSNetBuildData net_data;
+
+    DSNetContext ctx = make_ctx(env, block_data, net_data, "n1");
+    ctx.is_special = false;
+    ctx.connections.push_back({"*", "ZN"});
+    DSNetConnectionParseNode node;
+    node.handle(ctx);
+
+    const auto conns = net_data.connections_.at(CMNetId{1});
+    ASSERT_EQ(conns->size(), 2u);  // u1/u2 的 ZN
+    EXPECT_FALSE(net_data.is_pg_net(CMNetId{1}));
+    EXPECT_EQ(net_data.stats_.wildcard_connection_count, 2u);
+    EXPECT_EQ(net_data.stats_.connection_count, 2u);
+}
+
+// 通配 + 显式混写：同一 (实例, 引脚) 只保留一条——显式在前与在后两种
+// 顺序都只出现一份显式条目
+TEST(DSNetWildcardConnectionTest, ExplicitWinsNoDuplicate) {
+    TestEnv env;
+    DSBlockBuildData block_data = env.make_multi_block_data();
+    DSNetBuildData net_data;
+
+    // 显式在前
+    DSNetContext ctx = make_ctx(env, block_data, net_data, "VDD");
+    ctx.connections.push_back({"u1", "VDD"});
+    ctx.connections.push_back({"*", "VDD"});
+    DSNetConnectionParseNode node;
+    node.handle(ctx);
+    const auto conns = net_data.connections_.at(CMNetId{2});
+    ASSERT_EQ(conns->size(), 2u);  // u1（显式）+ u2（通配展开）
+    size_t u1_vdd = 0;
+    for (const DSNetConnection& c : *conns) {
+        if (c.instance_local_id_ == CMInstanceId{1}) ++u1_vdd;
+    }
+    EXPECT_EQ(u1_vdd, 1u);
+    EXPECT_EQ(net_data.stats_.connection_count, 2u);
+    EXPECT_EQ(net_data.stats_.wildcard_connection_count, 1u);
+
+    // 通配在前、显式在后（去重集合保证不重复）
+    DSNetBuildData net_data2;
+    DSNetContext ctx2 = make_ctx(env, block_data, net_data2, "VDD");
+    ctx2.connections.push_back({"*", "VDD"});
+    ctx2.connections.push_back({"u1", "VDD"});
+    node.handle(ctx2);
+    const auto conns2 = net_data2.connections_.at(CMNetId{2});
+    ASSERT_EQ(conns2->size(), 2u);
+    size_t u1_vdd2 = 0;
+    for (const DSNetConnection& c : *conns2) {
+        if (c.instance_local_id_ == CMInstanceId{1}) ++u1_vdd2;
+    }
+    EXPECT_EQ(u1_vdd2, 1u);
+    EXPECT_EQ(net_data2.stats_.connection_count, 2u);
+    EXPECT_EQ(net_data2.stats_.wildcard_connection_count, 1u);
+}
+
+// 同一张网写两条同引脚通配（2026-11-24 评审修订，上游实证：连接按集合
+// 处理——OpenROAD 对 `( * VDD )` 写两条的变体日志记 1504 条语句、网上的
+// 实例引脚连接仍 752 条）：每实例仍只有一条连接；条目计数按原始条目数
+// 计 2，连接计数只计实际展开条数
+TEST(DSNetWildcardConnectionTest, DuplicateWildcardEntriesDeduplicated) {
+    TestEnv env;
+    DSBlockBuildData block_data = env.make_multi_block_data();
+    DSNetBuildData net_data;
+
+    DSNetContext ctx = make_ctx(env, block_data, net_data, "VDD");
+    ctx.connections.push_back({"*", "VDD"});
+    ctx.connections.push_back({"*", "VDD"});
+    DSNetConnectionParseNode node;
+    node.handle(ctx);
+
+    const auto conns = net_data.connections_.at(CMNetId{2});
+    ASSERT_EQ(conns->size(), 2u);  // u1/u2 各一条
+    size_t u1_vdd = 0;
+    size_t u2_vdd = 0;
+    for (const DSNetConnection& c : *conns) {
+        if (c.instance_local_id_ == CMInstanceId{1}) ++u1_vdd;
+        if (c.instance_local_id_ == CMInstanceId{2}) ++u2_vdd;
+    }
+    EXPECT_EQ(u1_vdd, 1u);
+    EXPECT_EQ(u2_vdd, 1u);
+    EXPECT_EQ(net_data.stats_.connection_count, 2u);
+    EXPECT_EQ(net_data.stats_.wildcard_entry_count, 2u);
+    EXPECT_EQ(net_data.stats_.wildcard_connection_count, 2u);
+}
+
+// 含伪单元实例（cell 引用快照表外）：通配路径静默跳过（与显式路径的
+// DSGN::0025 口径不同——通配的本义是「谁有谁连」，无法判定就不连），
+// 其余实例照常展开
+TEST(DSNetWildcardConnectionTest, FakeCellInstanceSkippedSilently) {
+    TestEnv env;
+    DSBlockBuildData block_data = env.make_multi_block_data();
+    DSInstance ghost;
+    ghost.set_cell_id(CMCellId{9999});  // 快照表外 = 伪单元引用
+    block_data.add_instance(std::move(ghost), "ghost");  // local 4
+    DSNetBuildData net_data;
+
+    MessageCapture capture("DSGN::0025");
+    DSNetContext ctx = make_ctx(env, block_data, net_data, "VDD");
+    ctx.connections.push_back({"*", "VDD"});
+    DSNetConnectionParseNode node;
+    node.handle(ctx);
+
+    const auto conns = net_data.connections_.at(CMNetId{2});
+    ASSERT_EQ(conns->size(), 2u);  // u1/u2 展开、ghost 跳过
+    EXPECT_EQ(net_data.stats_.skipped_invalid_connection_count, 0u);
+    EXPECT_EQ(capture.count("DSGN::0025"), 0u);
+    EXPECT_EQ(net_data.stats_.wildcard_connection_count, 2u);
+}
+
+// 两种写法等价：通配 DEF 与逐实例显式 DEF 的连接表逐项相同（同 id、同
+// 标志位；展开序随 instances_ 容器序与文本序可能不同——逐项比对按排序
+// 键，与「同结构同标志位」的裁定语义一致）
+TEST(DsDefWildcardEquivTest, WildcardDefEqualsExplicitDef) {
+    TestEnv env;
+    // 临时 DEF 落项目约定的临时目录设施（ScopedTempDir：RAII 构造即建、
+    // 析构递归删——bazel 沙箱 TEST_TMPDIR，手动直跑落 .work/gtest_tmp/）
+    test::ScopedTempDir tmp("wildcard_equiv");
+    const std::string common_head =
+        "VERSION 5.8 ;\n"
+        "DESIGN nets_blk ;\n"
+        "UNITS DISTANCE MICRONS 1000 ;\n"
+        "COMPONENTS 3 ;\n"
+        "    - u1 INV_X1 + PLACED ( 100 100 ) N ;\n"
+        "    - u2 INV_X1 + PLACED ( 100 500 ) N ;\n"
+        "    - u3 BUF_X1 + PLACED ( 100 900 ) N ;\n"
+        "END COMPONENTS\n";
+    const std::string common_tail =
+        "END DESIGN\n";
+
+    const fs::path wildcard_def = fs::path(tmp.path) / "wildcard_a.def";
+    {
+        std::ofstream f(wildcard_def);
+        f << common_head
+          << "SPECIALNETS 1 ;\n"
+          << "    - VDD ( * VDD ) + USE POWER ;\n"
+          << "END SPECIALNETS\n" << common_tail;
+    }
+    const fs::path explicit_def = fs::path(tmp.path) / "explicit_b.def";
+    {
+        std::ofstream f(explicit_def);
+        f << common_head
+          << "SPECIALNETS 1 ;\n"
+          << "    - VDD ( u1 VDD ) ( u2 VDD ) + USE POWER ;\n"
+          << "END SPECIALNETS\n" << common_tail;
+    }
+
+    const auto parse_one = [&](const fs::path& path) {
+        DSBlockBuildData block_data;
+        CMVector<DSCell> fake_cells;
+        DSDefComponentsStats comp_stats;
+        ds_parse_def_components(path.string(), test::borrow(env.stack),
+                                test::borrow(env.design),
+                                test::borrow(block_data), comp_stats, 0,
+                                test::borrow(fake_cells));
+        DSNetBuildData net_data;
+        DSDefNetsStats net_stats;
+        ds_parse_def_nets(path.string(), test::borrow(env.stack),
+                          test::borrow(env.design),
+                          test::borrow(block_data),
+                          test::borrow(net_data), net_stats, 0, 1000);
+        return net_data;
+    };
+
+    const DSNetBuildData from_wildcard = parse_one(wildcard_def);
+    const DSNetBuildData from_explicit = parse_one(explicit_def);
+
+    // 两边 VDD = local id 1（唯一网名），展开/显式连接表逐项相同
+    const CMNetId vdd_id{1};
+    const auto conns_w = from_wildcard.connections_.at(vdd_id);
+    const auto conns_e = from_explicit.connections_.at(vdd_id);
+    ASSERT_EQ(conns_w->size(), 2u);
+    ASSERT_EQ(conns_e->size(), 2u);
+    const auto keys_w = sorted_keys(*conns_w);
+    const auto keys_e = sorted_keys(*conns_e);
+    ASSERT_EQ(keys_w.size(), keys_e.size());
+    for (size_t i = 0; i < keys_w.size(); ++i) {
+        EXPECT_TRUE(keys_w[i] == keys_e[i]);
+    }
+    // 统计面：通配版记通配条目/展开连接，显式版为零
+    EXPECT_EQ(from_wildcard.stats_.wildcard_entry_count, 1u);
+    EXPECT_EQ(from_wildcard.stats_.wildcard_connection_count, 2u);
+    EXPECT_EQ(from_explicit.stats_.wildcard_entry_count, 0u);
+    EXPECT_EQ(from_explicit.stats_.wildcard_connection_count, 0u);
+    // USE POWER 收录与 pg 判定两侧一致
+    EXPECT_EQ(from_wildcard.net_use_of(vdd_id), DSNetUse::POWER);
+    EXPECT_EQ(from_explicit.net_use_of(vdd_id), DSNetUse::POWER);
+    EXPECT_TRUE(from_wildcard.is_pg_net(vdd_id));
+    EXPECT_TRUE(from_explicit.is_pg_net(vdd_id));
 }
 
 }  // namespace

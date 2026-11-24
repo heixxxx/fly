@@ -16,6 +16,30 @@
 
 namespace fly {
 
+CMString ds_def_unescape_name(const char* name) {
+    if (name == nullptr) {
+        return CMString{};
+    }
+    // 快路径：无反斜杠 = 无转义，直接用原串构造（绝大多数名字不转义，
+    // 大设计百万名字级别不逐名字新建字符缓冲）
+    if (std::strchr(name, '\\') == nullptr) {
+        return CMString(name);
+    }
+    // 慢路径：反斜杠的下一个字符取字面义（`\[` → `[`、`\\` → `\`）；
+    // 结尾单独一个反斜杠无后续字符可转义，原样保留
+    CMString out;
+    out.reserve(std::strlen(name));
+    for (size_t i = 0; name[i] != '\0'; ++i) {
+        if (name[i] == '\\' && name[i + 1] != '\0') {
+            out.push_back(name[i + 1]);
+            ++i;  // 跳过被转义字符
+        } else {
+            out.push_back(name[i]);
+        }
+    }
+    return out;
+}
+
 namespace {
 
 // DEF 坐标（DBU_def）→ 全局 DBU：v × stack.dbu_per_micron / def_units
@@ -185,8 +209,9 @@ int def_pin_cbk(defrCallbackType_e, defiPin* p, defiUserData ud) {
     if (!ctx->block_active) return 0;
 
     // 重名 port 保留首份（DSGN::0006 场景的数据源；R7 ㊱：DSPin 不存
-    // name，查重经 port 名序列）
-    const CMString name = p->pinName();
+    // name，查重经 port 名序列）。port 名在解析边界转义还原（真实名字
+    // 入库——见文件头「名字转义还原」段）
+    const CMString name = ds_def_unescape_name(p->pinName());
     for (const CMString& seen : ctx->port_names) {
         if (seen == name) {
             ++ctx->stats->skipped_port_count;
@@ -524,7 +549,9 @@ int def_components_component_cbk(defrCallbackType_e, defiComponent* comp,
                           defiUserData ud) {
     auto* ctx = static_cast<DefComponentsContext*>(ud);
     DSInstanceContext ic;
-    ic.instance_name = comp->id();
+    // 实例名在解析边界转义还原（真实名字入库/入 hasher）；master 名是
+    // 与工艺文件对应的单元名引用，不在还原范围（见文件头裁定段）
+    ic.instance_name = ds_def_unescape_name(comp->id());
     ic.master_name = comp->name();
     ic.block_name = ctx->design_name;
     // 单位换算 int64 → int32（全局 DBU 域内，㉝ 统一基准）
@@ -552,16 +579,19 @@ int def_components_component_cbk(defrCallbackType_e, defiComponent* comp,
 
 // 网名扫描（③ NetNameOnly）：NETS 与 SPECIALNETS 共用 NetNameCbk（net
 // 体经 SkipNetDetails/SkipSNetDetails 真跳过）。跨段重名保留首份 + 计数。
+// 网名在解析边界转义还原——与 S5b 网内容通道同口径（真实名字对齐登记
+// 与连接换算；见文件头「名字转义还原」段）。
 int def_components_net_name_cbk(defrCallbackType_e, const char* name,
                          defiUserData ud) {
     auto* ctx = static_cast<DefComponentsContext*>(ud);
+    const CMString net_name = ds_def_unescape_name(name);
     // R7 ㊱：重名判定经 net hasher 哨兵查询（原 contains 语义等价）
     if (DSNetNameHasher::is_valid_id(
-            ctx->block_data->net_names_->get_id(name))) {
+            ctx->block_data->net_names_->get_id(net_name))) {
         ++ctx->stats->skipped_net_count;
         return 0;
     }
-    ctx->block_data->register_net(name);
+    ctx->block_data->register_net(net_name);
     ++ctx->stats->net_count;
     return 0;
 }
@@ -763,7 +793,9 @@ void traverse_nets_path(const defiPath* path, DefNetsContext* ctx,
 // 仍为 pg，语义与原字符串比较完全一致）。
 void extract_nets_net(defiNet* net, bool is_special, DefNetsContext* ctx) {
     DSNetContext nctx;
-    nctx.net_name = net->name();
+    // 网名在解析边界转义还原（真实名字入库——与 S5a 网名扫描同口径，
+    // 连接换算/查询全链按真实名字对齐）
+    nctx.net_name = ds_def_unescape_name(net->name());
     nctx.is_special = is_special;
     bool use_known = true;
     nctx.use = ds_parse_net_use(net->hasUse() ? net->use() : "SIGNAL",
@@ -782,11 +814,13 @@ void extract_nets_net(defiNet* net, bool is_special, DefNetsContext* ctx) {
     nctx.net_data = ctx->net_data;
     nctx.design_name = ctx->design_name;
 
-    // 连接项（instance pin / "PIN" port 引用，⑨ 拓扑保留原名）
+    // 连接项（instance pin / "PIN" port 引用，⑨ 拓扑 id 化前在适配层保
+    // 留名字形态）：端点实例名/引脚名/端口名均在解析边界转义还原（真实
+    // 名字交节点 1 换算；见文件头「名字转义还原」段）
     for (int i = 0; i < net->numConnections(); ++i) {
         DSNetRawConnection conn;
-        conn.instance_name = net->instance(i);
-        conn.pin_name = net->pin(i);
+        conn.instance_name = ds_def_unescape_name(net->instance(i));
+        conn.pin_name = ds_def_unescape_name(net->pin(i));
         nctx.connections.push_back(std::move(conn));
     }
 
@@ -966,6 +1000,10 @@ void ds_parse_def_nets(const CMString& path,
         static_cast<int>(net_data_ref.stats_.skipped_net_count);
     stats.skipped_invalid_connection_count =
         static_cast<int>(net_data_ref.stats_.skipped_invalid_connection_count);
+    stats.wildcard_entry_count =
+        static_cast<int>(net_data_ref.stats_.wildcard_entry_count);
+    stats.wildcard_connection_count =
+        static_cast<int>(net_data_ref.stats_.wildcard_connection_count);
 }
 
 // ── S4+S4b：DEF 头部一遍读取（原有入口）─────────────────────────────

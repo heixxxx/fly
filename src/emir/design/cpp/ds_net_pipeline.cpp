@@ -47,6 +47,149 @@ CMViaCellId ds_resolve_via_cell(const DSDesign& design,
 
 // —— 节点 1：连接项解析 ——
 
+namespace {
+
+// 同网连接去重集合（2026-11-24 评审修订：连接按集合处理——上游工具
+// 实证一个 (实例, 引脚) 在一张网上至多一条连接，显式 + 通配混写、同一
+// 通配写两条均去重）。键 = (端点实例 local id, 全局 pin id)，经容器别
+// 名层的 tuple hash 组合器（container_aliases.h），零自定义哈希。
+using ConnectedPinPairSet = CMUnorderedSet<std::tuple<CMInstanceId, CMPinId>>;
+
+// 显式与通配连接共用的换算（2026-11-24 真实数据兼容裁定：两条路径禁
+// 止各持一份逻辑。评审修订：拆两段共用——第一段「实例 → 所属单元」、
+// 第二段「引脚存在性 + 标志位 + 端点回填」；显式路径串联两段、port 条
+// 目与通配路径各取所需，库内零重复实现）。
+
+// 第一段：实例 → 所属单元（查实例表 + 单元 id 范围检查）。返回 nullptr
+// = 占位（local 0）/ fake cell 引用（快照表外），无 pin 可查。
+const DSCell* resolve_cell_of_instance(const DSNetContext& ctx,
+                                       CMInstanceId inst_local) {
+    const auto iit = ctx.block_data->instances_.find(inst_local);
+    if (iit == ctx.block_data->instances_.end() ||
+        (*iit->second).get_cell_id() >= ctx.design->cells_.size()) {
+        return nullptr;
+    }
+    return &ctx.design->cells_[(*iit->second).get_cell_id().value()];
+}
+
+// 第二段：给定单元 + 端点实例 + 引脚 id → 引脚存在性校验 + flags 六位
+// 填写 + instance_local_id_ / pin_id_ 回填。返回 false = 引脚 id 未登记
+// 或该 cell 定义内无此 pin（裁定 3 存在性校验：全局命中不代表该 cell
+// 有此 pin）。cached_flags 非空 = 套用既定标志位位集（通配路径按单元
+// 缓存传入——存在性已随缓存判定，免逐实例重扫 pin 表）。
+// pin_id → direction/type 现场定位经 cell 内线性遍历：std cell pin 数
+// <20 无负担；block cell（port 条目）pin 数当前 10³-10⁴ 级可接受
+//（review 注记：port 数上万时可改用 pin id 直等定位）。
+bool fill_resolved_connection(DSNetConnection& conn, const DSCell& cell,
+                              CMInstanceId inst_local, CMPinId pin_id,
+                              const uint8_t* cached_flags = nullptr) {
+    if (!pin_id.is_valid()) {
+        return false;
+    }
+    if (cached_flags == nullptr) {
+        bool found = false;
+        for (const DSPin& p : cell.pins_) {
+            if (p.pin_id_ != pin_id) {
+                continue;
+            }
+            const DSPinDirection dir = p.direction_;
+            if (dir == DSPinDirection::OUTPUT ||
+                dir == DSPinDirection::INOUT) {
+                conn.set_driver();
+            }
+            if (dir == DSPinDirection::INPUT ||
+                dir == DSPinDirection::INOUT) {
+                conn.set_receiver();  // INOUT = driver+receiver 同置 = hybrid
+            }
+            const DSPinType type = p.type_;
+            if (type == DSPinType::POWER) {
+                conn.set_power();
+            } else if (type == DSPinType::GROUND) {
+                conn.set_ground();
+            } else if (type == DSPinType::CLOCK) {
+                conn.set_clock();
+            }
+            found = true;
+            break;
+        }
+        if (!found) {
+            return false;
+        }
+    } else {
+        conn.flags_ = *cached_flags;  // 套用按单元缓存的标志位位集
+    }
+    conn.instance_local_id_ = inst_local;
+    conn.pin_id_ = pin_id;
+    return true;
+}
+
+// 通配条目 ( * 引脚 ) 展开（2026-11-24 真实数据兼容裁定，上游工具读
+// DEF 时展开、回写仍用通配简写——库内落展开后的真实连接）：
+//   语义 = 本 DEF（块）内每一个「所属单元定义了名为该引脚」的实例各一
+//   条连接，与显式 ( 实例 引脚 ) 产生的连接完全相同（同结构、同标志位、
+//   同后续路径），对 SPECIALNETS 与 NETS 一视同仁（语法层处理，不按网
+//   的类别特判）。细则：
+//   - 引脚名 → 全局 pin id 只查一次；「单元是否拥有该引脚」按单元缓存
+//     （单元数小；缓存值 = 该引脚的标志位位集，kNoPinFlags 哨兵 = 无此
+//     引脚）——位集经第二段探测形态取得，每条展开连接经第二段套用形态
+//     产出，查找与回填零内联；
+//   - 占位/伪单元实例静默跳过、不报警——通配的本义即「谁有谁连」，无
+//     法判定就不连（与显式连接的 DSGN::0025 口径不同，有意差异）；
+//   - 引脚名全局未登记 / 无任何实例拥有：零条连接，不报 DSGN::0025，
+//     只计通配条目数；
+//   - 连接按集合处理（2026-11-24 评审修订，上游实证）：connected_pairs
+//     初值 = 本网全部解析成功的显式条目，展开命中集合的跳过、未命中的
+//     展开并插入——「显式 + 通配」「通配 + 通配」均不重复；
+//   - 遍历顺序 = block 实例表（DSBlockBuildData::instances_）的既有顺
+//     序，不引入与运行有关的顺序（同输入两次建库逐字节一致）。
+void expand_wildcard_entry(DSNetContext& ctx, const CMString& pin_name,
+                           ConnectedPinPairSet& connected_pairs) {
+    // 缓存哨兵：-1 = 该单元无此引脚；>= 0 = 该引脚的 flags 位集
+    constexpr int8_t kNoPinFlags = -1;
+    DSNetStats& stats = ctx.net_data->stats_;
+    ++stats.wildcard_entry_count;
+    const CMPinId pin_id = ctx.design->pin_names_.get_id(pin_name);
+    if (!pin_id.is_valid()) {
+        return;  // 全局未登记：零条连接、不报警（只计条目数）
+    }
+    CMUnorderedMap<CMCellId, int8_t> cell_flag_cache;
+    for (const auto& [inst_local, inst] : ctx.block_data->instances_) {
+        if (inst_local == CMInstanceId{0}) {
+            continue;  // ⑧ 占位（块自身），非真实实例
+        }
+        const DSCell* cell = resolve_cell_of_instance(ctx, inst_local);
+        if (cell == nullptr) {
+            continue;  // 伪单元引用（快照表外）：静默跳过不报警
+        }
+        const CMCellId cell_id = (*inst).get_cell_id();
+        auto cached = cell_flag_cache.find(cell_id);
+        if (cached == cell_flag_cache.end()) {
+            DSNetConnection probe;  // 第二段探测形态：存在性 + 位集一次取得
+            const int8_t flags =
+                fill_resolved_connection(probe, *cell, inst_local, pin_id)
+                    ? static_cast<int8_t>(probe.flags_)
+                    : kNoPinFlags;
+            cached = cell_flag_cache.emplace(cell_id, flags).first;
+        }
+        if (cached->second == kNoPinFlags) {
+            continue;  // 该单元无此引脚：不连
+        }
+        // 连接集合去重：显式条目已占位或此前通配已展开的 (实例, 引脚)
+        // 不再重复展开
+        if (!connected_pairs.insert({inst_local, pin_id}).second) {
+            continue;
+        }
+        const uint8_t flags = static_cast<uint8_t>(cached->second);
+        DSNetConnection conn;
+        // 套用形态恒成功（位集来自本函数探测形态的既有判定）
+        fill_resolved_connection(conn, *cell, inst_local, pin_id, &flags);
+        ctx.net_data->add_connection(ctx.local_net_id, std::move(conn));
+        ++stats.wildcard_connection_count;
+    }
+}
+
+}  // namespace
+
 void DSNetConnectionParseNode::handle(DSNetContext& ctx) {
     if (ctx.stack == nullptr || ctx.design == nullptr ||
         ctx.block_data == nullptr || ctx.net_data == nullptr) {
@@ -91,39 +234,45 @@ void DSNetConnectionParseNode::handle(DSNetContext& ctx) {
     // skipped_invalid_connection_count 计数 + DSGN::0025 提醒（dev-rules
     // §7 不 raise；对齐 fake cell/未定义 via 的先例语义）
     const CMString& block_name = ctx.block_data->get_block_name();
-    // pin_id → direction/type 匹配经 cell 内线性遍历：std cell pin 数
-    // <20 无负担；block cell（port 条目）pin 数当前 10³-10⁴ 级可接受
-    //（review 注记：port 数上万时可改用 pin id 直等定位）。返回 false =
-    // 该 cell 定义内无此 pin id（裁定 3 存在性校验）
-    const auto fill_pin_flags = [](DSNetConnection& conn, const DSCell& cell,
-                                   CMPinId pin_id) -> bool {
-        for (const DSPin& p : cell.pins_) {
-            if (p.pin_id_ != pin_id) {
+    // 通配预扫：本网存在 ( * 引脚 ) 条目时，构建同网连接去重集合，初值
+    // = 本网全部解析成功的显式条目（2026-11-24 评审修订：连接按集合处
+    // 理——上游实证一个 (实例, 引脚) 至多一条连接；通配展开命中集合的
+    // 跳过、未命中的展开并插入）。无通配条目的网零预扫开销（绝大多数
+    // 网）。两条完全相同的显式条目之间的重复为既有行为（照常收录两条
+    // 连接），本集合不改变显式条目间的既有语义。
+    bool has_wildcard = false;
+    for (const DSNetRawConnection& raw : ctx.connections) {
+        if (raw.instance_name == "*") {
+            has_wildcard = true;
+            break;
+        }
+    }
+    ConnectedPinPairSet connected_pairs;
+    if (has_wildcard) {
+        for (const DSNetRawConnection& raw : ctx.connections) {
+            if (raw.instance_name == "*" || raw.instance_name == "PIN") {
                 continue;
             }
-            const DSPinDirection dir = p.direction_;
-            if (dir == DSPinDirection::OUTPUT ||
-                dir == DSPinDirection::INOUT) {
-                conn.set_driver();
+            const CMInstanceId inst_local =
+                ctx.block_data->instance_names_
+                    ? ctx.block_data->instance_names_->get_id(
+                          raw.instance_name)
+                    : CMInstanceId{};
+            const CMPinId pin_id =
+                ctx.design->pin_names_.get_id(raw.pin_name);
+            if (inst_local.is_valid() && pin_id.is_valid()) {
+                connected_pairs.insert({inst_local, pin_id});
             }
-            if (dir == DSPinDirection::INPUT ||
-                dir == DSPinDirection::INOUT) {
-                conn.set_receiver();  // INOUT = driver+receiver 同置 = hybrid
-            }
-            const DSPinType type = p.type_;
-            if (type == DSPinType::POWER) {
-                conn.set_power();
-            } else if (type == DSPinType::GROUND) {
-                conn.set_ground();
-            } else if (type == DSPinType::CLOCK) {
-                conn.set_clock();
-            }
-            return true;
         }
-        return false;
-    };
+    }
     for (DSNetRawConnection& raw : ctx.connections) {
         DSNetConnection conn;
+        if (raw.instance_name == "*") {
+            // 通配条目 ( * 引脚 )：展开为本块内所有拥有该引脚的实例的
+            // 连接（与显式写法完全同构；细则见 expand_wildcard_entry）
+            expand_wildcard_entry(ctx, raw.pin_name, connected_pairs);
+            continue;
+        }
         if (raw.instance_name == "PIN") {
             const CMPinId port_pin =
                 ctx.design->pin_names_.get_id(raw.pin_name);
@@ -131,18 +280,18 @@ void DSNetConnectionParseNode::handle(DSNetContext& ctx) {
                 ctx.design->cell_names_.get_id(block_name);
             const bool cell_known = block_cell_id.is_valid() &&
                                     block_cell_id < ctx.design->cells_.size();
-            // 裁定 3 存在性校验：port pin 须在 block cell 定义内
+            // 共用换算第二段（端点实例 = local 0 占位回填，⑧）：裁定 3
+            // 存在性校验——port pin 须在 block cell 定义内
             if (!port_pin.is_valid() || !cell_known ||
-                !fill_pin_flags(
+                !fill_resolved_connection(
                     conn, ctx.design->cells_[block_cell_id.value()],
-                    port_pin)) {
+                    CMInstanceId{0}, port_pin)) {
                 ++ctx.net_data->stats_.skipped_invalid_connection_count;
                 MSG("DSGN::0025", 0,
                     "net '{}' references unregistered port '{}' — "
                     "connection dropped", ctx.net_name, raw.pin_name);
                 continue;
             }
-            conn.pin_id_ = port_pin;
             conn.set_port();
         } else {
             const CMInstanceId inst_local =
@@ -157,10 +306,15 @@ void DSNetConnectionParseNode::handle(DSNetContext& ctx) {
                     "connection dropped", ctx.net_name, raw.instance_name);
                 continue;
             }
-            const auto iit = ctx.block_data->instances_.find(inst_local);
-            if (iit == ctx.block_data->instances_.end() ||
-                (*iit->second).get_cell_id() >= ctx.design->cells_.size()) {
-                // 占位（local 0）或 fake cell 引用（快照表外）：无 pin 可查
+            // 共用换算串联两段（显式/通配同一逻辑）：第一段定位所属单元
+            // ——占位（local 0）或 fake cell 引用（快照表外）= 无单元；
+            // 第二段做引脚存在性校验（裁定 3：全局名字命中 ≠ 该 cell 有
+            // 此 pin）+ 标志位 + 端点回填。显式路径逐项 DSGN::0025 +
+            // 计数（通配路径静默跳过，差异见 expand_wildcard_entry 注释）
+            const CMPinId pin_id =
+                ctx.design->pin_names_.get_id(raw.pin_name);
+            const DSCell* cell = resolve_cell_of_instance(ctx, inst_local);
+            if (cell == nullptr) {
                 ++ctx.net_data->stats_.skipped_invalid_connection_count;
                 MSG("DSGN::0025", 0,
                     "net '{}' instance '{}' has no resolvable cell "
@@ -169,21 +323,14 @@ void DSNetConnectionParseNode::handle(DSNetContext& ctx) {
                     raw.pin_name);
                 continue;
             }
-            const DSCell& cell =
-                ctx.design->cells_[(*iit->second).get_cell_id().value()];
-            const CMPinId pin_id =
-                ctx.design->pin_names_.get_id(raw.pin_name);
-            // 裁定 3 存在性校验：全局名字命中 ≠ 该 cell 有此 pin
-            if (!pin_id.is_valid() || !fill_pin_flags(conn, cell, pin_id)) {
+            if (!fill_resolved_connection(conn, *cell, inst_local, pin_id)) {
                 ++ctx.net_data->stats_.skipped_invalid_connection_count;
                 MSG("DSGN::0025", 0,
                     "net '{}' references undefined pin '{}' of cell '{}' — "
                     "connection dropped", ctx.net_name, raw.pin_name,
-                    cell.name_);
+                    cell->name_);
                 continue;
             }
-            conn.instance_local_id_ = inst_local;
-            conn.pin_id_ = pin_id;
         }
         ctx.net_data->add_connection(ctx.local_net_id, std::move(conn));
     }

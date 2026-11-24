@@ -10,6 +10,11 @@
 
 #include <gtest/gtest.h>
 
+#include <message/cpp/message_macros.h>
+#include <message/cpp/message_registry.h>
+
+#include <algorithm>
+
 namespace {
 
 using namespace fly;
@@ -265,6 +270,97 @@ TEST(DsMergeLibTest, MatchesFillFieldsExtractsTablesAndReportsMismatch) {
     // 无表 pin（ZN 无 lib 表 → 键 1 无条目）与 lef-only cell（id 1）无表
     EXPECT_FALSE(
         dst.get_pin_tables()->pin_has_tables(CMCellId{0}, CMPinId{1}));
+}
+
+// 2026-11-24 真实数据兼容裁定：电源地引脚只以 pg_pin 组声明的工艺
+// （Nangate45 形态：135 宏全库 270 个 pg_pin、无普通 VDD/VSS 引脚组）
+// 不再逐 cell 误报 DSGN::0004；真正的信号引脚缺失仍然发。⑰ 逐 pin 挂
+// 表的循环不受影响（pg_pin 无表可挂——VDD/VSS 无键条目）。
+TEST(DsMergeLibTest, PgPinOnlyLibertyMatchesLefPowerPins) {
+    fly::MessageRegistry::instance().register_id("DSGN::0004",
+                                                fly::LogLevel::WARN);
+    fly::MessageRegistry::instance().set_id_limit("DSGN::0004", -1);
+    CMVector<CMString> pushed;
+    fly::set_message_push_func(
+        [&](fly::LogLevel, const CMString& domain, int32_t, const CMString&) {
+            pushed.push_back(domain);
+        });
+
+    // lef 侧：INV_X1（A/ZN/VDD/VSS——lib 有 A 普通引脚 + pg_pin VDD/VSS
+    // → 不发 0004）+ NAND2_X1（A/B/VDD/VSS——lib 缺信号引脚 B → 发 0004）
+    DSDesign dst;
+    DSCell inv;
+    inv.name_ = "INV_X1";
+    for (int i = 0; i < 4; ++i) {  // A / ZN / VDD / VSS（下标即 pin id）
+        inv.add_pin(DSPin{});
+    }
+    dst.add_cell(std::move(inv));
+    DSCell nand;
+    nand.name_ = "NAND2_X1";
+    for (int i = 0; i < 4; ++i) {
+        nand.add_pin(DSPin{});
+    }
+    dst.add_cell(std::move(nand));
+    dst.register_pin("A");
+    dst.register_pin("ZN");
+    dst.register_pin("VDD");
+    dst.register_pin("VSS");
+    dst.register_pin("B");
+    for (uint32_t pi = 0; pi < 4; ++pi) {
+        dst.cells_[0].pins_[pi].set_pin_id(CMPinId{pi});  // A/ZN/VDD/VSS
+    }
+    dst.cells_[1].pins_[0].set_pin_id(CMPinId{0});  // A
+    dst.cells_[1].pins_[1].set_pin_id(CMPinId{4});  // B
+    dst.cells_[1].pins_[2].set_pin_id(CMPinId{2});  // VDD
+    dst.cells_[1].pins_[3].set_pin_id(CMPinId{3});  // VSS
+
+    LIBLibrary lib;
+    LIBCell linv;
+    linv.name_ = "INV_X1";
+    LIBPin la;
+    la.name_ = "A";
+    linv.pins_.push_back(la);  // lib 缺 ZN（普通引脚）→ 该方向名单仍记
+    LIBPgPin lvdd;
+    lvdd.pg_name_ = "VDD";
+    lvdd.pg_type_ = "primary_power";
+    linv.pg_pins_.push_back(lvdd);
+    LIBPgPin lvss;
+    lvss.pg_name_ = "VSS";
+    lvss.pg_type_ = "primary_ground";
+    linv.pg_pins_.push_back(lvss);
+    LIBCell lnand;
+    lnand.name_ = "NAND2_X1";
+    LIBPin na;
+    na.name_ = "A";
+    lnand.pins_.push_back(na);  // lib 缺 B → 信号引脚缺失仍发 0004
+    LIBPgPin nvdd;
+    nvdd.pg_name_ = "VDD";
+    nvdd.pg_type_ = "primary_power";
+    lnand.pg_pins_.push_back(nvdd);
+    LIBPgPin nvss;
+    nvss.pg_name_ = "VSS";
+    nvss.pg_type_ = "primary_ground";
+    lnand.pg_pins_.push_back(nvss);
+    lib.cells_.push_back(std::move(linv));
+    lib.cells_.push_back(std::move(lnand));
+
+    const int matched = dst.merge_lib(lib);
+    fly::set_message_push_func(nullptr);
+
+    EXPECT_EQ(matched, 2);
+    // 「物理库有时序库没有」方向：VDD/VSS 经 pg_pin 组命中——两 cell 各
+    // 只因 ZN / B（普通信号引脚）发一条 DSGN::0004，电源地引脚不进名单
+    ASSERT_EQ(pushed.size(), 2u);
+    EXPECT_EQ(static_cast<size_t>(std::count(pushed.begin(), pushed.end(),
+                                             CMString("DSGN::0004"))),
+              2u);
+    // ⑰ 逐 pin 挂表只遍历 pins_：pg_pin（VDD/VSS）无表可挂——键 2/3 无
+    // 条目（键 0 = A 亦无表，本 lib 未配 internal_power/timing 表）
+    ASSERT_TRUE(dst.get_pin_tables() != nullptr);
+    EXPECT_FALSE(dst.get_pin_tables()->pin_has_tables(CMCellId{0},
+                                                      CMPinId{2}));
+    EXPECT_FALSE(dst.get_pin_tables()->pin_has_tables(CMCellId{0},
+                                                      CMPinId{3}));
 }
 
 }  // namespace

@@ -692,11 +692,18 @@ public:
     // 网 USE 语句未知值兜底数（2026-09-13 USE 全量补收裁定：未知值 →
     // SIGNAL + DSGN::0026 提醒，不 raise）
     uint64_t unknown_use_count = 0;
+    // 通配连接条目数（( * 引脚 ) 形态的原始条目；2026-11-24 真实数据
+    // 兼容裁定——SPECIALNETS/NETS 一视同仁，逐条计数）
+    uint64_t wildcard_entry_count = 0;
+    // 通配展开产生的连接数（实际收录的展开连接；显式重复/伪单元/未登记
+    // 引脚的跳过项不计）
+    uint64_t wildcard_connection_count = 0;
 
     FLY_SERIALIZE(net_count, connection_count, wire_count, rect_count,
                   via_instance_count, skipped_via_count,
                   skipped_layer_ref_count, skipped_net_count,
-                  skipped_invalid_connection_count, unknown_use_count)
+                  skipped_invalid_connection_count, unknown_use_count,
+                  wildcard_entry_count, wildcard_connection_count)
 };
 
 // per-DEF 网内容产物（③ 分批解析落批追加；⑬ 独立对象）：连接表 + 几何表

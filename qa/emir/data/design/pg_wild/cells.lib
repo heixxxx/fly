@@ -1,0 +1,28 @@
+/* 通配展开端到端用例的时序库：电源地引脚只以 pg_pin 组声明（真实工艺
+   形态）——DSGN::0004 比对的「物理库有时序库没有」方向按 pins_ ∪
+   pg_pins_ 命中，本库与 cells.lef 的 INV2 不产生引脚集合误报。 */
+library (design_fix_typ) {
+  time_unit : "1ns";
+  voltage_unit : "1V";
+  current_unit : "1mA";
+  capacitive_load_unit (1, pf);
+  cell (INV2) {
+    area : 1.0;
+    pin (A) {
+      direction : input;
+      capacitance : 1.0;
+    }
+    pin (ZN) {
+      direction : output;
+      capacitance : 0.0;
+    }
+    pg_pin (VDD) {
+      pg_type : primary_power;
+      voltage_name : VDD;
+    }
+    pg_pin (VSS) {
+      pg_type : primary_ground;
+      voltage_name : VSS;
+    }
+  }
+}

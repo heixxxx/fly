@@ -42,12 +42,33 @@
 // DSGN::0010 提醒后条目级丢弃（rect 丢弃该矩形、via 整条放弃、wire 段/
 // rect 项丢弃）并计入 skipped_layer_ref_count。重名 port / 重名 via /
 // 重名网保留首份并计数（DSGN::0005/0006 的数据源，T6 接线）。
+//
+// 名字转义还原（2026-11-24 真实数据兼容裁定）：DEF 的名字转义 = 反斜杠
+// 的下一个字符取字面义（综合工具展平层次生成的 `模块.信号[位]` 网名在
+// DEF 里写成 `模块\.信号\[位\]`）。适配层在 DEF 解析边界把**设计对象的
+// 名字**还原成真实形态后存储（对齐 OpenDB 的读取期 deEscape）——实例名
+// （COMPONENTS）、网名（NETS/SPECIALNETS 的网名扫描 + 网内容两通道）、
+// 连接项里的实例/引脚/端口名（( 实例 引脚 ) 与 ( PIN 端口 )）、端口名
+// （PINS 段）。范围外（保持原样）：通孔名、层名、行名、单元 master 名
+// 引用、DESIGN 块名、属性值——它们是与工艺文件对应的引用名。库内一律
+// 存真实名字，不保留转义原文作别名；去转义后重名按各入口既有口径处置
+//（逐入口口径不同）：网名 = 网名扫描保留首份 + 计数（skipped_net_
+// count），第二张同名网的连接并轨进首张网（合并而非覆盖）；端口名 =
+// 保留首份 + 计数（skipped_port_count）；实例名 = 防御性覆盖——后到的
+// 同名列实例映射生效、先到的实例成为无名。带空格的加引号名字不在还原
+// 范围。
 // =============================================================================
 
 #include <container/cpp/container_aliases.h>
 #include <emir/design/cpp/ds_types.h>
 
 namespace fly {
+
+// DEF 名字转义还原（见文件头「名字转义还原」段）：逐字符扫描，反斜杠
+// 的下一个字符取字面义（`\[` → `[`、`\\` → `\`）；结尾单独一个反斜杠
+// 无后续字符可转义，原样保留；其余字符原样。先扫一遍有无反斜杠——没
+// 有就直接用原串构造（大设计百万名字级别不逐名字新建字符缓冲）。
+CMString ds_def_unescape_name(const char* name);
 
 // DEF 头扫描统计（S4/S4b；T6 汇总与 DSGN 消息的数据源）
 struct DSDefParseStats {
@@ -123,6 +144,9 @@ struct DSDefNetsStats {
     int skipped_invalid_connection_count = 0;  // 无效连接项跳过（DSGN::0025）
     int unknown_use_count = 0;   // 网 USE 语句未知值兜底（DSGN::0026，
                                  // 2026-09-13 USE 全量补收裁定）
+    int wildcard_entry_count = 0;   // 通配连接条目数（( * 引脚 ) 原始条目，
+                                    // 2026-11-24 真实数据兼容裁定）
+    int wildcard_connection_count = 0;  // 通配展开产生的连接数
     int batch_count = 0;         // 分批批次数（③ 分批落批可观测）
 };
 

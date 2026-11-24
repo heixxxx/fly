@@ -308,6 +308,12 @@ FLY_EXPORT_CLASS(fly::DSNetStats, "EXDSNetStats")
     // 无效连接项跳过数（2026-09-13 id 化裁定，DSGN::0025）
     FLY_EXPORT_READONLY_ATTR("skipped_invalid_connection_count",
                              &fly::DSNetStats::skipped_invalid_connection_count)
+    // 通配连接条目数 / 通配展开产生的连接数（2026-11-24 真实数据兼容
+    // 裁定，DSGN::0009 汇总新增两项）
+    FLY_EXPORT_READONLY_ATTR("wildcard_entry_count",
+                             &fly::DSNetStats::wildcard_entry_count)
+    FLY_EXPORT_READONLY_ATTR("wildcard_connection_count",
+                             &fly::DSNetStats::wildcard_connection_count)
     FLY_EXPORT_SERIALIZE_PICKLE(fly::DSNetStats);
 
 FLY_EXPORT_CLASS(fly::DSNetBuildData, "EXDSNetBuildData")
@@ -890,6 +896,10 @@ FLY_EXPORT_CLASS(fly::DSDefNetsStats, "EXDSDefNetsStats")
                                  skipped_invalid_connection_count)
     FLY_EXPORT_READONLY_ATTR("unknown_use_count",
                              &fly::DSDefNetsStats::unknown_use_count)
+    FLY_EXPORT_READONLY_ATTR("wildcard_entry_count",
+                             &fly::DSDefNetsStats::wildcard_entry_count)
+    FLY_EXPORT_READONLY_ATTR("wildcard_connection_count",
+                             &fly::DSDefNetsStats::wildcard_connection_count)
     FLY_EXPORT_READONLY_ATTR("batch_count", &fly::DSDefNetsStats::batch_count);
 
 FLY_EXPORT_CLASS(fly::DSDesign, "EXDSDesign")

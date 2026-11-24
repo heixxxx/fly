@@ -245,7 +245,26 @@ int DSDesign::merge_lib(const LIBLibrary& lib) {
         // R7 ㊱：DSPin 不存 name——lef pin 名经全局 pin 名字空间
         // （2026-09-16 裁定 3，键 = 裸 pin 名）按 pin_id_ 反查
         // （pin_name_of 直查裸 pin 名；DSGN::0004 是用户可见输出，
-        // name 仅在边界转换）
+        // name 仅在边界转换）。
+        // 2026-11-24 真实数据兼容裁定：「物理库有时序库没有」方向，时序
+        // 库引脚集合 = pins_ ∪ pg_pins_（按名字）——电源地引脚只以
+        // pg_pin 组声明的工艺（如 Nangate45 全库 270 个 pg_pin、无普通
+        // VDD/VSS 引脚组）不再逐 cell 误报；反方向（时序库普通引脚、物
+        // 理库没有）口径不变。下方 ⑰ 逐 pin 挂表的循环仍只遍历 pins_
+        // （pg_pin 无功耗/时序表，不混入）。
+        const auto lib_has_pin_name = [&lc](const CMString& name) {
+            for (const auto& lp : lc->pins_) {
+                if (lp.name_ == name) {
+                    return true;
+                }
+            }
+            for (const auto& pg : lc->pg_pins_) {
+                if (pg.pg_name_ == name) {
+                    return true;
+                }
+            }
+            return false;
+        };
         CMVector<CMString> missing_in_lib;
         CMVector<CMString> missing_in_lef;
         for (const auto& lp : lc->pins_) {
@@ -259,14 +278,10 @@ int DSDesign::merge_lib(const LIBLibrary& lib) {
             if (!found) missing_in_lib.push_back(lp.name_);
         }
         for (const auto& dp : c.pins_) {
-            bool found = false;
-            for (const auto& lp : lc->pins_) {
-                if (lp.name_ == pin_name_of(dp.get_pin_id())) {
-                    found = true;
-                    break;
-                }
+            const CMString name = pin_name_of(dp.get_pin_id());
+            if (!lib_has_pin_name(name)) {
+                missing_in_lef.push_back(name);
             }
-            if (!found) missing_in_lef.push_back(pin_name_of(dp.get_pin_id()));
         }
         if (!missing_in_lib.empty() || !missing_in_lef.empty()) {
             MSG("DSGN::0004", 0,

@@ -42,6 +42,23 @@ EMIR（Electro-Migration 与 IR-Drop 分析）工具链的输入是芯片版图�
   = GEOPointT/GEORectT/GEOPolygonT/GEOTransformT 模板的 int32 业务默认实例化；模板类 T 后缀命名
   + 无后缀业务别名的规则见 DEVELOPMENT_GUIDELINES.md §2.2，位宽切换只改别名定义一处）。
 
+### 真实布线工具产出的两个形态（2026-11-24 实证，设计库据此对齐）
+
+用 OpenROAD 对 gcd 设计的产出建库时暴露，既有手写测试数据都不具备这两个特征：
+
+- **名字转义**。DEF 的名字转义规则：反斜杠的下一个字符取字面义。综合工具展平层次时生成的 `模块.信号[位]` 形态网名，在 DEF 里写成转义形态，如 `ctrl.state.out\[1\]`、`dpath.a_lt_b$in0\[0\]`——真实名字是 `ctrl.state.out[1]`。配套的寄生文件（SPEF）里同一张网写成 `ctrl\.state\.out\[1\]`，下游各库查找时去转义后查的就是真实名字。**设计库在解析边界把设计对象的名字还原成真实名字后存储**（对齐 OpenDB 读取 DEF 时的去转义）：实例名、网名、连接项里的引脚名与端口名、端口名。不还原的：通孔名、层名、行名、单元名引用、块名、属性值——它们是与工艺文件对应的引用名。带空格的加引号名字不在还原范围。
+- **电源网的通配连接**。真实 DEF 的电源网只写通配、不写电源端口：
+
+  ```
+  SPECIALNETS 2 ;
+      - VDD ( * VDD ) + USE POWER
+        + ROUTED metal4 960 + SHAPE STRIPE ...
+  ```
+
+  `( * 引脚名 )` 的含义是连接本设计内**所有拥有该引脚的实例**（电源轨与单元电源引脚的隐式连接）。上游工具在读取时把它展开成每个实例一条真实连接（读回 752 个实例的设计得到 2 条电源网 × 752 = 1504 条连接），回写时仍用通配简写。**设计库同样在解析时展开**——展开出的连接与显式写 `( 实例 引脚 )` 完全同构，对 `SPECIALNETS` 与 `NETS` 一视同仁；同一张网里一个「(实例， 引脚)」最多连一次，不分条目来自显式还是通配（上游实证：写两条通配、或通配加显式重复，网上的连接数不变）。既有手写测试数据要么逐实例显式写连接，要么同时写了 `( PIN VDD )` 端口连接，所以这个问题此前没有暴露：通配被丢弃后电源网没有任何连接，而分区网表只收录有连接的网，于是全局电源地网集合为空。
+
+引脚集合比对的口径也随之明确：有的工艺（如 Nangate45）在 Liberty 里只以 `pg_pin` 组声明电源地引脚、没有普通引脚组，比对「物理库有时序库没有」时，时序库一侧的引脚集合要包含 `pg_pin` 组。
+
 ## 3. 核心概念词汇表
 
 | 概念 | 含义 |
@@ -194,10 +211,10 @@ EMIR（Electro-Migration 与 IR-Drop 分析）工具链的输入是芯片版图�
 |------|------|------|
 | S1 | lib 库 db 入库 | ✅ |
 | S2 | cell lef 并行解析 | ✅ |
-| S3 | lib cell ↔ lef cell merge 检测 | ✅ |
-| S4/S4b | DEF 头扫描（block/port/DEF via 收集） | ✅ |
-| S5a | COMPONENTS 责任链 ∥ 网名扫描 | ✅ |
-| S5b | 网内容责任链（分批控内存峰值）。连接项 id 化（2026-09-13 裁定）：连接 = `(instance_local_id, pin_id)`，解析边界一次换算（pin 组合键 `"cell/pin"`、port 组合键 `"block/port"` + port 位 + local 0 占位）；flags 六位 port/driver/receiver/power/ground/clock 同点填写（INOUT = driver+receiver 同置，显式命名 **hybrid** 第三分类）；未命中兜底跳过 + `skipped_invalid_connection_count` + DSGN::0025 | ✅ |
+| S3 | lib cell ↔ lef cell merge 检测（引脚集合比对 `DSGN::0004`：「物理库有时序库没有」方向的时序库引脚集合 = 普通引脚 ∪ `pg_pin` 组——2026-11-24 真实数据对齐） | ✅ |
+| S4/S4b | DEF 头扫描（block/port/DEF via 收集；端口名转义还原） | ✅ |
+| S5a | COMPONENTS 责任链 ∥ 网名扫描（实例名、网名转义还原成真实名字） | ✅ |
+| S5b | 网内容责任链（分批控内存峰值）。连接项 id 化（2026-09-13 裁定）：连接 = `(instance_local_id, pin_id)`，解析边界一次换算（pin 组合键 `"cell/pin"`、port 组合键 `"block/port"` + port 位 + local 0 占位）；flags 六位 port/driver/receiver/power/ground/clock 同点填写（INOUT = driver+receiver 同置，显式命名 **hybrid** 第三分类）；未命中兜底跳过 + `skipped_invalid_connection_count` + DSGN::0025。**通配连接**（2026-11-24）：`( * 引脚 )` 展开为本块内所有拥有该引脚的实例各一条连接，与显式写法同构；所属单元是占位或伪单元的实例、引脚名未登记、没有任何实例拥有该引脚——都不报警；同一张网里连接按集合处理——「显式 + 通配」「通配 + 通配」都不重复（上游实证：重复条目不产生重复连接）；两条完全相同的显式条目仍是既有行为，各收录一条；统计 `wildcard_entry_count` / `wildcard_connection_count` 进 DSGN::0009 汇总行 | ✅ |
 | S6 | 层级树构建 + 起始编号分配 | ✅ |
 | S7 | 并查集 port 连接归并（仅 port 相连网、两层树、root = 层级最高/同级最小 global id、悬空 port root=自身 + DSGN::0018 计数；连接 id 化后对接键 = 同一 port 的全局 pin id 相等，内部零字符串匹配；`ds_union.h/.cpp` + `load_design_net_union`） | ✅ |
 | S8 | 密度图合并 + 分区决策（core/extend 双区域，非边缘扩 2×最高有效层宽、最外围 int32 极值；通道比重 6:2:2；三键优先级 target_partitions > partition_count > partition_target_density 默认 15 万；block instance bbox 不计局部密度） | ✅ |

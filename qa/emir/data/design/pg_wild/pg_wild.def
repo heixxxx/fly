@@ -1,0 +1,42 @@
+VERSION 5.8 ;
+DIVIDERCHAR "/" ;
+BUSBITCHARS "[]" ;
+DESIGN pg_wild ;
+UNITS DISTANCE MICRONS 1000 ;
+DIEAREA ( 0 0 ) ( 4000 2000 ) ;
+
+COMPONENTS 2 ;
+    - u1 INV2 + PLACED ( 500 500 ) N ;
+    - u2 INV2 + PLACED ( 1500 500 ) N ;
+END COMPONENTS
+
+PINS 2 ;
+    - st\[0\] + NET ctl\.st\[0\]
+      + DIRECTION INPUT
+      + USE SIGNAL
+      + PORT
+        + LAYER M1 ( 0 0 ) ( 100 100 )
+        + PLACED ( 100 100 ) N ;
+    - st\[1\] + NET ctl\.st\[1\]
+      + DIRECTION OUTPUT
+      + USE SIGNAL
+      + PORT
+        + LAYER M2 ( 0 0 ) ( 100 100 )
+        + PLACED ( 3900 1900 ) N ;
+END PINS
+
+NETS 2 ;
+    - ctl\.st\[0\] ( PIN st\[0\] ) ( u1 A )
+      + ROUTED M1 ( 100 100 ) ( 500 500 ) ;
+    - ctl\.st\[1\] ( PIN st\[1\] ) ( u2 ZN )
+      + ROUTED M2 ( 1500 500 ) ( 3900 1900 ) ;
+END NETS
+
+SPECIALNETS 2 ;
+    - VDD ( * VDD ) + USE POWER
+      + ROUTED M1 200 ( 0 100 ) ( 4000 100 ) ;
+    - VSS ( * VSS ) + USE GROUND
+      + ROUTED M1 200 ( 0 1900 ) ( 4000 1900 ) ;
+END SPECIALNETS
+
+END DESIGN

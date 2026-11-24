@@ -549,6 +549,8 @@ def _parse_nets_task(db, path, stack_key, snapshot_key, block_key, names_key,
         "skipped_via": stats.skipped_via_count,
         "skipped_net": stats.skipped_net_count,
         "skipped_invalid_connection": stats.skipped_invalid_connection_count,
+        "wildcard_entry": stats.wildcard_entry_count,
+        "wildcard_connection": stats.wildcard_connection_count,
         "batch": stats.batch_count,
     }, save_to_db=False)
     if stats.skipped_via_count or stats.skipped_net_count or \
@@ -569,7 +571,8 @@ def _merge_net_stats_task(db, stats_keys):
     """网内容统计合并 → DSGN::0009（网数/几何/via instance 数）。"""
     total = {"net": 0, "connection": 0, "wire": 0, "rect": 0,
              "via_instance": 0, "skipped_via": 0, "skipped_net": 0,
-             "skipped_invalid_connection": 0, "batch": 0}
+             "skipped_invalid_connection": 0, "wildcard_entry": 0,
+             "wildcard_connection": 0, "batch": 0}
     for key in stats_keys:
         stats = db.read_object(key)
         for name in total:
@@ -580,6 +583,8 @@ def _merge_net_stats_task(db, stats_keys):
             f"({total['connection']} connections, {total['wire']} wires, "
             f"{total['rect']} rects, {total['via_instance']} via instances "
             f"in {total['batch']} batches), "
+            f"{total['wildcard_entry']} wildcard entries expanded to "
+            f"{total['wildcard_connection']} connections, "
             f"{total['skipped_via']} undefined vias skipped, "
             f"{total['skipped_invalid_connection']} invalid connections "
             f"skipped")
