@@ -1,0 +1,3 @@
+[submodule "designs"]
+	path = designs
+	url = git@github.com:heixxxx/fly-designs.git

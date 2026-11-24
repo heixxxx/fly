@@ -50,6 +50,16 @@ bash qa/run_qa_tests.sh        # Legacy wrapper, same thing
 
 历史上根目录曾累积 16 个 `fly_log.N`（手动烟测裸跑所致）；同理测试数据目录一律走 `from test import qa_tmp`（不硬编码 `/tmp/fly_*`——曾累积 44334 目录 36G 触发 WSL 磁盘事件，2026-08-29 治理）。
 
+### 设计数据子模块（`designs/`——真实布线设计数据，独立仓库）
+
+用户裁定（2026-11-24）：**设计文件单独用 git 仓库管理，fly 仅作引用。** 用开源工具跑出的已完成布局布线的设计数据（DEF、SPEF、网表、时序窗口、翻转活动等）放在独立仓库里，fly 以 git 子模块引用；fly 仓库自带的只有手写的小型测试设计（`qa/emir/data/`）。理由是体积（约 176 MB）与许可（各设计不同，逐项写明在设计数据仓库里）。
+
+- **首次检出**：新克隆用 `git clone --recurse-submodules`；已有检出用 `git submodule update --init designs`。
+- **目录约定**：`designs/<设计名>/<工艺>/<时钟周期>ns/` 下有 `results/`（布局布线产出）、`twf/`（时序窗口）、`vcd/`（翻转活动）、`reports/`、`stats.json`；输入网表与约束在 `designs/inputs/`；各来源许可原文在 `designs/LICENSES/`。规模、已知局限、下游该用哪些文件，见 `designs/README.md`。
+- **用例写法**：按路径读取。需要这些数据的用例在子模块未初始化时必须**明确失败并提示上面的命令**，不得静默跳过。
+- **更新指向**：子模块内容的改动在它自己的仓库里提交推送（复现脚本需要的外部位置经环境变量传入，见其 `scripts/env.sh`）；然后在 fly 仓库根 `git add designs` 提交新的指向。
+- 推送钩子的构建与端到端测试不读取它；bazel 不构建它。
+
 ---
 
 ## Public API Export Chain
