@@ -3407,9 +3407,21 @@ TEST(MasterAgentTest, FreezeClearsProvenance) {
     worker.start();
     ASSERT_TRUE(wait_until_registered(worker));
     worker.request_database_freeze(db_path);
-    wait_for([&] { return master.is_db_frozen(db_path); }, 50, 20);
+    // 等待条件必须是「溯源数量归零」，不能改回 is_db_frozen。master 处理流式冻结请求的
+    // 顺序（src/agent/cpp/master_agent.cpp）：
+    //   1) :4101  frozen_dbs_.insert —— 登记冻结，此后 is_db_frozen 返回真；
+    //   2) :4116  给 worker 回确认（ack）；
+    //   3) :4121  cleanup_provenance_for_db —— 清理写入溯源；
+    //   4) :4141  打印「DB frozen and broadcasted (stream)」。
+    // 等 is_db_frozen 只等到第 1 步，而断言依赖第 3 步，中间有几微秒窗口，高负载下
+    // 测试线程会抢在清理之前（2026-11-25 CPU 负载下重复 400 次失败 6 次）。冻结登记后
+    // 溯源已拦截不到任何写入，清理只是释放内存——测试真正依赖的是第 3 步完成。
+    // 用非致命的 wait_for + EXPECT_EQ：保证后面的清理（worker.stop / master.stop 等）
+    // 总能执行；清理不发生时 EXPECT_EQ 稳定失败，不靠碰运气。
+    wait_for([&] { return master.provenance_count_for_testing(db_path) == 0; }, 50, 20);
 
-    EXPECT_EQ(master.provenance_count_for_testing(db_path), 0u) << "freeze 后 provenance 应清理";
+    EXPECT_EQ(master.provenance_count_for_testing(db_path), 0u)
+        << "freeze 后 provenance 应清理（上面已轮询等待 50 次乘 20 毫秒；清理不发生时这里稳定失败）";
 
     WorkerAgentContext::clear_current_write_hash();
     worker.stop();
