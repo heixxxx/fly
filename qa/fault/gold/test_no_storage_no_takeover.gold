@@ -1,0 +1,8 @@
+{
+  "master_log/no_takeover_initiated": true,
+  "master_log/orphan_fail_fired": true,
+  "message_log/grace_expiry_reminder": true,
+  "message_log/restart_command_present": true,
+  "no_takeover/holders_stable": true,
+  "prekill/holders_single": true
+}

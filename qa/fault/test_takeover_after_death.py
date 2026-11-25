@@ -14,7 +14,7 @@ import shutil
 import signal
 import time
 
-from test import write_data, read_data
+from test import write_data, read_data, record, wait_tasks_no_failure
 from fly import open_db, get_config
 DB_PATH = os.path.join(get_config().get_str("log_dir"), "db")
 from fly.runtime import get_agent
@@ -43,6 +43,7 @@ master.launch_local_workers([
     {"host": "host-a"},
     {"host": "host-a", "role": "storage_only"},
 ])
+# 保留：等待原语
 assert master.wait_for_workers(2), "first batch should connect"
 
 db = open_db(DB_PATH)
@@ -50,13 +51,16 @@ full_name = db.get_full_name("takeover/obj")
 
 # 单副本数据（无 backup）：唯一 hybrid w1 执行写入 → holder == [1]。
 write_data(db, "takeover/obj", 42)
+# 保留：等待原语
 assert wait_for(lambda: len(master.completed_tasks) >= 1), "write task should complete"
 
 from _fly_storage import ex_stg_get_data_service
 ds = ex_stg_get_data_service()
 holders = ds.get_remote_workers(full_name)
 INFO(f"[H3] pre-kill holders={holders}")
-assert holders == [1], f"single-replica holder must be worker 1, got {holders}"
+holders_single = holders == [1]
+# 原断言：assert holders == [1], f"single-replica holder must be worker 1, got {holders}"
+record("prekill/holders_single", holders_single, detail=holders)
 
 # SIGKILL holder → 断连即死 → handle_worker_death → try_storage_takeover。
 worker_pids = master.get_worker_pids()
@@ -65,6 +69,7 @@ os.waitpid(worker_pids[0], 0)
 INFO("[H3] killed holder worker 1 (SIGKILL)")
 
 # 接管完成标志：holder 列表出现 storage worker 2（IdxLoad ack 后 update_remote_idx）。
+# 保留：等待原语
 assert wait_for(lambda: 2 in ds.get_remote_workers(full_name), timeout=30), \
     "storage worker 2 should take over as holder after death"
 INFO("[H3] storage takeover completed (holder now includes worker 2)")
@@ -73,6 +78,7 @@ INFO("[H3] storage takeover completed (holder now includes worker 2)")
 # 注意用注册语义等待（wait_workers_registered）而非连接数（wait_for_workers）：
 # w1 已死，连接数含它永远到不了 3。
 master.launch_local_workers([{"host": "host-b"}])
+# 保留：等待原语
 assert master.wait_workers_registered(timeout=60), "second batch should register"
 INFO(f"[H3-DBG] worker_count={master.worker_count}, "
      f"idle={list(master._agent.get_idle_workers())}")
@@ -80,13 +86,16 @@ wait_for(lambda: master._agent.get_idle_workers() == [3], timeout=30)
 
 # 读 task：key 与 deps 同为接管对象（test_stress_readwrite 同款用法）。
 read_data(db, "takeover/obj", [full_name])
-assert wait_for(lambda: len(master.completed_tasks) >= 2, timeout=60), \
+# 原断言：assert wait_for(lambda: len(master.completed_tasks) >= 2, timeout=60), \
+# 原断言：assert not master.failed_tasks, f"no task should fail, failed={master.failed_tasks}"
+assert wait_tasks_no_failure(master, 2, "takeover/no_failed_tasks", timeout=60.0), \
     "dependent read task should complete after takeover (not failed)"
-assert not master.failed_tasks, f"no task should fail, failed={master.failed_tasks}"
 INFO("[H3] dependent task completed via taken-over replica")
 
 # master 直接读（TIER2 打 storage 副本，M2 死 holder 排尾联动）。
-assert db.read_object("takeover/obj") == 42
+direct_read = db.read_object("takeover/obj")
+# 原断言：assert db.read_object("takeover/obj") == 42
+record("takeover/direct_read", direct_read, detail=direct_read)
 INFO("[H3] direct read served by storage worker")
 
 # 先停止再读 master 日志（INFO 缓冲退出才 flush，P3-19 同机制）。
@@ -95,7 +104,9 @@ master.stop()
 master_log = os.path.join(get_config().get_str("log_dir"), "master.log")
 with open(master_log) as f:
     content = f.read()
-assert "storage takeover initiated" in content, "master log should record takeover"
+takeover_logged = "storage takeover initiated" in content
+# 原断言：assert "storage takeover initiated" in content, "master log should record takeover"
+record("master_log/takeover_initiated", takeover_logged, detail=content[-2000:])
 INFO("[H3] takeover logged in master.log")
 
-INFO("[PASS] test_takeover_after_death")
+INFO("[DONE] test_takeover_after_death")

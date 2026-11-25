@@ -1,0 +1,5 @@
+{
+  "run1/failed_tasks_bin_persisted": true,
+  "run2/completed_at_least_1": true,
+  "run2/restarted_at_least_2": true
+}

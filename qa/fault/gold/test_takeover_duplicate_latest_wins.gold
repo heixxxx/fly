@@ -1,0 +1,5 @@
+{
+  "dup/latest_version": 2,
+  "master_log/takeover_initiated": true,
+  "prekill/backup_on_storage": true
+}

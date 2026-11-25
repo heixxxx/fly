@@ -1,0 +1,15 @@
+{
+  "dirty_unreadable_after_load/mixed/dirty": true,
+  "dirty_unreadable_after_load/mixed/large": true,
+  "dirty_unreadable_after_load/mixed/small_0": true,
+  "dirty_unreadable_after_restart/mixed/dirty": true,
+  "failed_tasks_bin/persisted": true,
+  "load_db/path_preserved": true,
+  "restart_data/after_large_0": "after0",
+  "restart_data/after_large_1": "after1",
+  "restart_data/large_ends": true,
+  "restart_data/large_shape": true,
+  "restart_data/small_0": 0,
+  "restart_data/small_1": 100,
+  "restart_data/small_2": 200
+}

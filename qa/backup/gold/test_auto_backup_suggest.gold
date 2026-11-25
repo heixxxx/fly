@@ -1,0 +1,6 @@
+{
+  "auto_backup/triggered": true,
+  "master_log/exists": true,
+  "read_phase/completed": true,
+  "write_phase/completed": true
+}

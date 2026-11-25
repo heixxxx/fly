@@ -1,0 +1,4 @@
+{
+  "duplicate_worker/exit_code": 3,
+  "graceful_worker/exit_code": 0
+}

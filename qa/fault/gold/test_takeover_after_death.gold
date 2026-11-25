@@ -1,0 +1,6 @@
+{
+  "master_log/takeover_initiated": true,
+  "prekill/holders_single": true,
+  "takeover/direct_read": 42,
+  "takeover/no_failed_tasks": true
+}

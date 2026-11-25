@@ -17,9 +17,9 @@ def setup_clean():
     if os.path.isdir(DB_PATH):
         shutil.rmtree(DB_PATH, ignore_errors=True)
 
-run_subcase("wait_linkage_run1.py", timeout=120, setup=setup_clean,
+run_subcase("wait_linkage_run1.py", timeout=120, setup=setup_clean, check_list=["result.json"],
             env={"FLY_DB_PATH": DB_PATH})
 
-run_subcase("wait_linkage_run2.py", timeout=120,
+run_subcase("wait_linkage_run2.py", timeout=120, check_list=["result.json"],
             env={"FLY_DB_PATH": DB_PATH})
 INFO("[PASS] test_wait_death_linkage: infinite wait settled explicitly by worker death")

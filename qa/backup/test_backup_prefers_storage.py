@@ -15,7 +15,7 @@ import os
 import shutil
 import time
 
-from test import write_data_backup
+from test import write_data_backup, record
 from fly import open_db, get_config
 DB_PATH = os.path.join(get_config().get_str("log_dir"), "db")
 from fly.runtime import get_agent
@@ -43,18 +43,22 @@ master.launch_local_workers([
     {"host": "host-b"},
     {"host": "host-c", "role": "storage_only"},
 ])
+# 保留：等待原语
 assert master.wait_for_workers(3), \
     f"All workers should connect, got {master.worker_count}"
 
 # storage worker（id=3）在线但不进调度候选。
 wait_for(lambda: master._agent.get_idle_workers() == [1, 2], timeout=30)
 idle = master._agent.get_idle_workers()
-assert idle == [1, 2], f"idle candidates must be hybrid-only, got {idle}"
+idle_hybrid_only = idle == [1, 2]
+# 原断言：assert idle == [1, 2], f"idle candidates must be hybrid-only, got {idle}"
+record("scheduling/idle_hybrid_only", idle_hybrid_only, detail=idle)
 
 db = open_db(DB_PATH)
 write_data_backup(db, "shared/alpha_data", 42)
 write_data_backup(db, "shared/beta_data", 99)
 
+# 保留：等待原语
 assert wait_for(lambda: len(master.completed_tasks) >= 2), "2 write tasks should complete"
 # 排空 internal __backup_object task（等 backup 完成的标准手法）。
 master.wait_for_all_tasks(expected=None, timeout=10)
@@ -64,12 +68,17 @@ ds = ex_stg_get_data_service()
 for name in ("shared/alpha_data", "shared/beta_data"):
     holders = ds.get_remote_workers(db.get_full_name(name))
     INFO(f"[H1] {name} holders={holders}")
-    assert 3 in holders, \
-        f"backup replica of {name} must land on storage worker 3, got {holders}"
+    on_storage = 3 in holders
+    # 原断言：assert 3 in holders, \
+    record(f"backup_target/{name}", on_storage, detail=holders)
 
 # 数据可读（回归）。
-assert db.read_object("shared/alpha_data") == 42
-assert db.read_object("shared/beta_data") == 99
+alpha_value = db.read_object("shared/alpha_data")
+# 原断言：assert db.read_object("shared/alpha_data") == 42
+record("readback/alpha_data", alpha_value, detail=alpha_value)
+beta_value = db.read_object("shared/beta_data")
+# 原断言：assert db.read_object("shared/beta_data") == 99
+record("readback/beta_data", beta_value, detail=beta_value)
 
 # 先停止再读 master 日志（INFO 缓冲退出才 flush，P3-19 同机制）。
 master.stop()
@@ -77,8 +86,9 @@ master.stop()
 master_log = os.path.join(get_config().get_str("log_dir"), "master.log")
 with open(master_log) as f:
     content = f.read()
-assert "host-disjoint + storage-only" in content, \
-    "master log should record storage-only backup target selection"
+storage_pref_logged = "host-disjoint + storage-only" in content
+# 原断言：assert "host-disjoint + storage-only" in content, \
+record("master_log/storage_only_selection", storage_pref_logged, detail=content[-2000:])
 INFO("[H1] backup target selection logged storage-only preference")
 
-INFO("[PASS] test_backup_prefers_storage")
+INFO("[DONE] test_backup_prefers_storage")

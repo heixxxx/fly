@@ -13,8 +13,8 @@ def setup_clean():
     if os.path.isdir(DB_PATH):
         shutil.rmtree(DB_PATH, ignore_errors=True)
 
-r1 = run_subcase("mixed_fail_run1.py", timeout=120, setup=setup_clean,
+r1 = run_subcase("mixed_fail_run1.py", timeout=120, setup=setup_clean, check_list=["result.json"],
                  env={"FLY_DB_PATH": DB_PATH, "FLY_MIXED_FAIL": "1"})
-run_subcase("mixed_fail_run2.py", timeout=120,
+run_subcase("mixed_fail_run2.py", timeout=120, check_list=["result.json"],
             env={"FLY_DB_PATH": DB_PATH, "FLY_MIXED_FAIL": "0"})
 INFO("[PASS] test_mixed_write_fail: cross-file abort + load_db + restart verified")

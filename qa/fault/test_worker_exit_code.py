@@ -16,13 +16,14 @@ from _fly_log import INFO
 
 from fly import get_fly_binary, get_config
 from fly.runtime import get_agent
-from test import wait_until
+from test import wait_until, record
 
 master = get_agent()
 master.start()
 
 LOG_DIR = get_config().get_str("log_dir")
 CONFIG_PATH = os.path.join(LOG_DIR, ".fly_config")
+# 保留：环境前置检查——后面 spawn 的 worker 靠它引导寻址，缺失时场景无法进行
 assert os.path.isfile(CONFIG_PATH), \
     f".fly_config must exist after master start: {CONFIG_PATH}"
 FLY_BIN = get_fly_binary()
@@ -40,9 +41,10 @@ def _spawn_worker(worker_id):
 
 # ── 1. 首次注册：worker_id=7 正常上线 ───────────────────────────────
 p1 = _spawn_worker(7)
+# 保留：等待原语
 assert wait_until(lambda: 7 in master._agent.get_idle_workers(), timeout=30), \
     "worker 7 must register and go idle"
-INFO("[PASS] worker 7 registered (duplicate-registration setup ready)")
+INFO("[DONE] worker 7 registered (duplicate-registration setup ready)")
 
 # ── 2. 重复 id → REGISTRATION_REJECTED → 进程退出码 3 ───────────────
 p2 = _spawn_worker(7)
@@ -51,8 +53,9 @@ try:
 except subprocess.TimeoutExpired:
     p2.kill()
     raise AssertionError("duplicate worker must exit promptly")
-assert rc2 == 3, f"duplicate-id worker must exit with 3 (abnormal), got {rc2}"
-INFO("[PASS] duplicate worker id rejected -> process exit code 3")
+# 原断言：assert rc2 == 3, f"duplicate-id worker must exit with 3 (abnormal), got {rc2}"
+record("duplicate_worker/exit_code", rc2, detail=rc2)
+INFO("[DONE] duplicate worker id rejected -> process exit code 3")
 
 # ── 3. graceful 对照：ShutdownMessage 后 worker 退出码 0 ────────────
 master.stop()
@@ -61,7 +64,8 @@ try:
 except subprocess.TimeoutExpired:
     p1.kill()
     raise AssertionError("worker must exit after master stop broadcast")
-assert rc1 == 0, f"graceful worker must exit with 0, got {rc1}"
-INFO("[PASS] graceful shutdown -> process exit code 0")
+# 原断言：assert rc1 == 0, f"graceful worker must exit with 0, got {rc1}"
+record("graceful_worker/exit_code", rc1, detail=rc1)
+INFO("[DONE] graceful shutdown -> process exit code 0")
 
-INFO("[PASS] test_worker_exit_code")
+INFO("[DONE] test_worker_exit_code")

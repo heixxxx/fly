@@ -11,7 +11,7 @@ import shutil
 import signal
 import time
 
-from test import write_data
+from test import write_data, record
 from fly import open_db, get_config
 DB_PATH = os.path.join(get_config().get_str("log_dir"), "db")
 from fly.runtime import get_agent
@@ -36,18 +36,22 @@ get_config().set_int("storage_takeover_enabled", 1)  # feature 开但 host 上�
 
 master = get_agent()
 master.launch_local_workers([{"host": "host-a"}])  # 仅 hybrid，无 storage
+# 保留：等待原语
 assert master.wait_for_workers(1), "worker should connect"
 
 db = open_db(DB_PATH)
 full_name = db.get_full_name("plain/obj")
 
 write_data(db, "plain/obj", 7)
+# 保留：等待原语
 assert wait_for(lambda: len(master.completed_tasks) >= 1), "write task should complete"
 
 from _fly_storage import ex_stg_get_data_service
 ds = ex_stg_get_data_service()
 holders = ds.get_remote_workers(full_name)
-assert holders == [1], f"single-replica holder must be worker 1, got {holders}"
+holders_single = holders == [1]
+# 原断言：assert holders == [1], f"single-replica holder must be worker 1, got {holders}"
+record("prekill/holders_single", holders_single, detail=holders)
 
 worker_pids = master.get_worker_pids()
 os.kill(worker_pids[0], signal.SIGKILL)
@@ -55,8 +59,14 @@ os.waitpid(worker_pids[0], 0)
 INFO("[CTRL] killed holder worker 1 (SIGKILL), no storage on host-a")
 
 # 无接管者：holder 列表不应出现新 worker（等待一个短窗口确认稳定）。
-assert not wait_for(lambda: len(ds.get_remote_workers(full_name)) > 1, timeout=5), \
+# 等待只执行一次，断言与记录共用它的结果（执行两次会让等待时长翻倍）。
+holders_stable = not wait_for(lambda: len(ds.get_remote_workers(full_name)) > 1, timeout=5)
+# 保留：等待原语——等一个不该发生的事件 5s 确认稳定
+assert holders_stable, \
     "holder list should NOT grow without a storage node on the host"
+# 原断言：assert not wait_for(lambda: len(ds.get_remote_workers(full_name)) > 1, timeout=5), \
+record("no_takeover/holders_stable", holders_stable,
+       detail=ds.get_remote_workers(full_name))
 INFO("[CTRL] holder unchanged after death")
 
 # 读失败路径由 TIER2 网络期限保证（死 holder connect refused 退避满 30s 后
@@ -69,19 +79,24 @@ master.stop()
 master_log = os.path.join(get_config().get_str("log_dir"), "master.log")
 with open(master_log) as f:
     content = f.read()
-assert "storage takeover initiated" not in content, "takeover must not initiate"
-assert "lost all replicas" in content, \
-    "fail_orphan should fire immediately without a storage node (AGENT::0003)"
+no_takeover_logged = "storage takeover initiated" not in content
+# 原断言：assert "storage takeover initiated" not in content, "takeover must not initiate"
+record("master_log/no_takeover_initiated", no_takeover_logged, detail=content[-2000:])
+orphan_fired = "lost all replicas" in content
+# 原断言：assert "lost all replicas" in content, \
+record("master_log/orphan_fail_fired", orphan_fired, detail=content[-2000:])
 INFO("[CTRL] no takeover, immediate orphan-fail in master.log")
 
 # 宽限超时判死 → AGENT::0006 user message 附手动重启命令（用户确认语义）。
 msg_log = os.path.join(get_config().get_str("log_dir"), "message.log")
 with open(msg_log) as f:
     msg_content = f.read()
-assert "failed to reconnect within grace" in msg_content, \
-    "AGENT::0006 should remind user with manual restart command"
-assert "fly --worker --worker-id 1" in msg_content, \
-    "AGENT::0006 should carry the restart command line"
+grace_msg_logged = "failed to reconnect within grace" in msg_content
+# 原断言：assert "failed to reconnect within grace" in msg_content, \
+record("message_log/grace_expiry_reminder", grace_msg_logged, detail=msg_content[-2000:])
+restart_cmd_logged = "fly --worker --worker-id 1" in msg_content
+# 原断言：assert "fly --worker --worker-id 1" in msg_content, \
+record("message_log/restart_command_present", restart_cmd_logged, detail=msg_content[-2000:])
 INFO("[CTRL] grace-expiry user message with restart command logged")
 
-INFO("[PASS] test_no_storage_no_takeover")
+INFO("[DONE] test_no_storage_no_takeover")

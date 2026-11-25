@@ -1,0 +1,5 @@
+{
+  "load_db/idx_load_failed_msg": true,
+  "load_db/outcome_present": true,
+  "load_db/thread_finished": true
+}

@@ -1,0 +1,7 @@
+{
+  "grace_window/no_death_declaration": true,
+  "reconnect/no_death_declaration": true,
+  "respawn/object_value": "recovered",
+  "respawn/task_completed": true,
+  "worker_pids/two_live": true
+}

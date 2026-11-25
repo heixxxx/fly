@@ -15,7 +15,7 @@ import shutil
 
 
 
-from test import write_data
+from test import write_data, record
 from fly import open_db, get_config
 DB_PATH = os.path.join(get_config().get_str("log_dir"), "db")
 
@@ -43,6 +43,7 @@ def test_shutdown_broadcast():
     master = get_agent()
 
     master.launch_local_workers([{}, {}])
+    # 保留：等待原语
     assert master.wait_for_workers(2), \
         f"Both workers should connect, got {master.worker_count}"
 
@@ -54,6 +55,7 @@ def test_shutdown_broadcast():
     for i in range(5):
         write_data(db, f"key_{i}", i)
 
+    # 保留：等待原语
     assert wait_for(lambda: len(master.completed_tasks) >= 5), \
         f"Phase 2: 5 tasks should complete, got {len(master.completed_tasks)}"
 
@@ -61,6 +63,10 @@ def test_shutdown_broadcast():
 
     # Capture worker PIDs before stop
     worker_pids = master.get_worker_pids()
+    two_worker_pids = len(worker_pids) == 2
+    # 原断言：assert len(worker_pids) == 2, \
+    record("shutdown/two_worker_pids", two_worker_pids, detail=worker_pids)
+    # 保留：守卫——后面 Phase 5 的循环检查依赖列表里确实有这两个进程
     assert len(worker_pids) == 2, \
         f"Expected 2 worker processes, got {len(worker_pids)}"
     INFO(f"  Worker PIDs: {worker_pids}")
@@ -69,13 +75,17 @@ def test_shutdown_broadcast():
     master.stop()
 
     # -- Phase 4: Verify master is stopped --
-    assert not master.is_running(), \
-        "Phase 4: master should not be running after stop()"
+    master_stopped = not master.is_running()
+    # 原断言：assert not master.is_running(), \
+    record("shutdown/master_stopped", master_stopped, detail=master.is_running())
 
     # -- Phase 5: Verify worker processes have exited --
     for pid in worker_pids:
         try:
             os.kill(pid, 0)
+            # 否定性检查里 try 块内原有的 assert False：抛出的 AssertionError 不会被
+            # 下面的 except ProcessLookupError/PermissionError 捕获，效果与 raise 相同。
+            # 保留：见上
             assert False, \
                 f"Phase 5: worker pid={pid} should be terminated after shutdown"
         except ProcessLookupError:
@@ -86,10 +96,12 @@ def test_shutdown_broadcast():
     INFO("  Phase 5: all worker processes exited gracefully")
 
     # -- Phase 6: Verify no worker procs left --
-    assert len(master.get_worker_pids()) == 0, \
-        "Phase 6: no workers should be running"
+    workers_left = len(master.get_worker_pids())
+    no_workers_left = workers_left == 0
+    # 原断言：assert len(master.get_worker_pids()) == 0, \
+    record("shutdown/no_workers_left", no_workers_left, detail=workers_left)
 
-    INFO("[PASS] test_shutdown_broadcast")
+    INFO("[DONE] test_shutdown_broadcast")
 
 
 test_shutdown_broadcast()

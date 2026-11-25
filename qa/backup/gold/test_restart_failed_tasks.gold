@@ -1,0 +1,12 @@
+{
+  "phase1/completed_count": true,
+  "phase1/failed_bin_persisted": true,
+  "phase1/failed_count": true,
+  "phase2/completed_count": true,
+  "phase2/failed_at_least_1": true,
+  "phase2/failed_bin_persisted": true,
+  "phase2/gpu_error_is_capability": true,
+  "phase3/completed_count": true,
+  "phase3/no_failed_tasks": true,
+  "phase4/failed_bin_deleted": true
+}

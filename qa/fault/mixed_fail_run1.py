@@ -7,7 +7,7 @@ from _fly_log import INFO, ERR
 import os
 import time
 
-from test import mixed_size_write_fail
+from test import mixed_size_write_fail, record
 from fly import open_db, get_config
 
 DB_PATH = os.environ.get("FLY_DB_PATH") or os.path.join(get_config().get_str("log_dir"), "db")
@@ -25,6 +25,7 @@ get_config().set_int("aggregation_threshold", 102400)
 master = get_agent()
 
 master.launch_local_workers([{}])
+# 保留：等待原语
 assert master.wait_workers_registered(timeout=60.0), "Worker should connect"
 
 db = open_db(DB_PATH)
@@ -44,6 +45,7 @@ def wait_failed(timeout=15.0):
         time.sleep(0.3)
     return False
 
+# 保留：等待原语（等待失败出现）
 assert wait_failed(), "task should fail"
 INFO(f"[RUN1] task failed: {master.failed_tasks}")
 
@@ -54,16 +56,22 @@ dirty_keys = ["mixed/small_0", "mixed/small_1", "mixed/small_2",
               "mixed/large", "mixed/after_large_0", "mixed/after_large_1",
               "mixed/dirty"]
 for key in dirty_keys:
+    readable = False
     try:
         db.read_object(key)
+        readable = True
         ERR(f"[RUN1] WARN: {key} unexpectedly readable after abort")
     except Exception:
         pass
+    # 新增判定：原来只打日志，读成功也不会使用例失败
+    record(f"dirty_unreadable/{key}", not readable, detail=key)
 INFO("[RUN1] all dirty objects cleaned by abort")
 
 # 验证 failed_tasks.bin 持久化（Task db 归属规则：task 带 db 参数 → {db_path}/failed_tasks.bin）
 failed_file = os.path.join(DB_PATH, "failed_tasks.bin")
-assert os.path.isfile(failed_file), f"failed_tasks.bin should exist: {failed_file}"
+bin_persisted = os.path.isfile(failed_file)
+# 原断言：assert os.path.isfile(failed_file), f"failed_tasks.bin should exist: {failed_file}"
+record("failed_tasks_bin/persisted", bin_persisted, detail=failed_file)
 INFO("[RUN1] failed_tasks.bin persisted")
 
 with open(os.path.join(DB_PATH, "_test_db_path"), "w") as f:

@@ -10,7 +10,7 @@ import shutil
 
 
 
-from test import write_data, read_data, gpu_write
+from test import write_data, read_data, gpu_write, record
 from fly import open_db, get_config
 DB_PATH = os.environ.get("FLY_DB_PATH") or os.path.join(get_config().get_str("log_dir"), "db")
 
@@ -31,6 +31,7 @@ def run1():
     master = get_agent()
 
     master.launch_local_workers([{}])
+    # 保留：等待原语
     assert master.wait_for_workers(1), \
         "Worker should connect"
 
@@ -49,8 +50,10 @@ def run1():
     gpu_write(db, "gpu_result", 42)
 
     # Wait for completions and failures
+    # 保留：等待原语
     assert wait_for(lambda: len(master.completed_tasks) >= 2), \
         f"Expected 2 completed, got {len(master.completed_tasks)}"
+    # 保留：等待原语
     assert wait_for(lambda: len(master.failed_tasks) >= 2), \
         f"Expected 2 failed, got {len(master.failed_tasks)}"
 
@@ -59,11 +62,14 @@ def run1():
     INFO(f"  Run1: {completed} completed, {failed} failed")
 
     # Verify failed_tasks.bin exists before stop
+    # 保留：等待原语
     assert wait_for(lambda: os.path.isfile(failed_file)), \
         f"failed_tasks.bin should exist at {failed_file}"
 
     file_size = os.path.getsize(failed_file)
-    assert file_size > 0, "failed_tasks.bin should not be empty"
+    file_not_empty = file_size > 0
+    # 原断言：assert file_size > 0, "failed_tasks.bin should not be empty"
+    record("run1/failed_bin_not_empty", file_not_empty, detail=file_size)
     INFO(f"  Run1: failed_tasks.bin exists ({file_size} bytes)")
 
     INFO("  Run1: master stopped")

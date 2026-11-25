@@ -1,0 +1,10 @@
+{
+  "data_plane/gk_value": "gv",
+  "graceful_stop/exit_confirmation_logged": true,
+  "graceful_stop/no_declared_dead": true,
+  "graceful_stop/no_orphan_fail_error": true,
+  "kill/pids_observable": true,
+  "monitor/all_workers_exited": true,
+  "monitor/db_exists": true,
+  "monitor/workers_registered": true
+}

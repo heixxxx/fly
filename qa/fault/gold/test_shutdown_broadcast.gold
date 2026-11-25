@@ -1,0 +1,5 @@
+{
+  "shutdown/master_stopped": true,
+  "shutdown/no_workers_left": true,
+  "shutdown/two_worker_pids": true
+}

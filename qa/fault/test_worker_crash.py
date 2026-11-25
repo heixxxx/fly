@@ -6,7 +6,7 @@ import shutil
 
 
 
-from test import write_data
+from test import write_data, record
 from fly import open_db, get_config
 DB_PATH = os.path.join(get_config().get_str("log_dir"), "db")
 
@@ -34,6 +34,7 @@ def test_worker_crash():
 
     master.launch_local_workers([{}, {}])
 
+    # 保留：等待原语
     assert master.wait_for_workers(2), \
         f"Both workers should connect, got {master.worker_count}"
 
@@ -42,10 +43,15 @@ def test_worker_crash():
     for i in range(10):
         write_data(db, f"key_{i}", i)
 
+    # 保留：等待原语
     assert wait_for(lambda: len(master.completed_tasks) >= 1), \
         "At least 1 task should complete before crash"
 
     worker_pids = master.get_worker_pids()
+    two_plus_workers = len(worker_pids) >= 2
+    # 原断言：assert len(worker_pids) >= 2, f"Need 2+ workers, got {len(worker_pids)}"
+    record("prekill/two_plus_workers", two_plus_workers, detail=worker_pids)
+    # 保留：守卫——后面的 worker_pids[0] 依赖至少有两个 worker 进程
     assert len(worker_pids) >= 2, f"Need 2+ workers, got {len(worker_pids)}"
 
     import os, signal
@@ -55,13 +61,16 @@ def test_worker_crash():
 
     # Remaining worker should pick up all tasks (recovered from dead worker)
     total_done = lambda: len(master.completed_tasks) + len(master.failed_tasks)
+    # 保留：等待原语
     assert wait_for(lambda: total_done() >= 10, timeout=60.0), \
         f"Expected all 10 tasks done, got {total_done()} (completed={len(master.completed_tasks)}, failed={len(master.failed_tasks)})"
 
-    assert len(master.completed_tasks) >= 10, \
-        f"Expected all 10 completed (zero task loss), got {len(master.completed_tasks)}"
+    completed_final = len(master.completed_tasks)
+    all_ten_completed = completed_final >= 10
+    # 原断言：assert len(master.completed_tasks) >= 10, \
+    record("recovery/all_ten_completed", all_ten_completed, detail=completed_final)
 
-    INFO(f"[PASS] test_worker_crash: {len(master.completed_tasks)} completed after crash")
+    INFO(f"[DONE] test_worker_crash: {len(master.completed_tasks)} completed after crash")
 
 
 test_worker_crash()

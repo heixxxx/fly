@@ -1,0 +1,5 @@
+{
+  "phase2/total_tasks_at_least_5": true,
+  "phase4/completed_before_stop": true,
+  "phase4/failed_bin_not_empty": true
+}

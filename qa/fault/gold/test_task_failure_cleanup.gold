@@ -1,0 +1,7 @@
+{
+  "dirty_unreadable/clean_key": true,
+  "dirty_unreadable/dirty_a": true,
+  "dirty_unreadable/dirty_b": true,
+  "failed_tasks/at_least_1": true,
+  "failed_tasks/error_msg": true
+}

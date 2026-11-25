@@ -19,7 +19,7 @@ import shutil
 
 from _fly_log import INFO, ERR
 
-from test import partial_write_then_fail, write_data, write_multiple
+from test import partial_write_then_fail, write_data, write_multiple, record
 from fly import open_db, get_config
 
 DB_PATH = os.path.join(get_config().get_str("log_dir"), "db")
@@ -46,6 +46,7 @@ def test_task_failure_cleanup():
     master = get_agent()
 
     master.launch_local_workers([{}])
+    # 保留：等待原语
     assert master.wait_workers_registered(timeout=60), "worker should connect"
 
     db = open_db(DB_PATH)
@@ -53,24 +54,35 @@ def test_task_failure_cleanup():
     # 1. 失败 task：写入 dirty_a / dirty_b / clean_key 后抛异常
     partial_write_then_fail(db, ["dirty_a", "dirty_b"], "clean_key", "cleanup_test_error")
 
+    # 保留：等待原语
     assert wait_for(lambda: len(master.failed_tasks) >= 1), \
         "partial_write_then_fail should be recorded as failed"
 
     failed = master.failed_tasks
+    failed_not_empty = len(failed) >= 1
+    # 原断言：assert len(failed) >= 1
+    record("failed_tasks/at_least_1", failed_not_empty, detail=len(failed))
+    # 保留：守卫——后面的 failed[0] 依赖失败清单非空
     assert len(failed) >= 1
     error_msg = master.get_task_error(failed[0])
-    assert "cleanup_test_error" in error_msg, f"unexpected error: {error_msg}"
+    msg_has_marker = "cleanup_test_error" in error_msg
+    # 原断言：assert "cleanup_test_error" in error_msg, f"unexpected error: {error_msg}"
+    record("failed_tasks/error_msg", msg_has_marker, detail=error_msg)
 
     INFO("[STEP 1] task failed as expected")
 
     # 2. 失败 task 写出的对象应不可读（master 已清理 remote_idx）
     for key in ["dirty_a", "dirty_b", "clean_key"]:
+        readable = False
         try:
             db.read_object(key)
+            readable = True
             # 允许读失败（期望）；如果读成功说明清理没生效
             ERR(f"[WARN] object {key} unexpectedly readable after task failure cleanup")
         except Exception:
             INFO(f"[OK] object {key} correctly cleaned up (unreadable)")
+        # 新增判定：原来只打日志，读成功也不会使用例失败
+        record(f"dirty_unreadable/{key}", not readable, detail=key)
 
     INFO("[STEP 2] dirty objects cleaned up on master side")
 
@@ -85,12 +97,13 @@ def test_task_failure_cleanup():
         except Exception:
             return False
 
+    # 保留：等待原语
     assert wait_for(can_read, timeout=15.0), \
         "dirty_a should be readable after successful rewrite (proves cleanup)"
 
     INFO("[STEP 3] rewrite after cleanup succeeds")
 
-    INFO("[PASS] test_task_failure_cleanup")
+    INFO("[DONE] test_task_failure_cleanup")
 
 
 test_task_failure_cleanup()

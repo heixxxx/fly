@@ -17,6 +17,7 @@ import time
 import shutil
 
 from fly import as_task, open_db, get_config
+from test import record
 from fly.runtime import get_agent
 
 DB_PATH = os.path.join(get_config().get_str("log_dir"), "db")
@@ -43,6 +44,7 @@ master.launch_local_workers([
     {"attributes": ["writer"]},   # obj 持有者
     {"attributes": ["reader"]},   # 跨 worker 读方（TIER2 流量来源）
 ])
+# 保留：等待原语
 assert master.wait_for_workers(2), "both workers should connect"
 
 
@@ -62,21 +64,32 @@ def read_obj_many(db, key, times):
         # cache="none"：绕过 ObjectCache 强制每次走 TIER2 跨 worker 读——suggest 的
         # read_count 只在 TIER2 命中时累积（默认 "low" 会被本地缓存拦截到仅 1 次）。
         v = db.read_object(key)
+        # 保留：@as_task 任务函数内的断言，record 只能在子阶段的主进程里调用
         assert v == HOT_VALUE, "read mismatch"
 
 
 db = open_db(DB_PATH)
 write_obj(db, "hot/data", HOT_VALUE)
 completed = master.wait_for_all_tasks(expected=1, timeout=30)
-assert len(completed) >= 1, "write task should complete"
+write_completed = len(completed) >= 1
+# 原断言：assert len(completed) >= 1, "write task should complete"
+record("write_phase/completed", write_completed, detail=len(completed))
+# 非守卫：后面的代码不读取这两个任务写出的对象；读任务的结果由任务函数内的断言和后面的判定把关
 
 # reader task 读 6 次（≥ suggest 阈值 3）→ worker 累积并上报
 read_obj_many(db, "hot/data", 6)
 completed = master.wait_for_all_tasks(expected=2, timeout=30)
-assert len(completed) >= 2, "read task should complete"
+read_completed = len(completed) >= 2
+# 原断言：assert len(completed) >= 2, "read task should complete"
+record("read_phase/completed", read_completed, detail=len(completed))
+# 非守卫：同上，后面的代码不读取任务写出的对象
 
 # 等 master 判定 + trigger（日志为 INFO 级；Logger 自动 flush ≤1s，运行中轮询可见）
 master_log = os.path.join(get_config().get_str("log_dir"), "master.log")
+master_log_exists = os.path.exists(master_log)
+# 原断言：assert os.path.exists(master_log), f"master.log should exist at {master_log}"
+record("master_log/exists", master_log_exists, detail=master_log)
+# 保留：守卫——后面的轮询循环要 open 这个日志文件
 assert os.path.exists(master_log), f"master.log should exist at {master_log}"
 
 triggered = False
@@ -87,10 +100,11 @@ for _ in range(40):
             break
     time.sleep(0.5)
 
-assert triggered, "auto-backup should trigger from worker suggest + master EWMA"
+# 原断言：assert triggered, "auto-backup should trigger from worker suggest + master EWMA"
+record("auto_backup/triggered", triggered, detail=triggered)
 
 # 等 internal backup task 完成（replicas 达到 2），保证 stop 时无悬挂 internal task
 master.wait_for_all_tasks(expected=None, timeout=10)
-INFO("[PASS] test_auto_backup_suggest: suggest → EWMA → auto-backup verified")
+INFO("[DONE] test_auto_backup_suggest: suggest → EWMA → auto-backup verified")
 
 master.stop()

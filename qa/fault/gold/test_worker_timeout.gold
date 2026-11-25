@@ -1,0 +1,10 @@
+{
+  "heartbeat_alive/dead_workers": [],
+  "heartbeat_monitor/dead_after_timeout": true,
+  "heartbeat_monitor/dead_initially": [],
+  "heartbeat_monitor/timeout": 2,
+  "heartbeat_monitor/worker1_marked_dead": true,
+  "master_agent/connected_initially": [],
+  "unregister/count_after_register": 1,
+  "unregister/count_after_unregister": 0
+}

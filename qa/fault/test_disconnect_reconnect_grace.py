@@ -19,6 +19,7 @@ import subprocess
 import time
 
 from fly import as_task, open_db, get_config
+from test import record
 from fly.runtime import get_agent
 
 LOG_DIR = get_config().get_str("log_dir")
@@ -36,6 +37,7 @@ master.launch_local_workers([
     {"attributes": ["slowhost"]},   # w1：执行慢 task 的进程（将被闪断）
     {"attributes": ["other"]},      # w2：对照
 ])
+# 保留：等待原语
 assert master.wait_for_workers(2), "both workers should connect"
 mport = master.port
 
@@ -53,6 +55,10 @@ master_log = os.path.join(LOG_DIR, "master.log")
 # 再提交 task（pin slowhost；此时 w1 不可用，task 挂起 pending），宽限内同 id
 # 重启 w1' → 重连注册解除宽限 → task 派发到 w1' 执行完成。
 pids = master.get_worker_pids()
+pids_two = len(pids) == 2
+# 原断言：assert len(pids) == 2, f"expect 2 live worker pids, got {pids}"
+record("worker_pids/two_live", pids_two, detail=pids)
+# 保留：守卫——后面的 pids[0] 依赖恰好有两个 worker 进程
 assert len(pids) == 2, f"expect 2 live worker pids, got {pids}"
 w1_pid = pids[0]
 os.kill(w1_pid, signal.SIGKILL)
@@ -79,8 +85,10 @@ time.sleep(7)
 
 # ── 观察窗结束，断言不变量 ──
 content = open(master_log, errors="replace").read()
-assert "worker 1 declared dead" not in content, \
-    "w1 must NOT be declared dead within grace window (7s < 10s)"
+grace_held = "worker 1 declared dead" not in content
+# 原断言：assert "worker 1 declared dead" not in content, \
+record("grace_window/no_death_declaration", grace_held,
+       detail=[l for l in content.splitlines() if "declared dead" in l])
 
 # 同 worker_id 重启 worker（重连注册路径：旧连接已 EOF，新注册正常接受，
 # 宽限解除、worker 状态恢复可调度）。
@@ -95,17 +103,25 @@ INFO(f"[grace] respawned worker_id=1 pid={proc.pid}")
 
 # task 派发到重连的 w1' 并完成——宽限期保留 + 重连恢复的行为铁证。
 completed = master.wait_for_all_tasks(expected=1, timeout=30)
+respawn_done = len(completed) >= 1
+# 原断言：assert len(completed) >= 1, \
+record("respawn/task_completed", respawn_done, detail=len(completed))
+# 保留：守卫——后面 read_object 读的是这个任务写出的对象
 assert len(completed) >= 1, \
     f"task should be scheduled to respawned w1 and complete, completed={len(completed)}"
-assert db.read_object("grace/obj") == "recovered", "task output should be written by respawned w1"
+recovered = db.read_object("grace/obj")
+# 原断言：assert db.read_object("grace/obj") == "recovered", "task output should be written by respawned w1"
+record("respawn/object_value", recovered, detail=recovered)
 
 # 重连路径正确语义：宽限被重连消费，全程不判死（超时判死路径见单测
 # ReconnectTimeoutExhaustedCleanExit）。
 content = open(master_log, errors="replace").read()
-assert "worker 1 declared dead" not in content, \
-    "reconnect within grace must clear the deadline, no death declaration"
+no_death_final = "worker 1 declared dead" not in content
+# 原断言：assert "worker 1 declared dead" not in content, \
+record("reconnect/no_death_declaration", no_death_final,
+       detail=[l for l in content.splitlines() if "declared dead" in l])
 
-INFO("[PASS] test_disconnect_reconnect_grace: kill -> grace hold -> same-id respawn -> task recovery")
+INFO("[DONE] test_disconnect_reconnect_grace: kill -> grace hold -> same-id respawn -> task recovery")
 
 proc.terminate()
 master.stop()

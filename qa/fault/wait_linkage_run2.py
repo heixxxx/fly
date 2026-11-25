@@ -14,6 +14,7 @@ import threading
 import time
 
 from _fly_log import INFO
+from test import record
 from fly import load_db, get_config, expect_workers
 from fly.runtime import get_agent
 
@@ -22,6 +23,7 @@ DB_PATH = os.environ["FLY_DB_PATH"]
 # 编排脚本挪入的检查（原先在两个 sub case 之间内联断言，重录模式会真的执行
 # 内联语句而失败，见 qa/README.md「编排脚本的写法约定」）：时机不变——run1
 # 的工作刚结束、本 sub case 开始工作之前。
+# 保留：场景前提——load_db 的屏障场景依赖 run1 已冻结的 db，未冻结时后续等待无意义
 assert os.path.isfile(os.path.join(DB_PATH, "_FROZEN")), "db should be frozen after run1"
 
 cfg = get_config()
@@ -106,11 +108,18 @@ os.kill(proc.pid, signal.SIGKILL)
 INFO("[linkage] killed parked worker during idx load barrier")
 
 t.join(30)
-assert not t.is_alive(), "load_db must fail fast on worker death, not hang forever"
+thread_finished = not t.is_alive()
+# 原断言：assert not t.is_alive(), "load_db must fail fast on worker death, not hang forever"
+record("load_db/thread_finished", thread_finished, detail=result.get("outcome"))
+outcome_ready = result.get("outcome", "hang") != "hang"
+# 原断言：assert result.get("outcome", "hang") != "hang"
+record("load_db/outcome_present", outcome_ready, detail=result.get("outcome"))
+# 保留：守卫——后面的 result["outcome"] 下标依赖 outcome 已就绪
 assert result.get("outcome", "hang") != "hang"
-assert "idx load failed" in result["outcome"], \
-    f"expect explicit RuntimeError about idx load failure, got: {result.get('outcome')}"
+msg_has_marker = "idx load failed" in result["outcome"]
+# 原断言：assert "idx load failed" in result["outcome"], \
+record("load_db/idx_load_failed_msg", msg_has_marker, detail=result.get("outcome"))
 
 master.stop()
-INFO("[PASS] wait_linkage_run2: load_db infinite wait settled by worker death "
+INFO("[DONE] wait_linkage_run2: load_db infinite wait settled by worker death "
      f"(explicit error: {result['outcome'][:80]})")

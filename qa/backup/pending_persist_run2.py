@@ -8,14 +8,19 @@ import time
 import os
 import shutil
 
+from test import record
+
 # run1 的失败记录按归属 db 落盘（Task db 归属规则）：{DB_PATH}/failed_tasks.bin。
 DB_PATH = os.environ.get("FLY_DB_PATH") or os.environ.get("FLY_RUN1_LOG_DIR", "")
 
 # 编排脚本挪入的检查（原先在两个 sub case 之间内联断言，重录模式会真的执行
 # 内联语句而失败，见 qa/README.md「编排脚本的写法约定」）：时机不变——run1
 # 的工作刚结束、本 sub case 开始工作之前。
-assert os.path.isfile(os.path.join(DB_PATH, "failed_tasks.bin")), \
-    "run1 should leave failed_tasks.bin in its owner db dir"
+bin_persisted = os.path.isfile(os.path.join(DB_PATH, "failed_tasks.bin"))
+# 原断言：assert os.path.isfile(os.path.join(DB_PATH, "failed_tasks.bin")), \
+record("run1/failed_tasks_bin_persisted", bin_persisted,
+       detail=os.path.join(DB_PATH, "failed_tasks.bin"))
+# 非守卫：failed_tasks.bin 只被 restart_failed_tasks 消费，缺失时它静默跳过，后面的代码不打开这个文件
 
 
 from fly import get_config
@@ -38,17 +43,20 @@ def run2():
 
     # Launch worker with gpu attribute so gpu task can complete on restart
     master.launch_local_workers([{"attributes": ["gpu"]}])
+    # 保留：等待原语
     assert master.wait_for_workers(1), \
         "Worker should connect"
 
     # Restart failed tasks: 自动搜索归属 db 目录下的 bin
     restarted = master.restart_failed_tasks(DB_PATH)
-    assert restarted >= 2, \
-        f"expected >= 2 restarted tasks, got {restarted}"
+    restarted_enough = restarted >= 2
+    # 原断言：assert restarted >= 2, \
+    record("run2/restarted_at_least_2", restarted_enough, detail=restarted)
     INFO("  Run2: restart_failed_tasks called")
 
     # Wait for gpu task to complete (gpu worker now available)
     # The unresolvable dep task will fail again, but gpu task should succeed
+    # 保留：等待原语
     assert wait_for(lambda: len(master.completed_tasks) >= 1, timeout=30.0), \
         f"Expected at least 1 completed after restart, got {len(master.completed_tasks)}"
 
@@ -57,8 +65,9 @@ def run2():
     INFO(f"  Run2: {completed} completed, {failed} failed after restart")
 
     # The gpu task should have completed
-    assert completed >= 1, \
-        f"Expected >= 1 task to complete after restart, got {completed}"
+    completed_enough = completed >= 1
+    # 原断言：assert completed >= 1, \
+    record("run2/completed_at_least_1", completed_enough, detail=completed)
 
     INFO("  Run2: master stopped")
 

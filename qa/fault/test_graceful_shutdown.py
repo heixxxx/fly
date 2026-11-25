@@ -19,7 +19,7 @@ import struct
 
 
 
-from test import write_data, read_data
+from test import write_data, read_data, record
 from fly import open_db, get_config
 DB_PATH = os.path.join(get_config().get_str("log_dir"), "db")
 from fly import get_config
@@ -49,6 +49,7 @@ def test_graceful_shutdown():
     master = get_agent()
 
     master.launch_local_workers([{}])
+    # 保留：等待原语
     assert master.wait_for_workers(1), \
         "Worker should connect"
 
@@ -60,6 +61,7 @@ def test_graceful_shutdown():
     for i in range(3):
         write_data(db, f"key_{i}", f"value_{i}")
 
+    # 保留：等待原语
     assert wait_for(lambda: len(master.completed_tasks) >= 3), \
         f"Phase 1: 3 write_data tasks should complete, got {len(master.completed_tasks)}"
 
@@ -81,8 +83,9 @@ def test_graceful_shutdown():
 
     # The pending tasks should exist (either pending or failed, depending on scheduler)
     total = p2_completed + len(master.pending_tasks) + len(master.running_tasks) + len(master.failed_tasks)
-    assert total >= 5, \
-        f"Phase 2: expected >= 5 total tasks, got {total}"
+    total_at_least_5 = total >= 5
+    # 原断言：assert total >= 5, \
+    record("phase2/total_tasks_at_least_5", total_at_least_5, detail=total)
 
     # -- Phase 3: Stop master --
     # This should persist any pending/failed tasks to failed_tasks.bin
@@ -97,14 +100,19 @@ def test_graceful_shutdown():
 
     # What we CAN verify:
     # 1. The completed count was correct before stop
-    assert p1_completed >= 3, \
-        f"Phase 4: expected >= 3 completed before stop, got {p1_completed}"
+    p1_completed_ok = p1_completed >= 3
+    # 原断言：assert p1_completed >= 3, \
+    record("phase4/completed_before_stop", p1_completed_ok, detail=p1_completed)
 
     # 2. If a failed_tasks.bin exists, verify it has content
-    if os.path.isfile(failed_file):
-        file_size = os.path.getsize(failed_file)
-        assert file_size > 0, \
-            "Phase 4: failed_tasks.bin exists but is empty"
+    # 文件可能存在也可能不存在（两种都允许），所以记成无条件的判定：不存在，或者大小大于 0。
+    failed_bin_exists = os.path.isfile(failed_file)
+    file_size = os.path.getsize(failed_file) if failed_bin_exists else None
+    # 原断言：assert file_size > 0, \
+    record("phase4/failed_bin_not_empty",
+           (not failed_bin_exists) or file_size > 0,
+           detail={"exists": failed_bin_exists, "size": file_size})
+    if failed_bin_exists:
         INFO(f"  Phase 4 OK: failed_tasks.bin exists ({file_size} bytes)")
     else:
         # With fail_unscheduleable_tasks=0, tasks may stay pending and not be persisted
@@ -135,7 +143,7 @@ def test_graceful_shutdown():
         INFO("  Phase 5: no failed file to restart")
 
     master2.stop()
-    INFO("[PASS] test_graceful_shutdown")
+    INFO("[DONE] test_graceful_shutdown")
 
 
 test_graceful_shutdown()

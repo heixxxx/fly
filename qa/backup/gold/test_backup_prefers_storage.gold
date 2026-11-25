@@ -1,0 +1,8 @@
+{
+  "backup_target/shared/alpha_data": true,
+  "backup_target/shared/beta_data": true,
+  "master_log/storage_only_selection": true,
+  "readback/alpha_data": 42,
+  "readback/beta_data": 99,
+  "scheduling/idle_hybrid_only": true
+}

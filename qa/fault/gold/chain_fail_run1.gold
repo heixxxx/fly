@@ -1,0 +1,9 @@
+{
+  "dirty_unreadable/node7/dirty1": true,
+  "dirty_unreadable/node7/dirty2": true,
+  "dirty_unreadable/node7/result": true,
+  "failed_tasks_bin/persisted": true,
+  "failure_reasons/read_fail_present": true,
+  "node_data/0": 0,
+  "workers/at_least_4": true
+}

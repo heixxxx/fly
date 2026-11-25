@@ -13,7 +13,7 @@ import shutil
 import signal
 import time
 
-from test import write_two_versions
+from test import write_two_versions, record
 from fly import open_db, get_config
 DB_PATH = os.path.join(get_config().get_str("log_dir"), "db")
 from fly.runtime import get_agent
@@ -42,6 +42,7 @@ master.launch_local_workers([
     {"host": "host-a"},
     {"host": "host-a", "role": "storage_only"},
 ])
+# 保留：等待原语
 assert master.wait_for_workers(2), "workers should connect"
 
 db = open_db(DB_PATH)
@@ -50,6 +51,7 @@ full_name = db.get_full_name("dup/obj")
 # 同 task 双版本：v1 带 backup（副本落 storage w2），v2 同上下文重写（仅更新
 # w1 源，w2 的 backup 副本停留在 v1）。同名重写需同 task 上下文（provenance）。
 write_two_versions(db, "dup/obj", 1, 2)
+# 保留：等待原语
 assert wait_for(lambda: len(master.completed_tasks) >= 1)
 master.wait_for_all_tasks(expected=None, timeout=10)  # 排空 internal backup
 
@@ -57,7 +59,9 @@ from _fly_storage import ex_stg_get_data_service
 ds = ex_stg_get_data_service()
 holders = ds.get_remote_workers(full_name)
 INFO(f"[DUP] after v1+backup holders={holders}")
-assert 2 in holders, f"backup replica must be on storage w2, got {holders}"
+backup_on_storage = 2 in holders
+# 原断言：assert 2 in holders, f"backup replica must be on storage w2, got {holders}"
+record("prekill/backup_on_storage", backup_on_storage, detail=holders)
 
 worker_pids = master.get_worker_pids()
 os.kill(worker_pids[0], signal.SIGKILL)
@@ -77,18 +81,22 @@ def takeover_done():
         return False
 
 
+# 保留：等待原语
 assert wait_for(takeover_done, timeout=30), "takeover IdxLoadAck should arrive"
 INFO("[DUP] takeover loaded source idx onto storage w2")
 
 # 核心断言：读到 v2（接管的新版本），不是 v1（backup 旧副本/缓存）。
 value = db.read_object("dup/obj")
-assert value == 2, f"must read latest v2 after takeover, got {value}"
+# 原断言：assert value == 2, f"must read latest v2 after takeover, got {value}"
+record("dup/latest_version", value, detail=value)
 INFO("[DUP] latest version served (back() selection + cache invalidation)")
 
 master.stop()
 
 with open(master_log) as f:
     content = f.read()
-assert "storage takeover initiated" in content
+takeover_logged = "storage takeover initiated" in content
+# 原断言：assert "storage takeover initiated" in content
+record("master_log/takeover_initiated", takeover_logged, detail=content[-2000:])
 
-INFO("[PASS] test_takeover_duplicate_latest_wins")
+INFO("[DONE] test_takeover_duplicate_latest_wins")
