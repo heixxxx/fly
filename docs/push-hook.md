@@ -8,7 +8,7 @@ git `pre-push` hook：在每次 `git push` 前自动执行完整校验流水线�
 |------|------|------|
 | 1/3 BUILD | `./fly.sh build` | bazel build `//src/...` + 刷新 `compile_commands.json` |
 | 2/3 UNIT TEST | `./fly.sh test //src/... --jobs=4` | bazel test `//src/...` 阶段内并行 4，任一用例失败即非零退出；阶段末 `bazel shutdown` 释放 Java server 内存 |
-| 3/3 QA TEST | `./fly.sh install && ./qa/runqa -j 6 -t 20` | install 生成 `build/bin/fly`，runqa 跑**全量** QA（阶段内并行 6，单测 20s 超时） |
+| 3/3 QA TEST | `./fly.sh install && ./qa/runqa -j 6 -t 20` | install 生成 `build/bin/fly`，runqa 跑**全量** QA（阶段内并行 6；`-t 20` 保留为兼容，对 `.pyt` 用例不约束时长——子阶段各自超时）；全量运行结束时运行器做引用审计（qa/ 下每个 `test_*.py` 都必须被某个 `.pyt` 调度），钩子不做基准重录（`--regold` 是显式操作，见 `AGENTS.md`） |
 
 **两套测试严格串行**：unit test 全部通过后才启动 QA，不做两套并行叠加。各阶段前后打印内存水位（`[mem] xxxxMB available`），OOM 复发时有现场可查。
 
@@ -105,7 +105,7 @@ GIT_SSH_COMMAND='ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=20' git pu
 
 完整流水线耗时取决于 build 增量和 QA 用例规模（**QA case 数随开发持续增长，以 runqa 运行输出为准，文档不写死**）。当前脚本配方（`scripts/pre-push` 为唯一权威：单测 `--jobs=4`、QA `-j 6 -t 20`）实测 QA 阶段全量门禁通过约 70s；保守降档 `-j 2` 约 171s，属资源安全的设计取舍。
 
-> **关于超时/并行配置**：`-t 20` 配合当前并行度是 2026-08-16 OOM 实测后的稳定配方（此前 `-j 4` 下三阶段连续执行内存峰值在 7.8GB 开发机上超限，见上文资源约束）。runqa 的默认并行度、钳制上限与覆盖方式以 [`qa/README.md`](../qa/README.md)「并行度权威口径」与 `qa/runqa` 源码为准；pre-push 脚本显式传 `-j 6` 以固定门禁行为。
+> **关于超时/并行配置**：`-t 20` 配合当前并行度是 2026-08-16 OOM 实测后的稳定配方（此前 `-j 4` 下三阶段连续执行内存峰值在 7.8GB 开发机上超限，见上文资源约束）。强制 `.pyt` 包装后 `-t` 对用例时长不再起作用（子阶段各自用 `run_subcase` 的超时），`-t 20` 仅作为兼容参数保留。runqa 的默认并行度、钳制上限与覆盖方式以 [`qa/README.md`](../qa/README.md)「并行度权威口径」与 `qa/runqa` 源码为准；pre-push 脚本显式传 `-j 6` 以固定门禁行为。
 
 ## 在新环境安装
 

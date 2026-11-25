@@ -279,5 +279,7 @@ ready_tasks_ 类型变更后，5 处访问点改造：
 标定，本机未达属预期（内存带宽/页回收压制），**留待新机复测裁决**；大 payload
 不再有「收齐才反序列化」的 2× 内存驻留差距。
 
-复现：`PEER_RPC_PERF_FULL=1 ./qa/runqa -t 180 qa/performance/test_peer_stream_read_perf.py`
+复现：`PEER_RPC_PERF_FULL=1 ./qa/runqa qa/performance/test_peer_stream_read_perf.pyt`
+（`.pyt` 编排脚本是唯一的用例单位；加重模式的 180 秒超时由 `.pyt` 包装自己提供，
+`PEER_RPC_PERF_FULL=1` 时生效，`-t` 对 `.pyt` 用例不起作用）
 （数字在 `worker2.log` 的 [PERF-SUMMARY]，master fly.log 无业务输出）

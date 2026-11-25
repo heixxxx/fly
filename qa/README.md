@@ -10,7 +10,7 @@
 ./qa/runqa -j 6 -t 40
 
 # 运行指定测试
-./qa/runqa qa/storage/test_read_cache_basic.py
+./qa/runqa qa/storage/test_read_cache_basic.pyt
 
 # 兼容旧入口
 ./qa/run_qa_tests.sh
@@ -19,19 +19,30 @@
 > **并行度权威口径**（其他文档只链接此处，不复制数字）：
 > 默认并行度为**固定值**（2026-08-16 用户裁定：不随核数自适应；当前值见 `qa/runqa` 的
 > `_resolve_default_parallelism()`，以源码为准），上限钳制、`-j 0`/负数行为同见源码。显式 `-j N` 可覆盖。
-> runqa 以 `os.walk` 递归发现 `test_*.py` 与 `*.pyt`（跳过 `.latest`/`.N` 日志残留与符号链接目录）。
+> runqa 以 `os.walk` 递归发现 `*.pyt` 编排脚本（跳过 `.latest`/`.N` 日志残留与符号链接目录）。
+> **编排脚本（.pyt）是唯一的用例单位**：裸 `test_*.py` 不被发现也不被运行，必须被某个
+> `.pyt` 调度（全量运行结束后有引用审计兜底，详见下文）；显式传入 `.py` 路径报错退出（退出码 2）。
 > **case 总数随开发持续增长，任何文档不写死具体数字**，以 `./qa/runqa` 运行输出为准。
 
 ### 测试运行机制
 
-`runqa`（Python 运行器）对每个 `test_*.py` 文件：
+`runqa`（Python 运行器）对每个用例（一个 `.pyt` 编排脚本）：
 
-1. 清理该测试的历史日志（`.N` 变体 + helper 嵌套 log）
-2. 用 `fly --log-dir <dir> <test_file>` 启动一个**独立进程**（`cwd` 设为测试所在目录）
+1. 清理该用例的历史日志（`.N` 变体 + helper 嵌套 log）
+2. 在 runqa 进程内 `exec` 编排脚本；脚本里的每个 `run_subcase` 调用启动一个
+   `fly --log-dir <dir> <脚本>` **独立子进程**跑一个子阶段（`cwd` 设为用例所在目录）
 3. fly 二进制初始化全新的 C++ 运行时（DataService、StorageManager 等单例都是全新的）
-4. 执行 Python 测试脚本
-5. 通过进程退出码判断 pass/fail（0=pass, 非0=fail）
-6. 日志写入 `{test_dir}/{test_name}/` 目录
+4. 执行子阶段 Python 脚本
+5. 通过进程退出码判断 pass/fail（0=pass, 非0=fail）；声明了 `check_list` 的子阶段
+   再把结果文件与基准文件按 key 比对，有差异同样判 fail
+6. 日志写入 `{test_dir}/{test_name}/{N}_{子阶段名}/` 目录；子阶段未达期望或比对
+   有差异 → `run_subcase` 抛 `SubcaseError` → 编排脚本中断 → 整个用例失败
+
+**引用审计**：全量运行（不带路径参数）、没有触发 `--fail-fast` 并且全部用例通过时，
+运行结束前检查 `qa/` 下是否还有没被任何 `.pyt` 调度过的 `test_*.py`（有的话说明
+新用例忘了包 `.pyt`，会被静默跳过）——发现即打印清单并把本轮判为失败（退出码 1）。
+有用例失败时跳过审计（失败用例可能没有调度完它的子阶段，审计会误报）；带路径
+参数的局部运行不做审计。
 
 ---
 
@@ -47,10 +58,10 @@ import time
 import os
 import shutil
 
-DB_PATH = os.path.join(get_work_directory(), "db")
-
 from e2e_tasks import write_data
 from fly import open_db, get_config, get_work_directory
+
+DB_PATH = os.path.join(get_work_directory(), "db")
 
 
 def cleanup():
@@ -84,13 +95,29 @@ master.stop()
 INFO(f"[PASS] test_<feature>")
 ```
 
+**新用例必须带 `.pyt` 包装**（编排脚本，runqa 只发现 `.pyt`）：把上面的脚本
+（命名 `test_<feature>.py`）作为一个子阶段调度，旁边建 `test_<feature>.pyt`：
+
+```python
+# test_<feature>.pyt —— 编排脚本（用例入口，runqa 进程内执行）
+run_subcase("test_<feature>.py", timeout=60)
+```
+
+没有包装的裸 `test_*.py` 不会被运行（静默跳过），并且全量运行结束后的引用审计
+会把它列为未调度脚本、将本轮判为失败。单进程场景用上面的一行薄包装即可；
+多阶段编排见下文 `.pyt` 机制一节。
+
 ### 多进程测试（协调器模式，legacy）—— 新测试请用 .pyt 机制（下节）
 
-如果测试需要跨进程重启（如 load_db），使用协调器模式：
+如果测试需要跨进程重启（如 load_db），历史上使用协调器模式（一个 `test_*.py`
+经 `subprocess.run` 驱动辅助脚本）。**runqa 现在只发现 `.pyt`**：遗留的协调器
+脚本已经或必须包一层同名 `.pyt`（`run_subcase("test_xxx.py", timeout=60)`）
+才会被运行，裸 `test_*.py` 不再被发现。新测试一律用 `.pyt` 编排：
 
 ```
 qa/storage/
-├── test_load_db.py          # 协调器（runqa 发现此文件）
+├── test_load_db.pyt         # 编排脚本（runqa 发现此文件）
+├── test_load_db.py          # 协调器（被 .pyt 调度为一个子阶段，不再独立发现）
 ├── load_db_run1.py          # 辅助脚本（非 test_ 前缀，不被 runqa 直接运行）
 └── load_db_run2.py          # 辅助脚本
 ```
@@ -161,7 +188,12 @@ INFO("[PASS] case passed")
 - log 外产物（如 DB）须 .pyt 成功路径末尾显式清；失败残留由下次 setup 清
 - **sub case 未达 `expect_pass` 期望 → run_subcase raise → .pyt exec 中断 → 整个 case 失败**（fail-fast；teardown 仍跑）
 
-**发现机制**：runqa 发现 `*.pyt`（+ 过渡期 `test_*.py`）。同 stem 的 `test_*.py` 被 `.pyt` 接管（退为 sub case 脚本，不独立发现）。sub case 日志在 `{case_log_dir}/{N}_{script_stem}/fly.log`（N = sub case 序号，避免多阶段互相覆盖）。
+**发现机制**：runqa 只发现 `*.pyt`——编排脚本是唯一的用例单位。裸 `test_*.py` 是 sub case 脚本，不独立发现；每个 `test_*.py` 必须被某个 `.pyt` 调度（有的 `.pyt` 运行多个名称不同的 `.py`，不能按同名判断），全量运行结束后的引用审计负责兜底。sub case 日志在 `{case_log_dir}/{N}_{script_stem}/fly.log`（N = sub case 序号，避免多阶段互相覆盖）。
+
+**编排脚本的写法约定**（重录模式会 `exec` 编排脚本：调度的 `setup`/`teardown` 不会被调用，但子阶段调用之间的内联语句会真的执行）：
+- 子阶段调用之间不写有副作用的语句和断言。文件操作放进下一个 `run_subcase` 的 `setup`；阶段之间的状态检查挪到下一个子阶段脚本的开头；最后一个子阶段之后的检查挪到该子阶段脚本的末尾（子阶段脚本已有同样检查时直接删掉编排脚本里的重复）。
+- 编排脚本一个子阶段都没调度判为失败（防止静默假绿）。
+- 含故意失败场景的用例（如自测）在重录模式下必须整体跳过：用注入的 `QA_MODE`（`"run"`/`"regold"`）判断，`if QA_MODE != "regold":` 包住全部场景。
 
 ### 基准比对机制（记录接口 + check_list + gold 文件）
 
@@ -426,9 +458,9 @@ def test_part2():
 
 | 类型 | 命名 | 说明 |
 |------|------|------|
-| 测试文件 | `test_<name>.py` | runqa 自动发现，fly 进程跑（单进程 case） |
-| 编排脚本 | `<name>.pyt` | runqa 自动发现，runqa 进程 exec，调 run_subcase 编排多 sub case（复合 case） |
-| 辅助脚本 | `<name>.py`（非 test_ 前缀） | 由 test_*.py（subprocess）或 .pyt（run_subcase）调用的 sub case |
+| 编排脚本（用例单位） | `test_<name>.pyt` | runqa 只发现 `.pyt`，runqa 进程 exec，调 `run_subcase` 编排 sub case；单进程 case 是一行薄包装 |
+| 子阶段脚本 | `test_<name>.py`（同名的 `.pyt` 调度它） | 被 `.pyt` 以 `run_subcase` 调度，fly 进程执行；不被 runqa 独立发现，没被任何 `.pyt` 调度会被引用审计拦下 |
+| 辅助脚本 | `<name>.py`（非 test_ 前缀） | 由编排脚本或子阶段脚本调用的 sub case |
 
 ### DB 路径
 
@@ -496,7 +528,7 @@ cat qa/storage/test_read_cache_basic/worker1.log
 grep '\[ERROR\]' qa/storage/test_read_cache_basic/fly.log
 ```
 
-**测试失败时**，`runqa` 自动在终端打印失败测试的最后 10 行日志。
+**测试失败时**，`runqa` 自动在终端打印失败测试的最后 15 行日志。
 
 #### 生产环境日志
 
@@ -551,7 +583,6 @@ qa/
 ├── runqa                       # Python 测试运行器（-j 并发、计时、排序、qa.log 双写）
 ├── run_qa_tests.sh             # 兼容入口（薄 wrapper → runqa）
 ├── .gitignore                   # 忽略运行产物
-├── BUILD                        # Bazel 构建定义
 │
 ├── api/                         # API 测试（缓存、进程模式、用户脚本）
 ├── backup/                      # 备份测试（自动备份、数据备份、持久化）
@@ -602,7 +633,7 @@ cat qa/<category>/<test_name>/fly.log
 
 **Q: 测试失败如何调试？**
 
-1. `runqa` 失败时自动打印最后 10 行日志
+1. `runqa` 失败时自动打印最后 15 行日志
 2. 查看完整日志：`cat qa/<category>/<test_name>/fly.log`
 3. 查看 Worker 日志（任务执行细节）：`cat qa/<category>/<test_name>/worker1.log`
 4. 搜索错误：`grep '\[ERROR\]' qa/<category>/<test_name>/fly.log`
@@ -617,7 +648,7 @@ cat qa/<category>/<test_name>/fly.log
 
 **Q: 新建的 QA case 被 runqa 忽略？**
 
-确认文件名以 `test_` 开头、以 `.py` 结尾（或 `.pyt` 编排），且位于 `qa/` 的某个子目录下。runqa 使用 `os.walk` 递归发现测试（跳过 `.latest`/`.N` 日志残留与符号链接目录），详见上文「并行度权威口径」。
+确认编排脚本以 `.pyt` 结尾且位于 `qa/` 的某个子目录下（runqa 只发现 `.pyt`；裸 `test_*.py` 不被发现，必须被某个 `.pyt` 调度，否则全量运行的引用审计会把本轮判为失败）。runqa 使用 `os.walk` 递归发现（跳过 `.latest`/`.N` 日志残留与符号链接目录），详见上文「并行度权威口径」。
 
 ---
 

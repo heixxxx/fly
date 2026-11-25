@@ -733,14 +733,25 @@ class RegoldTest(QaRecordTestBase):
         self.tmp = _tmp_dir()
         self.sub_dir = os.path.join(self.tmp, "1_stage")
         os.makedirs(self.sub_dir)
-        self.fly_mtime = os.path.getmtime(__file__) + 3600  # 结果文件一律更旧 → 提示可断言
+        # 固定的「fly 二进制修改时间」参照值（数值本身任意，只要为正且与墙钟
+        # 无关）。不要改回从 os.path.getmtime(__file__) 或当前时间推导——原写法
+        # 「源文件修改时间 + 3600」只在源文件最后一次修改之后的一小时内成立
+        # （它指望运行时刚写出的结果文件比它旧），一小时之后
+        # test_regoldable_preset_makes_gold 必然失败，推送前校验的单测阶段会被
+        # 拦下（2026-11-25 实证）。本类的新旧两个场景各自用 os.utime 把结果
+        # 文件的修改时间显式设成比它旧/比它新，与墙上时钟完全无关。
+        self.fly_mtime = 1_000_000_000.0
 
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
         super().tearDown()
 
     def _write_result(self, name, obj):
-        _write_json(os.path.join(self.sub_dir, name), obj)
+        path = os.path.join(self.sub_dir, name)
+        _write_json(path, obj)
+        # 显式设成「比 fly 二进制旧」（缺省场景：提示结果可能来自旧版本的二进制）。
+        # 不能依赖写入时刻与 fly_mtime 的天然先后——那又是依赖墙上时钟。
+        os.utime(path, (self.fly_mtime - 10, self.fly_mtime - 10))
 
     def _regold(self, items):
         return qa_record.regold_result_files(

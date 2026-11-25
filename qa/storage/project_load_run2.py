@@ -14,6 +14,12 @@ from test import DemoProject
 
 PROJ_PATH = os.environ["FLY_PROJ_PATH"]
 
+# 编排脚本挪入的检查（原先在两个 sub case 之间内联断言，重录模式会真的执行
+# 内联语句而失败，见 qa/README.md「编排脚本的写法约定」）：时机不变——run1
+# 的工作刚结束、本 sub case 开始工作之前。
+assert os.path.isfile(os.path.join(PROJ_PATH, "_PROJECT_META.json")), \
+    "_PROJECT_META.json should exist after load_run1"
+
 proj = fly.load_project(PROJ_PATH)
 
 # 子类动态还原：应是 DemoProject，flow 可用。

@@ -20,10 +20,8 @@ def setup_clean():
     if os.path.isdir(PROJ_PATH):
         shutil.rmtree(PROJ_PATH, ignore_errors=True)
 
-r1 = run_subcase("project_resume_run1.py", timeout=120, setup=setup_clean,
-                 env={"FLY_PROJ_PATH": PROJ_PATH})
-assert os.path.isfile(os.path.join(PROJ_PATH, "workdb", "failed_tasks.bin")), \
-    "failed_tasks.bin should persist into the owner db dir on graceful interrupt"
+run_subcase("project_resume_run1.py", timeout=120, setup=setup_clean,
+            env={"FLY_PROJ_PATH": PROJ_PATH})
 
 run_subcase("project_resume_run2.py", timeout=180,
             env={"FLY_PROJ_PATH": PROJ_PATH})

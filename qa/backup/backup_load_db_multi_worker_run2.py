@@ -18,6 +18,10 @@ get_config().set_int("fail_unscheduleable_tasks", 0)
 
 # Read original db_path from Run 1
 marker_path = os.path.join(DB_PATH, "_test_db_path")
+# 编排脚本挪入的检查（原先在两个 sub case 之间内联断言，重录模式会真的执行
+# 内联语句而失败，见 qa/README.md「编排脚本的写法约定」）：时机不变——run1
+# 的工作刚结束、本 sub case 开始工作之前。
+assert os.path.isfile(marker_path), "marker should exist after run1"
 with open(marker_path) as f:
     original_db_path = f.read().strip()
 

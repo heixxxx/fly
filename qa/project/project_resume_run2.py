@@ -8,13 +8,18 @@ from fly.runtime import get_agent
 
 PROJ_PATH = os.environ["FLY_PROJ_PATH"]
 
+# 断点现场铁证：bin 落归属 db 目录（Task db 归属规则，非 {log_dir} 也非 project 根）。
+# 编排脚本挪入的检查（原先在两个 sub case 之间内联断言，重录模式会真的执行
+# 内联语句而失败，见 qa/README.md「编排脚本的写法约定」）：时机不变——run1
+# 的工作刚结束、本 sub case 开始工作之前（原脚本在 launch worker 之后做的
+# 就是这同一句检查，现挪到最前）。
+bin_path = os.path.join(PROJ_PATH, "workdb", "failed_tasks.bin")
+assert os.path.isfile(bin_path), \
+    "failed_tasks.bin should persist into the owner db dir on graceful interrupt"
+
 master = get_agent()
 master.launch_local_workers([{}, {}])
 assert master.wait_for_workers(2)
-
-# 断点现场铁证：bin 落归属 db 目录（Task db 归属规则，非 {log_dir} 也非 project 根）。
-bin_path = os.path.join(PROJ_PATH, "workdb", "failed_tasks.bin")
-assert os.path.isfile(bin_path), f"failed_tasks.bin should live in the owner db dir: {bin_path}"
 
 proj = open_project(PROJ_PATH)
 db = proj.get_db("workdb")

@@ -37,7 +37,9 @@
 > none 512MB **554 MB/s** / lz4 541 MB/s（较收齐交付版 373 MB/s +48%）；64MB
 > none 583 MB/s。验收线「none 512MB ≥ 700 MB/s」按 ≥16GB 机器标定，本机受内存
 > 带宽压制未达属预期（case 已自动打印 MemTotal WARN），**留待新机复测裁决**。
-> 复现：`PEER_RPC_PERF_FULL=1 ./qa/runqa -t 180 qa/performance/test_peer_stream_read_perf.py`。
+> 复现：`PEER_RPC_PERF_FULL=1 ./qa/runqa qa/performance/test_peer_stream_read_perf.pyt`。
+> （`.pyt` 编排脚本是唯一的用例单位；加重模式的 180 秒超时由 `.pyt` 包装自己提供，
+> `-t` 对 `.pyt` 用例不起作用。）
 
 收齐交付版的基准（自环全管线口径）：64MB f64 467 MB/s / 512MB f64
 373 MB/s / 远端 read_object 727-885 MB/s。真流式版（业务拉动）预期 ≥ 远

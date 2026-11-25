@@ -24,11 +24,11 @@
 ./fly.sh install               # Creates build/ with symlinks
 ./qa/runqa                     # Preferred runner (fixed default parallelism, capped; -j N override — 并行度口径见 qa/README.md)
 ./qa/runqa qa/storage          # Run a single category dir
-./qa/runqa qa/storage/test_x.py  # Run a single case
+./qa/runqa qa/storage/test_x.pyt  # Run a single case
 bash qa/run_qa_tests.sh        # Legacy wrapper, same thing
 ```
 
-`runqa` launches each `test_*.py` in a fresh `fly` process with isolated C++ singletons. Logs go to `{test_dir}/{test_name}/`. Before each run, `runqa` cleans the test's historical logs (`.N` variants + helper nested logs). Test discovery uses `os.walk` (not glob), skipping `.latest`/`.N` log residues and symlinked dirs so each case is collected exactly once — directory and file args both resolve to canonical real paths.
+`runqa` 只发现 `.pyt` 编排脚本（编排脚本是唯一的用例单位）；每个用例在 runqa 进程内 exec，其中的 `run_subcase` 为每个 sub case 起一个全新 `fly` 进程（隔离的 C++ 单例）。裸 `test_*.py` 是子阶段脚本，不被发现也不被运行——必须被某个 `.pyt` 调度（不能按同名判断），显式传 `.py` 路径报错退出（退出码 2），全量运行结束后的引用审计会把没被调度的 `test_*.py` 判为失败。Logs go to `{test_dir}/{test_name}/{N}_{sub_stem}/`. Before each run, `runqa` cleans the case's historical logs (`.N` variants + helper nested logs). Test discovery uses `os.walk` (not glob), skipping `.latest`/`.N` log residues and symlinked dirs so each case is collected exactly once — directory and file args both resolve to canonical real paths.
 
 **QA case 脚本不需要 `sys.path.insert`** — fly 启动时已自动配好所有模块路径。获取 fly binary 路径用 `get_fly_binary()`，不要硬编码 `bazel-bin/...`。
 
@@ -152,9 +152,9 @@ These clangd errors are **not real** — they come from Bazel's virtual include 
 
 ### QA Debug 日志保护规则（必须遵守）
 
-- **一次只跑一轮 runqa**，失败后**立即停下来看日志**。绝不在失败后继续跑下一轮——runqa 的 `run_one` 在每次运行前会清理该 case 的历史日志（`{test_dir}/{test_name}/fly.log`），下一轮会覆盖失败轮的日志，导致**永久丢失失败现场**。
+- **一次只跑一轮 runqa**，失败后**立即停下来看日志**。绝不在失败后继续跑下一轮——runqa 的 `_clean_case_logs`（由 `run_pyt` 在每次运行前调用）会清理该用例的历史日志（子阶段 `fly.log` 在 `{test_dir}/{test_name}/{N}_{子阶段名}/` 下），下一轮会覆盖失败轮的日志，导致**永久丢失失败现场**。
 - **多轮稳定性测试用 `-j4` 跑一次**（全量 case 一次跑完，数量以 runqa 运行输出为准），而非 for 循环跑多轮。要验证多轮稳定性，每轮之间必须**检查是否有失败**，有失败则立即停止分析，不得继续。
-- **失败日志位置**：`qa/{category}/{test_name}/fly.log`（stdout+stderr 合并）、`master.log`、`worker1.log` 等。这些是分析 timeout/fail 的唯一现场。
+- **失败日志位置**：`qa/{类别}/{用例名}/{N}_{子阶段名}/fly.log`（stdout+stderr 合并），`master.log`、`worker{N}.log` 在同一个子阶段目录里。这些是分析 timeout/fail 的唯一现场。
 - **runqa 的 `qa/logs/qa.log`** 每轮重建（覆盖），但 per-case 的 `fly.log` 只被同 case 下一轮覆盖。
 - **基准重录是显式操作**：`./qa/runqa --regold <用例.pyt>` 用上次运行的结果文件覆盖基准文件（`qa/<类别>/gold/` 下的 `.gold` 文件），只在开发者判定差异合理之后执行；推送前校验不调用它，运行用例时也绝不写基准。重录后必须重跑确认通过，基准文件的变更随提交评审。迁移用例时先保留原有断言并行加 `record`，运行确认断言全部通过之后再重录初始基准——直接删断言再重录会把实现缺陷固化成期望值。结果文件顶层布尔为假的条目，重录会被拒绝（判定型条目期望恒为 true）。规则见 `qa/README.md`「基准比对机制」。
 

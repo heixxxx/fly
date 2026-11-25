@@ -1,4 +1,5 @@
-"""运行器自测：check_list 判定、差异报告、重录规则（QA 改造任务书步骤 1/2）。
+"""运行器自测：check_list 判定、差异报告、重录规则、强制 .pyt 包装（QA 改造
+任务书步骤 1/2/3）。
 
 场景全部确定性、秒级完成，每轮全量运行都会执行：
   1. 清单合法且结果与基准一致 → 正常通过；
@@ -14,9 +15,22 @@
   8. 退出状态与比对差异同时失败 → 报告里两者都在；
   9. 重录的调度分支与收尾落盘：在 logs/ 下构造临时编排脚本与结果文件，
      直接调用运行器的 _regold_one，断言基准生成、结果不变不重写、结果变化
-     基准更新。
+     基准更新；
+  10. 发现机制只返回 .pyt（find_tests 与目录形式的 collect_tests）；
+  11. 显式 .py 路径被拒绝：子进程运行 runqa 传 .py 路径，断言退出码 2 且
+      提示里给出同名 .pyt 的具体路径（子进程在触碰 qa/logs 之前就退出，
+      不影响本轮回合）；
+  12. 引用审计判定函数：临时目录构造「全部被调度」与「有脚本没被调度」
+      两种情况；
+  13. 空编排脚本（没有调度任何子阶段）被判失败——放在全部场景之后：
+      run_pyt 会重写本线程的 case 上下文。
 
 差异报告落盘断言（追加写、分段）在场景 8 之后统一做。
+
+场景 9/13 在用例内嵌套调用运行器的 `_regold_one`/`run_pyt`：调用前后用线程局部的
+日志接收器（运行器的 `_set_log_sink`）把嵌套输出收进列表、结束后恢复，并断言收到
+的内容（重录的新增键数、空编排的失败原因）——嵌套日志不混进终端与 qa/logs/qa.log，
+全量运行的 START 行数与 Tests to run 保持一致。
 
 本脚本在重录模式（--regold）下整体跳过、只打印一行说明：场景 2 的判定为假会被
 拒绝重录、场景 4 的子阶段会被重录出「基准缺失」场景的基准文件，全量重录不能被
@@ -25,11 +39,52 @@
 import json
 import os
 import shutil
+import subprocess
 
 if QA_MODE == "regold":
     INFO("[skip] test_runner_check: 自测用例不参与重录（场景 2 判定为假会被拒绝、"
          "场景 4 会被重录出基准缺失场景的基准）；正常运行时覆盖全部场景")
 else:
+    # ── 场景 10：发现机制只返回 .pyt（编排脚本是唯一的用例单位）──
+    runner = sys.modules["__main__"]
+    discovered = runner.find_tests()
+    assert discovered, "find_tests 应发现 qa/ 下的 .pyt 用例"
+    assert all(p.endswith(".pyt") for p in discovered), \
+        f"发现机制只应返回 .pyt：{[p for p in discovered if not p.endswith('.pyt')][:5]}"
+    by_dir = runner.collect_tests([FLY_CASE_DIR])
+    assert by_dir and all(p.endswith(".pyt") for p in by_dir), by_dir
+
+    # ── 场景 11：显式 .py 路径被拒绝（退出码 2 + 提示对应 .pyt 的具体路径）──
+    # 子进程方式验证完整的命令行入口；子进程在触碰 qa/logs 之前就从
+    # collect_tests 退出，不影响本轮回合的其他用例。
+    qa_root_dir = os.path.dirname(FLY_CASE_DIR)
+    _proc = subprocess.run(
+        [sys.executable, os.path.join(qa_root_dir, "runqa"),
+         os.path.join(qa_root_dir, "storage", "test_read_cache_basic.py")],
+        capture_output=True, text=True, timeout=60)
+    assert _proc.returncode == 2, \
+        f"显式 .py 路径应退出码 2，实际 {_proc.returncode}：\n{_proc.stdout}{_proc.stderr}"
+    assert "test_read_cache_basic.pyt" in _proc.stdout, \
+        f"拒绝提示应给出同名 .pyt 的路径：\n{_proc.stdout}"
+
+    # ── 场景 12：引用审计判定函数（临时目录构造两种情况）──
+    tmp_audit_dir = os.path.join(FLY_CASE_LOG_DIR, "logs", "audit_selftest")
+    if os.path.isdir(tmp_audit_dir):
+        shutil.rmtree(tmp_audit_dir)
+    os.makedirs(os.path.join(tmp_audit_dir, "sub"))
+    _a_path = os.path.join(tmp_audit_dir, "test_a.py")
+    _b_path = os.path.join(tmp_audit_dir, "sub", "test_b.py")
+    for _p in (_a_path, _b_path):
+        with open(_p, "w", encoding="utf-8") as f:
+            f.write("# audit selftest\n")
+    _a_real = os.path.realpath(_a_path)
+    _b_real = os.path.realpath(_b_path)
+    _unref = runner._find_unreferenced_tests({_a_real}, qa_root=tmp_audit_dir)
+    assert _unref == [_b_real], f"有脚本没被调度时应只报出它：{_unref}"
+    _unref = runner._find_unreferenced_tests({_a_real, _b_real}, qa_root=tmp_audit_dir)
+    assert _unref == [], f"全部被调度时应为空：{_unref}"
+    shutil.rmtree(tmp_audit_dir)
+
     # ── 场景 1：清单合法 + 结果与基准一致 → 正常通过 ──
     run_subcase("runner_check_record.py", timeout=15, check_list=["result.json"])
 
@@ -187,27 +242,63 @@ else:
               encoding="utf-8") as f:
         f.write('run_subcase("tmp_regold_stage.py", timeout=15, check_list=["result.json"])\n')
 
-    runner = sys.modules["__main__"]
     tmp_pyt = os.path.join(tmp_case_dir, "tmp_regold_case.pyt")
     # 基准目录是「编排脚本所在目录/gold/」；结果文件目录才带 <stem> 层。
     gold_path = os.path.join(tmp_case_dir, "gold", "tmp_regold_stage.gold")
 
-    assert runner._regold_one(tmp_pyt), "重录单用例应成功"
-    assert os.path.isfile(gold_path), f"基准未按命名约定生成：{gold_path}"
-    with open(gold_path, encoding="utf-8") as f:
-        assert '"answer": 42' in f.read()
+    # 嵌套调用期间把当前线程的日志收进列表（线程局部接收器）：_regold_one 的
+    # START/DONE 行与重录统计不混进终端与 qa/logs/qa.log。
+    nested = []
+    runner._set_log_sink(nested.append)
+    try:
+        assert runner._regold_one(tmp_pyt), "重录单用例应成功"
+        assert os.path.isfile(gold_path), f"基准未按命名约定生成：{gold_path}"
+        with open(gold_path, encoding="utf-8") as f:
+            assert '"answer": 42' in f.read()
 
-    # 结果不变再调用 → 基准文件修改时间不变（内容无变化不写盘）
-    mtime_before = os.path.getmtime(gold_path)
-    assert runner._regold_one(tmp_pyt)
-    assert os.path.getmtime(gold_path) == mtime_before, "结果不变时基准不应重写"
+        # 结果不变再调用 → 基准文件修改时间不变（内容无变化不写盘）
+        mtime_before = os.path.getmtime(gold_path)
+        assert runner._regold_one(tmp_pyt)
+        assert os.path.getmtime(gold_path) == mtime_before, "结果不变时基准不应重写"
 
-    # 结果变化再调用 → 基准更新
-    with open(result_path, "w", encoding="utf-8") as f:
-        f.write('{\n  "answer": 43\n}\n')
-    assert runner._regold_one(tmp_pyt)
-    with open(gold_path, encoding="utf-8") as f:
-        assert '"answer": 43' in f.read()
+        # 结果变化再调用 → 基准更新
+        with open(result_path, "w", encoding="utf-8") as f:
+            f.write('{\n  "answer": 43\n}\n')
+        assert runner._regold_one(tmp_pyt)
+        with open(gold_path, encoding="utf-8") as f:
+            assert '"answer": 43' in f.read()
+    finally:
+        runner._set_log_sink(None)
+
+    # 断言嵌套输出确实被接收器收走（含重录的新增键数统计）
+    nested_text = "\n".join(nested)
+    assert "tmp_regold_case.pyt" in nested_text, nested_text
+    assert "新增 1 键" in nested_text, nested_text
 
     shutil.rmtree(tmp_case_dir)
+
+    # ── 场景 13：空编排脚本判失败（放在最后：run_pyt 会重写本线程的 case
+    # 上下文，之后的场景不能再依赖它）──
+    tmp_empty_dir = os.path.join(FLY_CASE_LOG_DIR, "logs", "empty_case_selftest")
+    if os.path.isdir(tmp_empty_dir):
+        shutil.rmtree(tmp_empty_dir)
+    os.makedirs(tmp_empty_dir)
+    tmp_empty_pyt = os.path.join(tmp_empty_dir, "tmp_empty_case.pyt")
+    with open(tmp_empty_pyt, "w", encoding="utf-8") as f:
+        f.write('INFO("nothing scheduled")\n')
+    nested = []
+    runner._set_log_sink(nested.append)
+    try:
+        _empty = runner.run_pyt(tmp_empty_pyt)
+    finally:
+        runner._set_log_sink(None)
+    assert _empty["ok"] is False and _empty["status"] == "FAILED", \
+        f"空编排脚本应判失败：{_empty}"
+    # 断言嵌套输出被收走：失败原因（编排脚本没有调度任何子阶段）在接收器里，
+    # 不在终端与 qa.log
+    nested_text = "\n".join(nested)
+    assert "tmp_empty_case.pyt" in nested_text, nested_text
+    assert "编排脚本没有调度任何子阶段" in nested_text, nested_text
+    shutil.rmtree(tmp_empty_dir)
+
     INFO("[PASS] test_runner_check: 全部场景符合预期")

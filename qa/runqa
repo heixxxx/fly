@@ -1,22 +1,26 @@
 #!/usr/bin/env python3
 """Fly QA Test Runner.
 
-Runs each test_*.py as a fly subprocess.
-  - cd to test script directory before running
-  - log directory: {test_dir}/{test_name}/ (cleaned before each run)
-  - Fly's output → {test_dir}/{test_name}/fly.log
+Every case is a .pyt orchestration script, exec'd in this process; each
+run_subcase call inside it spawns one fly subprocess for a sub stage.
+  - cd to the orchestration script's directory before running a sub stage
+  - sub-stage log directory: {case_dir}/{case_stem}/{N}_{sub_stem}/
+  - Fly's output → {sub_log_dir}/fly.log
   - Runner's output → terminal + qa.log
 
 Selecting which tests to run (zero, one, or many positional args):
-  runqa                        # all test_*.py under qa/ (recursive)
-  runqa qa/storage             # a directory → every test_*.py under it
-  runqa qa/storage/test_x.py   # a single file
+  runqa                        # all *.pyt under qa/ (recursive)
+  runqa qa/storage             # a directory → every *.pyt under it
+  runqa qa/storage/test_x.pyt  # a single file
   runqa qa/storage qa/var      # multiple directories/files at once
-  runqa qa/solver/test_gold*.py  # shell-globbed files also accepted
+  runqa qa/solver/test_gold*.pyt  # shell-globbed files also accepted
 
-A directory is scanned recursively for test_*.py; an explicit .py file is run
-as-is regardless of its name. Non-existent paths are rejected up front instead
-of being passed to fly and failing with an opaque error.
+编排脚本（.pyt）是唯一的用例单位（2026-11-25 用户裁定：经 runqa 运行的用例
+都必须用 .pyt 包装）。裸 test_*.py 是子阶段脚本，不被发现也不被运行——它们
+必须被某个 .pyt 调度（有的 .pyt 运行多个名称不同的 .py，不能按同名判断），
+全量运行结束后有引用审计兜底（_find_unreferenced_tests）。显式传入 .py 路径
+直接报错退出（退出码 2）。不存在的路径也会提前拒绝，而不是丢给 fly 得到一份
+难懂的失败日志。
 """
 import subprocess
 import sys
@@ -57,9 +61,16 @@ qa_record = _load_qa_record()
 
 _log_lock = threading.Lock()
 _log_file = None
+_log_sink = threading.local()  # per-thread 日志接收器（见 _set_log_sink）
 
 
 def log(msg=""):
+    sink = getattr(_log_sink, "func", None)
+    if sink is not None:
+        # 当前线程设置了接收器（自测的嵌套调用）：这一行交给它，不进终端与
+        # qa.log。线程局部——并发运行的其他用例不受影响。
+        sink(msg)
+        return
     with _log_lock:
         print(msg, flush=True)
         if _log_file:
@@ -67,8 +78,26 @@ def log(msg=""):
             _log_file.flush()
 
 
+def _set_log_sink(func):
+    """设置/清除当前线程的日志接收器（线程局部；func=None 恢复正常输出）。
+
+    运行器自测在用例内嵌套调用 _regold_one/run_pyt 时（自测场景 9/13），先把
+    接收器设成收集函数：嵌套执行的日志（START/DONE 行、重录统计、失败原因）
+    收进调用方的容器，不混进终端与 qa/logs/qa.log——否则读全量日志的人会看到
+    临时用例的行，START 行数也与 Tests to run 对不上。调用结束后必须恢复
+    （传 None）。禁止用替换模块级 log 函数的方式实现：每个用例一个线程，替换
+    全局函数会把并发运行的其他用例的日志一起吞掉。
+    """
+    _log_sink.func = func
+
+
 def find_tests():
-    """Discover every test_*.py under qa/, returning canonical real paths.
+    """Discover every *.pyt orchestration script under qa/, returning canonical
+    real paths.
+
+    编排脚本是唯一的用例单位：只发现 .pyt。裸 test_*.py 是子阶段脚本，不独立
+    发现——它们由某个 .pyt 调度；新用例忘了包 .pyt 会被静默跳过，由全量运行
+    结束后的引用审计兜底（_find_unreferenced_tests）。
 
     Uses os.walk(followlinks=False) instead of glob('**') because glob's '**'
     follows symlinked directories — a '{dir}.latest -> {dir}' symlink (fly's
@@ -81,29 +110,43 @@ def find_tests():
     for root, dirs, files in os.walk(SCRIPT_DIR, followlinks=False):
         # Skip log-residue entries in-place so os.walk doesn't descend into them.
         dirs[:] = [d for d in dirs if not _is_log_artifact(d)]
-        # .pyt 是 case 入口（编排脚本）；同 stem 的 test_*.py 被 .pyt 接管，
-        # 退为 sub case 脚本（被 .pyt 调），不独立发现。
-        pyt_stems = {os.path.splitext(f)[0] for f in files if f.endswith(".pyt")}
         for f in files:
             if f.endswith(".pyt"):
-                tests.add(os.path.realpath(os.path.join(root, f)))
-            elif f.startswith("test_") and f.endswith(".py"):
-                if os.path.splitext(f)[0] in pyt_stems:
-                    continue  # 被 .pyt 接管
                 tests.add(os.path.realpath(os.path.join(root, f)))
     return sorted(tests)
 
 
+def _reject_non_pyt(orig_path, real_path):
+    """显式非 .pyt 文件路径 → 报错退出码 2。
+
+    .py 路径是主场景：有的 .pyt 运行多个名称不同的 .py，不能按「同名」判断
+    包装关系，所以一律拒绝运行；同名 .pyt 存在时给出它的具体路径。
+    """
+    if real_path.endswith(".py"):
+        pyt = os.path.splitext(real_path)[0] + ".pyt"
+        log(f"Error: 经 qa/runqa 运行的用例必须是 .pyt 编排脚本，收到 .py 路径 {orig_path!r}")
+        if os.path.isfile(pyt):
+            log(f"       请改用对应的 .pyt："
+                f"{os.path.relpath(os.path.realpath(pyt), PROJECT_ROOT)}")
+        else:
+            log("       该脚本没有同名 .pyt 包装——裸 test_*.py 不会被运行，"
+                "必须包一层 .pyt（写法见 qa/README.md「创建新测例」）")
+    else:
+        log(f"Error: 只接受编排脚本（.pyt），收到 {orig_path!r}")
+    sys.exit(2)
+
+
 def collect_tests(paths):
-    """Resolve positional args into a sorted, de-duplicated list of test files.
+    """Resolve positional args into a sorted, de-duplicated list of .pyt cases.
 
     Each path may be:
-      - a .py file   → included as-is (name need not match test_*.py)
-      - a directory  → every test_*.py under it, recursively (no symlink follow)
+      - a .pyt file  → included as-is
+      - a directory  → every *.pyt under it, recursively (no symlink follow)
+      - a .py file   → rejected with exit code 2（编排脚本是唯一的用例单位）
     Every result is canonicalised with realpath so that the SAME test reached
     via different routes (e.g. qa/storage vs the qa/storage.latest symlink, or
     an explicit file that also lives under a given directory) collapses to one
-    entry. This guarantees run_one always sees an identical test_dir/log_dir
+    entry. This guarantees run_pyt always sees an identical case_dir/log_dir
     for a given case, regardless of how it was requested — so the run
     environment never varies with the input path.
     Non-existent paths abort with a clear error instead of being passed to fly.
@@ -118,19 +161,17 @@ def collect_tests(paths):
             hits = set()
             for root, dirs, files in os.walk(rp, followlinks=False):
                 dirs[:] = [d for d in dirs if not _is_log_artifact(d)]
-                pyt_stems = {os.path.splitext(f)[0] for f in files if f.endswith(".pyt")}
                 for f in files:
                     if f.endswith(".pyt"):
                         hits.add(os.path.realpath(os.path.join(root, f)))
-                    elif f.startswith("test_") and f.endswith(".py"):
-                        if os.path.splitext(f)[0] in pyt_stems:
-                            continue
-                        hits.add(os.path.realpath(os.path.join(root, f)))
             if not hits:
-                log(f"Warning: no test_*.py found under {p!r}")
+                log(f"Warning: no .pyt found under {p!r}")
             collected.update(hits)
         elif os.path.isfile(rp):
-            collected.add(rp)
+            if rp.endswith(".pyt"):
+                collected.add(rp)
+            else:
+                _reject_non_pyt(p, rp)
         else:
             log(f"Error: path does not exist: {p!r}")
             sys.exit(2)
@@ -160,26 +201,54 @@ def _is_log_artifact(name):
     return False
 
 
-def _load_pyt(pyt_path):
-    """Load a .pyt config file, returning a dict with setup/teardown callables.
+# 引用审计的执行记录（进程级）：本轮所有 .pyt 的调度函数实际启动过的子阶段
+# 脚本路径（realpath）。运行器每个用例一个线程并发调度，读写都必须持锁。
+# 不能按名称判断包装关系——.pyt 调度的子阶段脚本名称可以与 .pyt 完全不同
+# （如 test_ras_graph_dynamic.pyt 调度 5 个不同名脚本），也可能经循环变量
+# 引用，所以只在调度函数运行时记录真实路径。
+_executed_sub_scripts = set()
+_executed_sub_scripts_lock = threading.Lock()
 
-    The pyt file is exec'd in a fresh namespace. Expected variables:
-      - test (str, optional): the python test file name (defaults to pyt stem + ".py").
-      - setup() (callable, optional): pre-test actions (create data, clean, set env).
-      - teardown() (callable, optional): post-test cleanup.
+# 每个编排脚本本轮实际调度（启动过子进程）的子阶段数，按 .pyt 绝对路径键控：
+# 空编排脚本的判定依据。不用线程局部 counter 判空——运行器自测会在一个用例的
+# exec 期间嵌套调用 run_pyt/_regold_one（自测场景 9/13），线程局部状态会被
+# 嵌套执行重置，外层用例 exec 结束后读到的 counter 不再是自己的；按路径键控
+# 则嵌套执行只写自己的键，互不污染。run_pyt 在正常运行开头清零本 .pyt 的计数，
+# 同一进程里复跑同一 .pyt 也不读旧值。
+_scheduled_sub_counts = {}
+_scheduled_sub_counts_lock = threading.Lock()
 
-    Returns:
-        dict with keys 'test', 'setup', 'teardown' (setup/teardown may be None).
+
+def _is_sub_stage_dir(name):
+    """子阶段日志目录：{序号}_{子阶段脚本名去掉扩展名}（如 0_load_db_run1）。"""
+    head, sep, _tail = name.partition("_")
+    return sep != "" and head.isdigit()
+
+
+def _find_unreferenced_tests(executed, qa_root=None):
+    """返回 qa/ 下没有被任何 .pyt 调度过（不在 executed 集合里）的 test_*.py。
+
+    运行器不再发现裸 test_*.py 之后，新写的用例忘了包 .pyt 就会被静默跳过、
+    永远不运行；全量运行结束后用本轮的执行记录审计兜底。qa_root 供运行器
+    自测用临时目录验证判定逻辑，生产路径缺省为 qa/。目录遍历沿用
+    _is_log_artifact 的跳过规则（日志残留目录里没有测试源码），并收窄候选
+    范围：不进用例日志目录（qa/<类别>/<用例名>/，与同级同名 .pyt 对应）和
+    子阶段目录（{N}_{子阶段名}/）——日志目录里不该有 test_*.py，将来哪个
+    用例往自己的日志目录写了 test_*.py，也不至于让审计莫名失败。
     """
-    ns = {}
-    with open(pyt_path) as f:
-        exec(compile(f.read(), pyt_path, "exec"), ns)
-    pyt_stem = os.path.splitext(os.path.basename(pyt_path))[0]
-    return {
-        "test": ns.get("test", pyt_stem + ".py"),
-        "setup": ns.get("setup", None),
-        "teardown": ns.get("teardown", None),
-    }
+    root = qa_root if qa_root is not None else SCRIPT_DIR
+    unreferenced = []
+    for dirpath, dirs, files in os.walk(root, followlinks=False):
+        dirs[:] = [d for d in dirs
+                   if not _is_log_artifact(d)
+                   and not _is_sub_stage_dir(d)
+                   and not os.path.isfile(os.path.join(dirpath, d + ".pyt"))]
+        for f in files:
+            if f.startswith("test_") and f.endswith(".py"):
+                path = os.path.realpath(os.path.join(dirpath, f))
+                if path not in executed:
+                    unreferenced.append(path)
+    return sorted(unreferenced)
 
 
 class SubcaseResult:
@@ -225,7 +294,7 @@ class SubcaseError(Exception):
 def _run_fly(script_path, log_dir, timeout, cwd, extra_env=None):
     """跑一个 fly 进程：subprocess + 超时 + SIGUSR1 stack dump + killpg + hang_stacks。
     fly stdout 写到 {log_dir}/fly.log。返回 SubcaseResult（status/returncode/stdout/log_path/elapsed）。
-    被 run_one（test_*.py 路径）与 run_subcase（.pyt 的 sub case）共用。"""
+    被 run_subcase（.pyt 的 sub case）调用。"""
     env = os.environ.copy()
     build_dir = os.path.dirname(os.path.dirname(FLY_BIN))
     lib_dir = os.path.join(build_dir, "lib")
@@ -472,6 +541,14 @@ def run_subcase(script, timeout=30, setup=None, teardown=None, expect_pass=True,
 
     if setup:
         setup()
+    # 引用审计与空编排判定的执行记录：调度函数真实启动了这个子阶段脚本。放在
+    # setup 之后、启动进程之前——setup 抛异常时脚本没有执行，不记录（此时用例
+    # 必然失败，本轮审计按约定跳过，不会因此误报）。重录模式不启动进程，不记录。
+    with _executed_sub_scripts_lock:
+        _executed_sub_scripts.add(os.path.realpath(script_abs))
+    if pyt_path:
+        with _scheduled_sub_counts_lock:
+            _scheduled_sub_counts[pyt_path] = _scheduled_sub_counts.get(pyt_path, 0) + 1
     result = _run_fly(script_abs, sub_log_dir, timeout, case_dir, extra_env)
     if teardown:
         teardown()
@@ -516,7 +593,7 @@ _case_state = threading.local()  # per-thread case 上下文（并发安全：-j
 
 def _clean_case_logs(test_dir, stem):
     """清 case 的旧日志：{stem}/、{stem}.latest、{stem}.N 轮转、helper logs/<prefix>/。
-    run_one（test_*.py）与 run_pyt（.pyt）共用，保证每次跑都是干净现场。"""
+    run_pyt（.pyt 用例）专用，保证每次跑都是干净现场。"""
     import glob as _glob
     for variant in _glob.glob(os.path.join(test_dir, stem + "*")):
         tail = os.path.basename(variant)
@@ -556,6 +633,11 @@ def run_pyt(pyt_path, timeout=20):
     _case_state.executed_scripts = set()  # 带 check_list 的已调度子阶段脚本
     _case_state.pending_gold = {}  # 重录模式：{子阶段脚本名: {结果文件: 基准值}}
     _case_state.pyt_path = abs_pyt
+    # 清零本编排脚本的已调度子阶段计数（空编排判定用，按 .pyt 路径键控）：
+    # 不依赖「每个 .pyt 在一个进程里只跑一次」，同一进程里复跑同一 .pyt（如
+    # 自测）不会读到上一轮的旧值。
+    with _scheduled_sub_counts_lock:
+        _scheduled_sub_counts[abs_pyt] = 0
 
     # thread_local 存 case 上下文（不污染全局 os.environ，-j 并发 case 互不干扰）。
     _case_state.case_dir = pyt_dir
@@ -584,7 +666,8 @@ def run_pyt(pyt_path, timeout=20):
             err_lines.append(f"sub case {e.script}: expected {want} but got {e.result.status}")
         if e.result is not None:
             err_lines.append(f"  [log: {e.result.log_path}]")
-            err_lines.extend(f"  {ln}" for ln in e.result.tail(1200).splitlines()[-12:])
+            # 失败尾部 15 行（文档口径：qa/README.md、CLAUDE.md 均写 15）。
+            err_lines.extend(f"  {ln}" for ln in e.result.tail(1200).splitlines()[-15:])
     except SystemExit as e:
         status = "PASSED" if (e.code == 0 or e.code is None) else "FAILED"
         if status == "FAILED":
@@ -596,6 +679,13 @@ def run_pyt(pyt_path, timeout=20):
         err_lines.extend(traceback.format_exc().splitlines()[-15:])
     finally:
         pass  # thread_local per-thread，无需恢复（下次 run_pyt 覆盖）
+
+    # 空编排脚本判失败：exec 正常结束却没有调度任何子阶段，说明编排脚本没有
+    # 编排任何场景——过去状态的缺省值就是「通过」，会静默假绿。只作用于正常
+    # 运行模式的通过路径；重录模式走 _regold_one，不做这条判定。
+    if status == "PASSED" and _scheduled_sub_counts.get(abs_pyt, 0) == 0:
+        status = "FAILED"
+        err_lines.append("编排脚本没有调度任何子阶段（run_subcase 调用次数为 0），判为失败")
 
     elapsed_ms = int((time.monotonic() - t0) * 1000)
     ok = (status == "PASSED")
@@ -610,72 +700,6 @@ def run_pyt(pyt_path, timeout=20):
     return {"name": name, "ms": elapsed_ms, "ok": ok, "status": status, "log": log_dir}
 
 
-def run_one(test_path, timeout=20):
-    if test_path.endswith(".pyt"):
-        return run_pyt(test_path, timeout)
-    abs_test_path = os.path.abspath(test_path)
-    test_dir = os.path.dirname(abs_test_path)
-    name = os.path.basename(abs_test_path)
-    stem = os.path.splitext(name)[0]
-
-    # Check for pyt config (same stem, .pyt extension)
-    pyt_path = os.path.join(test_dir, stem + ".pyt")
-    pyt_cfg = None
-    if os.path.isfile(pyt_path):
-        try:
-            pyt_cfg = _load_pyt(pyt_path)
-        except Exception as e:
-            log(f"  ✗ ERROR   pyt-load    {name} ({e})")
-            return {"name": name, "ms": 0, "ok": False, "status": "ERROR",
-                    "log": pyt_path}
-
-    # Log directory: {test_dir}/{test_name}/
-    log_dir = os.path.join(test_dir, stem)
-
-    _clean_case_logs(test_dir, stem)
-
-    t0 = time.monotonic()
-    _t_start = time.strftime("%H:%M:%S")
-    log(f"  ▶ START  {name}  (at {_t_start})")
-
-    # ── pyt setup (pre-test actions: create data, clean, set env) ──
-    if pyt_cfg and pyt_cfg["setup"] is not None:
-        try:
-            pyt_cfg["setup"]()
-        except Exception as e:
-            log(f"  ✗ ERROR   setup-fail  {name} ({e})")
-            return {"name": name, "ms": 0, "ok": False, "status": "ERROR",
-                    "log": log_dir}
-
-    result = _run_fly(abs_test_path, log_dir, timeout, test_dir)
-
-    # ── pyt teardown (post-test cleanup) ──
-    if pyt_cfg and pyt_cfg["teardown"] is not None:
-        try:
-            pyt_cfg["teardown"]()
-        except Exception as e:
-            log(f"  WARNING  teardown-fail  {name} ({e})")
-
-    log(f"  {'✓ PASSED' if result.ok else '✗ ' + result.status}  {result.elapsed_ms:>6}ms  {name}"
-        f"  [{_t_start} → {time.strftime('%H:%M:%S')}]")
-
-    if not result.ok:
-        if result.status == "TIMEOUT":
-            log(f"    (timed out after {timeout}s)")
-        log(f"    [log: {result.log_path}]")
-        for line in result.tail(1200).splitlines()[-15:]:
-            if line.strip():
-                log(f"    {line.rstrip()}")
-
-    return {
-        "name": name,
-        "ms": result.elapsed_ms,
-        "ok": result.ok,
-        "status": result.status,
-        "log": result.log_path,
-    }
-
-
 def _collect_regold_cases(paths):
     """解析 --regold 的路径参数：省略（全量）、目录、.pyt 文件，可给多个。
 
@@ -684,10 +708,7 @@ def _collect_regold_cases(paths):
     """
     cases = set()
     if not paths:
-        for candidate in find_tests():
-            if candidate.endswith(".pyt"):
-                cases.add(candidate)
-        return sorted(cases)
+        return find_tests()
     for p in paths:
         rp = os.path.realpath(os.path.abspath(p))
         if rp.endswith(".py"):
@@ -901,12 +922,13 @@ def main():
 
     parser = argparse.ArgumentParser(
         description="Fly QA Test Runner",
-        epilog="With no arguments, runs every test_*.py under qa/. A directory "
-               "argument is scanned recursively for test_*.py.",
+        epilog="With no arguments, runs every .pyt orchestration script under "
+               "qa/. A directory argument is scanned recursively for .pyt. "
+               "Explicit .py paths are rejected with exit code 2.",
     )
     parser.add_argument("paths", nargs="*",
-                        help="Test files and/or directories to run "
-                             "(default: all test_*.py under qa/)")
+                        help=".pyt case files and/or directories to run "
+                             "(default: all .pyt under qa/)")
     _default_j = _resolve_default_parallelism()
     parser.add_argument("-j", type=int, default=_default_j,
                         help=f"Max parallel tests (default={_default_j} based on CPU "
@@ -917,7 +939,9 @@ def main():
                              "heavy solver tests among lightweight ones, reducing "
                              "concurrent CPU-bound load spikes)")
     parser.add_argument("-t", "--timeout", type=int, default=30,
-                        help="Per-test timeout in seconds (default=30)")
+                        help="Per-test timeout in seconds (default=30). 对 .pyt "
+                             "用例不起作用：子阶段各自用 run_subcase 的超时；"
+                             "参数保留只为兼容既有调用方（推送前校验等）")
     parser.add_argument("--fail-fast", action="store_true",
                         help="Stop on first failure (cancel remaining tests). "
                              "Preserves failed test logs from being overwritten.")
@@ -989,20 +1013,22 @@ def main():
     log(f"Fly binary:   {FLY_BIN}")
     log(f"Tests to run: {len(tests)}")
     log(f"Parallelism:  {_parallelism_label(args.j)}")
-    log(f"Timeout:      {args.timeout}s per test")
+    log("Timeout:      per sub case (run_subcase timeouts; -t accepted but unused)")
     log("=" * 50)
     log()
 
     max_workers = _resolve_max_workers(args.j)
     results = []
     t_total_start = time.monotonic()
+    fail_fast_triggered = False
 
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
-        futures = {pool.submit(run_one, t, args.timeout): t for t in tests}
+        futures = {pool.submit(run_pyt, t, args.timeout): t for t in tests}
         for fut in as_completed(futures):
             r = fut.result()
             results.append(r)
             if args.fail_fast and not r["ok"]:
+                fail_fast_triggered = True
                 log(f"\n!!! FAIL-FAST: stopping after first failure: {r['name']}")
                 log("!!! Remaining tests cancelled. Failed test logs preserved.")
                 # Cancel all not-yet-started futures, then shutdown without waiting.
@@ -1034,19 +1060,45 @@ def main():
     log(f"Total:   {total_ms}ms")
     log(f"结束时间 {time.strftime('%Y-%m-%d %H:%M:%S')}")
 
-    _log_file.close()
-    _log_file = None
+    exit_code = 0
 
     if failed:
         log()
         log("Failed tests:")
         for n in failed_names:
             log(f"  - {n}")
-        sys.exit(1)
+        if not args.paths:
+            # 仅全量运行原本会做引用审计；失败用例可能没有调度完它的全部子
+            # 阶段，此时审计会误报，按约定跳过并说明。
+            log("[audit] 引用审计跳过：本轮有用例失败")
+        exit_code = 1
 
-    log()
-    log("All QA tests passed!")
-    sys.exit(0)
+    # 引用审计（只发现 .pyt 的兜底防线）：仅在全量运行（不带路径参数）、未触发
+    # fail-fast、并且全部用例通过时执行。带路径参数的局部运行不做审计。
+    if not failed and not args.paths and not fail_fast_triggered:
+        with _executed_sub_scripts_lock:
+            executed = set(_executed_sub_scripts)
+        unreferenced = _find_unreferenced_tests(executed)
+        if unreferenced:
+            log()
+            log(f"引用审计失败：{len(unreferenced)} 个 test_*.py 没有被任何 .pyt "
+                f"调度（运行器只发现 .pyt，这些脚本不会被运行）：")
+            for p in unreferenced:
+                log(f"  - {os.path.relpath(p, PROJECT_ROOT)}")
+            exit_code = 1
+        else:
+            log("[audit] 引用审计通过：qa/ 下的 test_*.py 全部被 .pyt 调度")
+
+    if exit_code == 0:
+        log()
+        log("All QA tests passed!")
+
+    # 收尾输出（汇总、失败清单、引用审计）全部写完之后再关闭日志文件：排查
+    # 失败要读 qa/logs/qa.log（AGENTS.md），审计拦下推送的原因必须留在里面，
+    # 不能只有终端看得到。
+    _log_file.close()
+    _log_file = None
+    sys.exit(exit_code)
 
 
 if __name__ == "__main__":

@@ -14,9 +14,8 @@ def setup_clean():
     if os.path.isdir(DB_PATH):
         shutil.rmtree(DB_PATH, ignore_errors=True)
 
-r1 = run_subcase("chain_fail_run1.py", timeout=120, setup=setup_clean,
-                 env={"FLY_DB_PATH": DB_PATH, "FLY_FAIL_NODES": "7", "FLY_DOWNSTREAM_SLEEP": "2.0"})
-assert os.path.isfile(os.path.join(DB_PATH, "_test_db_path")), "marker should exist after run1"
+run_subcase("chain_fail_run1.py", timeout=120, setup=setup_clean,
+            env={"FLY_DB_PATH": DB_PATH, "FLY_FAIL_NODES": "7", "FLY_DOWNSTREAM_SLEEP": "2.0"})
 
 run_subcase("chain_fail_run2.py", timeout=120,
             env={"FLY_DB_PATH": DB_PATH})

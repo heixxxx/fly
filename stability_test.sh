@@ -1,14 +1,15 @@
 #!/bin/bash
 # 全量 QA 多轮稳定性测试（取代原单进程 storage 冒烟简略版）。
 #
-# 每轮经 qa/runqa 跑完整 QA 套件（qa/ 下全部 test_*.py / *.pyt，约 147 个 case），
+# 每轮经 qa/runqa 跑完整 QA 套件（qa/ 下全部 .pyt 编排脚本——编排脚本是唯一的用例单位），
 # 任一轮失败立即停止并保留失败现场 —— runqa 每轮会重建 qa/logs/qa.log、每个 case
 # 跑前会清自己的历史日志，故绝不带病进入下一轮（否则失败现场被覆盖，无法定位）。
 #
 # 用法: ./stability_test.sh [轮数] [选项]
 #   轮数                 总轮数（默认 50）
 #   -j N                 每轮 runqa 并行度（默认 4 —— AGENTS.md 多轮稳定性配方）
-#   -t SEC               单 case 超时，透传给 runqa（默认 30）
+#   -t SEC               透传给 runqa（默认 30）。用例全是 .pyt，这个参数对用例时长
+#                        不起作用（子阶段各自用 run_subcase 的超时），保留只为兼容
 #   --no-build           跳过开头的 build+install，直接用当前 build/ 二进制
 #   --fail-fast          轮内首个失败即中止该轮（默认跑完整轮保留失败全貌；稳定性
 #                        主循环任一轮失败都会终止，现场不会被下一轮覆盖）

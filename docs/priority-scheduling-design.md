@@ -175,7 +175,7 @@ def alpha_cross_db_copy(target_db, source_db, source_key, target_key):
 
 1. ✅ `./fly.sh build //src/task/... //src/agent/... //src/network/...` 通过。
 2. ✅ C++ 单测全绿（含新增 6 个 priority 用例）。
-3. ✅ `./qa/runqa qa/scheduling/test_priority_scheduling.py` 通过。
+3. ✅ `./qa/runqa qa/scheduling/test_priority_scheduling.pyt` 通过。
 4. ✅ 全量回归：52 C++ 单测 + 135 QA 零失败。
 5. ✅ 现有 FIFO 单测无需改动即通过。
 

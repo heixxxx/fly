@@ -17,7 +17,6 @@ def setup_clean():
 
 run_subcase("backup_load_db_multi_worker_run1.py", timeout=120, setup=setup_clean,
             env={"FLY_DB_PATH": DB_PATH})
-assert os.path.isfile(os.path.join(DB_PATH, "_test_db_path")), "marker should exist after run1"
 
 run_subcase("backup_load_db_multi_worker_run2.py", timeout=120,
             env={"FLY_DB_PATH": DB_PATH})

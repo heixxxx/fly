@@ -19,7 +19,6 @@ def setup_clean():
 
 run_subcase("wait_linkage_run1.py", timeout=120, setup=setup_clean,
             env={"FLY_DB_PATH": DB_PATH})
-assert os.path.isfile(os.path.join(DB_PATH, "_FROZEN")), "db should be frozen after run1"
 
 run_subcase("wait_linkage_run2.py", timeout=120,
             env={"FLY_DB_PATH": DB_PATH})

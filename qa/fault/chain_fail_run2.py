@@ -11,6 +11,11 @@ from fly import get_config
 
 DB_PATH = os.environ.get("FLY_DB_PATH") or os.path.join(get_config().get_str("log_dir"), "db")
 
+# 编排脚本挪入的检查（原先在两个 sub case 之间内联断言，重录模式会真的执行
+# 内联语句而失败，见 qa/README.md「编排脚本的写法约定」）：时机不变——run1
+# 的工作刚结束、本 sub case 开始工作之前。
+assert os.path.isfile(os.path.join(DB_PATH, "_test_db_path")), "marker should exist after run1"
+
 # 读取 DAG 拓扑
 DAG = {}
 with open(os.path.join(DB_PATH, "_test_dag")) as f:

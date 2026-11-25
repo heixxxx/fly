@@ -19,6 +19,11 @@ from fly.runtime import get_agent
 
 DB_PATH = os.environ["FLY_DB_PATH"]
 
+# 编排脚本挪入的检查（原先在两个 sub case 之间内联断言，重录模式会真的执行
+# 内联语句而失败，见 qa/README.md「编排脚本的写法约定」）：时机不变——run1
+# 的工作刚结束、本 sub case 开始工作之前。
+assert os.path.isfile(os.path.join(DB_PATH, "_FROZEN")), "db should be frozen after run1"
+
 cfg = get_config()
 # 断连即死：杀 worker 后 master 立即判死 → settle_pending_for_dead_worker
 # 置 -1（默认 120s 宽限会让 load_db 等满宽限才失败，测试等不起也不必要——

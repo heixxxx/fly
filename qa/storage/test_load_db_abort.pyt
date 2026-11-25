@@ -15,7 +15,6 @@ def setup_clean():
         shutil.rmtree(DB_PATH, ignore_errors=True)
 
 run_subcase("load_db_abort_run1.py", timeout=120, setup=setup_clean, env=shared_env)
-assert os.path.isfile(os.path.join(DB_PATH, "_test_db_path")), "marker should exist after run1"
 
 run_subcase("load_db_abort_run2.py", timeout=120, env=shared_env)
 INFO("[PASS] test_load_db_abort: abort cleanup + load_db verified")

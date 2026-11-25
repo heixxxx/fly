@@ -60,7 +60,7 @@
 ./fly.sh build //src/main/cpp:fly
 ./qa/runqa -j 4 -t 40
 ./qa/runqa -j 4 qa/storage        # 只跑某目录
-./qa/runqa qa/storage/test_x.py   # 只跑单个 case
+./qa/runqa qa/storage/test_x.pyt  # 只跑单个 case
 ```
 
 ### ⚠️ 跑单个 gtest 用例的陷阱（bazel 缓存 + gtest filter）
@@ -104,14 +104,14 @@ QA 测试按模块分类在 `qa/<category>/` 子目录下（分类全表与运�
 1. **评估是否需要新任务**：检查 `e2e_tasks.py` 中是否已有满足需求的任务（write_data, read_data, compute_sum, cross_db_* 等）
 2. **若需新任务**：在 `e2e_tasks.py` 中添加，遵循现有命名风格（动词_名词，如 `write_data`）
 3. **若需新 C++ 测试对象**：在 `src/test/cpp/test_object.h` 添加新类 + `src/test/export/test_export.cpp` 添加导出
-4. **编写 QA 脚本**：在 `qa/<category>/` 目录创建新 `test_<name>.py` 文件，直接 import e2e_tasks 中的任务（无需 sys.path 操作）
-5. **runqa 自动发现**：`test_*.py` 文件由 runqa 经 `os.walk` 递归发现（跳过 `.latest`/`.N` 日志残留与符号链接目录，避免重复收集），无需手动注册。runqa 也可显式指定目录或单文件：`./qa/runqa qa/storage` 或 `./qa/runqa qa/storage/test_x.py`
+4. **编写 QA 脚本**：在 `qa/<category>/` 目录创建新 `test_<name>.py` 文件，直接 import e2e_tasks 中的任务（无需 sys.path 操作），并创建同名 `test_<name>.pyt` 包装（一行 `run_subcase("test_<name>.py", timeout=60)`；多阶段编排见 qa/README.md）
+5. **runqa 自动发现**：runqa 只发现 `.pyt` 编排脚本（编排脚本是唯一的用例单位），经 `os.walk` 递归发现（跳过 `.latest`/`.N` 日志残留与符号链接目录，避免重复收集），无需手动注册。裸 `test_*.py` 不被发现也不被运行——必须被某个 `.pyt` 调度，没被调度的会在全量运行结束后的引用审计中被判为失败；显式传 `.py` 路径报错退出（退出码 2）。runqa 也可显式指定目录或单文件：`./qa/runqa qa/storage` 或 `./qa/runqa qa/storage/test_x.pyt`
 
 **test 模块不是用户可见的框架功能**，它仅为测试提供基础设施，不导出任何公共 API。
 
 **runqa 日志行为**（定位失败时必须遵守）：
 - `qa/logs/qa.log`：每次 runqa 运行全量清理重建，记录所有终端输出（含 ✓/✗ + 失败尾部 15 行 + fly.log 路径）
-- 每个测试的 `fly.log`：`{test_dir}/{test_name}/fly.log`，**运行前清理历史，运行后覆盖**
+- 每个子阶段的 `fly.log`：`{test_dir}/{test_name}/{N}_{子阶段名}/fly.log`，**运行前清理历史，运行后覆盖**
 - **定位失败测试**：直接读 `qa/logs/qa.log`（含失败详情和 fly.log 路径），不要重跑覆盖
 - **禁止反复重跑同一个测试**——每次重跑会覆盖 fly.log，丢失上一次失败的现场
 

@@ -14,8 +14,6 @@ load_env = {"FLY_PROJ_PATH": PROJ_LOAD}
 
 run_subcase("project_basic_mechanism.py", timeout=120)
 run_subcase("project_load_run1.py", timeout=120, env=load_env)
-assert os.path.isfile(os.path.join(PROJ_LOAD, "_PROJECT_META.json")), \
-    "_PROJECT_META.json should exist after load_run1"
 run_subcase("project_load_run2.py", timeout=120, env=load_env)
 run_subcase("project_sync_freeze.py", timeout=120)
 run_subcase("project_errors.py", timeout=120)
