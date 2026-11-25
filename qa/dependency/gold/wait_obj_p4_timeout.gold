@@ -1,0 +1,4 @@
+{
+  "phantom/msg_mentions_cannot_be_produced": true,
+  "setup/worker_connected": true
+}

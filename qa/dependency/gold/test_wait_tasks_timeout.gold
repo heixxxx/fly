@@ -1,0 +1,6 @@
+{
+  "no_pending/returns_list": true,
+  "no_pending/setup_worker_connected": true,
+  "short_timeout/returns_list": true,
+  "short_timeout/setup_worker_connected": true
+}

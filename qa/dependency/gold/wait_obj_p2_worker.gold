@@ -1,0 +1,4 @@
+{
+  "setup/worker_connected": true,
+  "wait_then_read/result": "hello world"
+}

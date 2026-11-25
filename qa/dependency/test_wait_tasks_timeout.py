@@ -12,6 +12,7 @@ import shutil
 
 
 from test import write_data
+from test import record
 from fly import open_db, wait_tasks, get_config
 DB_PATH = os.path.join(get_config().get_str("log_dir"), "db")
 
@@ -29,14 +30,16 @@ def test_wait_tasks_no_pending_returns_gracefully():
     master = get_agent()
     master.launch_local_workers([{}])
     assert master.wait_workers_registered(timeout=60)
-    assert master.worker_count >= 1, \
-        "Worker should connect to master"
+    # 原断言：assert master.worker_count >= 1, \
+    record("no_pending/setup_worker_connected", master.worker_count >= 1,
+           detail=master.worker_count)
 
     result = wait_tasks(timeout=2.0)
-    assert result is not None, "wait_tasks should return a list, not None"
+    # 原断言：assert result is not None, "wait_tasks should return a list, not None"
+    record("no_pending/returns_list", result is not None)
 
-    INFO("[PASS] test_wait_tasks_no_pending_returns_gracefully: "
-          "wait_tasks returns without error when no tasks pending")
+    INFO("[DONE] test_wait_tasks_no_pending_returns_gracefully: "
+         "wait_tasks returns without error when no tasks pending")
 
 
 def test_wait_tasks_short_timeout_with_task():
@@ -47,20 +50,22 @@ def test_wait_tasks_short_timeout_with_task():
     master = get_agent()
     master.launch_local_workers([{}])
     assert master.wait_workers_registered(timeout=60)
-    assert master.worker_count >= 1, \
-        "Worker should connect to master"
+    # 原断言：assert master.worker_count >= 1, \
+    record("short_timeout/setup_worker_connected", master.worker_count >= 1,
+           detail=master.worker_count)
 
     db = open_db(DB_PATH)
     write_data(db, "timeout_key", 42)
 
     result = wait_tasks(timeout=1.0)
-    assert result is not None, "wait_tasks should return a list, not None"
+    # 原断言：assert result is not None, "wait_tasks should return a list, not None"
+    record("short_timeout/returns_list", result is not None)
 
-    INFO("[PASS] test_wait_tasks_short_timeout_with_task: "
-          "wait_tasks returns without error even with short timeout")
+    INFO("[DONE] test_wait_tasks_short_timeout_with_task: "
+         "wait_tasks returns without error even with short timeout")
 
 
 test_wait_tasks_no_pending_returns_gracefully()
 INFO("")
 test_wait_tasks_short_timeout_with_task()
-INFO("\nAll wait_tasks timeout E2E tests passed!")
+INFO("\nAll stages done!")

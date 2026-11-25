@@ -1,0 +1,4 @@
+{
+  "register_timeout/msg_mentions_failed_to_register": true,
+  "wait_all_failed/msg_mentions_tasks_failed": true
+}

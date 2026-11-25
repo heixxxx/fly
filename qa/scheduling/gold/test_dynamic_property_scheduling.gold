@@ -1,0 +1,13 @@
+{
+  "p1/alpha_routed_worker1": 1,
+  "p1/beta_routed_worker2": 2,
+  "p1/gamma_routed_worker3": 3,
+  "p2/add_beta_routed_worker2": 2,
+  "p2/add_gamma_routed_worker3": 3,
+  "p2/shared_never_on_worker1": true,
+  "p2/shared_only_on_worker2_3": true,
+  "p3/remove_routed_worker2": 2,
+  "p3/shared_never_on_worker2": true,
+  "p3/shared_only_on_worker3": true,
+  "setup/three_workers_connected": true
+}

@@ -15,6 +15,7 @@ import time
 
 from fly import get_config
 from fly.runtime import get_agent
+from test import record
 
 
 def wait_for(condition, timeout=30.0, interval=0.5):
@@ -42,13 +43,15 @@ assert wait_for(lambda: len(master._agent.get_storage_only_workers()) > 0, timeo
     "auto storage spawn should bring up a storage worker on host-a"
 storage_ids = list(master._agent.get_storage_only_workers())
 INFO(f"[H4] auto-spawned storage workers: {storage_ids}")
-assert all(wid >= 100000 for wid in storage_ids), \
-    f"auto-spawned ids must come from the high base range, got {storage_ids}"
+# 原断言：assert all(wid >= 100000 for wid in storage_ids), \
+record("auto_storage/high_base_ids", all(wid >= 100000 for wid in storage_ids),
+       detail=storage_ids)
 
 # spawn 的 storage 不进调度候选（仍由 idle 过滤保证）。
 wait_for(lambda: master._agent.get_idle_workers() == [1], timeout=15)
 idle = master._agent.get_idle_workers()
-assert idle == [1], f"idle must stay hybrid-only, got {idle}"
+# 原断言：assert idle == [1], f"idle must stay hybrid-only, got {idle}"
+record("auto_storage/idle_hybrid_only", idle == [1], detail=idle)
 INFO("[H4] spawned storage excluded from scheduling")
 
 # SETSID detach 验证：杀发起 spawn 的 worker（w1），storage 不受牵连。
@@ -59,7 +62,9 @@ INFO("[H4] killed spawn trigger worker 1 (SIGKILL)")
 
 assert wait_for(lambda: False, timeout=2) is False  # 观察窗口：storage 不应随父进程退出
 storage_alive = master._agent.get_storage_only_workers()
-assert len(storage_alive) > 0, "spawned storage must survive trigger worker death (setsid)"
+# 原断言：assert len(storage_alive) > 0, "spawned storage must survive trigger worker death (setsid)"
+record("auto_storage/survives_trigger_death", len(storage_alive) > 0,
+       detail=len(storage_alive))
 INFO("[H4] spawned storage survived trigger death")
 
 # master.stop() drain 正常回收 spawn 的 storage（无孤儿进程）。
@@ -69,12 +74,17 @@ master.stop()
 log_dir = get_config().get_str("log_dir")
 with open(os.path.join(log_dir, "message.log")) as f:
     msg_content = f.read()
-assert "auto storage spawn: host host-a has no storage worker" in msg_content, \
-    "message log should record the spawn decision"
+spawn_decision_logged = \
+    "auto storage spawn: host host-a has no storage worker" in msg_content
+# 原断言：assert "auto storage spawn: host host-a has no storage worker" in msg_content, \
+record("auto_storage/spawn_decision_logged", spawn_decision_logged,
+       detail=msg_content[-500:])
 with open(os.path.join(log_dir, "master.log")) as f:
     master_content = f.read()
-assert "auto storage spawn ack: host=host-a" in master_content, \
-    "master log should record the spawn ack"
+spawn_ack_logged = "auto storage spawn ack: host=host-a" in master_content
+# 原断言：assert "auto storage spawn ack: host=host-a" in master_content, \
+record("auto_storage/spawn_ack_logged", spawn_ack_logged,
+       detail=master_content[-500:])
 INFO("[H4] spawn decision + ack logged")
 
-INFO("[PASS] test_auto_storage_spawn")
+INFO("[DONE] test_auto_storage_spawn")

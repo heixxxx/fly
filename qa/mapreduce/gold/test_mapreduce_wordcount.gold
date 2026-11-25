@@ -1,0 +1,8 @@
+{
+  "wordcount/counts": {
+    "fly": 2,
+    "hello": 4,
+    "world": 3
+  },
+  "wordcount/no_failed_tasks": true
+}

@@ -1,0 +1,4 @@
+{
+  "setup/worker_connected": true,
+  "wait_and_sum/result": 300
+}

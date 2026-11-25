@@ -1,0 +1,23 @@
+{
+  "downstream/result": "downstream:100",
+  "error_paths/missing_input_data_in_msg": true,
+  "error_paths/missing_merger_in_msg": true,
+  "error_paths/missing_partitioner_in_msg": true,
+  "error_paths/missing_processor_in_msg": true,
+  "full_merge/result": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9
+  ],
+  "keep_intermediate/intermediates_readable": true,
+  "keep_intermediate/result": 100,
+  "multi_stage_merge/result": 2080,
+  "pre_partitioned/result": 21
+}

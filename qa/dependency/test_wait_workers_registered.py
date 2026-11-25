@@ -9,6 +9,7 @@ from _fly_log import INFO
 import time
 
 from fly import launch_workers, wait_workers_registered, expect_workers, get_config
+from test import record
 
 get_config().set_int("worker_register_timeout", 2)  # QA 自设短超时（默认 0=无限）
 
@@ -24,7 +25,8 @@ expect_workers([999])
 t0 = time.time()
 assert wait_workers_registered() is False, "phantom worker should time out (config=2s)"
 elapsed = time.time() - t0
-assert 1.5 <= elapsed <= 10.0, f"timeout should honor config (~2s), got {elapsed:.2f}s"
+# 原断言：assert 1.5 <= elapsed <= 10.0, f"timeout should honor config (~2s), got {elapsed:.2f}s"
+record("phantom/timeout_honors_config", 1.5 <= elapsed <= 10.0, detail=elapsed)
 INFO(f"[2] phantom worker timed out after {elapsed:.2f}s as configured")
 
 # 3. 显式 timeout 参数优先于 config：再次登记，用显式 1s 更快返回
@@ -32,7 +34,8 @@ expect_workers([998])
 t0 = time.time()
 assert wait_workers_registered(timeout=1.0) is False
 elapsed = time.time() - t0
-assert elapsed < 2.5, f"explicit timeout=1s should return in ~1s, got {elapsed:.2f}s"
+# 原断言：assert elapsed < 2.5, f"explicit timeout=1s should return in ~1s, got {elapsed:.2f}s"
+record("explicit_timeout/returns_in_time", elapsed < 2.5, detail=elapsed)
 INFO(f"[3] explicit timeout=1 honored ({elapsed:.2f}s)")
 
-INFO("[PASS] test_wait_workers_registered")
+INFO("[DONE] test_wait_workers_registered")

@@ -11,6 +11,7 @@ import shutil
 import time
 
 from fly import as_task, open_db, get_config, get_work_directory
+from test import record
 
 DB_PATH = os.path.join(get_work_directory(), "db")
 
@@ -63,8 +64,9 @@ time.sleep(1.0)
 
 
 # ── 观察窗结束，断言不变量 ──
-assert len(master.completed_tasks) == completed_base, \
-    "all gpu tasks should be waiting (no gpu worker)"
+# 原断言：assert len(master.completed_tasks) == completed_base, \
+record("compete/still_waiting_before_gpu", len(master.completed_tasks) == completed_base,
+       detail={"completed": len(master.completed_tasks), "base": completed_base})
 
 # 某 worker 动态添加 gpu 属性
 add_gpu_property(db, "trigger", "x")
@@ -82,9 +84,11 @@ def wait_completed(expected, timeout=30):
 
 
 completed = wait_completed(completed_base + NUM_TASKS + 1, timeout=30)
-for i in range(NUM_TASKS):
-    assert db.read_object(f"compete_{i}") == i, \
-        f"task compete_{i} should complete with value {i}"
+compete_values = [db.read_object(f"compete_{i}") for i in range(NUM_TASKS)]
+# 原断言：assert db.read_object(f"compete_{i}") == i, \
+compete_ok = all(compete_values[i] == i for i in range(NUM_TASKS))
+record("compete/all_values", compete_ok,
+       detail=[i for i in range(NUM_TASKS) if compete_values[i] != i])
 
 master.stop()
-INFO(f"[PASS] multi compete: {NUM_TASKS} waiting tasks all completed after gpu added")
+INFO(f"[DONE] multi compete: {NUM_TASKS} waiting tasks all completed after gpu added")

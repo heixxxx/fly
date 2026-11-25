@@ -269,6 +269,8 @@ run_subcase("load_db_run2.py", timeout=60, env=shared_env, check_list=[
 - `# 保留：<理由>`：这条 `assert` 为什么没有转成记录——等待原语、任务函数内的断言、等待循环体内的断言、后续步骤还要使用的判空守卫、等待门槛、环境前置检查（例如 ssh 免密可用；不成立时后面的场景无法进行，保留断言能第一时间给出修复指引）、否定性检查里 try 块内原有的 `assert False, "..."`（效果与 `raise AssertionError` 相同）。
 - 循环体内的逐条断言：累计成「每一行（每一轮）都成立」的判定，`detail` 带没通过的行号；或者循环体是常量列表时按键逐条记。键只能由常量构成，不能含运行时才确定的值。
 - 「取值为空」的检查（`x is None`）可以记成取值，基准存 `null`；不一致时差异报告直接给出实际值。
+- 测试函数被包装函数包住的脚本（包装函数用 `except Exception` 吞掉失败、只计数、末尾只打日志）：原来断言失败从不影响通过与否。包装调用之后必须记一条顶层判定「没有测试失败」，例如 `record("run/no_test_failed", failed == 0, detail={"passed": passed, "failed": failed})`，否则留在测试函数里的等待原语、try 块内的 `assert False` 失败时仍会被吞掉。参考 `qa/mapreduce/test_mapreduce_coverage_report.py`。
+- **守卫着后续解引用的断言，转成记录之后要留一条守卫**。`assert len(completed) >= 2`、`assert x is not None` 这类断言如果挡着后面的下标访问、`next(iter(x))`、读任务写出的对象，就在记录后面补一条同条件的断言并标注 `# 保留：守卫`。记录不中止脚本，守卫不成立时后面的访问会以 `IndexError`、`KeyError`、`StopIteration` 崩溃，看起来像存储或下标出了问题，实际是任务没完成。确实不依赖它的，在记录的下一行写 `# 非守卫：<理由>`。
 - `INFO("[DONE] ...")` 只表示执行到了这一行，**不表示用例通过**；通过与否由运行器的比对决定。迁移时把子阶段脚本里的 `[PASS]`、`ALL PASSED`、`All tests passed!` 改成了 `[DONE]`、`ALL DONE`、`All stages done!`。新写的脚本也不要在日志里自宣通过。
 - 新写的用例直接用 `record`，不需要 `# 原断言：` 注释。
 - 被测行为变了、期望值跟着变：先判断新值合理，再用 `./qa/runqa --regold <用例.pyt>` 重录（见上文「重录模式」）。比对不通过的时候不要重录，先查清原因。

@@ -27,6 +27,7 @@ NUM_SHARED_TASKS = 10
 from test import (alpha_write, beta_write, gamma_write,
                         shared_write, add_shared_on_beta,
                         add_shared_on_gamma, remove_shared_on_beta)
+from test import record
 from fly import open_db, get_config
 DB_PATH = os.path.join(get_config().get_str("log_dir"), "db")
 
@@ -45,8 +46,9 @@ def setup_three_workers():
         {"attributes": ["gamma"]},
     ])
     assert master.wait_workers_registered(timeout=60)
-    assert master.worker_count >= 3, \
-        f"Only {master.worker_count}/3 workers connected"
+    # 原断言：assert master.worker_count >= 3, \
+    record("setup/three_workers_connected", master.worker_count >= 3,
+           detail=master.worker_count)
     return master
 
 
@@ -88,13 +90,16 @@ def test_dynamic_property_full_routing():
     completed_base += 3
     wait_completed(master, completed_base, timeout=30)
 
-    assert db.read_object("p1_alpha") == 1, \
-        f"alpha task should run on Worker 1, got {db.read_object('p1_alpha')}"
-    assert db.read_object("p1_beta") == 2, \
-        f"beta task should run on Worker 2, got {db.read_object('p1_beta')}"
-    assert db.read_object("p1_gamma") == 3, \
-        f"gamma task should run on Worker 3, got {db.read_object('p1_gamma')}"
-    INFO("[PASS] Phase 1: initial attribute routing correct")
+    p1_alpha_val = db.read_object("p1_alpha")
+    # 原断言：assert db.read_object("p1_alpha") == 1, \
+    record("p1/alpha_routed_worker1", p1_alpha_val, detail=p1_alpha_val)
+    p1_beta_val = db.read_object("p1_beta")
+    # 原断言：assert db.read_object("p1_beta") == 2, \
+    record("p1/beta_routed_worker2", p1_beta_val, detail=p1_beta_val)
+    p1_gamma_val = db.read_object("p1_gamma")
+    # 原断言：assert db.read_object("p1_gamma") == 3, \
+    record("p1/gamma_routed_worker3", p1_gamma_val, detail=p1_gamma_val)
+    INFO("[DONE] Phase 1: initial attribute routing correct")
 
     # Phase 2: dynamic add "shared" on Worker 2 and Worker 3
     add_shared_on_beta(db, "p2_add_beta")
@@ -102,10 +107,12 @@ def test_dynamic_property_full_routing():
     completed_base += 2
     wait_completed(master, completed_base, timeout=30)
 
-    assert db.read_object("p2_add_beta") == 2, \
-        f"add_shared_on_beta should run on Worker 2, got {db.read_object('p2_add_beta')}"
-    assert db.read_object("p2_add_gamma") == 3, \
-        f"add_shared_on_gamma should run on Worker 3, got {db.read_object('p2_add_gamma')}"
+    p2_add_beta_val = db.read_object("p2_add_beta")
+    # 原断言：assert db.read_object("p2_add_beta") == 2, \
+    record("p2/add_beta_routed_worker2", p2_add_beta_val, detail=p2_add_beta_val)
+    p2_add_gamma_val = db.read_object("p2_add_gamma")
+    # 原断言：assert db.read_object("p2_add_gamma") == 3, \
+    record("p2/add_gamma_routed_worker3", p2_add_gamma_val, detail=p2_add_gamma_val)
 
     for i in range(NUM_SHARED_TASKS):
         shared_write(db, f"p2_shared_{i}")
@@ -113,19 +120,22 @@ def test_dynamic_property_full_routing():
     wait_completed(master, completed_base, timeout=30)
 
     p2_wids = collect_worker_ids(db, "p2_shared", NUM_SHARED_TASKS)
-    assert 1 not in p2_wids, \
-        f"Phase 2 FAILED: Worker 1 should NOT handle shared tasks, but got wids={p2_wids}"
-    assert p2_wids.issubset({2, 3}), \
-        f"Phase 2 FAILED: shared tasks should only run on Worker 2/3, got wids={p2_wids}"
-    INFO(f"[PASS] Phase 2: {NUM_SHARED_TASKS} shared tasks routed to Worker 2/3 only (wids={p2_wids})")
+    # 原断言：assert 1 not in p2_wids, \
+    record("p2/shared_never_on_worker1", 1 not in p2_wids,
+           detail=sorted(p2_wids))
+    # 原断言：assert p2_wids.issubset({2, 3}), \
+    record("p2/shared_only_on_worker2_3", p2_wids.issubset({2, 3}),
+           detail=sorted(p2_wids))
+    INFO(f"[DONE] Phase 2: {NUM_SHARED_TASKS} shared tasks routed to Worker 2/3 only (wids={p2_wids})")
 
     # Phase 3: remove "shared" from Worker 2
     remove_shared_on_beta(db, "p3_remove")
     completed_base += 1
     wait_completed(master, completed_base, timeout=30)
 
-    assert db.read_object("p3_remove") == 2, \
-        f"remove_shared_on_beta should run on Worker 2, got {db.read_object('p3_remove')}"
+    p3_remove_val = db.read_object("p3_remove")
+    # 原断言：assert db.read_object("p3_remove") == 2, \
+    record("p3/remove_routed_worker2", p3_remove_val, detail=p3_remove_val)
 
     for i in range(NUM_SHARED_TASKS):
         shared_write(db, f"p3_shared_{i}")
@@ -133,13 +143,14 @@ def test_dynamic_property_full_routing():
     wait_completed(master, completed_base, timeout=30)
 
     p3_wids = collect_worker_ids(db, "p3_shared", NUM_SHARED_TASKS)
-    assert 2 not in p3_wids, \
-        f"Phase 3 FAILED: Worker 2 should NOT handle shared tasks after removal, but got wids={p3_wids}"
-    assert p3_wids == {3}, \
-        f"Phase 3 FAILED: shared tasks should only run on Worker 3, got wids={p3_wids}"
-    INFO(f"[PASS] Phase 3: {NUM_SHARED_TASKS} shared tasks routed to Worker 3 only after Worker 2 lost property (wids={p3_wids})")
+    # 原断言：assert 2 not in p3_wids, \
+    record("p3/shared_never_on_worker2", 2 not in p3_wids,
+           detail=sorted(p3_wids))
+    # 原断言：assert p3_wids == {3}, \
+    record("p3/shared_only_on_worker3", p3_wids == {3}, detail=sorted(p3_wids))
+    INFO(f"[DONE] Phase 3: {NUM_SHARED_TASKS} shared tasks routed to Worker 3 only after Worker 2 lost property (wids={p3_wids})")
 
-    INFO("\nAll dynamic property routing tests passed!")
+    INFO("\nAll stages done!")
 
 
 test_dynamic_property_full_routing()

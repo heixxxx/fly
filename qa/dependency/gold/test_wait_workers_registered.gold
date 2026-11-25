@@ -1,0 +1,4 @@
+{
+  "explicit_timeout/returns_in_time": true,
+  "phantom/timeout_honors_config": true
+}

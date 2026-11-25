@@ -9,6 +9,7 @@ import shutil
 import time
 
 from fly import as_task, open_db, get_work_directory
+from test import record
 
 DB_PATH = os.path.join(get_work_directory(), "db")
 
@@ -54,22 +55,29 @@ while time.time() - t0 < 30:
         break
     time.sleep(0.3)
 
-assert len(completed) >= 2, f"Expected 2 completed tasks, got {len(completed)}"
+# 原断言：assert len(completed) >= 2, f"Expected 2 completed tasks, got {len(completed)}"
+record("priority/two_completed", len(completed) >= 2, detail=len(completed))
+# 保留：守卫——后面的 completed[0]、completed[1] 依赖至少 2 个已完成任务
+assert len(completed) >= 2, f"守卫：后面要按完成顺序取下标, got {len(completed)} completed"
 
 # 单 worker 串行下，completed_tasks 顺序 = 调度执行顺序
 # high_prio_write 后提交但 priority=20，应先于 priority=5 的 low_prio_write 完成
 # task_id 是递增分配的：low=1, high=2
-assert completed[0] == 2, (
-    "High-priority task (id=2, priority=20) should complete first, "
-    f"got order={completed}")
-assert completed[1] == 1, (
-    "Low-priority task (id=1, priority=5) should complete second, "
-    f"got order={completed}")
+# 原断言：assert completed[0] == 2, (
+record("priority/high_completes_first", completed[0] == 2,
+       detail={"order": completed})
+# 原断言：assert completed[1] == 1, (
+record("priority/low_completes_second", completed[1] == 1,
+       detail={"order": completed})
 
 # 校验对象值确实写入（正确性）
-assert db.read_object("low") == 1
-assert db.read_object("high") == 2
+low_val = db.read_object("low")
+# 原断言：assert db.read_object("low") == 1
+record("priority/low_value", low_val, detail=low_val)
+high_val = db.read_object("high")
+# 原断言：assert db.read_object("high") == 2
+record("priority/high_value", high_val, detail=high_val)
 
 master.stop()
-INFO(f"[PASS] priority scheduling: completion order={completed} "
+INFO(f"[DONE] priority scheduling: completion order={completed} "
      "(high-priority id=2 first, low-priority id=1 second)")

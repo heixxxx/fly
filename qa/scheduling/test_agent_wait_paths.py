@@ -20,7 +20,7 @@ from _fly_log import INFO
 from fly import open_db, load_db, as_task, expect_workers, ensure_workers
 from fly import wait_workers_registered, get_config
 from fly.runtime import get_agent
-from test import wait_until
+from test import record, wait_until
 
 CASE_DIR = os.environ["FLY_CASE_LOG_DIR"]
 DB_PATH = os.path.join(CASE_DIR, "wait_paths_db")
@@ -37,17 +37,19 @@ for bad in ([""], [["qa", 42]], []):
         raise AssertionError(f"ensure_workers({bad!r}) must raise ValueError")
     except ValueError:
         pass
-INFO("[PASS] ensure_workers argument validation (empty str / non-str / empty list)")
+INFO("[DONE] ensure_workers argument validation (empty str / non-str / empty list)")
 
 # ── 2. 占位符登记 + 注册等待超时 → False ─────────────────────────────
 expect_workers([998])
+# 保留：断言的是等待在超时边界上的返回值（被测行为，应为 False）；等待原语不转记录，时长不能变
 assert wait_workers_registered(timeout=1.0) is False, \
     "ghost placeholder must keep wait_workers_registered returning False"
-INFO("[PASS] expect_workers + wait_workers_registered(timeout) -> False")
+INFO("[DONE] expect_workers + wait_workers_registered(timeout) -> False")
 
+# 保留：断言的是等待在超时边界上的返回值（被测行为，应为 False）；等待原语不转记录，时长不能变
 assert master.wait_for_workers(count=99, timeout=0.5) is False, \
     "impossible count must time out to False"
-INFO("[PASS] wait_for_workers(count=99, timeout=0.5) -> False")
+INFO("[DONE] wait_for_workers(count=99, timeout=0.5) -> False")
 
 # ── 3. 必败 task → wait_for_all_tasks(expected=1) RuntimeError ──────
 get_config().set_int("fail_unscheduleable_tasks", 0)
@@ -67,8 +69,11 @@ try:
     master.wait_for_all_tasks(expected=1, timeout=30)
     raise AssertionError("wait_for_all_tasks must raise on failed task")
 except RuntimeError as e:
-    assert "Tasks failed" in str(e), str(e)
-INFO("[PASS] wait_for_all_tasks(expected=1) raises on failed task")
+    wait_all_err = str(e)
+    # 原断言：assert "Tasks failed" in str(e), str(e)
+    record("wait_all_failed/msg_mentions_tasks_failed", "Tasks failed" in wait_all_err,
+           detail=wait_all_err)
+INFO("[DONE] wait_for_all_tasks(expected=1) raises on failed task")
 
 # ── 4. load_db auto-start spawn（meta 有无 worker 的 host → spawn）──
 # 直接向 _DB_META.workers 注入一条假 host 记录：load_db 发现该 host 无在线
@@ -95,8 +100,11 @@ try:
     load_db(DB_PATH)
     raise AssertionError("load_db with ghost placeholder must hit register timeout")
 except TimeoutError as e:
-    assert "failed to register" in str(e), str(e)
-INFO("[PASS] load_db auto-start spawn + register-timeout branch")
+    register_err = str(e)
+    # 原断言：assert "failed to register" in str(e), str(e)
+    record("register_timeout/msg_mentions_failed_to_register", "failed to register" in register_err,
+           detail=register_err)
+INFO("[DONE] load_db auto-start spawn + register-timeout branch")
 
 master.stop()
-INFO("[PASS] test_agent_wait_paths")
+INFO("[DONE] test_agent_wait_paths")

@@ -6,6 +6,7 @@ import shutil
 
 
 from test import write_data
+from test import record
 from fly import open_db, get_config, wait_obj
 DB_PATH = os.environ.get("FLY_DB_PATH") or os.path.join(get_config().get_str("log_dir"), "db")
 from fly.runtime import get_agent
@@ -31,7 +32,9 @@ get_config().set_int("fail_unscheduleable_tasks", 0)
 master = get_agent()
 master.launch_local_workers([{}])
 assert master.wait_workers_registered(timeout=60)
-assert master.worker_count >= 1
+# 原断言：assert master.worker_count >= 1
+record("setup/worker_connected", master.worker_count >= 1,
+       detail=master.worker_count)
 
 db = open_db(DB_PATH)
 
@@ -43,8 +46,9 @@ write_data(db, "x", 100)
 write_data(db, "y", 200)
 
 result = wait_and_sum(db, "x", "y")
-assert result == 300
+# 原断言：assert result == 300
+record("wait_and_sum/result", result, detail=result)
 
 assert wait_for(lambda: len(master.completed_tasks) >= 2)
 
-INFO("[PASS] test_wait_obj_multi_deps")
+INFO("[DONE] test_wait_obj_multi_deps")

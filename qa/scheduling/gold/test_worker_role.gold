@@ -1,0 +1,5 @@
+{
+  "role/idle_hybrid_only": true,
+  "role/no_compute_task_trace": true,
+  "role/worker2_registered_storage_only": true
+}

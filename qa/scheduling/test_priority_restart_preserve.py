@@ -19,6 +19,7 @@ import shutil
 import time
 
 from fly import as_task, open_db, get_config, get_work_directory
+from test import record
 
 DB_PATH = os.path.join(get_work_directory(), "db")
 
@@ -80,8 +81,9 @@ high_prio_dep_write(db, "high", "v1")
 
 assert wait_for(lambda: len(master.failed_tasks) >= 1, timeout=20), \
     f"Phase 1: high-prio task should fail (missing dep), failed={master.failed_tasks}"
-assert os.path.isfile(failed_file), \
-    "Phase 1: failed_tasks.bin should exist after failure"
+# 原断言：assert os.path.isfile(failed_file), \
+record("phase1/failed_file_exists", os.path.isfile(failed_file),
+       detail=os.path.isfile(failed_file))
 p1_failed = list(master.failed_tasks)
 INFO(f"  Phase 1 OK: high-prio task failed as expected, failed_ids={p1_failed}")
 
@@ -125,21 +127,26 @@ rows = list(con.execute(
     (restart_task_id, default_task_id)))
 con.close()
 prio_map = dict(rows)
-assert prio_map.get(restart_task_id) == 20, (
-    f"Phase 2: restarted task {restart_task_id} must keep priority=20, "
-    f"got {prio_map.get(restart_task_id)} (priority LOST during restart — regression)")
-assert prio_map.get(default_task_id) == 10, (
-    f"Phase 2: default task {default_task_id} should be priority=10, "
-    f"got {prio_map.get(default_task_id)}")
+# 原断言：assert prio_map.get(restart_task_id) == 20, (
+record("phase2/restarted_keeps_priority_20", prio_map.get(restart_task_id) == 20,
+       detail={"task": restart_task_id, "priority": prio_map.get(restart_task_id)})
+# 原断言：assert prio_map.get(default_task_id) == 10, (
+record("phase2/default_priority_10", prio_map.get(default_task_id) == 10,
+       detail={"task": default_task_id, "priority": prio_map.get(default_task_id)})
 
 # 端到端正确性：两个对象都写入成功
-assert db.read_object("high") == "v1", "high-prio task should have written 'high'"
-assert db.read_object("default") == "v0", "default task should have written 'default'"
+high_val = db.read_object("high")
+# 原断言：assert db.read_object("high") == "v1", "high-prio task should have written 'high'"
+record("phase2/high_value", high_val, detail=high_val)
+default_val = db.read_object("default")
+# 原断言：assert db.read_object("default") == "v0", "default task should have written 'default'"
+record("phase2/default_value", default_val, detail=default_val)
 
 # 失败文件应被清空（restart 成功后删除）
-assert not os.path.isfile(failed_file), \
-    "Phase 2: failed_tasks.bin should be deleted after successful restart"
+# 原断言：assert not os.path.isfile(failed_file), \
+record("phase2/failed_file_deleted", not os.path.isfile(failed_file),
+       detail=os.path.isfile(failed_file))
 
 master.stop()
-INFO("[PASS] priority + attr_timeout preserved across restart: "
+INFO("[DONE] priority + attr_timeout preserved across restart: "
      f"order={new_completed} (high-prio id={restart_task_id} first)")

@@ -18,6 +18,7 @@ import shutil
 import time
 
 from fly import as_task, open_db, get_config
+from test import record
 
 DB_PATH = os.path.join(get_config().get_str("log_dir"), "db")
 
@@ -63,14 +64,19 @@ master.launch_local_workers([
     {"attributes": ["gpu"]},     # worker 2: 持有 gpu 属性（consume 必落这里）
 ])
 assert master.wait_workers_registered(timeout=60)
-assert master.worker_count >= 2, f"Only {master.worker_count}/2 workers connected"
+# 原断言：assert master.worker_count >= 2, f"Only {master.worker_count}/2 workers connected"
+record("setup/two_workers_connected", master.worker_count >= 2,
+       detail=master.worker_count)
 
 db = open_db(DB_PATH)
 
 # 写 big_obj，强制落 holder worker（worker 1）。
 write_on_holder(db, "big_obj", "holder_marker", 1_000_000)
 completed = wait_completed(master, 1, timeout=60)
-assert len(completed) >= 1, "write_on_holder did not complete"
+# 原断言：assert len(completed) >= 1, "write_on_holder did not complete"
+record("holder_write/completed", len(completed) >= 1, detail=len(completed))
+# 保留：守卫——后面读取 holder_marker 依赖写任务已完成
+assert len(completed) >= 1, f"守卫：后面要读写任务写出的标记, got {len(completed)} completed"
 
 holder_worker = db.read_object("holder_marker")
 INFO(f"[LOCALITY-CAP] big_obj held by worker {holder_worker}")
@@ -79,18 +85,23 @@ INFO(f"[LOCALITY-CAP] big_obj held by worker {holder_worker}")
 # capability 完整匹配应优先 → 调度到 worker 2。
 consume_on_gpu(db, "big_obj", "consume_result")
 completed2 = wait_completed(master, 2, timeout=60)
-assert len(completed2) >= 2, "consume_on_gpu did not complete"
+# 原断言：assert len(completed2) >= 2, "consume_on_gpu did not complete"
+record("consume/completed", len(completed2) >= 2, detail=len(completed2))
+# 保留：守卫——后面读取 consume_result 依赖 consume 任务已完成
+assert len(completed2) >= 2, f"守卫：后面要读 consume 任务写出的结果, got {len(completed2)} completed"
 
 consume_worker = db.read_object("consume_result")
 INFO(f"[LOCALITY-CAP] consume ran on worker {consume_worker}, holder was {holder_worker}")
 
 # consume 必须跑在 gpu worker（worker 2），即使 locality 偏好指向 holder（worker 1）。
 # worker_id 从 1 开始，holder=worker 1，gpu=worker 2。
-assert int(consume_worker) != int(holder_worker), \
-    f"capability priority FAILED: consume ran on holder worker {consume_worker}, " \
-    f"should be the OTHER (gpu) worker. holder={holder_worker}."
-assert int(consume_worker) == 2, \
-    f"consume should run on worker 2 (gpu), got {consume_worker}"
+# 原断言：assert int(consume_worker) != int(holder_worker), \
+record("capability_priority/consume_not_on_holder",
+       int(consume_worker) != int(holder_worker),
+       detail={"consume": consume_worker, "holder": holder_worker})
+# 原断言：assert int(consume_worker) == 2, \
+record("capability_priority/consume_on_gpu_worker", int(consume_worker) == 2,
+       detail=consume_worker)
 
 master.stop()
-INFO("[PASS] locality yields to capability: consume scheduled to gpu worker despite locality hint")
+INFO("[DONE] locality yields to capability: consume scheduled to gpu worker despite locality hint")

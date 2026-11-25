@@ -6,6 +6,7 @@ import shutil
 
 import _fly_log as log
 import _fly_storage as storage
+from test import record
 
 
 def _stream_write(db, key, value):
@@ -46,13 +47,18 @@ def test_database_write_updates_local_index():
     ds.drain_write_back()
     time.sleep(0.3)
 
-    assert ds.has_local_object(full_name), f"Object {full_name} not in local_idx"
-    
+    in_local = ds.has_local_object(full_name)
+    # 原断言：assert ds.has_local_object(full_name), f"Object {full_name} not in local_idx"
+    record("local_idx/object_present", in_local)
+
     success, data_bytes, py_name = ds.try_read_local(full_name)
+    # 保留：守卫——后续用 data_bytes 反序列化比对
     assert success, f"try_read_local failed for {full_name}"
 
     data = data_bytes if isinstance(data_bytes, bytes) else str(data_bytes).encode()
-    assert pickle.loads(data) == test_data, f"Data mismatch vs {test_data}"
+    unpickled = pickle.loads(data)
+    # 原断言：assert pickle.loads(data) == test_data, f"Data mismatch vs {test_data}"
+    record("local_idx/data_roundtrip", unpickled == test_data, detail=unpickled)
     
     sm.close_all()
     log.shutdown_log()
@@ -84,13 +90,23 @@ def test_database_multiple_objects():
     ds.drain_write_back()
     time.sleep(0.5)
 
+    local_oks = []
+    value_oks = []
     for i in range(10):
         key = f"multi/obj_{i}"
         full_name = db.get_full_name(key)
-        assert ds.has_local_object(full_name), f"Object {full_name} not found"
+        in_idx = ds.has_local_object(full_name)
+        local_oks.append(in_idx)
 
         result = _stream_read(db, key)
-        assert result == f"data_{i}", f"Mismatch at {i}: {result}"
+        value_match = result == f"data_{i}"
+        value_oks.append(value_match)
+    # 原断言：assert ds.has_local_object(full_name), f"Object {full_name} not found"
+    record("multi/all_in_local_idx", all(local_oks),
+           detail=[i for i, ok in enumerate(local_oks) if not ok])
+    # 原断言：assert result == f"data_{i}", f"Mismatch at {i}: {result}"
+    record("multi/all_values_match", all(value_oks),
+           detail=[i for i, ok in enumerate(value_oks) if not ok])
     
     sm.close_all()
     log.shutdown_log()
@@ -108,8 +124,9 @@ def test_storage_manager_singleton():
     
     sm1 = storage.ex_stg_get_storage_manager()
     sm2 = storage.ex_stg_get_storage_manager()
-    
-    assert sm1 is sm2, "StorageManager not singleton"
+
+    # 原断言：assert sm1 is sm2, "StorageManager not singleton"
+    record("singleton/same_manager", sm1 is sm2)
     
     log.shutdown_log()
     shutil.rmtree(log_dir, ignore_errors=True)
@@ -137,16 +154,24 @@ def test_data_service_remote_index():
     time.sleep(0.3)
     
     full_name_a = db.get_full_name("obj/a")
-    assert ds.has_local_object(full_name_a), "Object should be in local index"
-    
+    a_in_local = ds.has_local_object(full_name_a)
+    # 原断言：assert ds.has_local_object(full_name_a), "Object should be in local index"
+    record("remote_idx/local_input_present", a_in_local)
+
     ds.update_remote_idx("remote/obj_x", 1, "192.168.1.100", 8080)
     has, worker_id, host, port = ds.lookup_remote_idx("remote/obj_x")
-    assert has, "Updated remote object should be in remote index"
-    assert worker_id == 1, f"Expected worker_id=1, got {worker_id}"
-    assert host == "192.168.1.100", f"Expected host=192.168.1.100, got {host}"
-    assert port == 8080, f"Expected port=8080, got {port}"
-    
-    assert ds.has_remote_location("remote/obj_x"), "Should have remote location"
+    # 原断言：assert has, "Updated remote object should be in remote index"
+    record("remote_idx/updated_object_found", has)
+    # 原断言：assert worker_id == 1, f"Expected worker_id=1, got {worker_id}"
+    record("remote_idx/worker_id", worker_id)
+    # 原断言：assert host == "192.168.1.100", f"Expected host=192.168.1.100, got {host}"
+    record("remote_idx/host", host)
+    # 原断言：assert port == 8080, f"Expected port=8080, got {port}"
+    record("remote_idx/port", port)
+
+    remote_loc = ds.has_remote_location("remote/obj_x")
+    # 原断言：assert ds.has_remote_location("remote/obj_x"), "Should have remote location"
+    record("remote_idx/has_remote_location", remote_loc)
     
     sm.close_all()
     log.shutdown_log()
@@ -159,4 +184,4 @@ test_database_write_updates_local_index()
 test_database_multiple_objects()
 test_storage_manager_singleton()
 test_data_service_remote_index()
-print("\nAll distributed data flow tests passed!")
+print("\nAll stages done!")

@@ -16,6 +16,7 @@ import shutil
 import time
 
 from test import write_payload_with_worker, locality_consume
+from test import record
 from fly import open_db, get_config
 
 DB_PATH = os.path.join(get_config().get_str("log_dir"), "db")
@@ -46,7 +47,9 @@ master.launch_local_workers([
     {"attributes": []},
 ])
 assert master.wait_workers_registered(timeout=60)
-assert master.worker_count >= 2, f"Only {master.worker_count}/2 workers connected"
+# 原断言：assert master.worker_count >= 2, f"Only {master.worker_count}/2 workers connected"
+record("setup/two_workers_connected", master.worker_count >= 2,
+       detail=master.worker_count)
 
 db = open_db(DB_PATH)
 
@@ -54,7 +57,10 @@ db = open_db(DB_PATH)
 write_payload_with_worker(db, "big_obj", "holder_marker", 1_000_000)
 
 completed = wait_completed(master, 1, timeout=60)
-assert len(completed) >= 1, "write_payload_with_worker did not complete"
+# 原断言：assert len(completed) >= 1, "write_payload_with_worker did not complete"
+record("holder_write/completed", len(completed) >= 1, detail=len(completed))
+# 保留：守卫——后面读取 holder_marker 依赖写任务已完成
+assert len(completed) >= 1, f"守卫：后面要读写任务写出的标记, got {len(completed)} completed"
 
 # 持有 big_obj 的 worker id
 holder_worker = db.read_object("holder_marker")
@@ -64,14 +70,19 @@ INFO(f"[LOCALITY] big_obj held by worker {holder_worker}")
 locality_consume(db, "big_obj", "consume_result")
 
 completed2 = wait_completed(master, 2, timeout=60)
-assert len(completed2) >= 2, "locality_consume did not complete"
+# 原断言：assert len(completed2) >= 2, "locality_consume did not complete"
+record("consume/completed", len(completed2) >= 2, detail=len(completed2))
+# 保留：守卫——后面读取 consume_result 依赖 consume 任务已完成
+assert len(completed2) >= 2, f"守卫：后面要读 consume 任务写出的结果, got {len(completed2)} completed"
 
 # consume_result 记录执行 consume 的 worker id
 consume_worker = db.read_object("consume_result")
 INFO(f"[LOCALITY] locality_consume ran on worker {consume_worker}, big_obj holder is worker {holder_worker}")
 
-assert int(consume_worker) == int(holder_worker), \
-    f"locality FAILED: consume ran on worker {consume_worker}, expected {holder_worker} (data holder)"
+# 原断言：assert int(consume_worker) == int(holder_worker), \
+record("locality/consume_on_holder_worker",
+       int(consume_worker) == int(holder_worker),
+       detail={"consume": consume_worker, "holder": holder_worker})
 
 master.stop()
-INFO("[PASS] locality basic: consume task scheduled to data-holding worker")
+INFO("[DONE] locality basic: consume task scheduled to data-holding worker")

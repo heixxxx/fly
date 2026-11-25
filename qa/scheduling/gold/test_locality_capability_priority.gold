@@ -1,0 +1,7 @@
+{
+  "capability_priority/consume_not_on_holder": true,
+  "capability_priority/consume_on_gpu_worker": true,
+  "consume/completed": true,
+  "holder_write/completed": true,
+  "setup/two_workers_connected": true
+}

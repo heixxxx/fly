@@ -1,0 +1,18 @@
+{
+  "append/e_single_holder": true,
+  "append/existing_attrs_preserved": true,
+  "basic_ensure/a_single_holder": true,
+  "basic_ensure/four_distinct_holders": true,
+  "basic_ensure/list_element_multi_attrs": true,
+  "basic_ensure/ok": true,
+  "exclude/f_clean_worker_chosen": true,
+  "exclude_exhausted/detail_mentions_unsatisfied_and_request": true,
+  "exclude_exhausted/fail_fast": true,
+  "exclude_pre/one_clean_worker": true,
+  "global_capacity/detail_mentions_requested_6": true,
+  "global_capacity/fail_fast": true,
+  "idempotent/caps_unchanged": true,
+  "idempotent/worker_count_unchanged": true,
+  "idempotent/zero_wait": true,
+  "launch_ensure/ok": true
+}

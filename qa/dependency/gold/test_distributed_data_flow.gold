@@ -1,0 +1,13 @@
+{
+  "local_idx/data_roundtrip": true,
+  "local_idx/object_present": true,
+  "multi/all_in_local_idx": true,
+  "multi/all_values_match": true,
+  "remote_idx/has_remote_location": true,
+  "remote_idx/host": "192.168.1.100",
+  "remote_idx/local_input_present": true,
+  "remote_idx/port": 8080,
+  "remote_idx/updated_object_found": true,
+  "remote_idx/worker_id": 1,
+  "singleton/same_manager": true
+}

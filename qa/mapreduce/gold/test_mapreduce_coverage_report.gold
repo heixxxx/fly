@@ -1,0 +1,17 @@
+{
+  "full_merge/result": [
+    1,
+    1,
+    3,
+    4,
+    5,
+    9
+  ],
+  "keep_intermediate/intermediates_readable": true,
+  "keep_intermediate/result": 30,
+  "multi_stage_merge/result": 136,
+  "pre_partitioned/result": 21,
+  "run/no_test_failed": true,
+  "summary_merge/result": 100,
+  "with_finalize/result": 60
+}

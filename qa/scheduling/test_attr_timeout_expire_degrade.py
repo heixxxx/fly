@@ -10,6 +10,7 @@ import shutil
 import time
 
 from fly import as_task, open_db, get_config, get_work_directory
+from test import record
 
 DB_PATH = os.path.join(get_work_directory(), "db")
 
@@ -47,12 +48,15 @@ def wait_completed(expected, timeout=20):
 
 
 completed = wait_completed(1, timeout=20)
-assert len(completed) >= 1, \
-    "soft_gpu_write should degrade-schedule after timeout, " \
-    f"completed={len(completed)}, failed={master.failed_tasks}"
+# 原断言：assert len(completed) >= 1, \
+record("degrade/completed", len(completed) >= 1,
+       detail={"completed": len(completed), "failed": master.failed_tasks})
+# 保留：守卫——后面读取 result 依赖任务已完成
+assert len(completed) >= 1, f"守卫：后面要读任务写出的结果, got {len(completed)} completed"
 
-assert db.read_object("result") == 42, \
-    f"task should write 42, got {db.read_object('result')}"
+result_val = db.read_object("result")
+# 原断言：assert db.read_object("result") == 42, \
+record("degrade/result_value", result_val == 42, detail=result_val)
 
 master.stop()
-INFO("[PASS] attr timeout expire: task degraded-scheduled after 2s timeout")
+INFO("[DONE] attr timeout expire: task degraded-scheduled after 2s timeout")

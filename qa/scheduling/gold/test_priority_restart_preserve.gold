@@ -1,0 +1,8 @@
+{
+  "phase1/failed_file_exists": true,
+  "phase2/default_priority_10": true,
+  "phase2/default_value": "v0",
+  "phase2/failed_file_deleted": true,
+  "phase2/high_value": "v1",
+  "phase2/restarted_keeps_priority_20": true
+}

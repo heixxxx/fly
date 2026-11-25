@@ -12,6 +12,7 @@ import shutil
 import time
 
 from fly import as_task, open_db, get_config, get_work_directory
+from test import record
 
 DB_PATH = os.path.join(get_work_directory(), "db")
 
@@ -64,14 +65,15 @@ def wait_completed(expected, timeout=20):
 completed = wait_completed(completed_base + 2, timeout=20)
 elapsed = time.time() - submit_time
 
-assert db.read_object("result") == 107, \
-    f"task B should compute 7+100=107, got {db.read_object('result')}"
+result_val = db.read_object("result")
+# 原断言：assert db.read_object("result") == 107, \
+record("data_dep/result_value", result_val == 107, detail=result_val)
 
 # timeout=2s。若 timeout 从提交时开始，Task A 完成后 Task B 可能已超时。
 # 实际 timeout 从数据依赖满足后开始，所以 Task B 至少等 2s 才降级。
-assert elapsed >= 2.0, \
-    f"task B should wait at least timeout=2s before degrade, elapsed={elapsed:.2f}s"
+# 原断言：assert elapsed >= 2.0, \
+record("data_dep/timeout_started_after_dep", elapsed >= 2.0, detail=elapsed)
 
 master.stop()
-INFO(f"[PASS] data dep + attr timeout: task degraded after {elapsed:.2f}s "
+INFO(f"[DONE] data dep + attr timeout: task degraded after {elapsed:.2f}s "
      "(timeout=2s started after dep satisfied)")

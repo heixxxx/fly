@@ -1,0 +1,5 @@
+{
+  "mr_add/no_failed_tasks": true,
+  "mr_add/sum": 55,
+  "mr_add/sum_via_db": 55
+}

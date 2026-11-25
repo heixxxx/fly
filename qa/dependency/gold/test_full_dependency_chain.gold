@@ -1,0 +1,19 @@
+{
+  "add_remove/initial_state": true,
+  "add_remove/task2_ready": true,
+  "diamond/both_2_3_ready": true,
+  "diamond/initial_only_one_ready": true,
+  "diamond/initial_task1_ready": true,
+  "diamond/task4_not_ready": true,
+  "diamond/task4_ready": true,
+  "graph_basic/initial_task1_ready": true,
+  "graph_basic/task2_not_ready": true,
+  "graph_basic/task2_ready_after_t1": true,
+  "graph_basic/task3_not_ready": true,
+  "graph_basic/task3_ready": true,
+  "graph_basic/task3_still_not_ready": true,
+  "is_task_ready/task1_initial": true,
+  "is_task_ready/task2_after_dep": true,
+  "is_task_ready/task2_before_dep": true,
+  "master_submit/has_pending": true
+}

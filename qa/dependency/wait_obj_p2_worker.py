@@ -6,6 +6,7 @@ import shutil
 
 
 from test import write_data
+from test import record
 from fly import open_db, get_config, wait_obj
 DB_PATH = os.environ.get("FLY_DB_PATH") or os.path.join(get_config().get_str("log_dir"), "db")
 from fly.runtime import get_agent
@@ -31,7 +32,9 @@ get_config().set_int("fail_unscheduleable_tasks", 0)
 master = get_agent()
 master.launch_local_workers([{}])
 assert master.wait_workers_registered(timeout=60)
-assert master.worker_count >= 1
+# 原断言：assert master.worker_count >= 1
+record("setup/worker_connected", master.worker_count >= 1,
+       detail=master.worker_count)
 
 db = open_db(DB_PATH)
 
@@ -41,8 +44,9 @@ def wait_then_read(d, k):
 
 write_data(db, "greeting", "hello world")
 result = wait_then_read(db, "greeting")
-assert result == "hello world"
+# 原断言：assert result == "hello world"
+record("wait_then_read/result", result, detail=result)
 
 assert wait_for(lambda: len(master.completed_tasks) >= 1)
 
-INFO("[PASS] test_wait_obj_worker_write")
+INFO("[DONE] test_wait_obj_worker_write")

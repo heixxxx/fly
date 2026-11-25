@@ -2,6 +2,7 @@
 keep_intermediate, multi-stage tree, downstream dependency, error paths."""
 from _fly_log import INFO
 from test import qa_tmp
+from test import record
 import time
 import os
 import shutil
@@ -49,9 +50,9 @@ def test_full_merge():
 
     assert wait_tasks(timeout=60.0)
     result = mr.get()
-    assert result == [0, 1, 2, 3, 4, 5, 6, 7, 8, 9], \
-        f"Expected sorted list, got {result}"
-    INFO("[PASS] test_full_merge")
+    # 原断言：assert result == [0, 1, 2, 3, 4, 5, 6, 7, 8, 9], \
+    record("full_merge/result", result, detail=result)
+    INFO("[DONE] test_full_merge")
 
 
 # ── Test 2: Pre-partitioned (skip partition phase) ─────────────────────────
@@ -72,8 +73,9 @@ def test_pre_partitioned():
 
     assert wait_tasks(timeout=60.0)
     result = mr.get()
-    assert result == 21, f"Expected 21 (1+2+3+4+5+6), got {result}"
-    INFO("[PASS] test_pre_partitioned")
+    # 原断言：assert result == 21, f"Expected 21 (1+2+3+4+5+6), got {result}"
+    record("pre_partitioned/result", result, detail=result)
+    INFO("[DONE] test_pre_partitioned")
 
 
 # ── Test 3: Keep intermediate data ────────────────────────────────────────
@@ -89,7 +91,8 @@ def test_keep_intermediate():
 
     assert wait_tasks(timeout=60.0)
     result = mr.get()
-    assert result == 100, f"Expected 100, got {result}"
+    # 原断言：assert result == 100, f"Expected 100, got {result}"
+    record("keep_intermediate/result", result, detail=result)
 
     # Intermediate temp objects should still be readable
     read_count = 0
@@ -99,9 +102,10 @@ def test_keep_intermediate():
             read_count += 1
         except Exception:
             pass
-    assert read_count > 0, \
-        f"Intermediate data should be preserved (keep_intermediate=True), but 0/{len(mr._processed_keys)} readable"
-    INFO(f"[PASS] test_keep_intermediate ({read_count} intermediates preserved)")
+    # 原断言：assert read_count > 0, \
+    record("keep_intermediate/intermediates_readable", read_count > 0,
+           detail={"readable": read_count, "total": len(mr._processed_keys)})
+    INFO(f"[DONE] test_keep_intermediate ({read_count} intermediates preserved)")
 
 
 # ── Test 4: Multi-stage tree merge (>8 partitions) ────────────────────────
@@ -121,8 +125,9 @@ def test_multi_stage_merge():
     assert wait_tasks(timeout=60.0)
     result = mr.get()
     expected = sum(range(1, 65))
-    assert result == expected, f"Expected {expected}, got {result}"
-    INFO("[PASS] test_multi_stage_merge (16 partitions -> 2-stage tree)")
+    # 原断言：assert result == expected, f"Expected {expected}, got {result}"
+    record("multi_stage_merge/result", result, detail=expected)
+    INFO("[DONE] test_multi_stage_merge (16 partitions -> 2-stage tree)")
 
 
 # ── Test 5: MR as downstream task dependency ───────────────────────────────
@@ -141,9 +146,9 @@ def test_downstream_dependency():
 
     assert wait_tasks(timeout=60.0)
     downstream = db.read_object("downstream_output")
-    assert downstream == "downstream:100", \
-        f"Expected 'downstream:100', got {downstream}"
-    INFO("[PASS] test_downstream_dependency")
+    # 原断言：assert downstream == "downstream:100", \
+    record("downstream/result", downstream, detail=downstream)
+    INFO("[DONE] test_downstream_dependency")
 
 
 # ── Test 6: Error paths ───────────────────────────────────────────────────
@@ -158,7 +163,10 @@ def test_error_paths():
         mr1.run([1, 2, 3])
         errors.append("Missing merger should raise")
     except ValueError as e:
-        assert "Merger" in str(e)
+        err1_msg = str(e)
+        # 原断言：assert "Merger" in str(e)
+        record("error_paths/missing_merger_in_msg", "Merger" in err1_msg,
+               detail=err1_msg)
 
     mr2 = MapReduceJob(db, output_name="err2")
     mr2.set_merger(lambda a, b: a + b)
@@ -166,7 +174,10 @@ def test_error_paths():
         mr2.run([1, 2, 3])
         errors.append("Missing processor should raise")
     except ValueError as e:
-        assert "Processor" in str(e)
+        err2_msg = str(e)
+        # 原断言：assert "Processor" in str(e)
+        record("error_paths/missing_processor_in_msg", "Processor" in err2_msg,
+               detail=err2_msg)
 
     mr3 = MapReduceJob(db, output_name="err3")
     mr3.set_processor(lambda x: x)
@@ -175,7 +186,10 @@ def test_error_paths():
         mr3.run([1, 2, 3])
         errors.append("Missing partitioner should raise")
     except ValueError as e:
-        assert "Partitioner" in str(e)
+        err3_msg = str(e)
+        # 原断言：assert "Partitioner" in str(e)
+        record("error_paths/missing_partitioner_in_msg", "Partitioner" in err3_msg,
+               detail=err3_msg)
 
     mr4 = MapReduceJob(db, output_name="err4")
     mr4.set_partitioner(lambda d: [d])
@@ -185,12 +199,15 @@ def test_error_paths():
         mr4.run()
         errors.append("Missing input_data should raise")
     except ValueError as e:
-        assert "input_data" in str(e)
+        err4_msg = str(e)
+        # 原断言：assert "input_data" in str(e)
+        record("error_paths/missing_input_data_in_msg", "input_data" in err4_msg,
+               detail=err4_msg)
 
     if errors:
         raise AssertionError(errors[0])
 
-    INFO("[PASS] test_error_paths (4/4)")
+    INFO("[DONE] test_error_paths (4/4)")
 
 
 # ── Run all ───────────────────────────────────────────────────────────────
@@ -212,4 +229,4 @@ test_keep_intermediate()
 test_error_paths()
 
 master.stop()
-INFO("\nAll MapReduce coverage tests passed!")
+INFO("\nAll stages done!")

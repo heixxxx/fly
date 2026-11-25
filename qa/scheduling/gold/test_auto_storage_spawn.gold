@@ -1,0 +1,7 @@
+{
+  "auto_storage/high_base_ids": true,
+  "auto_storage/idle_hybrid_only": true,
+  "auto_storage/spawn_ack_logged": true,
+  "auto_storage/spawn_decision_logged": true,
+  "auto_storage/survives_trigger_death": true
+}

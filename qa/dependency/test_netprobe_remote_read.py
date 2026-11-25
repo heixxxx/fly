@@ -24,6 +24,7 @@ import shutil
 from _fly_log import INFO
 
 from test import write_data, compute_sum
+from test import record
 from fly import open_db, get_config
 
 # runqa passes --log-dir {test_dir}/{test_name}/ to fly, which fly stores in
@@ -76,6 +77,7 @@ assert wait_for(lambda: len(master.completed_tasks) >= 3), \
     "Phase 2: compute_sum should complete (cross-worker remote read)"
 
 result = db.read_object("sum_result")
-assert result == 12, f"Expected 12, got {result}"
+# 原断言：assert result == 12, f"Expected 12, got {result}"
+record("sum_result/value", result, detail=result)
 
-INFO("[PASS] test_netprobe_remote_read: cross-worker read succeeds with probe running")
+INFO("[DONE] test_netprobe_remote_read: cross-worker read succeeds with probe running")

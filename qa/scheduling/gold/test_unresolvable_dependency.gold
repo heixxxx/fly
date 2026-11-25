@@ -1,0 +1,6 @@
+{
+  "real_key/value": 1,
+  "setup/worker_connected": true,
+  "unresolvable/msg_lists_missing_dep": true,
+  "unresolvable/msg_mentions_unresolvable": true
+}

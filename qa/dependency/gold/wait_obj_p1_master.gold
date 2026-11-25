@@ -1,0 +1,5 @@
+{
+  "setup/worker_connected": true,
+  "wait_master_data/data": "sync_data",
+  "wait_master_data/result": "ok"
+}

@@ -19,6 +19,7 @@ from _fly_log import INFO
 
 from fly import as_task, ensure_workers, open_db, get_work_directory
 from fly.runtime import get_agent
+from test import record
 
 DB_PATH = os.path.join(get_work_directory(), "db")
 
@@ -50,6 +51,7 @@ long_occupy(db, 6)
 long_occupy(db, 6)
 deadline = time.time() + 15
 while len(master.running_tasks) < 2:
+    # 保留：等待循环体内
     assert time.time() < deadline, f"long tasks must both start: {master.completed_tasks}"
     time.sleep(0.1)
 
@@ -58,17 +60,19 @@ while len(master.running_tasks) < 2:
 t0 = time.time()
 ok = ensure_workers(["qaew:r:x"], timeout=2.0)
 elapsed = time.time() - t0
-assert ok is True
-assert elapsed >= 1.9, \
-    f"阶段一应真实等待 timeout 窗口（而非秒过）: {elapsed:.2f}s"
-assert elapsed < 4.5, \
-    f"放宽后必须立即收集完成（不得等 worker 空闲）: {elapsed:.2f}s"
-INFO(f"[PASS] busy relax in {elapsed:.2f}s")
+# 原断言：assert ok is True
+record("busy_relax/ok", ok is True, detail=ok)
+# 原断言：assert elapsed >= 1.9, \
+record("busy_relax/phase_one_waited", elapsed >= 1.9, detail=elapsed)
+# 原断言：assert elapsed < 4.5, \
+record("busy_relax/relaxed_immediately", elapsed < 4.5, detail=elapsed)
+INFO(f"[DONE] busy relax in {elapsed:.2f}s")
 
 agent = master._agent
 busy = agent.get_busy_workers()
-assert any("qaew:r:x" in set(agent.get_worker_capabilities(w)) for w in busy), \
-    "属性应已落在 BUSY worker 上（不等空闲）"
+attr_on_busy = any("qaew:r:x" in set(agent.get_worker_capabilities(w)) for w in busy)
+# 原断言：assert any("qaew:r:x" in set(agent.get_worker_capabilities(w)) for w in busy), \
+record("busy_relax/attr_on_busy_worker", attr_on_busy, detail=sorted(busy))
 
 # 调度接管：requires task 在全部忙时排队，长 task 一结束即落到带属性者
 needs_x(db)
@@ -80,6 +84,7 @@ def wait_done():
     while time.time() < deadline:
         if len(master.completed_tasks) >= 3:
             return True
+        # 保留：等待循环体内
         assert not master.failed_tasks, \
             f"unexpected failures: {master.get_task_error(master.failed_tasks[0])}"
         time.sleep(0.2)
@@ -87,8 +92,10 @@ def wait_done():
 
 
 assert wait_done(), "relaxed BUSY worker 应在空闲后自动接到 requires task"
-assert db.read_object("mark_x") == 42
-INFO("[PASS] scheduler picked up the required task after worker freed")
+mark_x_val = db.read_object("mark_x")
+# 原断言：assert db.read_object("mark_x") == 42
+record("busy_relax/mark_x_value", mark_x_val, detail=mark_x_val)
+INFO("[DONE] scheduler picked up the required task after worker freed")
 
 master.stop()
-INFO("[PASS] ensure_workers busy relax two-phase")
+INFO("[DONE] ensure_workers busy relax two-phase")

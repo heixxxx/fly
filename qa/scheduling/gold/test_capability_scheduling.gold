@@ -1,0 +1,6 @@
+{
+  "capability/cpu_result_value": 1,
+  "capability/gpu_result_value": 2,
+  "capability/two_completed": true,
+  "setup/two_workers_connected": true
+}

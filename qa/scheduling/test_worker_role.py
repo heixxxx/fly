@@ -11,6 +11,7 @@ import os
 import time
 
 from test import write_data
+from test import record
 from fly import open_db, get_config
 DB_PATH = os.path.join(get_config().get_str("log_dir"), "role_db")
 from fly.runtime import get_agent
@@ -48,7 +49,8 @@ INFO("[ROLE] both workers online")
 # storage_only（worker_id=2）不在调度候选。
 wait_for(lambda: master._agent.get_idle_workers() == [1], timeout=30)
 idle = master._agent.get_idle_workers()
-assert idle == [1], f"idle candidates must be hybrid-only, got {idle}"
+# 原断言：assert idle == [1], f"idle candidates must be hybrid-only, got {idle}"
+record("role/idle_hybrid_only", idle == [1], detail=idle)
 INFO("[ROLE] idle candidates exclude storage_only")
 
 # 提交计算 task：全部应由 hybrid（worker 1）执行完成。
@@ -63,14 +65,18 @@ INFO("[ROLE] all compute tasks completed on hybrid worker")
 master.stop()
 
 worker2_log = os.path.join(get_config().get_str("log_dir"), "worker2.log")
+# 保留：守卫——下一行直接打开该文件读取
 assert os.path.exists(worker2_log), "worker2 log should exist"
 with open(worker2_log) as f:
     content = f.read()
 # 注册行确认 role 上报。
-assert "role=storage_only" in content, "worker2 should register as storage_only"
+role_registered = "role=storage_only" in content
+# 原断言：assert "role=storage_only" in content, "worker2 should register as storage_only"
+record("role/worker2_registered_storage_only", role_registered)
 # storage_only worker 无任何计算 task 执行痕迹。
-assert "Executing task" not in content, \
-    "storage_only worker must never execute compute tasks"
+no_compute_trace = "Executing task" not in content
+# 原断言：assert "Executing task" not in content, \
+record("role/no_compute_task_trace", no_compute_trace)
 INFO("[ROLE] storage_only worker registered with role, no compute-task trace")
 
-INFO("[PASS] test_worker_role")
+INFO("[DONE] test_worker_role")

@@ -1,0 +1,4 @@
+{
+  "processed_result/value": "processed:hello worker",
+  "setup/two_workers_connected": true
+}

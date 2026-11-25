@@ -10,6 +10,7 @@ import shutil
 import time
 
 from fly import as_task, open_db, get_config, get_work_directory
+from test import record
 
 DB_PATH = os.path.join(get_work_directory(), "db")
 
@@ -50,12 +51,17 @@ def wait_completed(expected, timeout=10):
 completed = wait_completed(1, timeout=10)
 elapsed = time.time() - t0
 
-assert len(completed) >= 1, \
-    f"immediate_degrade_write should schedule, completed={len(completed)}"
-assert db.read_object("result") == 99
+# 原断言：assert len(completed) >= 1, \
+record("zero_degrade/completed", len(completed) >= 1,
+       detail={"completed": len(completed), "failed": master.failed_tasks})
+# 保留：守卫——后面读取 result 依赖任务已完成
+assert len(completed) >= 1, f"守卫：后面要读任务写出的结果, got {len(completed)} completed"
+result_val = db.read_object("result")
+# 原断言：assert db.read_object("result") == 99
+record("zero_degrade/result_value", result_val, detail=result_val)
 # timeout=0 立即降级，应该在很短时间内完成（< 3秒，考虑调度延迟）
-assert elapsed < 3.0, \
-    f"timeout=0 should degrade immediately, but took {elapsed:.1f}s"
+# 原断言：assert elapsed < 3.0, \
+record("zero_degrade/immediate", elapsed < 3.0, detail=elapsed)
 
 master.stop()
-INFO(f"[PASS] attr timeout=0: task degraded immediately in {elapsed:.2f}s")
+INFO(f"[DONE] attr timeout=0: task degraded immediately in {elapsed:.2f}s")

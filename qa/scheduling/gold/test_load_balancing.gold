@@ -1,0 +1,6 @@
+{
+  "load_balance/no_failed_tasks": true,
+  "spot_check/key_0": true,
+  "spot_check/key_14": true,
+  "spot_check/key_29": true
+}

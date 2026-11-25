@@ -14,6 +14,7 @@ import traceback
 
 from fly import open_db, get_config, MapReduceJob, wait_tasks
 from fly.runtime import get_agent
+from test import record
 from test import mr_downstream_read
 
 passed = 0
@@ -23,7 +24,7 @@ def run_test(name, fn):
     global passed, failed
     try:
         fn()
-        INFO(f"[PASS] {name}")
+        INFO(f"[DONE] {name}")
         passed += 1
     except Exception as e:
         INFO(f"[FAIL] {name}: {e}")
@@ -63,7 +64,8 @@ def test_summary_merge():
 
     assert wait_tasks(timeout=60.0)
     result = mr.get()
-    assert result == 100, f"Expected 100, got {result}"
+    # 原断言：assert result == 100, f"Expected 100, got {result}"
+    record("summary_merge/result", result, detail=result)
     master.stop()
 
 # ══════════════════════════════════════════════════════
@@ -83,7 +85,8 @@ def test_full_merge():
 
     assert wait_tasks(timeout=60.0)
     result = mr.get()
-    assert result == [1, 1, 3, 4, 5, 9], f"Got {result}"
+    # 原断言：assert result == [1, 1, 3, 4, 5, 9], f"Got {result}"
+    record("full_merge/result", result, detail=result)
     master.stop()
 
 # ══════════════════════════════════════════════════════
@@ -106,7 +109,8 @@ def test_pre_partitioned():
 
     assert wait_tasks(timeout=60.0)
     result = mr.get()
-    assert result == 21, f"Got {result}"
+    # 原断言：assert result == 21, f"Got {result}"
+    record("pre_partitioned/result", result, detail=result)
     master.stop()
 
 # ══════════════════════════════════════════════════════
@@ -127,7 +131,8 @@ def test_multi_stage_merge():
 
     assert wait_tasks(timeout=60.0)
     result = mr.get()
-    assert result == 136, f"Got {result}"
+    # 原断言：assert result == 136, f"Got {result}"
+    record("multi_stage_merge/result", result, detail=result)
     master.stop()
 
 # ══════════════════════════════════════════════════════
@@ -148,7 +153,8 @@ def test_with_finalize():
 
     assert wait_tasks(timeout=60.0)
     result = mr.get()
-    assert result == 60, f"Got {result}"
+    # 原断言：assert result == 60, f"Got {result}"
+    record("with_finalize/result", result, detail=result)
     master.stop()
 
 # ══════════════════════════════════════════════════════
@@ -168,7 +174,8 @@ def test_keep_intermediate():
 
     assert wait_tasks(timeout=60.0)
     result = mr.get()
-    assert result == 30, f"Got {result}"
+    # 原断言：assert result == 30, f"Got {result}"
+    record("keep_intermediate/result", result, detail=result)
 
     read_count = 0
     for key in mr._processed_keys:
@@ -177,7 +184,9 @@ def test_keep_intermediate():
             read_count += 1
         except Exception:
             pass
-    assert read_count > 0, f"0/{len(mr._processed_keys)} intermediates readable"
+    # 原断言：assert read_count > 0, f"0/{len(mr._processed_keys)} intermediates readable"
+    record("keep_intermediate/intermediates_readable", read_count > 0,
+           detail={"readable": read_count, "total": len(mr._processed_keys)})
     master.stop()
 
 # ══════════════════════════════════════════════════════
@@ -212,6 +221,7 @@ def test_downstream_dependency():
 def test_errors():
     try:
         MapReduceJob(fresh_db("err1"), output_name="e1").run([1])
+        # 保留：否定性检查 try 块内的 assert False（未被 except ValueError 捕获）
         assert False
     except ValueError:
         pass
@@ -220,6 +230,7 @@ def test_errors():
         mr = MapReduceJob(fresh_db("err2"), output_name="e2")
         mr.set_merger(lambda a, b: a + b, "summary")
         mr.run([1])
+        # 保留：否定性检查 try 块内的 assert False（未被 except ValueError 捕获）
         assert False
     except ValueError:
         pass
@@ -229,6 +240,7 @@ def test_errors():
         mr.set_processor(lambda x: x)
         mr.set_merger(lambda a, b: a + b, "summary")
         mr.run([1])
+        # 保留：否定性检查 try 块内的 assert False（未被 except ValueError 捕获）
         assert False
     except ValueError:
         pass
@@ -238,6 +250,7 @@ def test_errors():
         mr.set_processor(lambda x: x)
         mr.set_merger(lambda a, b: a + b, "summary")
         mr.run(None)
+        # 保留：否定性检查 try 块内的 assert False（未被 except ValueError 捕获）
         assert False
     except ValueError:
         pass
@@ -253,6 +266,12 @@ run_test("with_finalize", test_with_finalize)
 run_test("keep_intermediate", test_keep_intermediate)
 run_test("downstream_dependency", test_downstream_dependency)
 run_test("error_paths", test_errors)
+
+# 旧脚本只在日志里打印失败的个数，从不对它判定：run_test 会吞掉每个测试函数里的
+# 异常，任何一个测试失败，脚本照样正常结束，用例照样通过。这里把「没有测试失败」
+# 记成顶层判定——被 run_test 吞掉的断言失败（包括 test_errors 里 4 条否定性检查）
+# 从此会让用例失败。
+record("run/no_test_failed", failed == 0, detail={"passed": passed, "failed": failed})
 
 # ── Done ──
 INFO(f"\nResults: {passed} passed, {failed} failed")

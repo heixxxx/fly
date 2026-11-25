@@ -1,0 +1,7 @@
+{
+  "priority/high_completes_first": true,
+  "priority/high_value": 2,
+  "priority/low_completes_second": true,
+  "priority/low_value": 1,
+  "priority/two_completed": true
+}

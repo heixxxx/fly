@@ -7,6 +7,7 @@ import shutil
 
 
 from fly import open_db, get_config, MapReduceJob, wait_tasks
+from test import record
 DB_PATH = os.path.join(get_config().get_str("log_dir"), "db")
 
 
@@ -70,12 +71,13 @@ assert wait_tasks(timeout=60.0), \
     "Tasks should complete, " \
     f"completed={len(master.completed_tasks)}, failed={len(master.failed_tasks)}"
 
-assert len(master.failed_tasks) == 0, \
-    f"No tasks should fail, failed={master.failed_tasks}"
+# 原断言：assert len(master.failed_tasks) == 0, \
+record("wordcount/no_failed_tasks", len(master.failed_tasks) == 0,
+       detail=master.failed_tasks)
 
 result = mr.get()
-assert result == {"hello": 4, "world": 3, "fly": 2}, \
-    f"Expected {{hello:4, world:3, fly:2}}, got {result}"
+# 原断言：assert result == {"hello": 4, "world": 3, "fly": 2}, \
+record("wordcount/counts", result, detail=result)
 
 master.stop()
-INFO("[PASS] test_mapreduce_wordcount")
+INFO("[DONE] test_mapreduce_wordcount")

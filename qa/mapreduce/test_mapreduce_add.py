@@ -7,6 +7,7 @@ import shutil
 
 
 from fly import open_db, get_config, MapReduceJob, wait_tasks
+from test import record
 DB_PATH = os.path.join(get_config().get_str("log_dir"), "db")
 
 
@@ -49,14 +50,17 @@ except RuntimeError:
         INFO(f"Task {tid} failed: {master.get_task_error(tid)}")
     raise
 
-assert len(master.failed_tasks) == 0, \
-    f"No tasks should fail, errors={[master.get_task_error(t) for t in master.failed_tasks]}"
+# 原断言：assert len(master.failed_tasks) == 0, \
+record("mr_add/no_failed_tasks", len(master.failed_tasks) == 0,
+       detail=master.failed_tasks)
 
 result = mr.get()
-assert result == 55, f"Expected sum=55, got {result}"
+# 原断言：assert result == 55, f"Expected sum=55, got {result}"
+record("mr_add/sum", result, detail=result)
 
 result_via_db = db.read_object("sum_result")
-assert result_via_db == 55, f"Expected sum=55 via db.read_object, got {result_via_db}"
+# 原断言：assert result_via_db == 55, f"Expected sum=55 via db.read_object, got {result_via_db}"
+record("mr_add/sum_via_db", result_via_db, detail=result_via_db)
 
 master.stop()
-INFO("[PASS] test_mapreduce_add")
+INFO("[DONE] test_mapreduce_add")

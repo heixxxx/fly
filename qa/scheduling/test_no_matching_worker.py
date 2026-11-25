@@ -16,6 +16,7 @@ import shutil
 
 
 from test import alpha_write, shared_write
+from test import record
 from fly import open_db, get_config
 DB_PATH = os.path.join(get_config().get_str("log_dir"), "db")
 from fly import get_config
@@ -36,7 +37,9 @@ def test_no_matching_worker_never_completes():
         {"attributes": ["alpha"]},
     ])
     assert master.wait_workers_registered(timeout=60)
-    assert master.worker_count >= 1
+    # 原断言：assert master.worker_count >= 1
+    record("setup/worker_connected", master.worker_count >= 1,
+           detail=master.worker_count)
 
     db = open_db(DB_PATH)
 
@@ -49,24 +52,26 @@ def test_no_matching_worker_never_completes():
     completed = master.completed_tasks
     failed = master.failed_tasks
 
-    assert len(completed) == 0, \
-        f"Task with nonexistent capability should NOT complete, got {len(completed)} completed"
-    assert len(failed) == 0, \
-        f"Task with nonexistent capability should NOT fail, got {len(failed)} failed"
+    # 原断言：assert len(completed) == 0, \
+    record("no_match/no_completed", len(completed) == 0, detail=len(completed))
+    # 原断言：assert len(failed) == 0, \
+    record("no_match/no_failed", len(failed) == 0, detail=failed)
 
     alpha_write(db, "alpha_result")
     from test import wait_until
     assert wait_until(lambda: len(master.completed_tasks) >= 1, timeout=10), \
         "alpha task should complete within 10s"
-    assert db.read_object("alpha_result") == 1, \
-        "alpha task should complete normally"
+    alpha_val = db.read_object("alpha_result")
+    # 原断言：assert db.read_object("alpha_result") == 1, \
+    record("alpha_result/value", alpha_val, detail=alpha_val)
 
     total_completed = len(master.completed_tasks)
-    assert total_completed == 1, \
-        f"Only alpha task should have completed, got {total_completed}"
+    # 原断言：assert total_completed == 1, \
+    record("no_match/only_alpha_completed", total_completed == 1,
+           detail=total_completed)
 
-    INFO("[PASS] test_no_matching_worker_never_completes: "
-          "no-matching-cap task stays in scheduler, no error, no completion")
+    INFO("[DONE] test_no_matching_worker_never_completes: "
+         "no-matching-cap task stays in scheduler, no error, no completion")
 
 
 test_no_matching_worker_never_completes()

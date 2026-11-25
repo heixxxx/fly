@@ -6,6 +6,7 @@ import shutil
 
 
 from test import write_data, compute_sum
+from test import record
 from fly import open_db, get_config
 DB_PATH = os.path.join(get_config().get_str("log_dir"), "db")
 
@@ -47,6 +48,7 @@ assert wait_for(lambda: len(master.completed_tasks) >= 3), \
     f"Phase 2: compute_sum should complete, got {len(master.completed_tasks)} completed"
 
 result = db.read_object("sum_result")
-assert result == 30, f"Expected 30, got {result}"
+# 原断言：assert result == 30, f"Expected 30, got {result}"
+record("sum_result/value", result, detail=result)
 
-INFO("[PASS] test_write_worker_dep: data written by tasks satisfies downstream compute_sum")
+INFO("[DONE] test_write_worker_dep: data written by tasks satisfies downstream compute_sum")

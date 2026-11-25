@@ -13,5 +13,5 @@ PHASES = [
 
 for name, script in PHASES:
     INFO(f"── {name}: {script} ──")
-    run_subcase(script, timeout=120)
+    run_subcase(script, timeout=120, check_list=["result.json"])
 INFO("All wait_obj E2E tests passed!")

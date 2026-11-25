@@ -12,6 +12,7 @@ import shutil
 
 
 from test import write_data, wait_obj_then_process
+from test import record
 from fly import open_db, get_config
 DB_PATH = os.environ.get("FLY_DB_PATH") or os.path.join(get_config().get_str("log_dir"), "db")
 from fly.runtime import get_agent
@@ -38,7 +39,9 @@ master = get_agent()
 # Two Workers — tasks may be distributed across them
 master.launch_local_workers([{}, {}])
 assert master.wait_workers_registered(timeout=60)
-assert master.worker_count >= 2
+# 原断言：assert master.worker_count >= 2
+record("setup/two_workers_connected", master.worker_count >= 2,
+       detail=master.worker_count)
 
 db = open_db(DB_PATH)
 
@@ -52,6 +55,7 @@ wait_obj_then_process(db, "hello_upstream", "processed_result")
 assert wait_for(lambda: len(master.completed_tasks) >= 2)
 
 result = db.read_object("processed_result")
-assert result == "processed:hello worker"
+# 原断言：assert result == "processed:hello worker"
+record("processed_result/value", result, detail=result)
 
-INFO("[PASS] test_wait_obj_inside_worker_task (2 workers)")
+INFO("[DONE] test_wait_obj_inside_worker_task (2 workers)")

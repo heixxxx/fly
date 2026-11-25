@@ -11,6 +11,7 @@ import shutil
 import time
 
 from fly import as_task, open_db, get_config, get_work_directory
+from test import record
 
 DB_PATH = os.path.join(get_work_directory(), "db")
 
@@ -59,8 +60,10 @@ time.sleep(1.0)
 
 
 # ── 观察窗结束，断言不变量 ──
-assert len(master.completed_tasks) == completed_base, \
-    "gpu task should still be waiting (no gpu worker yet)"
+# 原断言：assert len(master.completed_tasks) == completed_base, \
+record("property_change/still_waiting_before_gpu",
+       len(master.completed_tasks) == completed_base,
+       detail={"completed": len(master.completed_tasks), "base": completed_base})
 
 # 提交 add_gpu_property：在某 worker 上动态添加 gpu 属性
 add_gpu_property(db, "trigger", "x")
@@ -78,8 +81,9 @@ def wait_completed(expected, timeout=15):
 
 
 completed = wait_completed(completed_base + 2, timeout=15)
-assert db.read_object("gpu_result") == 77, \
-    "gpu task should be scheduled after property change"
+gpu_result_val = db.read_object("gpu_result")
+# 原断言：assert db.read_object("gpu_result") == 77, \
+record("property_change/gpu_result_value", gpu_result_val == 77, detail=gpu_result_val)
 
 master.stop()
-INFO("[PASS] attr property change: waiting task scheduled immediately after gpu added")
+INFO("[DONE] attr property change: waiting task scheduled immediately after gpu added")

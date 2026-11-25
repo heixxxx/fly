@@ -1,0 +1,8 @@
+{
+  "bad_partitioner/msg_mentions_dry_run": true,
+  "finalizer/output_name": "<case_log_dir>/mr_edge_db:mr_edge_fin",
+  "finalizer/result": {
+    "total": 100
+  },
+  "nodb_get/msg_mentions_no_db_reference": true
+}

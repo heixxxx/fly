@@ -14,6 +14,7 @@ import threading
 
 
 from test import write_data, failing_task
+from test import record
 from fly import open_db, get_config, wait_obj
 DB_PATH = os.path.join(get_config().get_str("log_dir"), "db")
 from fly.runtime import get_agent
@@ -66,10 +67,11 @@ except RuntimeError as e:
     else:
         raise
 
-assert raised, "wait_obj should raise when object can never appear"
+# 原断言：assert raised, "wait_obj should raise when object can never appear"
+record("phantom/wait_obj_raises", raised)
 
 # Test 2: wait_obj waits when tasks are still running
 # Submit a slow task and verify wait_obj doesn't timeout
 # (This test passes if wait_obj completes after the slow task finishes)
 
-INFO("[PASS] test_wait_obj_no_timeout")
+INFO("[DONE] test_wait_obj_no_timeout")

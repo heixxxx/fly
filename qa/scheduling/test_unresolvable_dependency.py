@@ -16,6 +16,7 @@ import shutil
 
 
 from test import write_data, read_data
+from test import record
 from fly import open_db, get_config
 DB_PATH = os.path.join(get_config().get_str("log_dir"), "db")
 from fly import get_config
@@ -35,7 +36,9 @@ def test_unresolvable_dependency():
     master = get_agent()
     master.launch_local_workers([{}])
     assert master.wait_workers_registered(timeout=60)
-    assert master.worker_count >= 1
+    # 原断言：assert master.worker_count >= 1
+    record("setup/worker_connected", master.worker_count >= 1,
+           detail=master.worker_count)
 
     db = open_db(DB_PATH)
 
@@ -50,18 +53,21 @@ def test_unresolvable_dependency():
 
     failed = master.failed_tasks
     error_msg = master.get_task_error(failed[0])
-    assert "Unresolvable data dependencies" in error_msg, \
-        f"Error message should mention unresolvable dependencies, got: {error_msg}"
-    assert "phantom" in error_msg, \
-        f"Error message should list the missing dependency, got: {error_msg}"
+    # 原断言：assert "Unresolvable data dependencies" in error_msg, \
+    record("unresolvable/msg_mentions_unresolvable",
+           "Unresolvable data dependencies" in error_msg, detail=error_msg)
+    # 原断言：assert "phantom" in error_msg, \
+    record("unresolvable/msg_lists_missing_dep", "phantom" in error_msg,
+           detail=error_msg)
 
     assert wait_until(lambda: len(master.completed_tasks) >= 1, timeout=10), \
         "write_data task should complete within 10s"
-    assert db.read_object("real_key") == 1, \
-        "write_data task should still complete normally"
+    real_key_val = db.read_object("real_key")
+    # 原断言：assert db.read_object("real_key") == 1, \
+    record("real_key/value", real_key_val, detail=real_key_val)
 
-    INFO("[PASS] test_unresolvable_dependency: "
-          f"task failed with '{error_msg}'")
+    INFO("[DONE] test_unresolvable_dependency: "
+         f"task failed with '{error_msg}'")
 
 
 test_unresolvable_dependency()

@@ -10,6 +10,7 @@ import shutil
 import time
 
 from fly import as_task, open_db, get_config, get_work_directory
+from test import record
 
 DB_PATH = os.path.join(get_work_directory(), "db")
 
@@ -48,9 +49,9 @@ def wait_failed(expected, timeout=15):
 
 
 failed = wait_failed(1, timeout=15)
-assert len(failed) >= 1, \
-    "dead-wait task should fail (no worker can acquire property), " \
-    f"failed={len(failed)}, completed={len(master.completed_tasks)}"
+# 原断言：assert len(failed) >= 1, \
+record("dead_wait/task_failed", len(failed) >= 1,
+       detail={"failed": len(failed), "completed": len(master.completed_tasks)})
 
 master.stop()
-INFO("[PASS] attr timeout<0 dead-wait: task failed as expected")
+INFO("[DONE] attr timeout<0 dead-wait: task failed as expected")

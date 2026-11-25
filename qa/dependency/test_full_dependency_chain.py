@@ -19,6 +19,7 @@ import _fly_storage as storage
 from _fly_task import EXTaskDependencyGraph
 from _fly_agent import EXAgentMaster
 from _fly_storage import ex_stg_get_data_service
+from test import record
 
 
 def test_dependency_graph_basic():
@@ -30,22 +31,28 @@ def test_dependency_graph_basic():
     graph.add_task(3, ["task_2_output"])
 
     ready = graph.get_ready_tasks()
-    assert 1 in ready, f"Task 1 should be ready, got: {ready}"
-    assert 2 not in ready, "Task 2 should not be ready yet"
-    assert 3 not in ready, "Task 3 should not be ready yet"
+    # 原断言：assert 1 in ready, f"Task 1 should be ready, got: {ready}"
+    record("graph_basic/initial_task1_ready", 1 in ready, detail=ready)
+    # 原断言：assert 2 not in ready, "Task 2 should not be ready yet"
+    record("graph_basic/task2_not_ready", 2 not in ready, detail=ready)
+    # 原断言：assert 3 not in ready, "Task 3 should not be ready yet"
+    record("graph_basic/task3_not_ready", 3 not in ready, detail=ready)
 
     graph.mark_data_ready("task_1_output")
     graph.remove_task(1)
 
     ready = graph.get_ready_tasks()
-    assert 2 in ready, f"Task 2 should be ready after task 1 done, got: {ready}"
-    assert 3 not in ready, "Task 3 should not be ready yet"
+    # 原断言：assert 2 in ready, f"Task 2 should be ready after task 1 done, got: {ready}"
+    record("graph_basic/task2_ready_after_t1", 2 in ready, detail=ready)
+    # 原断言：assert 3 not in ready, "Task 3 should not be ready yet"
+    record("graph_basic/task3_still_not_ready", 3 not in ready, detail=ready)
 
     graph.mark_data_ready("task_2_output")
     graph.remove_task(2)
 
     ready = graph.get_ready_tasks()
-    assert 3 in ready, f"Task 3 should be ready, got: {ready}"
+    # 原断言：assert 3 in ready, f"Task 3 should be ready, got: {ready}"
+    record("graph_basic/task3_ready", 3 in ready, detail=ready)
 
     print("PASS: test_dependency_graph_basic")
 
@@ -64,26 +71,31 @@ def test_dependency_graph_diamond():
     graph.add_task(4, ["task_2_out", "task_3_out"])
 
     ready = graph.get_ready_tasks()
-    assert 1 in ready
-    assert len(ready) == 1
+    # 原断言：assert 1 in ready
+    record("diamond/initial_task1_ready", 1 in ready, detail=ready)
+    # 原断言：assert len(ready) == 1
+    record("diamond/initial_only_one_ready", len(ready) == 1, detail=ready)
 
     graph.mark_data_ready("task_1_out")
     graph.remove_task(1)
 
     ready = graph.get_ready_tasks()
-    assert 2 in ready and 3 in ready, f"Both 2,3 should be ready: {ready}"
+    # 原断言：assert 2 in ready and 3 in ready, f"Both 2,3 should be ready: {ready}"
+    record("diamond/both_2_3_ready", 2 in ready and 3 in ready, detail=ready)
 
     graph.mark_data_ready("task_2_out")
     graph.remove_task(2)
 
     ready = graph.get_ready_tasks()
-    assert 4 not in ready, "Task 4 should not be ready yet"
+    # 原断言：assert 4 not in ready, "Task 4 should not be ready yet"
+    record("diamond/task4_not_ready", 4 not in ready, detail=ready)
 
     graph.mark_data_ready("task_3_out")
     graph.remove_task(3)
 
     ready = graph.get_ready_tasks()
-    assert 4 in ready
+    # 原断言：assert 4 in ready
+    record("diamond/task4_ready", 4 in ready, detail=ready)
 
     print("PASS: test_dependency_graph_diamond")
 
@@ -96,13 +108,16 @@ def test_dependency_graph_add_and_remove():
     graph.add_task(3, ["input_b"])
 
     ready = graph.get_ready_tasks()
-    assert 1 in ready and 2 not in ready and 3 not in ready
+    # 原断言：assert 1 in ready and 2 not in ready and 3 not in ready
+    record("add_remove/initial_state",
+           1 in ready and 2 not in ready and 3 not in ready, detail=ready)
 
     graph.remove_task(1)
     graph.mark_data_ready("input_a")
 
     ready = graph.get_ready_tasks()
-    assert 2 in ready
+    # 原断言：assert 2 in ready
+    record("add_remove/task2_ready", 2 in ready, detail=ready)
 
 
 def test_dependency_graph_is_task_ready():
@@ -112,11 +127,14 @@ def test_dependency_graph_is_task_ready():
     graph.add_task(1, [])
     graph.add_task(2, ["dep_x"])
 
-    assert graph.is_task_ready(1) == True
-    assert graph.is_task_ready(2) == False
+    # 原断言：assert graph.is_task_ready(1) == True
+    record("is_task_ready/task1_initial", graph.is_task_ready(1) == True)
+    # 原断言：assert graph.is_task_ready(2) == False
+    record("is_task_ready/task2_before_dep", graph.is_task_ready(2) == False)
 
     graph.mark_data_ready("dep_x")
-    assert graph.is_task_ready(2) == True
+    # 原断言：assert graph.is_task_ready(2) == True
+    record("is_task_ready/task2_after_dep", graph.is_task_ready(2) == True)
 
     print("PASS: test_dependency_graph_is_task_ready")
 
@@ -133,7 +151,8 @@ def test_master_submit_and_track():
     time.sleep(0.2)
 
     pending = master._agent.get_pending_tasks()
-    assert len(pending) > 0, "Should have pending tasks"
+    # 原断言：assert len(pending) > 0, "Should have pending tasks"
+    record("master_submit/has_pending", len(pending) > 0, detail=len(pending))
 
     print("PASS: test_master_submit_and_track")
 
@@ -147,4 +166,4 @@ print()
 test_dependency_graph_is_task_ready()
 print()
 test_master_submit_and_track()
-print("\nAll dependency chain tests passed!")
+print("\nAll stages done!")

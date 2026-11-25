@@ -1,0 +1,6 @@
+{
+  "consume/completed": true,
+  "holder_write/completed": true,
+  "locality/consume_on_holder_worker": true,
+  "setup/two_workers_connected": true
+}

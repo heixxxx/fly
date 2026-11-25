@@ -1,0 +1,7 @@
+{
+  "busy_relax/attr_on_busy_worker": true,
+  "busy_relax/mark_x_value": 42,
+  "busy_relax/ok": true,
+  "busy_relax/phase_one_waited": true,
+  "busy_relax/relaxed_immediately": true
+}

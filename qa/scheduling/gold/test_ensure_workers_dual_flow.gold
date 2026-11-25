@@ -1,0 +1,8 @@
+{
+  "flows/attrs_no_overlap": true,
+  "flows/attrs_rasg_prefixed": true,
+  "flows/each_spec_on_one_worker": true,
+  "flows/fleet_size_exact": true,
+  "flows/fleets_disjoint": true,
+  "flows/uid_distinct": true
+}
