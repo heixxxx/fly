@@ -281,7 +281,7 @@ run_subcase("load_db_run2.py", timeout=60, env=shared_env, check_list=[
 6. 删除可迁移的断言（带 `# 保留：` 标注的留下）。
 7. 连续运行 3 次（多 worker 并发的用例 10 次），再重录一次，必须零变化。
 
-等待任务完成用 `wait_tasks`（见「等待模式」），并显式传入原来的超时。
+等待任务完成用 `wait_tasks_no_failure`（见「等待模式」），并显式传入原来的超时。它不是 `fly.wait_tasks`，后者是产品公开接口的等待原语。
 
 ### 任务函数
 
@@ -593,16 +593,17 @@ completed = master.wait_for_all_tasks(expected=3, timeout=30)
 time.sleep(5)
 ```
 
-**等待任务完成用 `wait_tasks`**（`from test import wait_tasks`）。它替代「等完成数达到 N，再确认没有失败任务」这一对断言：
+**等待任务完成用 `wait_tasks_no_failure`**（`from test import wait_tasks_no_failure`）。它替代「等完成数达到 N，再确认没有失败任务」这一对断言：
 
 ```python
-assert wait_tasks(master, 3, "counter_check/no_failed_tasks", timeout=20.0), \
+assert wait_tasks_no_failure(master, 3, "counter_check/no_failed_tasks", timeout=20.0), \
     "tasks did not complete"
 ```
 
 - 等到三者之一：完成数达到 N；出现失败任务；超时。有任务失败时**立即**停止等待，不会熬满超时。
 - 第三个参数是记录的键。它记录一条顶层布尔判定「没有失败任务」（见「基准比对机制」），`detail` 带失败任务的编号和它的异常类型、消息，差异报告里能直接看到是哪个任务、为什么。省略这个参数时不记录。
 - **超时要显式传入**，与被它替换的等待一致。缺省值是 30 秒，不传就等于放宽了超时。
+- **不要与 `fly.wait_tasks(timeout)` 混淆**。后者是产品公开接口的等待原语，只等全部任务完成，不带判定，属于保留为 `assert` 的等待原语。两者签名不同，同一个脚本里同时导入时后导入的会覆盖先导入的。
 - 没有失败但超时的情况下，它返回假，记录的是 `true`（确实没有失败任务），用例因等待的断言而失败。
 
 ### 不要使用 `from fly.runtime import reset`

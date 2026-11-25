@@ -2,6 +2,29 @@
 
 ---
 
+## 2026-11-26: 测试用的等待函数改名——`test.wait_tasks` 改为 `wait_tasks_no_failure`，避开与 `fly.wait_tasks` 同名
+
+**问题**：阶段丙二在 `test` 包里新增的等待函数取名 `wait_tasks`，当时没有查到
+`fly` 包早就有同名的公开接口 `fly.wait_tasks(timeout)`——等全部任务完成，约 40 个
+存量 QA 脚本、`src/fly/mapreduce.py`、solver 的 flow 都在用，`qa/dependency/`
+下的 `test_wait_tasks_timeout.pyt` 专门测它。两者签名不同。同一个脚本里同时写
+`from fly import wait_tasks` 和 `from test import wait_tasks` 时，后导入的覆盖先
+导入的，出错信息是不直观的 `TypeError`。阶段丙四的实现者在报告里提到，才发现。
+
+**落地**：`test` 包的这个函数改名为 `wait_tasks_no_failure`（`src/test/py/qa_wait.py`），
+名字直接说明它与前者的区别：有任务失败就立即返回，并记录「没有失败任务」的判定。
+行为不变。改名范围：导出（`src/test/py/__init__.py`）、单元测试
+（`src/test/tests/qa_wait_test.py`，先改测试看到它失败、再改实现）、14 个已迁移
+脚本里的 49 处（导入、调用、注释）、`qa/README.md`「等待模式」。不保留旧名字的
+别名——留着就还是撞名。`fly.wait_tasks` 是产品接口，不动。本文件阶段丙二、丙三
+条目里的 `wait_tasks` 指的是改名前的这个函数。
+
+**验证**：单元测试 9 项通过；全量单测 133 个目标通过；受影响的 13 个用例连续 3 轮
+通过；全量 QA 202 个全过；对 `qa/var` 与 `qa/storage` 重录，51 个编排脚本全部
+「基准无变化」。
+
+**文档同步**：`qa/README.md`「等待模式」改用新名字，并说明两者不要混淆。
+
 ## 2026-11-26: QA 改造阶段丙四——迁移 `qa/storage` 第二批（24 个用例：数据库链、合并、加载、冻结、修复备份）
 
 **依据**：QA 改造任务书第 7 节的阶段丙四。到此 `qa/storage` 的 45 个用例全部迁移完成，

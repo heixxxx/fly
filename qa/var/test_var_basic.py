@@ -5,7 +5,7 @@ from fly import get_work_directory
 
 DB_PATH = os.path.join(get_work_directory(), "db")
 
-from test import set_var_task, get_var_task, remove_var_task, record, wait_tasks
+from test import set_var_task, get_var_task, remove_var_task, record, wait_tasks_no_failure
 from fly import open_db, get_config, get_work_directory
 
 
@@ -51,14 +51,14 @@ from fly import as_task
 @as_task()
 def assert_var_equals(db, name, expected):
     # 任务函数内的断言保留：record 只能在主进程调用；断言失败时任务不计入
-    # 已完成，由主进程的等待门槛（wait_tasks）发现并给出失败详情。
+    # 已完成，由主进程的等待门槛（wait_tasks_no_failure）发现并给出失败详情。
     val = db.get_var(name)
     assert val == expected, f"var {name}={val!r}, expected {expected!r}"
 
 assert_var_equals(db, "counter", 42)
 # 原断言：assert wait_for(lambda: len(master.completed_tasks) >= 3), "assert task did not complete"
 # 原断言：assert len(master.failed_tasks) == 0, f"assert task failed: {master.failed_tasks}"
-assert wait_tasks(master, 3, "counter_check/no_failed_tasks", timeout=20.0), "assert task did not complete"
+assert wait_tasks_no_failure(master, 3, "counter_check/no_failed_tasks", timeout=20.0), "assert task did not complete"
 
 # Python str and dict.
 set_var_task(db, "greeting", "hello")
@@ -68,20 +68,20 @@ assert_var_equals(db, "greeting", "hello")
 assert_var_equals(db, "config", {"a": 1, "b": [2, 3]})
 # 原断言：assert wait_for(lambda: len(master.completed_tasks) >= 7)
 # 原断言：assert len(master.failed_tasks) == 0
-assert wait_tasks(master, 7, "str_dict_check/no_failed_tasks", timeout=20.0)
+assert wait_tasks_no_failure(master, 7, "str_dict_check/no_failed_tasks", timeout=20.0)
 
 # get_var on a missing name returns None (default).
 @as_task()
 def assert_var_missing(db, name):
     # 任务函数内的断言保留：record 只能在主进程调用；断言失败时任务不计入
-    # 已完成，由主进程的等待门槛（wait_tasks）发现并给出失败详情。
+    # 已完成，由主进程的等待门槛（wait_tasks_no_failure）发现并给出失败详情。
     val = db.get_var(name)
     assert val is None, f"expected None for missing var, got {val!r}"
 
 assert_var_missing(db, "does_not_exist")
 # 原断言：assert wait_for(lambda: len(master.completed_tasks) >= 8)
 # 原断言：assert len(master.failed_tasks) == 0
-assert wait_tasks(master, 8, "missing_var_check/no_failed_tasks", timeout=20.0)
+assert wait_tasks_no_failure(master, 8, "missing_var_check/no_failed_tasks", timeout=20.0)
 
 # remove_var then get_var returns None.
 remove_var_task(db, "counter")
@@ -89,7 +89,7 @@ assert wait_for(lambda: len(master.completed_tasks) >= 9)
 assert_var_missing(db, "counter")
 # 原断言：assert wait_for(lambda: len(master.completed_tasks) >= 10)
 # 原断言：assert len(master.failed_tasks) == 0
-assert wait_tasks(master, 10, "removed_var_check/no_failed_tasks", timeout=20.0)
+assert wait_tasks_no_failure(master, 10, "removed_var_check/no_failed_tasks", timeout=20.0)
 
 master.stop()
 INFO("[DONE] test_var_basic")

@@ -15,7 +15,7 @@ import time
 import os
 import shutil
 
-from test import write_data, write_and_remove, record, wait_tasks
+from test import write_data, write_and_remove, record, wait_tasks_no_failure
 from fly import open_db, get_config
 
 DB_PATH = os.path.join(get_config().get_str("log_dir"), "db")
@@ -64,7 +64,7 @@ assert wait_for(lambda: len(master.completed_tasks) >= 2, timeout=30.0), \
 write_data(db, "obj_w", 999)  # worker task 重写（调度到任意 worker 都应成功）
 # 原断言：assert wait_for(lambda: len(master.completed_tasks) >= 3, timeout=30.0), \
 # 原断言：assert len(master.failed_tasks) == 0, \
-assert wait_tasks(master, 3, "rewrite/no_failed_tasks", timeout=30.0), \
+assert wait_tasks_no_failure(master, 3, "rewrite/no_failed_tasks", timeout=30.0), \
     f"worker 重写应完成，got completed={len(master.completed_tasks)} failed={len(master.failed_tasks)}"
 # 原断言：assert val2 == 999, f"worker 重写后应读 999，got {val2}"
 record("worker_rewrite_value", db.read_object("obj_w"))

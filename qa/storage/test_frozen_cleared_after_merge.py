@@ -9,7 +9,7 @@ commit_write 漏处理 WRITE_TO_FROZEN_DB 导致静默忽略（碰巧蒙对结�
 import os
 import shutil
 
-from test import record, wait_tasks
+from test import record, wait_tasks_no_failure
 from fly import open_db, merge_db, launch_workers, get_config
 from fly.runtime import get_agent
 
@@ -68,7 +68,7 @@ def main():
     # task 应成功完成（不应因 frozen reject 失败）
     # 原断言：assert master.wait_for_all_tasks(timeout=10), \
     # 原断言：assert len(master.failed_tasks) == 0, \
-    assert wait_tasks(master, 2, "no_failed_tasks", timeout=10.0), \
+    assert wait_tasks_no_failure(master, 2, "no_failed_tasks", timeout=10.0), \
         "write to new db after merge should succeed, not be rejected as frozen"
 
     from _fly_log import INFO

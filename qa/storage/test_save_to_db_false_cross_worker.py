@@ -5,7 +5,7 @@ import shutil
 
 
 
-from test import write_temp, read_data, record, wait_tasks
+from test import write_temp, read_data, record, wait_tasks_no_failure
 from fly import open_db, get_config
 DB_PATH = os.path.join(get_config().get_str("log_dir"), "db")
 
@@ -39,7 +39,7 @@ write_temp(db, "shared_temp", 777)
 
 # 原断言：assert wait_for(lambda: len(master.completed_tasks) >= 1, timeout=30.0)
 # 原断言：assert len(master.failed_tasks) == 0
-assert wait_tasks(master, 1, "write/no_failed_tasks", timeout=30.0)
+assert wait_tasks_no_failure(master, 1, "write/no_failed_tasks", timeout=30.0)
 
 dep = db.get_full_name("shared_temp")
 read_data(db, "shared_temp", [dep])
@@ -47,7 +47,7 @@ read_data(db, "shared_temp", [dep])
 
 # 原断言：assert wait_for(lambda: len(master.completed_tasks) >= 3, timeout=30.0)
 # 原断言：assert len(master.failed_tasks) == 0
-assert wait_tasks(master, 3, "reads/no_failed_tasks", timeout=30.0)
+assert wait_tasks_no_failure(master, 3, "reads/no_failed_tasks", timeout=30.0)
 
 # 原断言：assert db.read_object("shared_temp") == 777
 record("read_back", db.read_object("shared_temp"))

@@ -6,7 +6,7 @@ from fly import get_work_directory
 DB_PATH = os.path.join(get_work_directory(), "db")
 
 from fly import open_db, get_config, get_work_directory, as_task
-from test import record, wait_tasks
+from test import record, wait_tasks_no_failure
 
 
 def cleanup():
@@ -47,7 +47,7 @@ def produce(db, var_name, var_value, obj_key, obj_value):
          requires=["consumer"])
 def consume(d, sig, var):
     # 任务函数内的断言保留：record 只能在主进程调用；断言失败时任务不计入
-    # 已完成，由主进程的等待门槛（wait_tasks）发现并给出失败详情。
+    # 已完成，由主进程的等待门槛（wait_tasks_no_failure）发现并给出失败详情。
     obj = d.read_object(sig)
     val = d.get_var(var)
     assert obj == "done", f"obj={obj!r}"
@@ -57,12 +57,12 @@ def consume(d, sig, var):
 produce(db, "config_val", 99, "signal", "done")
 # 原断言：assert wait_for(lambda: len(master.completed_tasks) >= 1), "producer task did not complete"
 # 原断言：assert len(master.failed_tasks) == 0, f"producer task failed: {master.failed_tasks}"
-assert wait_tasks(master, 1, "producer/no_failed_tasks", timeout=20.0), "producer task did not complete"
+assert wait_tasks_no_failure(master, 1, "producer/no_failed_tasks", timeout=20.0), "producer task did not complete"
 
 consume(db, "signal", "config_val")
 # 原断言：assert wait_for(lambda: len(master.completed_tasks) >= 2), "consumer task did not complete"
 # 原断言：assert len(master.failed_tasks) == 0, f"consumer task failed: {master.failed_tasks}"
-assert wait_tasks(master, 2, "consumer/no_failed_tasks", timeout=20.0), "consumer task did not complete"
+assert wait_tasks_no_failure(master, 2, "consumer/no_failed_tasks", timeout=20.0), "consumer task did not complete"
 
 master.stop()
 INFO("[DONE] test_var_cross_worker")

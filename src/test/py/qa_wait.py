@@ -5,9 +5,13 @@
     assert wait_until(lambda: master.failed_tasks, timeout=30), \
         "group death must surface within 30s"
 
-    from test import wait_tasks
-    assert wait_tasks(master, 3, "counter/no_failed_tasks"), \
+    from test import wait_tasks_no_failure
+    assert wait_tasks_no_failure(master, 3, "counter/no_failed_tasks", timeout=20.0), \
         "tasks did not complete"
+
+与 ``fly.wait_tasks`` 不是同一个函数：``fly.wait_tasks(timeout)`` 是产品公开接口的
+等待原语（等全部任务完成，不带判定）；这里是 QA 用的记录型等待。两者曾经同名，
+2026-11-26 改成现在的名字。
 """
 import time
 
@@ -31,9 +35,12 @@ def wait_until(cond, timeout: float = 30.0, interval: float = 0.05) -> bool:
         time.sleep(interval)
 
 
-def wait_tasks(master, expected, key=None, timeout: float = 30.0,
-               interval: float = 0.05) -> bool:
+def wait_tasks_no_failure(master, expected, key=None, timeout: float = 30.0,
+                          interval: float = 0.05) -> bool:
     """轮询等待任务完成：完成数达到 expected，或出现失败任务，或超时。
+
+    与 ``fly.wait_tasks(timeout)`` 不同：那个只等全部任务完成；这个有任务失败就
+    立即返回，并记录判定。
 
     替代「assert wait_for(完成数 >= N) + assert 没有失败任务」这一对。关键
     差别：失败任务不计入已完成，干等只会熬满超时——这里任务一失败就立即
