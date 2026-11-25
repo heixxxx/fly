@@ -11,7 +11,9 @@ def setup_clean():
     if os.path.isdir(db_path):
         shutil.rmtree(db_path, ignore_errors=True)
 
-run_subcase("load_db_run1.py", timeout=60, setup=setup_clean, env=shared_env)
+run_subcase("load_db_run1.py", timeout=60, setup=setup_clean, env=shared_env,
+            check_list=["result.json"])
 
-run_subcase("load_db_run2.py", timeout=60, env=shared_env)
+run_subcase("load_db_run2.py", timeout=60, env=shared_env,
+            check_list=["result.json"])
 INFO("[PASS] test_load_db_two_processes: two-process lifecycle verified")

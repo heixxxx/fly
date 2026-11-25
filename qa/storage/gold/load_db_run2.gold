@@ -1,0 +1,21 @@
+{
+  "alpha_value": 100,
+  "beta_value": 200,
+  "config_value": {
+    "source": "run1",
+    "version": 1
+  },
+  "db_dir_exists": true,
+  "db_frozen": true,
+  "db_meta_exists": true,
+  "db_path_matches": true,
+  "final_value": "completed_by_run2",
+  "frozen_marker_exists": true,
+  "gamma_value": "hello",
+  "marker_exists": true,
+  "master_only_value": "from_master",
+  "meta_created_at_positive": true,
+  "new_tasks_completed": true,
+  "not_frozen_after_run1": true,
+  "stage2_sum": 300
+}

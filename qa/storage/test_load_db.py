@@ -14,7 +14,7 @@ import sys
 import shutil
 import time
 
-from test import qa_tmp
+from test import qa_tmp, record
 
 
 def cleanup(path):
@@ -42,36 +42,53 @@ def test_db_meta_json_format():
 
         db = open_db(db_path)
         meta_path = os.path.join(db_path, "_DB_META")
-        assert os.path.isfile(meta_path), "_DB_META should exist after open_db"
+        meta_exists = os.path.isfile(meta_path)
+        # 原断言：assert os.path.isfile(meta_path), "_DB_META should exist after open_db"
+        record("meta_exists", meta_exists, detail=meta_exists)
 
         db.write_object("obj/a", "data_a")
         db.write_object("obj/b", "data_b")
         storage.ex_stg_get_data_service().drain_write_back()
         time.sleep(0.3)
 
-        assert db.read_object("obj/a") == "data_a"
-        assert db.read_object("obj/b") == "data_b"
+        read_a = db.read_object("obj/a")
+        # 原断言：assert db.read_object("obj/a") == "data_a"
+        record("read_obj_a", read_a)
+        read_b = db.read_object("obj/b")
+        # 原断言：assert db.read_object("obj/b") == "data_b"
+        record("read_obj_b", read_b)
 
         # _DB_META JSON 直读 + Database.load_meta 兼容层双验证。
         import json
         with open(meta_path, encoding="utf-8") as f:
             raw = json.load(f)
-        assert raw["created_at"] > 0
-        assert raw["version"] == 2
-        assert raw["uid"] is not None
+        created_at_positive = raw["created_at"] > 0
+        # 原断言：assert raw["created_at"] > 0
+        record("raw_created_at_positive", created_at_positive, detail=raw["created_at"])
+        # 原断言：assert raw["version"] == 2
+        record("raw_version", raw["version"])
+        # 原断言：assert raw["uid"] is not None
+        record("raw_uid_present", raw["uid"] is not None, detail=raw["uid"])
 
         meta = db.load_meta()
+        # 保留：判空守卫——后续 meta.created_at 还要用 meta
         assert meta is not None
-        assert meta.created_at > 0
+        meta_created_at_positive = meta.created_at > 0
+        # 原断言：assert meta.created_at > 0
+        record("meta_created_at_positive", meta_created_at_positive, detail=meta.created_at)
         # master 自写在非 stream 模式才登记 worker；本 case 只验证格式契约，
         # workers 可为空或含 master 登记，不做数量断言。
 
         db.freeze()
-        assert db.is_frozen()
-        assert os.path.isfile(os.path.join(db_path, "_FROZEN"))
+        db_frozen = db.is_frozen()
+        # 原断言：assert db.is_frozen()
+        record("db_frozen", db_frozen, detail=db_frozen)
+        frozen_marker_exists = os.path.isfile(os.path.join(db_path, "_FROZEN"))
+        # 原断言：assert os.path.isfile(os.path.join(db_path, "_FROZEN"))
+        record("frozen_marker_exists", frozen_marker_exists, detail=frozen_marker_exists)
 
         storage.ex_stg_get_storage_manager().close_all()
-        print("[PASS] test_db_meta_json_format", file=sys.stderr)
+        print("[DONE] test_db_meta_json_format", file=sys.stderr)
 
     finally:
         log.shutdown_log()

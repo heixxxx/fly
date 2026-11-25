@@ -1,0 +1,5 @@
+{
+  "db_frozen": true,
+  "master_read_matrix_n": 8,
+  "merged_handle_read_completed": true
+}

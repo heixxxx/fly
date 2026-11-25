@@ -10,7 +10,7 @@ import os
 import glob
 
 
-from test import partial_write_then_fail, write_data
+from test import partial_write_then_fail, write_data, record
 from fly import open_db, get_config
 
 DB_PATH = os.environ.get("FLY_DB_PATH") or os.path.join(get_config().get_str("log_dir"), "db")
@@ -23,14 +23,18 @@ from fly.runtime import get_agent
 
 master = get_agent()
 master.launch_local_workers([{}])
+# 保留：等待原语
 assert master.wait_workers_registered(timeout=60)
-assert master.worker_count >= 1, "Worker should connect"
+worker_connected = master.worker_count >= 1
+# 原断言：assert master.worker_count >= 1, "Worker should connect"
+record("worker_connected", worker_connected, detail=master.worker_count)
 
 db = open_db(DB_PATH)
 
 # 1. 先写一个正常 task（产生段外 ADD 的基准数据 + 已提交段）
 write_data(db, "baseline", "base_value")
 from test import wait_until
+# 保留：等待原语
 assert wait_until(lambda: len(master.completed_tasks) >= 1, timeout=20), \
     "baseline write should complete"
 
@@ -42,6 +46,7 @@ INFO(f"[RUN1] baseline data size after normal task: {baseline_size} bytes, files
 # 2. 失败 task：写入 dirty 对象后抛异常（应被 abort 清理）
 partial_write_then_fail(db, ["dirty1", "dirty2", "dirty3"], "dirty_clean", "crash_recovery_test")
 
+# 保留：等待原语
 assert wait_until(lambda: len(master.failed_tasks) >= 1, timeout=20), \
     "partial_write_then_fail should fail"
 
@@ -52,6 +57,7 @@ def _abort_cleanup_done():
     return sum(os.path.getsize(f) for f in dat) <= baseline_size + 1
 
 
+# 保留：等待原语
 assert wait_until(_abort_cleanup_done, timeout=10), \
     "abort cleanup did not shrink data file within 10s"
 
@@ -60,8 +66,10 @@ dat_files_after = glob.glob(os.path.join(DB_PATH, "data_*.dat"))
 after_size = sum(os.path.getsize(f) for f in dat_files_after)
 INFO(f"[RUN1] data size after abort: {after_size} bytes, files={len(dat_files_after)}")
 
-assert after_size <= baseline_size + 1, \
-    f"data file should be truncated after abort: baseline={baseline_size}, after={after_size}"
+data_truncated = after_size <= baseline_size + 1
+# 原断言：assert after_size <= baseline_size + 1, \
+record("data_truncated_after_abort", data_truncated,
+       detail={"baseline": baseline_size, "after": after_size})
 
 INFO("[RUN1] data file truncated after task failure (dirty bytes recovered)")
 
@@ -70,4 +78,4 @@ with open(os.path.join(DB_PATH, "_test_db_path"), "w") as f:
     f.write(db.get_db_path())
 
 INFO(f"[RUN1] db_path={db.get_db_path()}")
-INFO("[RUN1] PASS: abort cleanup verified, exiting for load_db verification")
+INFO("[RUN1] DONE: abort cleanup verified, exiting for load_db verification")

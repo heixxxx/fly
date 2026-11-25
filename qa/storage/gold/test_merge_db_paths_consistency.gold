@@ -1,0 +1,9 @@
+{
+  "db_frozen": true,
+  "merged_dat_nonempty": true,
+  "merged_k1": 111,
+  "merged_k2": 222,
+  "merged_k3": "consistency",
+  "source_dat_after": 0,
+  "source_dat_before_nonempty": true
+}

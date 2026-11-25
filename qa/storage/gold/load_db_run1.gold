@@ -1,0 +1,10 @@
+{
+  "config_value": {
+    "source": "run1",
+    "version": 1
+  },
+  "db_meta_exists": true,
+  "master_only_value": "from_master",
+  "worker_connected": true,
+  "worker_tasks_completed": true
+}

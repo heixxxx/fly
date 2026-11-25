@@ -7,7 +7,7 @@ import time
 
 
 
-from test import write_data
+from test import write_data, record
 from fly import open_db, get_config
 DB_PATH = os.environ.get("FLY_DB_PATH") or os.path.join(get_config().get_str("log_dir"), "db")
 from fly import get_config
@@ -28,8 +28,11 @@ master = get_agent()
 master.launch_local_workers([{}])
 
 # Wait for worker
+# 保留：等待原语
 assert master.wait_workers_registered(timeout=60)
-assert master.worker_count >= 1, "Worker should connect"
+worker_connected = master.worker_count >= 1
+# 原断言：assert master.worker_count >= 1, "Worker should connect"
+record("worker_connected", worker_connected, detail=master.worker_count)
 
 db = open_db(DB_PATH)
 db_path = db.get_db_path()
@@ -41,7 +44,8 @@ write_data(db, "stage1/gamma", "hello")
 
 # Wait for completion
 completed = master.wait_for_all_tasks(expected=3, timeout=30)
-assert len(completed) >= 3, f"Expected 3 completed tasks, got {len(completed)}"
+# 原断言：assert len(completed) >= 3, f"Expected 3 completed tasks, got {len(completed)}"
+record("worker_tasks_completed", len(completed) >= 3, detail=len(completed))
 
 # Master also writes directly
 db.write_object("stage1/master_only", "from_master")
@@ -51,8 +55,12 @@ db.write_object("stage1/config", {"version": 1, "source": "run1"})
 time.sleep(0.5)
 
 # Verify data readable before exit
-assert db.read_object("stage1/master_only") == "from_master"
-assert db.read_object("stage1/config") == {"version": 1, "source": "run1"}
+master_only_value = db.read_object("stage1/master_only")
+# 原断言：assert db.read_object("stage1/master_only") == "from_master"
+record("master_only_value", master_only_value)
+config_value = db.read_object("stage1/config")
+# 原断言：assert db.read_object("stage1/config") == {"version": 1, "source": "run1"}
+record("config_value", config_value)
 
 # Do NOT freeze — that's Run 2's job
 
@@ -61,7 +69,9 @@ with open(os.path.join(DB_PATH, "_test_db_path"), "w") as f:
     f.write(db_path)
 
 # Verify _DB_META exists
-assert os.path.isfile(os.path.join(DB_PATH, "_DB_META")), "_DB_META should exist"
+db_meta_exists = os.path.isfile(os.path.join(DB_PATH, "_DB_META"))
+# 原断言：assert os.path.isfile(os.path.join(DB_PATH, "_DB_META")), "_DB_META should exist"
+record("db_meta_exists", db_meta_exists, detail=db_meta_exists)
 
 INFO(f"[RUN1] Created DB: db_path={db_path}, path={DB_PATH}")
 INFO("[RUN1] Wrote 5 objects (3 via worker, 2 via master)")

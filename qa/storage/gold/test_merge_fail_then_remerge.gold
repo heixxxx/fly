@@ -1,0 +1,13 @@
+{
+  "db_frozen": true,
+  "failed_merge_products_purged": true,
+  "merge_failed/error_type": "RuntimeError",
+  "merge_failed_msg_mentions_failed": true,
+  "merge_failed_raises": true,
+  "merged_data_nonempty": true,
+  "preserved_z": 222,
+  "remerged_x": 111,
+  "remerged_z": 222,
+  "source_dat_count": 2,
+  "source_deleted_after_remerge": true
+}

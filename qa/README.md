@@ -227,6 +227,8 @@ record("no_failed_tasks", len(master.failed_tasks) == 0, detail=master.failed_ta
 - 值规范化后写入：元组/列表→列表、集合→排序后的列表、字典键转字符串、字节串→`{len, sha256}`、`pathlib.Path`→字符串、numpy 标量/数组→Python 标量/嵌套列表、其他对象抛 `TypeError`（逐字段记录，不静默跳过）。
 - 路径掩蔽缺省开启：字符串里的五个路径来源分别替换为对应占位符——子阶段日志目录（`FLY_CASE_SUB_DIR`）→ `<sub_log_dir>`、用例日志目录（`FLY_CASE_LOG_DIR`）→ `<case_log_dir>`、用例目录（`FLY_CASE_DIR`）→ `<case_dir>`、build 目录（`FLY_BUILD`）→ `<build>`、仓库根 → `<repo>`（环境变量不存在时跳过对应项），换机器换检出位置后基准仍然有效。
 - 等待原语（`assert wait_until(...)`）与后续步骤还要使用的对象的判空守卫仍是 `assert`，不转记录。
+- 否定性检查（「应当抛异常」）：没抛异常时用 `raise AssertionError(...)` 让脚本直接失败；抛了异常时，异常类型记成取值（类型名），对消息的要求记成顶层布尔判定（如 `record("reject/frozen_in_msg", "frozen" in str(e).lower())`）。不要把异常对象或字典直接当顶层值记，也不要只记「抛了异常」。
+- 编排脚本 `setup` 函数里的检查只能是 `assert`：`setup` 在运行器进程里执行，`record` 不可用，重录模式也不执行 `setup`。
 
 **基准文件（gold）**：一个结果文件一个基准文件，按命名约定放在 `qa/<编排脚本所在目录>/gold/`：`S.result.json` 的基准是 `S.gold`，`S.<类型>.<扩展名>` 的基准是 `S.<类型>.gold`。`kv` 预设的基准内容就是与结果同形的 JSON 对象本身；`contains` 的基准内容是 `{"must": [...], "must_not": [...]}`。写入格式：缩进 2、键排序、末尾换行（文件名不带 `.json`，内容仍是 JSON）。基准里**顶层**的布尔值只允许 `true`（判定型条目）；嵌套布尔不受限。
 
@@ -265,7 +267,7 @@ run_subcase("load_db_run2.py", timeout=60, env=shared_env, check_list=[
 
 - `# 原断言：<原断言第一行的源码>`：这条记录取代了哪条旧的 `assert`。引用逐字复制，不改写、不概括；多条旧断言合并成一条记录时逐条引用。
 - `# 保留：<理由>`：这条 `assert` 为什么没有转成记录——等待原语、任务函数内的断言、等待循环体内的断言、后续步骤还要使用的判空守卫。
-- `INFO("[DONE] ...")` 只表示执行到了这一行，**不表示用例通过**；通过与否由运行器的比对决定。迁移时把子阶段脚本里的 `[PASS]` 改成了 `[DONE]`。
+- `INFO("[DONE] ...")` 只表示执行到了这一行，**不表示用例通过**；通过与否由运行器的比对决定。迁移时把子阶段脚本里的 `[PASS]`、`ALL PASSED`、`All tests passed!` 改成了 `[DONE]`、`ALL DONE`、`All stages done!`。新写的脚本也不要在日志里自宣通过。
 - 新写的用例直接用 `record`，不需要 `# 原断言：` 注释。
 - 被测行为变了、期望值跟着变：先判断新值合理，再用 `./qa/runqa --regold <用例.pyt>` 重录（见上文「重录模式」）。比对不通过的时候不要重录，先查清原因。
 
@@ -273,7 +275,7 @@ run_subcase("load_db_run2.py", timeout=60, env=shared_env, check_list=[
 
 1. 保留原断言，并行加 `record`，**先不加 `check_list`**；每条记录旁写 `# 原断言：`。原断言与记录并存时，记录读原断言已经算出的值，不把条件表达式再求值一次。
 2. 运行，必须干净通过。此时只有旧断言在把关，这次运行的日志要留存。
-3. 在调度它的 `run_subcase` 上加 `check_list`。
+3. 在调度它的 `run_subcase` 上加 `check_list`。**只加这一个参数**：超时、环境变量、`setup` 等调度参数一律不动，也不要用模板重新生成编排脚本（会把人工调过的超时覆盖成模板缺省值）。
 4. 重录，生成初始基准。
 5. 再运行，必须通过。此时旧断言与基准比对同时把关，日志同样留存。
 6. 删除可迁移的断言（带 `# 保留：` 标注的留下）。

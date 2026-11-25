@@ -12,7 +12,7 @@ import os
 import time
 import shutil
 
-from test import write_data
+from test import write_data, record
 from fly import open_db, merge_db, get_config
 DB_PATH = os.path.join(get_config().get_str("log_dir"), "cross_path_db")
 MERGE_BASE = os.path.join(get_config().get_str("log_dir"), "cross_path_merged")
@@ -39,19 +39,24 @@ get_config().set_int("fail_unscheduleable_tasks", 0)
 
 master = get_agent()
 master.launch_local_workers([{"host": "host_A"}, {"host": "host_B"}])
+# 保留：等待原语
 assert master.wait_workers_registered(timeout=60), "need 2 workers on different hosts"
 
 # ── Phase 1: 源 db 写数据 + freeze ──
 db = open_db(DB_PATH)
 write_data(db, "data/alpha", 100)
 write_data(db, "data/beta", 200)
+# 保留：等待原语
 assert wait_for(lambda: len(master.completed_tasks) >= 2)
 # freeze 前置同步点：写 task 完成落账（替代裸 sleep 缓冲）
 from test import wait_until
+# 保留：等待原语
 assert wait_until(lambda: len(master.completed_tasks) >= 2, timeout=10), \
     "write tasks must complete before freeze"
 db.freeze()
-assert db.is_frozen()
+db_frozen = db.is_frozen()
+# 原断言：assert db.is_frozen()
+record("db_frozen", db_frozen, detail=db_frozen)
 
 source_db_path = db.get_db_path()
 INFO(f"[CROSS-PATH] source db_path={source_db_path}, path={DB_PATH}")
@@ -62,32 +67,41 @@ merged_db = merge_db(DB_PATH, merge_db_path=MERGE_BASE, delete_source=True)
 INFO(f"[CROSS-PATH] merge done, merged_db path={merged_db.get_db_path()}")
 
 # 验证源 path 已彻底删除（无遗留，不再像旧机制保留作迁移锚点）
-assert not os.path.isdir(DB_PATH), \
-    f"source path should be deleted after merge (db chain mechanism), but {DB_PATH} still exists"
+source_deleted = not os.path.isdir(DB_PATH)
+# 原断言：assert not os.path.isdir(DB_PATH), \
+record("source_deleted", source_deleted, detail=source_deleted)
 INFO("[CROSS-PATH] source path deleted (no _MIGRATED_TO residue)")
 
 # ── Phase 3: 验证产物数据可读 + _DB_META 继承 ──
 # 3a. 产物句柄（merge_db 返回值）能读 merge 数据
-assert merged_db.read_object("data/alpha") == 100, \
-    "merged db should read cross-path merged data"
-assert merged_db.read_object("data/beta") == 200, \
-    "merged db should read cross-path merged data"
+merged_alpha = merged_db.read_object("data/alpha")
+# 原断言：assert merged_db.read_object("data/alpha") == 100, \
+record("merged_alpha", merged_alpha)
+merged_beta = merged_db.read_object("data/beta")
+# 原断言：assert merged_db.read_object("data/beta") == 200, \
+record("merged_beta", merged_beta)
 INFO("[CROSS-PATH] merged db reads cross-path data correctly")
 
 # 3b. 验证 _DB_META 在 target 继承 source 身份（uid 存在、有 absorbed_from）
 target_chain_path = os.path.join(MERGE_BASE, "_DB_META")
-assert os.path.isfile(target_chain_path), \
-    f"_DB_META should exist at target {target_chain_path}"
+meta_exists = os.path.isfile(target_chain_path)
+# 原断言：assert os.path.isfile(target_chain_path), \
+record("target_meta_exists", meta_exists, detail=meta_exists)
 
 from storage import DbMetaFile
 
 target_cf = DbMetaFile(MERGE_BASE)
 target_chain = target_cf.read()
+# 保留：判空守卫——后续 target_chain.get(...) 还要用 target_chain
 assert target_chain is not None, "target _DB_META should be readable"
-assert target_chain.get("uid") is not None, "target should inherit source uid"
-assert DB_PATH in target_chain.get("absorbed_from", []), \
-    f"target absorbed_from should contain source path {DB_PATH}"
+target_has_uid = target_chain.get("uid") is not None
+# 原断言：assert target_chain.get("uid") is not None, "target should inherit source uid"
+record("target_has_uid", target_has_uid, detail=target_chain.get("uid"))
+absorbed = target_chain.get("absorbed_from", [])
+absorbed_contains = DB_PATH in absorbed
+# 原断言：assert DB_PATH in target_chain.get("absorbed_from", []), \
+record("target_absorbed_from_contains_source", absorbed_contains, detail=absorbed)
 INFO(f"[CROSS-PATH] target _DB_META: uid={target_chain['uid']}, "
      f"absorbed_from={target_chain.get('absorbed_from')}")
 
-INFO("[PASS] test_merge_db_cross_path")
+INFO("[DONE] test_merge_db_cross_path")

@@ -8,7 +8,7 @@ import time
 
 
 
-from test import write_data
+from test import write_data, record
 from fly import open_db, get_config
 DB_PATH = os.environ.get("FLY_DB_PATH") or os.path.join(get_config().get_str("log_dir"), "db")
 from fly import get_config
@@ -26,8 +26,11 @@ master = get_agent()
 
 master.launch_local_workers([{}])
 
+# 保留：等待原语
 assert master.wait_workers_registered(timeout=60)
-assert master.worker_count >= 1, "Worker should connect"
+worker_connected = master.worker_count >= 1
+# 原断言：assert master.worker_count >= 1, "Worker should connect"
+record("worker_connected", worker_connected, detail=master.worker_count)
 
 db = open_db(DB_PATH)
 db_path = db.get_db_path()
@@ -37,7 +40,8 @@ write_data(db, "moved/alpha", 42)
 write_data(db, "moved/beta", 58)
 
 completed = master.wait_for_all_tasks(expected=2, timeout=30)
-assert len(completed) >= 2, f"Expected 2 completed tasks, got {len(completed)}"
+# 原断言：assert len(completed) >= 2, f"Expected 2 completed tasks, got {len(completed)}"
+record("worker_tasks_completed", len(completed) >= 2, detail=len(completed))
 
 # Master writes
 db.write_object("moved/master_key", "master_value")
@@ -46,14 +50,20 @@ db.write_object("moved/dict", {"x": 1})
 time.sleep(0.5)
 
 # Verify before exit
-assert db.read_object("moved/master_key") == "master_value"
-assert db.read_object("moved/dict") == {"x": 1}
+master_key_value = db.read_object("moved/master_key")
+# 原断言：assert db.read_object("moved/master_key") == "master_value"
+record("master_key_value", master_key_value)
+dict_value = db.read_object("moved/dict")
+# 原断言：assert db.read_object("moved/dict") == {"x": 1}
+record("dict_value", dict_value)
 
 # Write marker
 with open(os.path.join(DB_PATH, "_test_db_path"), "w") as f:
     f.write(db_path)
 
-assert os.path.isfile(os.path.join(DB_PATH, "_DB_META")), "_DB_META should exist"
+db_meta_exists = os.path.isfile(os.path.join(DB_PATH, "_DB_META"))
+# 原断言：assert os.path.isfile(os.path.join(DB_PATH, "_DB_META")), "_DB_META should exist"
+record("db_meta_exists", db_meta_exists, detail=db_meta_exists)
 
 INFO(f"[RUN1_MOVED] Created DB at {DB_PATH}: db_path={db_path}")
 INFO("[RUN1_MOVED] Wrote 4 objects (2 worker, 2 master)")

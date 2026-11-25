@@ -1,0 +1,14 @@
+{
+  "idx/has_local_object": true,
+  "idx/local_data": "idx_data",
+  "idx/try_read_local_success": true,
+  "iso/db1_write_after_freeze_rejected": true,
+  "iso/db2_still_writable_value": "from_db2_after_freeze",
+  "rw/db_frozen": true,
+  "rw/read_before_freeze_1": "data_1",
+  "rw/read_before_freeze_2": "data_2",
+  "rw/write_after_freeze_rejected": true,
+  "typed/entry_object_name": "test/entry",
+  "typed/entry_offset": 100,
+  "typed/entry_size": 512
+}

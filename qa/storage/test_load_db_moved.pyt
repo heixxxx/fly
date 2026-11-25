@@ -17,6 +17,8 @@ def setup_move():
     # 重录模式会真的执行它们而失败，见 qa/README.md「编排脚本的写法约定」）：
     # 全部放在 run2 的 setup 里，时机不变——run1 的工作刚结束（产物检查）、
     # 搬移、本 sub case 开始工作之前。
+    # 保留：setup 在运行器进程执行，record 只能在 fly 子阶段进程调用，且重录模式
+    # 不执行 setup、记录无从产生——文件操作前提检查只能留在脚本里。
     assert os.path.isdir(path_a), "DB should exist at path_a after run1"
     assert os.path.isfile(os.path.join(path_a, "_DB_META")), "_DB_META should exist"
     # move A → B
@@ -24,6 +26,8 @@ def setup_move():
     assert os.path.isdir(path_b), "DB should exist at path_b after move"
     assert not os.path.isdir(path_a), "DB should NOT exist at path_a after move"
 
-run_subcase("load_db_run1_moved.py", timeout=60, setup=setup_clean, env={"FLY_DB_PATH": path_a})
-run_subcase("load_db_run2_moved.py", timeout=60, setup=setup_move, env={"FLY_DB_PATH": path_b})
+run_subcase("load_db_run1_moved.py", timeout=60, setup=setup_clean, env={"FLY_DB_PATH": path_a},
+            check_list=["result.json"])
+run_subcase("load_db_run2_moved.py", timeout=60, setup=setup_move, env={"FLY_DB_PATH": path_b},
+            check_list=["result.json"])
 INFO("[PASS] test_load_db_moved_db: moved-DB lifecycle verified")

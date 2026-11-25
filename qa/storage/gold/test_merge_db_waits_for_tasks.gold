@@ -1,0 +1,6 @@
+{
+  "db_frozen": true,
+  "merge_waited_for_slow_task": true,
+  "merged_obj_a": 1,
+  "slow_written_value": 99
+}

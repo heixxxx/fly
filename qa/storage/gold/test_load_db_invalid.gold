@@ -1,0 +1,8 @@
+{
+  "invalid_meta/error_type": "RuntimeError",
+  "invalid_meta/msg_mentions_meta_or_no_valid": true,
+  "invalid_meta/raises": true,
+  "nonexistent_path/error_type": "RuntimeError",
+  "nonexistent_path/msg_mentions_does_not_exist_or_not_found": true,
+  "nonexistent_path/raises": true
+}

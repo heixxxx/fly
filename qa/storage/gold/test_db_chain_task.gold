@@ -1,0 +1,6 @@
+{
+  "worker/found_matrix_role": "matrix",
+  "worker/found_matrix_uid_matches": true,
+  "worker/role": "solve",
+  "worker/uid_matches": true
+}

@@ -12,7 +12,7 @@ import os
 import time
 import shutil
 
-from test import write_data, fanout_read_verify
+from test import write_data, fanout_read_verify, record
 from fly import open_db, merge_db, get_config
 DB_PATH = os.path.join(get_config().get_str("log_dir"), "merge_read_db")
 from fly.runtime import get_agent
@@ -38,6 +38,7 @@ get_config().set_int("fail_unscheduleable_tasks", 0)
 
 master = get_agent()
 master.launch_local_workers([{"host": "host_A"}, {"host": "host_B"}])
+# 保留：等待原语
 assert master.wait_workers_registered(timeout=60), "need 2 workers on different hosts"
 
 # 写对象（分散到不同 host worker，模拟多机数据）。
@@ -45,12 +46,15 @@ db = open_db(DB_PATH)
 write_data(db, "data/alpha", 100)
 write_data(db, "data/beta", 200)
 write_data(db, "data/gamma", "merged_value")
+# 保留：等待原语
 assert wait_for(lambda: len(master.completed_tasks) >= 3)
 time.sleep(0.5)  # 等落盘
 
 # freeze（merge 前置）。
 db.freeze()
-assert db.is_frozen()
+db_frozen = db.is_frozen()
+# 原断言：assert db.is_frozen()
+record("db_frozen", db_frozen, detail=db_frozen)
 
 # 记录 merge 前时间（验证阻塞：读 task 只能在 merge 后提交）。
 t_before_merge = time.time()
@@ -78,8 +82,14 @@ INFO(f"[READ-TEST] fanout_read_verify completed, total completed tasks={len(comp
 # 到达此处即证明：① merge_db 阻塞（task 在 merge 后才提交）② 数据可读。
 
 # 额外直接校验：master 句柄也能读到（走 remote_idx → merge worker）。
-assert merged_db.read_object("data/alpha") == 100
-assert merged_db.read_object("data/beta") == 200
-assert merged_db.read_object("data/gamma") == "merged_value"
+merged_alpha = merged_db.read_object("data/alpha")
+# 原断言：assert merged_db.read_object("data/alpha") == 100
+record("merged_alpha", merged_alpha)
+merged_beta = merged_db.read_object("data/beta")
+# 原断言：assert merged_db.read_object("data/beta") == 200
+record("merged_beta", merged_beta)
+merged_gamma = merged_db.read_object("data/gamma")
+# 原断言：assert merged_db.read_object("data/gamma") == "merged_value"
+record("merged_gamma", merged_gamma)
 
-INFO("[PASS] test_merge_db_then_read")
+INFO("[DONE] test_merge_db_then_read")

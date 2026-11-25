@@ -18,6 +18,7 @@ import shutil
 
 import fly
 from fly import as_task, open_db, merge_db, get_config, wait_tasks
+from test import record
 DB_PATH = os.path.join(get_config().get_str("log_dir"), "merge_solve_db")
 
 
@@ -41,6 +42,7 @@ def wait_for(condition, timeout=30.0, interval=0.3):
 def _read_matrix_task(db, expected_n):
     """用 db 句柄读 matrix 对象，验证值正确。模拟 solver 的 matrix_db.read_object。"""
     m = db.read_object("matrix")
+    # 保留：@as_task 任务函数内的断言，record 只能在子阶段的主进程里调用
     assert m["n"] == expected_n, f"matrix n mismatch: {m['n']} != {expected_n}"
     return m["n"]
 
@@ -50,6 +52,7 @@ get_config().set_int("fail_unscheduleable_tasks", 0)
 
 master = fly.get_agent()
 master.launch_local_workers([{"host": "host_A"}, {"host": "host_B"}])
+# 保留：等待原语
 assert master.wait_workers_registered(timeout=60), "need 2 workers"
 
 # ── Phase 1: 建 db + 写 matrix（模拟 build_matrix）──
@@ -60,13 +63,17 @@ def _write_matrix_task(db, n):
     db.write_object("matrix", {"n": n, "N": n * n, "data": list(range(n))})
 
 _write_matrix_task(db, 8)
+# 保留：等待原语
 assert wait_for(lambda: len(master.completed_tasks) >= 1)
 # freeze 前置同步点：写 task 完成落账（替代裸 sleep 缓冲）
 from test import wait_until
+# 保留：等待原语
 assert wait_until(lambda: len(master.completed_tasks) >= 1, timeout=10), \
     "write task must complete before freeze"
 db.freeze()
-assert db.is_frozen()
+db_frozen = db.is_frozen()
+# 原断言：assert db.is_frozen()
+record("db_frozen", db_frozen, detail=db_frozen)
 
 INFO(f"[MERGE-SOLVE] matrix written + frozen, db_path={db.get_db_path()}")
 
@@ -81,19 +88,21 @@ _read_matrix_task(merged_db, 8)
 wait_tasks(timeout=30)
 
 completed = master.completed_tasks
-assert len(completed) >= 2, f"expected 2 completed tasks, got {len(completed)}"
-INFO("[MERGE-SOLVE] merged_db handle read in task: PASS")
+# 原断言：assert len(completed) >= 2, f"expected 2 completed tasks, got {len(completed)}"
+record("merged_handle_read_completed", len(completed) >= 2, detail=len(completed))
+INFO("[MERGE-SOLVE] merged_db handle read in task: DONE")
 
 # ── Phase 4: 用【merge 前的源句柄 db】在 worker 上读 matrix ──
 # 验证源句柄（底层共享同一 C++ Database 对象，db_path_ 已更新到 target）也能读。
 _read_matrix_task(db, 8)
 wait_tasks(timeout=30)
 
-INFO("[MERGE-SOLVE] source db handle read in task: PASS")
+INFO("[MERGE-SOLVE] source db handle read in task: DONE")
 
 # master 句柄直接读（走 remote_idx → merge worker）
 m = db.read_object("matrix")
-assert m["n"] == 8, f"master read matrix n mismatch: {m['n']}"
-INFO("[MERGE-SOLVE] master handle read: PASS")
+# 原断言：assert m["n"] == 8, f"master read matrix n mismatch: {m['n']}"
+record("master_read_matrix_n", m["n"], detail=m["n"])
+INFO("[MERGE-SOLVE] master handle read: DONE")
 
-INFO("[PASS] test_merge_then_solve")
+INFO("[DONE] test_merge_then_solve")

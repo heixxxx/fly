@@ -1,0 +1,16 @@
+{
+  "alpha_value": 42,
+  "beta_value": 58,
+  "db_frozen": true,
+  "db_path_is_current": true,
+  "dict_value": {
+    "x": 1
+  },
+  "final_value": "done",
+  "frozen_marker_exists": true,
+  "marker_exists": true,
+  "master_key_value": "master_value",
+  "meta_created_at_positive": true,
+  "new_tasks_completed": true,
+  "sum_value": 100
+}

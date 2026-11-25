@@ -9,6 +9,7 @@ commit_write 漏处理 WRITE_TO_FROZEN_DB 导致静默忽略（碰巧蒙对结�
 import os
 import shutil
 
+from test import record, wait_tasks
 from fly import open_db, merge_db, launch_workers, get_config
 from fly.runtime import get_agent
 
@@ -35,6 +36,7 @@ def main():
     master = get_agent()
     launch_workers([{"host": "host_A"}])
     from test import wait_until
+    # 保留：等待原语
     assert wait_until(lambda: master.worker_count >= 1, timeout=10), \
         "worker should connect"
 
@@ -42,29 +44,35 @@ def main():
     from test import write_data
     matrix_db = open_db(MATRIX_PATH, db_cls=MatrixDb, logical_name="matrix")
     write_data(matrix_db, "data/original", 100)
+    # 保留：等待原语（freeze 前同步点）
     assert master.wait_for_all_tasks(timeout=10) or len(master.completed_tasks) >= 1
     # freeze 前置同步点：写 task 完成落账（替代裸 sleep 缓冲）
+    # 保留：等待原语
     assert wait_until(lambda: len(master.completed_tasks) >= 1, timeout=10), \
         "write task must complete before freeze"
     matrix_db.freeze()
-    assert matrix_db.is_frozen()
+    matrix_frozen = matrix_db.is_frozen()
+    # 原断言：assert matrix_db.is_frozen()
+    record("matrix_frozen", matrix_frozen, detail=matrix_frozen)
 
     # t1: merge 到 shared_matrix（删源）
     merged_db = merge_db(MATRIX_PATH, merge_db_path=MERGE_TARGET, delete_source=True)
-    assert not os.path.isdir(MATRIX_PATH), "source should be deleted"
+    source_deleted = not os.path.isdir(MATRIX_PATH)
+    # 原断言：assert not os.path.isdir(MATRIX_PATH), "source should be deleted"
+    record("source_deleted", source_deleted, detail=source_deleted)
 
     # t2: 在原址新建 db，写数据——不应被 frozen reject
     matrix_db_B = open_db(MATRIX_PATH, db_cls=MatrixDb, logical_name="matrix")
     write_data(matrix_db_B, "data/new", 200)
 
     # task 应成功完成（不应因 frozen reject 失败）
-    assert master.wait_for_all_tasks(timeout=10), \
+    # 原断言：assert master.wait_for_all_tasks(timeout=10), \
+    # 原断言：assert len(master.failed_tasks) == 0, \
+    assert wait_tasks(master, 2, "no_failed_tasks", timeout=10.0), \
         "write to new db after merge should succeed, not be rejected as frozen"
-    assert len(master.failed_tasks) == 0, \
-        f"unexpected failed tasks after merge: {master.failed_tasks}"
 
     from _fly_log import INFO
-    INFO("[PASS] test_frozen_cleared_after_merge")
+    INFO("[DONE] test_frozen_cleared_after_merge")
 
 
 if __name__ == "__main__":

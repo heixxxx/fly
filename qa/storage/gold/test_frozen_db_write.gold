@@ -1,0 +1,6 @@
+{
+  "db_frozen": true,
+  "master_write_error_type": "RuntimeError",
+  "master_write_rejected": true,
+  "worker_connected": true
+}

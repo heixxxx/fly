@@ -1,0 +1,11 @@
+{
+  "db_frozen": true,
+  "frozen_marker_exists": true,
+  "meta_created_at_positive": true,
+  "meta_exists": true,
+  "raw_created_at_positive": true,
+  "raw_uid_present": true,
+  "raw_version": 2,
+  "read_obj_a": "data_a",
+  "read_obj_b": "data_b"
+}

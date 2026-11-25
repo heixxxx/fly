@@ -1,0 +1,9 @@
+{
+  "db_frozen": true,
+  "merged_alpha": 100,
+  "merged_beta": 200,
+  "source_deleted": true,
+  "target_absorbed_from_contains_source": true,
+  "target_has_uid": true,
+  "target_meta_exists": true
+}

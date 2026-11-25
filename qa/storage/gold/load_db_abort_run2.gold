@@ -1,0 +1,9 @@
+{
+  "baseline_readable": "base_value",
+  "db_path_matches": true,
+  "dirty_unreadable/dirty1": true,
+  "dirty_unreadable/dirty2": true,
+  "dirty_unreadable/dirty3": true,
+  "dirty_unreadable/dirty_clean": true,
+  "worker_connected": true
+}

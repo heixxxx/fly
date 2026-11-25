@@ -14,7 +14,7 @@ import os
 import time
 import shutil
 
-from test import write_data
+from test import write_data, record
 from fly import open_db, merge_db, get_config
 DB_PATH = os.path.join(get_config().get_str("log_dir"), "merge_db")
 from fly.runtime import get_agent
@@ -43,6 +43,7 @@ get_config().set_int("fail_unscheduleable_tasks", 0)
 master = get_agent()
 # launch 一个带 --host="host_A" 的 worker（模拟另一台机器的数据源）。
 master.launch_local_workers([{"host": "host_A"}])
+# 保留：等待原语
 assert master.wait_workers_registered(timeout=60), "host_A worker should connect"
 
 db = open_db(DB_PATH)
@@ -51,12 +52,15 @@ db = open_db(DB_PATH)
 write_data(db, "merge/x", 100)
 write_data(db, "merge/y", 200)
 write_data(db, "merge/z", "hello_merge")
+# 保留：等待原语
 assert wait_for(lambda: len(master.completed_tasks) >= 3), "3 writes should complete"
 time.sleep(0.5)  # 等落盘
 
 # freeze（前置条件）。
 db.freeze()
-assert db.is_frozen(), "db should be frozen"
+db_frozen = db.is_frozen()
+# 原断言：assert db.is_frozen(), "db should be frozen"
+record("db_frozen", db_frozen, detail=db_frozen)
 
 # 记录源 .dat 文件数（freeze 后稳定）。
 def count_dat(path):
@@ -66,7 +70,8 @@ def count_dat(path):
 
 src_dat_before = count_dat(DB_PATH)
 INFO(f"[MERGE] source .dat count before merge: {src_dat_before}")
-assert src_dat_before > 0, "source should have .dat files after writes"
+# 原断言：assert src_dat_before > 0, "source should have .dat files after writes"
+record("source_dat_before_nonempty", src_dat_before > 0, detail=src_dat_before)
 
 # ── 执行 merge_db ──
 merged_db = merge_db(DB_PATH, delete_source=True)
@@ -76,19 +81,27 @@ INFO(f"[MERGE] merge_db returned: {merged_db}")
 merged_data_path = DB_PATH + ".merged_data"
 merged_dat = count_dat(merged_data_path)
 INFO(f"[MERGE] merged data_path .dat count: {merged_dat}")
-assert merged_dat > 0, "merged data_path should have .dat files"
+# 原断言：assert merged_dat > 0, "merged data_path should have .dat files"
+record("merged_dat_nonempty", merged_dat > 0, detail=merged_dat)
 
 # 校验：产物应能读到全部对象（merged_db 句柄读，走 master remote_idx/local）。
 # 注意：merged_db 的 idx 在共享 db_path（复用源），data 在 merged_data_path。
 # master remote_idx 已被 merge task 的 register 更新，指向 master host worker。
-assert merged_db.read_object("merge/x") == 100, "merged db should read merge/x"
-assert merged_db.read_object("merge/y") == 200, "merged db should read merge/y"
-assert merged_db.read_object("merge/z") == "hello_merge", "merged db should read merge/z"
+merged_x = merged_db.read_object("merge/x")
+# 原断言：assert merged_db.read_object("merge/x") == 100, "merged db should read merge/x"
+record("merged_x", merged_x)
+merged_y = merged_db.read_object("merge/y")
+# 原断言：assert merged_db.read_object("merge/y") == 200, "merged db should read merge/y"
+record("merged_y", merged_y)
+merged_z = merged_db.read_object("merge/z")
+# 原断言：assert merged_db.read_object("merge/z") == "hello_merge", "merged db should read merge/z"
+record("merged_z", merged_z)
 INFO("[MERGE] all objects readable from merged db")
 
 # 校验：源 .dat 应已删除（delete_source=True）。
 src_dat_after = count_dat(DB_PATH)
 INFO(f"[MERGE] source .dat count after merge: {src_dat_after}")
-assert src_dat_after == 0, f"source .dat should be deleted, got {src_dat_after}"
+# 原断言：assert src_dat_after == 0, f"source .dat should be deleted, got {src_dat_after}"
+record("source_dat_after", src_dat_after)
 
-INFO("[PASS] test_merge_db")
+INFO("[DONE] test_merge_db")

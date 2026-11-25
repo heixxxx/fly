@@ -11,6 +11,7 @@ uid 阻断了 path 复用的别名冲突。
 import os
 import shutil
 
+from test import record
 from fly import open_db, merge_db, launch_workers, get_config
 from fly.runtime import get_agent
 
@@ -42,6 +43,7 @@ cleanup()
 master = get_agent()
 launch_workers([{"host": "host_A"}])
 from test import wait_until
+# 保留：等待原语
 assert wait_until(lambda: master.worker_count >= 1, timeout=10), \
     "worker should connect"
 
@@ -50,12 +52,16 @@ from test import write_data
 matrix_db_A = open_db(MATRIX_PATH, db_cls=MatrixDb, logical_name="matrix")
 uid_A = matrix_db_A.get_uid()
 write_data(matrix_db_A, "data/original", 100)
+# 保留：等待原语（freeze 前同步点）
 assert master.wait_for_all_tasks(timeout=10) or len(master.completed_tasks) >= 1
 # freeze 前置同步点：写 task 完成落账（替代裸 sleep 缓冲）
+# 保留：等待原语
 assert wait_until(lambda: len(master.completed_tasks) >= 1, timeout=10), \
     "write task must complete before freeze"
 matrix_db_A.freeze()
-assert matrix_db_A.is_frozen()
+matrix_frozen = matrix_db_A.is_frozen()
+# 原断言：assert matrix_db_A.is_frozen()
+record("t0/matrix_frozen", matrix_frozen, detail=matrix_frozen)
 print(f"  t0: matrix_db_A uid={uid_A}, path={MATRIX_PATH}")
 
 # ── 建链 solve → matrix（prev 记录 uid=A）──
@@ -64,7 +70,9 @@ print(f"  solve_db: uid={solve_db.get_uid()}, prev={solve_db.prevs()[0].get_uid(
 
 # ── t1: merge matrix → shared_matrix（彻底删源）──
 merged_db = merge_db(MATRIX_PATH, merge_db_path=MERGE_TARGET, delete_source=True)
-assert not os.path.isdir(MATRIX_PATH), "source should be deleted"
+source_deleted = not os.path.isdir(MATRIX_PATH)
+# 原断言：assert not os.path.isdir(MATRIX_PATH), "source should be deleted"
+record("t1/source_deleted", source_deleted, detail=source_deleted)
 print(f"  t1: merged to {MERGE_TARGET}, source deleted")
 
 # ── t2: 在原址新建 matrix_db_B（uid=B，新数据 D_B）──
@@ -72,21 +80,29 @@ print(f"  t1: merged to {MERGE_TARGET}, source deleted")
 matrix_db_B = open_db(MATRIX_PATH, db_cls=MatrixDb, logical_name="matrix")
 uid_B = matrix_db_B.get_uid()
 write_data(matrix_db_B, "data/new", 200)
-assert uid_B != uid_A, f"new db should have different uid: {uid_B} == {uid_A}"
+uid_B_differs = uid_B != uid_A
+# 原断言：assert uid_B != uid_A, f"new db should have different uid: {uid_B} == {uid_A}"
+record("t2/uid_B_differs", uid_B_differs, detail={"uid_B": uid_B, "uid_A": uid_A})
 print(f"  t2: matrix_db_B uid={uid_B} (!= {uid_A}), path={MATRIX_PATH}")
 
 # ── t3: solve 的 find_db(role=matrix) 应找到 uid=A（在 /shared/matrix），不是 uid=B ──
 found = solve_db.find_db(role="matrix")
+# 保留：判空守卫——后续 found.read_object 与 print 还要用 found
 assert found is not None, "should find matrix in chain"
-assert found.get_uid() == uid_A, \
-    f"find_db should return original uid={uid_A}, got uid={found.get_uid()}"
-assert found.get_db_path() == MERGE_TARGET, \
-    f"find_db path should be {MERGE_TARGET}, got {found.get_db_path()}"
+found_uid = found.get_uid()
+# 原断言：assert found.get_uid() == uid_A, \
+record("t3/find_uid_is_original", found_uid == uid_A,
+       detail={"found": found_uid, "expected": uid_A})
+found_path = found.get_db_path()
+# 原断言：assert found.get_db_path() == MERGE_TARGET, \
+record("t3/find_db_path", found_path)
 print(f"  t3: find_db(matrix) from solve: uid={found.get_uid()} (correct! not {uid_B})")
 print(f"       path={found.get_db_path()} ✓")
 
 # ── 验证数据正确：找到的是 D_A（original=100），不是 D_B（new=200）──
-assert found.read_object("data/original") == 100, "should read original data D_A"
+original_value = found.read_object("data/original")
+# 原断言：assert found.read_object("data/original") == 100, "should read original data D_A"
+record("t3/original_data", original_value)
 print("  data verification: found.read('data/original')=100 ✓ (D_A, not D_B)")
 
-print("\nALL PASSED")
+print("\nALL DONE")

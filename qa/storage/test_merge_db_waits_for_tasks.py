@@ -8,7 +8,7 @@ import os
 import time
 import shutil
 
-from test import write_data, slow_write
+from test import write_data, slow_write, record
 from fly import open_db, merge_db, get_config
 DB_PATH = os.path.join(get_config().get_str("log_dir"), "merge_wait_db")
 OTHER_DB_PATH = os.path.join(get_config().get_str("log_dir"), "merge_wait_other")
@@ -35,18 +35,23 @@ get_config().set_int("fail_unscheduleable_tasks", 0)
 
 master = get_agent()
 master.launch_local_workers([{"host": "host_A"}])
+# 保留：等待原语
 assert master.wait_workers_registered(timeout=60)
 
 # 在 db1 写对象并 freeze（merge 的目标）。
 db = open_db(DB_PATH)
 write_data(db, "obj/a", 1)
+# 保留：等待原语
 assert wait_for(lambda: len(master.completed_tasks) >= 1)
 # freeze 前置同步点：写 task 完成落账（替代裸 sleep 缓冲）
 from test import wait_until
+# 保留：等待原语
 assert wait_until(lambda: len(master.completed_tasks) >= 1, timeout=10), \
     "write task must complete before freeze"
 db.freeze()
-assert db.is_frozen()
+db_frozen = db.is_frozen()
+# 原断言：assert db.is_frozen()
+record("db_frozen", db_frozen, detail=db_frozen)
 
 # 提交一个慢 task（写另一个 db，2 秒后完成），不等待。
 other_db = open_db(OTHER_DB_PATH)
@@ -63,13 +68,17 @@ elapsed = time.time() - t_before
 INFO(f"[WAIT-TEST] merge_db returned after {elapsed:.1f}s")
 
 # 验证：merge_db 至少等了 ~2s（slow_write 的延迟）。
-assert elapsed >= 1.5, (
-    f"merge_db 应等待 pending task 完成，但仅耗时 {elapsed:.1f}s（预期 >= 1.5s）")
+# 原断言：assert elapsed >= 1.5, (
+record("merge_waited_for_slow_task", elapsed >= 1.5, detail=elapsed)
 
 # 验证 slow_write 的对象已写入（task 在 merge 前完成）。
-assert other_db.read_object("slow/x") == 99, "slow_write 对象应已写入"
+slow_value = other_db.read_object("slow/x")
+# 原断言：assert other_db.read_object("slow/x") == 99, "slow_write 对象应已写入"
+record("slow_written_value", slow_value)
 
 # 验证 merge 产物正常。
-assert merged_db.read_object("obj/a") == 1
+merged_a = merged_db.read_object("obj/a")
+# 原断言：assert merged_db.read_object("obj/a") == 1
+record("merged_obj_a", merged_a)
 
-INFO("[PASS] test_merge_db_waits_for_tasks")
+INFO("[DONE] test_merge_db_waits_for_tasks")

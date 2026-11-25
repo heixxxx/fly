@@ -1,0 +1,13 @@
+{
+  "step1/matrix_db_has_uid": true,
+  "step2/find_pre_merge_uid_matches": true,
+  "step3/matrix_frozen": true,
+  "step4/source_deleted": true,
+  "step5/find_after_db_path": "<sub_log_dir>/db_chain_merge/matrix_merged",
+  "step5/find_after_uid_matches": true,
+  "step6/prev_db_path": "<sub_log_dir>/db_chain_merge/matrix_merged",
+  "step6/prev_uid_matches": true,
+  "step7/absorbed_from_contains_source": true,
+  "step7/target_uid_inherited": true,
+  "step8/merged_data_x": 42
+}

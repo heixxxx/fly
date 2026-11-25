@@ -1,0 +1,9 @@
+{
+  "db_meta_exists": true,
+  "dict_value": {
+    "x": 1
+  },
+  "master_key_value": "master_value",
+  "worker_connected": true,
+  "worker_tasks_completed": true
+}

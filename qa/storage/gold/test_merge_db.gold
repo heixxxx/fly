@@ -1,0 +1,9 @@
+{
+  "db_frozen": true,
+  "merged_dat_nonempty": true,
+  "merged_x": 100,
+  "merged_y": 200,
+  "merged_z": "hello_merge",
+  "source_dat_after": 0,
+  "source_dat_before_nonempty": true
+}

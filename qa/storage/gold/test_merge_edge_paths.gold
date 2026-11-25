@@ -1,0 +1,20 @@
+{
+  "chain/b_uid_present": true,
+  "edge_a_next_b/db_path": "<case_log_dir>/merge_edge/b2",
+  "edge_a_next_b/edge_count": 1,
+  "edge_c_prev_b/db_path": "<case_log_dir>/merge_edge/b2",
+  "edge_c_prev_b/edge_count": 1,
+  "empty_merge/frozen": true,
+  "empty_merge/uid_inherited": true,
+  "merge_b/absorbed_from_contains_source": true,
+  "merge_b/source_deleted": true,
+  "merge_b/uid_inherited": true,
+  "merged_handle/db_path": "<case_log_dir>/merge_edge/b2",
+  "merged_handle/uid_matches": true,
+  "reject_missing_path/error_type": "RuntimeError",
+  "reject_missing_path/msg_mentions_does_not_exist": true,
+  "reject_no_meta/error_type": "RuntimeError",
+  "reject_no_meta/msg_mentions_no_db_meta": true,
+  "reject_not_frozen/error_type": "RuntimeError",
+  "reject_not_frozen/msg_mentions_not_frozen": true
+}

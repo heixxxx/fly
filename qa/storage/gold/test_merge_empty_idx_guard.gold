@@ -1,0 +1,8 @@
+{
+  "db_frozen": true,
+  "reject/error_type": "RuntimeError",
+  "reject/msg_mentions_idx": true,
+  "reject/rejected": true,
+  "source_dats_nonempty": true,
+  "source_dats_preserved": true
+}

@@ -1,0 +1,23 @@
+{
+  "backup/backed_up_value": {
+    "payload": 41
+  },
+  "chain/b_uid_present": true,
+  "chain/healed_edge_count": 1,
+  "chain/healed_edge_db_path": "<case_log_dir>/heal_backup/b",
+  "chain/healed_uid_is_b": true,
+  "chain/next_cleared": true,
+  "chain/next_edge_is_b": true,
+  "find_all/bfs_order_is_c_b_a": true,
+  "find_all/by_name_hits_a": true,
+  "find_all/by_name_hits_c": true,
+  "find_all/no_match_is_empty": true,
+  "var/never_set_is_none": true,
+  "var/py_obj_roundtrip": {
+    "k": [
+      1,
+      2
+    ]
+  },
+  "var/py_str_roundtrip": "hello_var"
+}

@@ -23,7 +23,7 @@ import time
 import shutil
 
 from fly import as_task, open_db, merge_db, get_config
-from test import write_data
+from test import write_data, record
 
 DB_PATH = os.path.join(get_config().get_str("log_dir"), "merge_paths_db")
 from fly.runtime import get_agent
@@ -62,17 +62,21 @@ get_config().set_int("fail_unscheduleable_tasks", 0)
 master = get_agent()
 # host_A / host_B 作为数据源（模拟多机分散数据）。
 master.launch_local_workers([{"host": "host_A"}, {"host": "host_B"}])
+# 保留：等待原语
 assert master.wait_workers_registered(timeout=60), "need host_A + host_B workers"
 
 db = open_db(DB_PATH)
 write_data(db, "paths/k1", 111)
 write_data(db, "paths/k2", 222)
 write_data(db, "paths/k3", "consistency")
+# 保留：等待原语
 assert wait_for(lambda: len(master.completed_tasks) >= 3)
 time.sleep(0.5)  # 等落盘
 
 db.freeze()
-assert db.is_frozen()
+db_frozen = db.is_frozen()
+# 原断言：assert db.is_frozen()
+record("db_frozen", db_frozen, detail=db_frozen)
 
 # 记录源 .dat 数（merge + delete_source 后应清零，证明旧 data_path 已失效）。
 def count_dat(path):
@@ -81,7 +85,8 @@ def count_dat(path):
     return sum(1 for f in os.listdir(path) if f.startswith("data_") and f.endswith(".dat"))
 
 src_dat_before = count_dat(DB_PATH)
-assert src_dat_before > 0, "source should have .dat before merge"
+# 原断言：assert src_dat_before > 0, "source should have .dat before merge"
+record("source_dat_before_nonempty", src_dat_before > 0, detail=src_dat_before)
 
 INFO("[PATHS] calling merge_db (delete_source=True)")
 merged_db = merge_db(DB_PATH, delete_source=True)
@@ -89,15 +94,20 @@ merged_data_path = DB_PATH + ".merged_data"
 INFO(f"[PATHS] merge done, merged_data_path={merged_data_path}")
 
 # 源 data_path 的 .dat 应已删除（旧路径失效）。
-assert count_dat(DB_PATH) == 0, "source .dat should be deleted after merge"
+src_dat_after = count_dat(DB_PATH)
+# 原断言：assert count_dat(DB_PATH) == 0, "source .dat should be deleted after merge"
+record("source_dat_after", src_dat_after)
 # 产物 data_path 应有 .dat（新路径有效）。
-assert count_dat(merged_data_path) > 0, "merged data_path should have .dat"
+merged_dat = count_dat(merged_data_path)
+# 原断言：assert count_dat(merged_data_path) > 0, "merged data_path should have .dat"
+record("merged_dat_nonempty", merged_dat > 0, detail=merged_dat)
 
 # ── 关键验证：launch 全新 host_C（本地无数据缓存）+ 启动即带 host_c_reader 属性 ──
 # host_C 读对象时必经 DbPathRequest 询问 master 路径。master 若回旧源路径（已删）则
 # 构造的 Database 指向不存在目录；回新 merge 路径则读成功。
 # requires=["host_c_reader"] 是子集匹配，强制 read task 只能调度到带该属性的 host_C。
 master.launch_local_workers([{"host": "host_C", "attributes": ["host_c_reader"]}])
+# 保留：等待原语
 assert master.wait_workers_registered(timeout=60), "host_C worker should connect"
 INFO("[PATHS] host_C worker launched (fresh, no local data, with host_c_reader attr)")
 
@@ -112,8 +122,14 @@ completed = master.wait_for_all_tasks(timeout=30)
 INFO(f"[PATHS] host_C read task completed, total tasks={len(completed)}")
 
 # 额外校验：master 句柄直接读（走 remote_idx → merge worker）。
-assert merged_db.read_object("paths/k1") == 111
-assert merged_db.read_object("paths/k2") == 222
-assert merged_db.read_object("paths/k3") == "consistency"
+merged_k1 = merged_db.read_object("paths/k1")
+# 原断言：assert merged_db.read_object("paths/k1") == 111
+record("merged_k1", merged_k1)
+merged_k2 = merged_db.read_object("paths/k2")
+# 原断言：assert merged_db.read_object("paths/k2") == 222
+record("merged_k2", merged_k2)
+merged_k3 = merged_db.read_object("paths/k3")
+# 原断言：assert merged_db.read_object("paths/k3") == "consistency"
+record("merged_k3", merged_k3)
 
-INFO("[PASS] test_merge_db_paths_consistency")
+INFO("[DONE] test_merge_db_paths_consistency")

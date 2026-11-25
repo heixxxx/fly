@@ -1,0 +1,8 @@
+{
+  "t0/matrix_frozen": true,
+  "t1/source_deleted": true,
+  "t2/uid_B_differs": true,
+  "t3/find_db_path": "<sub_log_dir>/db_chain_reuse/shared_matrix",
+  "t3/find_uid_is_original": true,
+  "t3/original_data": 100
+}

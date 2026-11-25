@@ -1,0 +1,6 @@
+{
+  "db_frozen": true,
+  "merged_alpha": 100,
+  "merged_beta": 200,
+  "merged_gamma": "merged_value"
+}
