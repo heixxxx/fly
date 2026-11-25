@@ -5,16 +5,7 @@ from _fly_log import INFO
 DB_PATH = os.environ["FLY_VAR_PERSISTENCE_DB"]
 
 from fly import load_db, get_config, as_task
-
-
-def wait_for(condition, timeout=20.0, interval=0.5):
-    import time
-    t0 = time.time()
-    while time.time() - t0 < timeout:
-        if condition():
-            return True
-        time.sleep(interval)
-    return False
+from test import record, wait_tasks
 
 
 get_config().set_int("fail_unscheduleable_tasks", 0)
@@ -31,14 +22,17 @@ db = load_db(DB_PATH)
 
 @as_task()
 def assert_var(db, name, expected):
+    # 任务函数内的断言保留：record 只能在主进程调用；断言失败时任务不计入
+    # 已完成，由主进程的等待门槛（wait_tasks）发现并给出失败详情。
     val = db.get_var(name)
     assert val == expected, f"var {name}={val!r}, expected {expected!r} (not persisted?)"
 
 
 assert_var(db, "persist_int", 123)
 assert_var(db, "persist_str", "hello")
-assert wait_for(lambda: len(master.completed_tasks) >= 2)
-assert len(master.failed_tasks) == 0, f"persistence assertion failed: {master.failed_tasks}"
+# 原断言：assert wait_for(lambda: len(master.completed_tasks) >= 2)
+# 原断言：assert len(master.failed_tasks) == 0, f"persistence assertion failed: {master.failed_tasks}"
+assert wait_tasks(master, 2, "vars_persisted/no_failed_tasks", timeout=20.0)
 
 master.stop()
-INFO("[PASS] var_persistence_run2")
+INFO("[DONE] var_persistence_run2")

@@ -17,4 +17,4 @@ py_library(
 
 # qa/runqa 与单元测试按路径加载本文件（runqa 无 .py 扩展名不能被导入，
 # 共享逻辑都在 qa_record.py），导出文件 label 供 data 引用。
-exports_files(["qa_record.py"])
+exports_files(["qa_record.py", "qa_wait.py"])

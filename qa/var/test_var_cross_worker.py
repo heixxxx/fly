@@ -6,21 +6,12 @@ from fly import get_work_directory
 DB_PATH = os.path.join(get_work_directory(), "db")
 
 from fly import open_db, get_config, get_work_directory, as_task
+from test import record, wait_tasks
 
 
 def cleanup():
     if os.path.isdir(DB_PATH):
         shutil.rmtree(DB_PATH, ignore_errors=True)
-
-
-def wait_for(condition, timeout=20.0, interval=0.5):
-    import time
-    t0 = time.time()
-    while time.time() - t0 < timeout:
-        if condition():
-            return True
-        time.sleep(interval)
-    return False
 
 
 cleanup()
@@ -55,6 +46,8 @@ def produce(db, var_name, var_value, obj_key, obj_value):
          vars=lambda d, sig, var: [d.get_full_name(var)],
          requires=["consumer"])
 def consume(d, sig, var):
+    # 任务函数内的断言保留：record 只能在主进程调用；断言失败时任务不计入
+    # 已完成，由主进程的等待门槛（wait_tasks）发现并给出失败详情。
     obj = d.read_object(sig)
     val = d.get_var(var)
     assert obj == "done", f"obj={obj!r}"
@@ -62,12 +55,14 @@ def consume(d, sig, var):
 
 
 produce(db, "config_val", 99, "signal", "done")
-assert wait_for(lambda: len(master.completed_tasks) >= 1), "producer task did not complete"
-assert len(master.failed_tasks) == 0, f"producer task failed: {master.failed_tasks}"
+# 原断言：assert wait_for(lambda: len(master.completed_tasks) >= 1), "producer task did not complete"
+# 原断言：assert len(master.failed_tasks) == 0, f"producer task failed: {master.failed_tasks}"
+assert wait_tasks(master, 1, "producer/no_failed_tasks", timeout=20.0), "producer task did not complete"
 
 consume(db, "signal", "config_val")
-assert wait_for(lambda: len(master.completed_tasks) >= 2), "consumer task did not complete"
-assert len(master.failed_tasks) == 0, f"consumer task failed: {master.failed_tasks}"
+# 原断言：assert wait_for(lambda: len(master.completed_tasks) >= 2), "consumer task did not complete"
+# 原断言：assert len(master.failed_tasks) == 0, f"consumer task failed: {master.failed_tasks}"
+assert wait_tasks(master, 2, "consumer/no_failed_tasks", timeout=20.0), "consumer task did not complete"
 
 master.stop()
-INFO("[PASS] test_var_cross_worker")
+INFO("[DONE] test_var_cross_worker")

@@ -1,0 +1,6 @@
+{
+  "counter_check/no_failed_tasks": true,
+  "missing_var_check/no_failed_tasks": true,
+  "removed_var_check/no_failed_tasks": true,
+  "str_dict_check/no_failed_tasks": true
+}

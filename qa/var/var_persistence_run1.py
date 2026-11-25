@@ -5,16 +5,7 @@ from _fly_log import INFO
 DB_PATH = os.environ["FLY_VAR_PERSISTENCE_DB"]
 
 from fly import open_db, get_config, as_task
-
-
-def wait_for(condition, timeout=20.0, interval=0.5):
-    import time
-    t0 = time.time()
-    while time.time() - t0 < timeout:
-        if condition():
-            return True
-        time.sleep(interval)
-    return False
+from test import record, wait_tasks
 
 
 get_config().set_int("fail_unscheduleable_tasks", 0)
@@ -41,12 +32,14 @@ def freeze_db(db):
 
 set_var(db, "persist_int", 123)
 set_var(db, "persist_str", "hello")
-assert wait_for(lambda: len(master.completed_tasks) >= 2)
-assert len(master.failed_tasks) == 0
+# 原断言：assert wait_for(lambda: len(master.completed_tasks) >= 2)
+# 原断言：assert len(master.failed_tasks) == 0
+assert wait_tasks(master, 2, "set_vars/no_failed_tasks", timeout=20.0)
 
 freeze_db(db)
-assert wait_for(lambda: len(master.completed_tasks) >= 3)
-assert len(master.failed_tasks) == 0
+# 原断言：assert wait_for(lambda: len(master.completed_tasks) >= 3)
+# 原断言：assert len(master.failed_tasks) == 0
+assert wait_tasks(master, 3, "freeze/no_failed_tasks", timeout=20.0)
 
 master.stop()
-INFO("[PASS] var_persistence_run1")
+INFO("[DONE] var_persistence_run1")

@@ -1,0 +1,4 @@
+{
+  "freeze/no_failed_tasks": true,
+  "set_vars/no_failed_tasks": true
+}

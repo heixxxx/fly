@@ -1,0 +1,6 @@
+{
+  "freeze/no_failed_tasks": true,
+  "post_freeze/no_failed_tasks": true,
+  "pre_freeze_readable/no_failed_tasks": true,
+  "pre_freeze_set/no_failed_tasks": true
+}

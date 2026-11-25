@@ -571,6 +571,18 @@ completed = master.wait_for_all_tasks(expected=3, timeout=30)
 time.sleep(5)
 ```
 
+**等待任务完成用 `wait_tasks`**（`from test import wait_tasks`）。它替代「等完成数达到 N，再确认没有失败任务」这一对断言：
+
+```python
+assert wait_tasks(master, 3, "counter_check/no_failed_tasks", timeout=20.0), \
+    "tasks did not complete"
+```
+
+- 等到三者之一：完成数达到 N；出现失败任务；超时。有任务失败时**立即**停止等待，不会熬满超时。
+- 第三个参数是记录的键。它记录一条顶层布尔判定「没有失败任务」（见「基准比对机制」），`detail` 带失败任务的编号和它的异常类型、消息，差异报告里能直接看到是哪个任务、为什么。省略这个参数时不记录。
+- **超时要显式传入**，与被它替换的等待一致。缺省值是 30 秒，不传就等于放宽了超时。
+- 没有失败但超时的情况下，它返回假，记录的是 `true`（确实没有失败任务），用例因等待的断言而失败。
+
 ### 不要使用 `from fly.runtime import reset`
 
 QA 测试由 fly 二进制以独立进程运行。`reset()` 用于单进程内模拟重启，不适合 QA 测试。如需跨进程测试，使用 subprocess 协调器模式。

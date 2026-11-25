@@ -1,0 +1,4 @@
+{
+  "consumer/no_failed_tasks": true,
+  "producer/no_failed_tasks": true
+}

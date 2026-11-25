@@ -15,3 +15,12 @@ py_test(
     main = "qa_record_test.py",
     deps = [requirement("numpy")],
 )
+
+# qa_wait.py 同样按路径加载：wait_tasks 的记录调用经模块属性转发，测试里
+# 替换成桩，无需 fly 与真实记录接口（纯标准库，无额外 deps）。
+py_test(
+    name = "qa_wait_test",
+    srcs = ["qa_wait_test.py"],
+    data = ["//src/test/py:qa_wait.py"],
+    main = "qa_wait_test.py",
+)

@@ -14,6 +14,6 @@ def setup_clean():
     if os.path.isdir(DB_PATH):
         shutil.rmtree(DB_PATH, ignore_errors=True)
 
-run_subcase("var_persistence_run1.py", timeout=120, setup=setup_clean, env=shared_env)
-run_subcase("var_persistence_run2.py", timeout=120, env=shared_env)
+run_subcase("var_persistence_run1.py", timeout=120, setup=setup_clean, env=shared_env, check_list=["result.json"])
+run_subcase("var_persistence_run2.py", timeout=120, env=shared_env, check_list=["result.json"])
 INFO("[PASS] test_var_persistence")
