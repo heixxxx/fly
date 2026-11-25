@@ -389,6 +389,8 @@ write_data(db, "key", "value")
 
 常用任务（write_data、read_data 等）建议统一放在 `src/test/py/e2e_tasks.py` 中复用。仅在测试需要特殊行为（如自定义 requires、特定写入逻辑）时在测试脚本中定义。
 
+**需要写入数据库的数据类不能定义在子阶段脚本里**。fly 把用户脚本执行在一个临时命名空间里，脚本内定义的类找不到可寻址的模块名，标准 pickle 在写入和读出两侧都会报错。用 `@as_task()` 定义的任务函数不受影响，它们经 cloudpickle 分发。把这类数据类放进可导入的模块：同目录下不以 `test_` 开头的辅助模块（例：`qa/unit/stream_after_async_data.py`），或 `src/test/py/e2e_tasks.py`。
+
 ### 只使用公共 Python API
 
 QA 测试是高层集成测试，必须只使用公共 Python API。底层 C++ 测试属于 unit test（`qa/unit/` 或 `src/*/tests/`），不属于 QA。
@@ -596,9 +598,16 @@ qa/
 ├── stress/                      # 压力测试（并发写、读写混合、稳定性）
 ├── write_provenance/            # 写入溯源测试（幂等、mismatch、load_db 溯源）
 │
-├── unit/                        # pytest 单元测试（不经 fly 运行，独立 import C++ 模块）
+├── unit/                        # 单元测试（pytest 手动跑，不经 fly）+ 一个 QA 子阶段用例
 │   ├── smoke_test.py            #   Config + serialization + export 集成
-│   └── storage_test.py          #   DataService + Database 单元测试
+│   ├── storage_test.py          #   DataService + Database 单元测试
+│   ├── test_stream_after_async_write.pyt  # 流式写紧跟异步写回归（QA 子阶段，全量必跑）
+│   ├── test_stream_after_async_write.py   #   上者的子阶段脚本（fly 进程执行）
+│   └── stream_after_async_data.py         #   其数据类辅助模块——fly 用户脚本内定义的
+│                                            #   类不可被标准 pickle（__module__ 指向
+│                                            #   __main__ 但 sys.modules["__main__"]
+│                                            #   是 fly 入口模块），可 pickle 的类必须
+│                                            #   放独立模块供按引用寻址
 │
 └── scripts/                     # 基准测试 / 调试脚本（不在 QA 套件中）
     ├── bench_ras*.py            #   RAS 性能基准
