@@ -13,6 +13,7 @@ from scipy.sparse.linalg import splu
 
 from _fly_log import INFO
 from fly import open_db, get_config
+from test import record
 from fly.runtime import get_agent
 from solver import (solve_ras_graph_dynamic, get_dynamic_result,
                     generate_poisson_matrix, MATRIX_OBJ_KEY, SolveDb)
@@ -57,15 +58,19 @@ solve_ras_graph_dynamic(db, MATRIX_OBJ_KEY, NSD, b0, update_rhs,
 result = get_dynamic_result(db)
 INFO(f"dynamic result: {result}")
 
-assert result["num_steps_done"] == 2, \
-    f"early stop expected at 2 steps, got {result['num_steps_done']}"
-assert len(result["sol_names"]) == 2
+# 原断言：assert result["num_steps_done"] == 2, \
+record("num_steps_done", result["num_steps_done"])
+# 原断言：assert len(result["sol_names"]) == 2
+record("sol_names_count", len(result["sol_names"]) == 2,
+       detail=list(result["sol_names"]))
 for t in range(2):
     x_t = np.asarray(db.read_object(f"__rasg__sol_{t}"))
     x_exact = lu.solve(b0 * (1.0 + 0.1 * t))
     rel = np.linalg.norm(x_t - x_exact) / np.linalg.norm(x_exact)
-    assert rel < 1e-4, f"t={t} rel_err too large: {rel:.2e}"
+    # 原断言：assert rel < 1e-4, f"t={t} rel_err too large: {rel:.2e}"
+    record(f"step{t}/rel_err_ok", rel < 1e-4, detail=f"{rel:.2e}")
 
+# 保留：否定性检查——读成功就 raise AssertionError，异常直接让子阶段失败，不需要另记判定
 try:
     db.read_object("__rasg__sol_2")
     raise AssertionError("sol_2 should not exist (stopped early)")
@@ -75,4 +80,4 @@ except Exception:
     pass  # 预期：不存在
 
 get_agent().stop()
-INFO("[PASS] rasgd_early_stop")
+INFO("[DONE] rasgd_early_stop")

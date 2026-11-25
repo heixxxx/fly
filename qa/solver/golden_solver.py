@@ -18,7 +18,7 @@ import threading
 import numpy as np
 from scipy import sparse
 from _fly_log import INFO
-from test import qa_tmp
+from test import qa_tmp, record
 
 
 from fly import open_db, get_config
@@ -112,7 +112,12 @@ def run_golden(n_side, nsd, overlap_ratio=0.30, max_iter=200, tol=1e-8, omega=1.
          f"rel_err={rel_error:.2e} max_err={max_error:.2e} rel_res={rel_res:.2e}")
 
     get_agent().stop()
-    assert converged, f"{label}: did not converge"
-    assert rel_error < 1e-4, f"{label}: rel_error={rel_error:.2e}"
-    assert rel_res < 1e-4, f"{label}: rel_res={rel_res:.2e}"
-    INFO(f"[PASS] {label}")
+    # 原断言：assert converged, f"{label}: did not converge"
+    record("converged", converged, detail={"label": label})
+    # 原断言：assert rel_error < 1e-4, f"{label}: rel_error={rel_error:.2e}"
+    record("rel_error_ok", rel_error < 1e-4,
+           detail={"label": label, "rel_error": f"{rel_error:.2e}"})
+    # 原断言：assert rel_res < 1e-4, f"{label}: rel_res={rel_res:.2e}"
+    record("rel_res_ok", rel_res < 1e-4,
+           detail={"label": label, "rel_res": f"{rel_res:.2e}"})
+    INFO(f"[DONE] {label}")

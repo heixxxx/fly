@@ -5,7 +5,7 @@ Usage:
   bash qa/run_qa_tests.sh qa/test_ras_graph.py
 """
 from _fly_log import INFO
-from test import qa_tmp
+from test import qa_tmp, record
 import os
 import shutil
 import numpy as np
@@ -59,9 +59,12 @@ INFO(f"iters={iters} converged={converged} "
      f"rel_err={rel_error:.2e} max_err={max_error:.2e} "
      f"rel_res={rel_res:.2e}")
 
-assert converged, f"Did not converge: iters={iters}"
-assert rel_error < 1e-4, f"rel_error too large: {rel_error:.2e}"
-assert rel_res < 1e-4, f"rel_residual too large: {rel_res:.2e}"
+# 原断言：assert converged, f"Did not converge: iters={iters}"
+record("converged", converged, detail={"iters": iters})
+# 原断言：assert rel_error < 1e-4, f"rel_error too large: {rel_error:.2e}"
+record("rel_error_ok", rel_error < 1e-4, detail=f"{rel_error:.2e}")
+# 原断言：assert rel_res < 1e-4, f"rel_residual too large: {rel_res:.2e}"
+record("rel_res_ok", rel_res < 1e-4, detail=f"{rel_res:.2e}")
 
 get_agent().stop()
-INFO(f"[PASS] test_ras_graph n={N_SIDE} nsd={NSD}")
+INFO(f"[DONE] test_ras_graph n={N_SIDE} nsd={NSD}")

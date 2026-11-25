@@ -19,10 +19,12 @@ from _fly_log import INFO
 
 from fly import get_config, launch_workers, wait_tasks
 from fly.runtime import get_agent
+from test import record
 from solver import SolverProject
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 MATRIX_PATH = os.path.join(SCRIPT_DIR, "matrices", "poisson_n20.npz")
+# 保留：环境前置检查（签入的矩阵数据缺失时后面的场景无法进行）
 assert os.path.isfile(MATRIX_PATH), f"matrix file missing: {MATRIX_PATH}"
 
 LOG_DIR = get_config().get_str("log_dir")
@@ -53,6 +55,7 @@ get_config().set_int("fail_unscheduleable_tasks", 1)
 # stop_peer_rpc 会关本 worker 全部 peer 连接，共存即互杀）──
 # flow 不碰 worker；用户脚本负责 worker 池。
 launch_workers([{"attributes": [f"sd_{i}"]} for i in range(NSD)] + [{}])
+# 保留：等待原语
 assert get_agent().wait_workers_registered(timeout=60), \
     f"{NSD} workers should connect"
 INFO(f"  {NSD} workers connected (user-managed)")
@@ -60,8 +63,8 @@ INFO(f"  {NSD} workers connected (user-managed)")
 # ── API 1: build_matrix（异步：提交 task 后立即返回 db）──
 proj = SolverProject(PROJ_PATH)
 INFO(f"registered flows: {proj.list_flows()}")
-assert proj.list_flows() == ["build_matrix", "solve"], \
-    f"flows={proj.list_flows()}"
+# 原断言：assert proj.list_flows() == ["build_matrix", "solve"], \
+record("flows", proj.list_flows())
 
 matrix_db = proj.build_matrix(name="matrix", matrix_path=MATRIX_PATH)
 INFO(f"[API1] build_matrix returned db (async): {matrix_db}")
@@ -83,14 +86,18 @@ INFO(f"[API2] solve returned db (async): {result_db}")
 
 # ── 等待求解 + freeze 全部完成 ──
 # freeze task 依赖 __rasg__sol，故 matrix_db / result_db 都 frozen 等价于全流程完成。
+# 保留：等待原语
 assert proj.wait_frozen("matrix", timeout=120), "matrix db should freeze after matrix written"
+# 保留：等待原语
 assert proj.wait_frozen("solve", timeout=120), "solve db should freeze after solve completes"
 INFO("[WAIT] both dbs frozen — full pipeline done")
 
 # ── 校验矩阵 db ──
 m = matrix_db.read_object("matrix")
-assert m["N"] == 400, f"expected N=400, got {m['N']}"
-assert m["n"] == 20
+# 原断言：assert m["N"] == 400, f"expected N=400, got {m['N']}"
+record("matrix_N", m["N"])
+# 原断言：assert m["n"] == 20
+record("matrix_n", m["n"])
 INFO(f"[API1] matrix readable: N={m['N']}")
 
 # ── 校验求解结果（__rasg__sol 是对外结果对象，save_to_db=True）──
@@ -105,18 +112,23 @@ data = np.load(MATRIX_PATH, allow_pickle=False)
 x_exact = data["x_exact"]
 rel_error = np.linalg.norm(x - x_exact) / np.linalg.norm(x_exact)
 INFO(f"[API2] rel_error vs exact = {rel_error:.2e}")
-assert rel_error < 1e-4, f"rel_error too large: {rel_error:.2e}"
+# 原断言：assert rel_error < 1e-4, f"rel_error too large: {rel_error:.2e}"
+record("rel_error_ok", rel_error < 1e-4, detail=f"{rel_error:.2e}")
 
 # 残差校验 ||b - A x||。
 A_sp = sparse.csc_matrix((data["vals"], (data["rows"], data["cols"])), shape=(400, 400))
 rel_res = np.linalg.norm(data["b"] - A_sp @ x) / np.linalg.norm(data["b"])
 INFO(f"[API2] rel_residual = {rel_res:.2e}")
-assert rel_res < 1e-4, f"rel_residual too large: {rel_res:.2e}"
+# 原断言：assert rel_res < 1e-4, f"rel_residual too large: {rel_res:.2e}"
+record("rel_res_ok", rel_res < 1e-4, detail=f"{rel_res:.2e}")
 
 # ── Project 管理校验：两个 db 都记入 meta ──
-assert proj.list_dbs() == ["matrix", "solve"], f"dbs={proj.list_dbs()}"
-assert proj.is_db_frozen("matrix") and proj.is_db_frozen("solve"), \
-    "both dbs should be frozen"
+# 原断言：assert proj.list_dbs() == ["matrix", "solve"], f"dbs={proj.list_dbs()}"
+record("dbs", proj.list_dbs())
+# 原断言：assert proj.is_db_frozen("matrix") and proj.is_db_frozen("solve"), \
+record("matrix_db_frozen", proj.is_db_frozen("matrix"))
+# 原断言：assert proj.is_db_frozen("matrix") and proj.is_db_frozen("solve"), \
+record("solve_db_frozen", proj.is_db_frozen("solve"))
 
 get_agent().stop()
-INFO("[PASS] test_solver_project")
+INFO("[DONE] test_solver_project")

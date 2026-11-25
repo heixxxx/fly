@@ -1,0 +1,14 @@
+{
+  "all_converged": true,
+  "b_0_cleaned": true,
+  "b_1_cleaned": true,
+  "b_2_exists": true,
+  "iters_count": true,
+  "ldlt_setup_count_ok": true,
+  "num_steps_done": 3,
+  "step0/rel_err_ok": true,
+  "step1/rel_err_ok": true,
+  "step2/rel_err_ok": true,
+  "warm_start/step1_not_more_than_cold": true,
+  "warm_start/step2_not_more_than_cold": true
+}

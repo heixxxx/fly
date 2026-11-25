@@ -6,6 +6,7 @@ from scipy.sparse.linalg import splu
 import numpy as np
 
 from fly import open_db, get_config
+from test import record
 from solver import generate_poisson_matrix
 from solver import solve_once, MATRIX_OBJ_KEY, SolveDb
 
@@ -50,9 +51,11 @@ def main():
     print(f"  time={elapsed:.2f}s")
     print(f"  rel_err={rel_err:.3e}")
 
-    assert result["converged"], "Did not converge"
-    assert rel_err < 1e-4, f"rel_err too large: {rel_err}"
-    print("[PASS] solve_once n=50 converged with acceptable accuracy")
+    # 原断言：assert result["converged"], "Did not converge"
+    record("converged", bool(result["converged"]), detail=bool(result["converged"]))
+    # 原断言：assert rel_err < 1e-4, f"rel_err too large: {rel_err}"
+    record("rel_err_ok", rel_err < 1e-4, detail=f"{rel_err:.3e}")
+    print("[DONE] solve_once n=50 converged with acceptable accuracy")
 
 
 if __name__ == "__main__":

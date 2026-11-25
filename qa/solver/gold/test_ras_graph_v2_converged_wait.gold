@@ -1,0 +1,14 @@
+{
+  "converged": true,
+  "converged_is_bool": true,
+  "iters_positive": true,
+  "result_keys": [
+    "converged",
+    "iters",
+    "x"
+  ],
+  "result_type": "dict",
+  "x_shape": [
+    400
+  ]
+}

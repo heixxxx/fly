@@ -16,6 +16,7 @@ import numpy as np
 
 from _fly_log import INFO, WARN
 from fly import open_db, get_config
+from test import record
 from fly.runtime import get_agent
 from solver import (solve_ras_graph_dynamic, generate_poisson_matrix,
                     MATRIX_OBJ_KEY, SolveDb)
@@ -58,6 +59,7 @@ solve_ras_graph_dynamic(db, MATRIX_OBJ_KEY, NSD, b0, update_rhs, NUM_STEPS,
 # 与组失败的落账存在竞速窗口。
 from test import wait_until
 master = get_agent()
+# 保留：等待原语
 assert wait_until(lambda: master.failed_tasks, timeout=120), \
     "chain did not fail within harness budget"
 WARN(f"expected failure observed: {master.failed_tasks}")
@@ -73,7 +75,8 @@ with open(os.path.join(FLY_CASE_LOG_DIR, "restart_digests.json"), "w") as f:
     json.dump(digests, f)
 
 bin_path = os.path.join(DB_PATH, "failed_tasks.bin")
-assert os.path.isfile(bin_path), f"failed_tasks.bin missing at {bin_path}"
+# 原断言：assert os.path.isfile(bin_path), f"failed_tasks.bin missing at {bin_path}"
+record("failed_tasks_bin_exists", os.path.isfile(bin_path), detail=bin_path)
 
 get_agent().stop()
-INFO("[PASS] rasgd_restart_run1 (failed mid-run, results preserved)")
+INFO("[DONE] rasgd_restart_run1 (failed mid-run, results preserved)")

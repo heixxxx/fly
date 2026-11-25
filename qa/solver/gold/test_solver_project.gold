@@ -1,0 +1,16 @@
+{
+  "dbs": [
+    "matrix",
+    "solve"
+  ],
+  "flows": [
+    "build_matrix",
+    "solve"
+  ],
+  "matrix_N": 400,
+  "matrix_db_frozen": true,
+  "matrix_n": 20,
+  "rel_error_ok": true,
+  "rel_res_ok": true,
+  "solve_db_frozen": true
+}

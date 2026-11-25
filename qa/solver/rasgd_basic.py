@@ -19,6 +19,7 @@ from scipy.sparse.linalg import splu
 
 from _fly_log import INFO
 from fly import open_db, get_config
+from test import record
 from fly.runtime import get_agent
 from solver import (solve_ras_graph_dynamic, get_dynamic_result,
                     generate_poisson_matrix, MATRIX_OBJ_KEY, SolveDb)
@@ -67,19 +68,28 @@ INFO(f"kickoff returned in {kickoff_elapsed:.2f}s (non-blocking), handle={handle
 result = get_dynamic_result(db)
 INFO(f"dynamic result: {result}")
 
-assert result["num_steps_done"] == NUM_STEPS
+# 原断言：assert result["num_steps_done"] == NUM_STEPS
+record("num_steps_done", result["num_steps_done"])
+# 原断言：assert len(result["iters"]) == NUM_STEPS
+record("iters_count", len(result["iters"]) == NUM_STEPS,
+       detail=list(result["iters"]))
+# 保留：守卫——后面的 result["iters"][t]、result["iters"][0] 按步取下标
 assert len(result["iters"]) == NUM_STEPS
-assert all(result["converged"]), f"not all converged: {result['converged']}"
+# 原断言：assert all(result["converged"]), f"not all converged: {result['converged']}"
+record("all_converged", all(result["converged"]), detail=list(result["converged"]))
 
 for t in range(NUM_STEPS):
     x_t = np.asarray(db.read_object(f"__rasg__sol_{t}"))
     rel = np.linalg.norm(x_t - x_exact[t]) / np.linalg.norm(x_exact[t])
     INFO(f"t={t}: iters={result['iters'][t]} rel_err={rel:.2e}")
-    assert rel < 1e-4, f"t={t} rel_err too large: {rel:.2e}"
+    # 原断言：assert rel < 1e-4, f"t={t} rel_err too large: {rel:.2e}"
+    record(f"step{t}/rel_err_ok", rel < 1e-4, detail=f"{rel:.2e}")
 
 for t in range(1, NUM_STEPS):
-    assert result["iters"][t] <= result["iters"][0], \
-        f"warm start ineffective: iters={result['iters']}"
+    # 原断言：assert result["iters"][t] <= result["iters"][0], \
+    record(f"warm_start/step{t}_not_more_than_cold",
+           result["iters"][t] <= result["iters"][0],
+           detail=list(result["iters"]))
 INFO(f"warm start OK: iters={result['iters']} (step 0 is the cold start)")
 
 
@@ -92,9 +102,12 @@ def _obj_exists(name):
         return False
 
 
-assert _obj_exists("__rasg__b_2"), "b_2 should exist (final step keeps its rhs)"
-assert not _obj_exists("__rasg__b_0"), "b_0 should be cleaned by controller(1)"
-assert not _obj_exists("__rasg__b_1"), "b_1 should be cleaned by controller(2)"
+# 原断言：assert _obj_exists("__rasg__b_2"), "b_2 should exist (final step keeps its rhs)"
+record("b_2_exists", _obj_exists("__rasg__b_2"), detail="__rasg__b_2")
+# 原断言：assert not _obj_exists("__rasg__b_0"), "b_0 should be cleaned by controller(1)"
+record("b_0_cleaned", not _obj_exists("__rasg__b_0"), detail="__rasg__b_0")
+# 原断言：assert not _obj_exists("__rasg__b_1"), "b_1 should be cleaned by controller(2)"
+record("b_1_cleaned", not _obj_exists("__rasg__b_1"), detail="__rasg__b_1")
 
 get_agent().stop()
 # worker 矩阵缓存复用：LDLT 冷构建恰 nsd 次（worker 日志在 FLY_CASE_SUB_DIR）
@@ -105,6 +118,7 @@ for fn in sorted(os.listdir(sub_dir)):
         with open(os.path.join(sub_dir, fn), errors="replace") as f:
             setup_count += f.read().count("LDLT done (cold)")
 INFO(f"LDLT cold setups: {setup_count} (expect {NSD})")
-assert setup_count == NSD, f"setup cache reuse broken: {setup_count} != {NSD}"
+# 原断言：assert setup_count == NSD, f"setup cache reuse broken: {setup_count} != {NSD}"
+record("ldlt_setup_count_ok", setup_count == NSD, detail=setup_count)
 
-INFO("[PASS] rasgd_basic")
+INFO("[DONE] rasgd_basic")

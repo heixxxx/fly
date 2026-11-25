@@ -1,0 +1,10 @@
+{
+  "all_converged": true,
+  "ldlt_cold_setup_count_ok": true,
+  "num_steps_done": 3,
+  "preserved_results_intact": true,
+  "restart_resubmitted": true,
+  "step0/rel_err_ok": true,
+  "step1/rel_err_ok": true,
+  "step2/rel_err_ok": true
+}

@@ -25,13 +25,14 @@ def _clean_deadline_db():
         shutil.rmtree(DEADLINE_DB, ignore_errors=True)
 
 
-run_subcase("rasgd_basic.py", timeout=240)
-run_subcase("rasgd_early_stop.py", timeout=240)
+run_subcase("rasgd_basic.py", timeout=240, check_list=["result.json"])
+run_subcase("rasgd_early_stop.py", timeout=240, check_list=["result.json"])
 
 run_subcase("rasgd_restart_run1.py", timeout=300, setup=_clean_restart_db,
-            env={"FLY_RASG_FAIL_AT": "2:1", "FLY_DB_PATH": RESTART_DB})
+            env={"FLY_RASG_FAIL_AT": "2:1", "FLY_DB_PATH": RESTART_DB},
+            check_list=["result.json"])
 run_subcase("rasgd_restart_run2.py", timeout=300,
-            env={"FLY_DB_PATH": RESTART_DB})
+            env={"FLY_DB_PATH": RESTART_DB}, check_list=["result.json"])
 
 run_subcase("rasgd_collect_deadline.py", timeout=240,
             setup=_clean_deadline_db,

@@ -19,6 +19,7 @@ from scipy.sparse.linalg import splu
 
 from _fly_log import INFO
 from fly import ensure_workers, get_config, load_db
+from test import record
 from fly.runtime import get_agent
 from solver import get_dynamic_result
 
@@ -48,21 +49,27 @@ ensure_workers(attrs, timeout=30.0, exclude=r"^rasg:")
 
 restarted = master.restart_failed_tasks([db])
 INFO(f"restart_failed_tasks resubmitted: {restarted}")
-assert restarted > 0, "no failed tasks were resubmitted"
+# 原断言：assert restarted > 0, "no failed tasks were resubmitted"
+record("restart_resubmitted", restarted > 0, detail=restarted)
 
 result = get_dynamic_result(db)
 INFO(f"dynamic result after restart: {result}")
-assert result["num_steps_done"] == NUM_STEPS
-assert all(result["converged"])
+# 原断言：assert result["num_steps_done"] == NUM_STEPS
+record("num_steps_done", result["num_steps_done"])
+# 原断言：assert all(result["converged"])
+record("all_converged", all(result["converged"]), detail=list(result["converged"]))
 
 # 已有结果未被重算改写
 with open(os.path.join(FLY_CASE_LOG_DIR, "restart_digests.json")) as f:
     digests = json.load(f)
+changed = []
 for name, expect_md5 in digests.items():
     x_t = np.asarray(db.read_object(name))
     actual = hashlib.md5(x_t.tobytes()).hexdigest()
-    assert actual == expect_md5, \
-        f"{name} was recomputed/changed: {actual} != {expect_md5}"
+    if actual != expect_md5:
+        changed.append(name)
+# 原断言：assert actual == expect_md5, \
+record("preserved_results_intact", not changed, detail=changed)
 INFO(f"preserved results intact: {list(digests)}")
 
 # 数值正确性（全部 T 步）
@@ -75,18 +82,25 @@ for t in range(NUM_STEPS):
     x_t = np.asarray(db.read_object(f"__rasg__sol_{t}"))
     x_exact = lu.solve(b0 * (1.0 + 0.1 * t))
     rel = np.linalg.norm(x_t - x_exact) / np.linalg.norm(x_exact)
-    assert rel < 1e-4, f"t={t} rel_err too large: {rel:.2e}"
+    # 原断言：assert rel < 1e-4, f"t={t} rel_err too large: {rel:.2e}"
+    record(f"step{t}/rel_err_ok", rel < 1e-4, detail=f"{rel:.2e}")
 
 
 get_agent().stop()
 # 冷启动：新 worker 上 LDLT 重建恰 nsd 次（重投链的 setup_compute）
+setup_files = {}
 setup_count = 0
 sub_dir = os.environ["FLY_CASE_SUB_DIR"]
 for fn in sorted(os.listdir(sub_dir)):
     if fn.startswith("worker") and fn.endswith(".log"):
         with open(os.path.join(sub_dir, fn), errors="replace") as f:
-            setup_count += f.read().count("LDLT done (cold)")
+            n = f.read().count("LDLT done (cold)")
+        setup_files[fn] = n
+        setup_count += n
 INFO(f"LDLT cold setups in fresh run: {setup_count} (expect {NSD})")
-assert setup_count == NSD, f"cold setups={setup_count} (expect {NSD}); files=" + str([(fn, open(os.path.join(sub_dir, fn), errors="replace").read().count("LDLT done (cold)")) for fn in sorted(os.listdir(sub_dir)) if fn.startswith("worker") and fn.endswith(".log")])
+# 原断言：assert setup_count == NSD, f"cold setups={setup_count} (expect {NSD}); files=" + str([(fn, open(os.path.join(sub_dir, fn), errors="replace").read().count("LDLT done (cold)")) for fn in sorted(os.listdir(sub_dir)) if fn.startswith("worker") and fn.endswith(".log")])
+# detail 带每个 worker 日志文件的计数，失败时不用翻日志就能定位是哪个 worker 多算或漏算
+record("ldlt_cold_setup_count_ok", setup_count == NSD,
+       detail={"count": setup_count, "expect": NSD, "files": setup_files})
 
-INFO("[PASS] rasgd_restart_run2 (chain resumed from bin, results correct)")
+INFO("[DONE] rasgd_restart_run2 (chain resumed from bin, results correct)")

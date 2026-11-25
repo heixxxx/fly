@@ -1,0 +1,6 @@
+{
+  "num_steps_done": 2,
+  "sol_names_count": true,
+  "step0/rel_err_ok": true,
+  "step1/rel_err_ok": true
+}

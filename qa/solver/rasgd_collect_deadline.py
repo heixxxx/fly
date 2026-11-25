@@ -56,8 +56,9 @@ INFO(f"[DEADLINE-CASE] chain failed as expected, elapsed={elapsed:.0f}s")
 # 断言 2：master 权威 failed 列表非空（组死语义传播到任务账本）。
 from test import wait_until
 master = get_agent()
+# 保留：等待原语
 assert wait_until(lambda: master.failed_tasks, timeout=90), \
     "group death must surface as failed tasks"
-INFO("[PASS] rasgd_collect_deadline")
+INFO("[DONE] rasgd_collect_deadline")
 
 get_agent().stop()
