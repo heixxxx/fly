@@ -1,0 +1,4 @@
+{
+  "worker_connected": true,
+  "write_and_remove/no_failed_tasks": true
+}

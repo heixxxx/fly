@@ -1,0 +1,16 @@
+{
+  "auto_rename/db1_dir_exists": true,
+  "auto_rename/db2_dir_exists": true,
+  "auto_rename/paths": {
+    "db1": "<sub_log_dir>/db",
+    "db2": "<sub_log_dir>/db.1"
+  },
+  "auto_rename/worker_connected": true,
+  "data_path/worker_connected": true,
+  "data_path_matches_custom": true,
+  "getters/data_path_type": "str",
+  "getters/data_path_value": "",
+  "getters/db_path": "<sub_log_dir>/db",
+  "getters/worker_connected": true,
+  "port_positive": true
+}

@@ -1,0 +1,6 @@
+{
+  "frozen_marker_still_exists": true,
+  "frozen_write_error_type": "RuntimeError",
+  "frozen_write_rejected": true,
+  "still_frozen_after_load": true
+}

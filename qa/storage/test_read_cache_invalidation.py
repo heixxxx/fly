@@ -27,7 +27,7 @@ import time
 import os
 import shutil
 
-from test import write_data
+from test import write_data, record
 from fly import open_db, get_config
 
 DB_PATH = os.path.join(get_config().get_str("log_dir"), "db")
@@ -73,18 +73,20 @@ db = open_db(DB_PATH)
 write_data(db, "k", 1)
 assert wait_for(lambda: len(master.completed_tasks) >= 1, timeout=30.0)
 
-val = db.read_object("k", cache="high")
-assert val == 1, f"initial read failed: expected 1, got {val}"
-assert assert_cached("k"), "object should be cached in the Python high tier after read"
+# 原断言：assert val == 1, f"initial read failed: expected 1, got {val}"
+record("initial_read", db.read_object("k", cache="high"))
+# 原断言：assert assert_cached("k"), "object should be cached in the Python high tier after read"
+k_cached = assert_cached("k")
+record("k_cached_after_read", k_cached, detail=k_cached)
 
 # ── Scenario 1: write_object invalidation ──────────────────────────────
 # provenance 禁止同名覆盖（不同 context）。合法重写 = 先 remove 再 write。
 # remove 清 Python high-tier cache + provenance；write 填新值，read 应见新值。
 db.remove_object("k")
 db.write_object("k", 2)
-val = db.read_object("k", cache="high")
-assert val == 2, f"write invalidation failed: expected 2, got {val} (stale cache)"
-INFO("[PASS] write_object invalidation: remove+rewrite refreshes cached value")
+# 原断言：assert val == 2, f"write invalidation failed: expected 2, got {val} (stale cache)"
+record("write_invalidation_value", db.read_object("k", cache="high"))
+INFO("[DONE] write_object invalidation: remove+rewrite refreshes cached value")
 
 # ── Scenario 2（原直写路径 invalidation）已删除：_write_pickle_bytes/
 # _read_decompressed 导出随 T2b（2026-08-31）清理，remove→重写→可见的失效
@@ -94,17 +96,20 @@ INFO("[PASS] write_object invalidation: remove+rewrite refreshes cached value")
 # Re-populate the high-tier cache with a fresh pickle object, then remove it.
 write_data(db, "rm", 10)
 assert wait_for(lambda: len(master.completed_tasks) >= 2, timeout=30.0)
-val = db.read_object("rm", cache="high")
-assert val == 10, f"setup read failed: expected 10, got {val}"
-assert assert_cached("rm"), "rm should be cached before removal"
+# 原断言：assert val == 10, f"setup read failed: expected 10, got {val}"
+record("setup_read_rm", db.read_object("rm", cache="high"))
+# 原断言：assert assert_cached("rm"), "rm should be cached before removal"
+rm_cached = assert_cached("rm")
+record("rm_cached_before_removal", rm_cached, detail=rm_cached)
 
 # remove_object on the master sends an async remove request to the worker, so
 # the C++ index is not guaranteed gone immediately. We therefore assert the
 # Python high-tier cache entry directly: after remove_object it MUST be gone
 # (that is the invalidation contract we added), regardless of C++ timing.
 db.remove_object("rm")
-assert not assert_cached("rm"), \
-    "remove invalidation failed: stale Python high-tier entry still present"
-INFO("[PASS] remove_object invalidation: high-tier cache entry dropped")
+# 原断言：assert not assert_cached("rm"), \
+rm_cache_dropped = not assert_cached("rm")
+record("rm_cache_dropped", rm_cache_dropped, detail=rm_cache_dropped)
+INFO("[DONE] remove_object invalidation: high-tier cache entry dropped")
 
-INFO("[PASS] test_read_cache_invalidation: all scenarios verified")
+INFO("[DONE] test_read_cache_invalidation: all scenarios verified")

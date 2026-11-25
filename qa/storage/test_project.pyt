@@ -12,9 +12,9 @@ import os
 PROJ_LOAD = os.path.join(FLY_CASE_LOG_DIR, "project_load")
 load_env = {"FLY_PROJ_PATH": PROJ_LOAD}
 
-run_subcase("project_basic_mechanism.py", timeout=120)
-run_subcase("project_load_run1.py", timeout=120, env=load_env)
-run_subcase("project_load_run2.py", timeout=120, env=load_env)
-run_subcase("project_sync_freeze.py", timeout=120)
-run_subcase("project_errors.py", timeout=120)
+run_subcase("project_basic_mechanism.py", timeout=120, check_list=["result.json"])
+run_subcase("project_load_run1.py", timeout=120, env=load_env, check_list=["result.json"])
+run_subcase("project_load_run2.py", timeout=120, env=load_env, check_list=["result.json"])
+run_subcase("project_sync_freeze.py", timeout=120, check_list=["result.json"])
+run_subcase("project_errors.py", timeout=120, check_list=["result.json"])
 INFO("[PASS] test_project: 5 sub cases (basic + load + sync + errors) verified")

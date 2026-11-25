@@ -1,0 +1,14 @@
+{
+  "db_a_frozen_after_freeze_db": true,
+  "db_a_not_frozen_before_freeze": true,
+  "db_b_frozen_after_freeze_all": true,
+  "db_b_not_frozen_before_freeze_all": true,
+  "db_b_val": 2,
+  "flows": [
+    "make_db",
+    "make_db_unfrozen"
+  ],
+  "get_db_missing_error_type": "KeyError",
+  "get_db_missing_raises": true,
+  "unresolved_name_not_frozen": true
+}

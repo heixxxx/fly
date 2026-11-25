@@ -1,0 +1,5 @@
+{
+  "load_error_mentions_meta": true,
+  "load_error_type": "RuntimeError",
+  "load_without_meta_raises": true
+}

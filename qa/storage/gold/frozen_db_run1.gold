@@ -1,0 +1,8 @@
+{
+  "frozen_after_freeze": true,
+  "frozen_marker_exists": true,
+  "read_back/frozen_a": 10,
+  "read_back/frozen_b": 20,
+  "read_back/frozen_c": "hello",
+  "worker_connected": true
+}

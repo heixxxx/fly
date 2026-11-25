@@ -5,7 +5,7 @@ import shutil
 
 
 
-from test import write_data
+from test import write_data, record
 from fly import open_db, get_config
 DB_PATH = os.path.join(get_config().get_str("log_dir"), "db")
 
@@ -48,14 +48,18 @@ write_data(db2, "shared_key", 99)
 
 assert wait_for(lambda: len(master.completed_tasks) >= 2, timeout=30.0)
 
-val1 = db1.read_object("shared_key", cache="low")
-val2 = db2.read_object("shared_key", cache="low")
-assert val1 == 42, f"db1 expected 42, got {val1}"
-assert val2 == 99, f"db2 expected 99, got {val2}"
+# 原断言：assert val1 == 42, f"db1 expected 42, got {val1}"
+# 原断言：assert val2 == 99, f"db2 expected 99, got {val2}"
+record("read_low", {
+    "db1": db1.read_object("shared_key", cache="low"),
+    "db2": db2.read_object("shared_key", cache="low"),
+})
 
-val1 = db1.read_object("shared_key", cache="high")
-val2 = db2.read_object("shared_key", cache="high")
-assert val1 == 42, f"db1 HIGH expected 42, got {val1}"
-assert val2 == 99, f"db2 HIGH expected 99, got {val2}"
+# 原断言：assert val1 == 42, f"db1 HIGH expected 42, got {val1}"
+# 原断言：assert val2 == 99, f"db2 HIGH expected 99, got {val2}"
+record("read_high", {
+    "db1": db1.read_object("shared_key", cache="high"),
+    "db2": db2.read_object("shared_key", cache="high"),
+})
 
-INFO("[PASS] test_read_cache_cross_db: cross-DB cache isolation verified")
+INFO("[DONE] test_read_cache_cross_db: cross-DB cache isolation verified")

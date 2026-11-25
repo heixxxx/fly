@@ -1,0 +1,33 @@
+{
+  "dbs_after_step1": [
+    "step1"
+  ],
+  "dbs_initial": [],
+  "dbs_rebind": [
+    "step1",
+    "step1.1",
+    "step2"
+  ],
+  "flows": [
+    "make_db"
+  ],
+  "get_db_same_path": {
+    "db1": "<case_log_dir>/project_basic/step1",
+    "db1b": "<case_log_dir>/project_basic/step1"
+  },
+  "meta_class_suffix": true,
+  "meta_dbs_at_least_3": true,
+  "meta_file_exists": true,
+  "meta_project_id_set": true,
+  "pickle_db_cache_empty": {},
+  "pickle_db_path_preserved": {
+    "proj2": "<case_log_dir>/project_basic",
+    "proj3": "<case_log_dir>/project_basic"
+  },
+  "repr_contains_class": true,
+  "step1_1_val": 200,
+  "step1_exact_val": 100,
+  "step1_latest_val": 200,
+  "step1_val": 100,
+  "step2_from_src_val": 200
+}

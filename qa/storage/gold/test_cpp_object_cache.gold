@@ -1,0 +1,59 @@
+{
+  "cache_empty_after_clear": true,
+  "cpp_read_fields": {
+    "block_count": 0,
+    "file_name": "data.dat",
+    "is_large": false,
+    "object_name": "test/entry",
+    "offset": 100,
+    "size": 512
+  },
+  "cpp_read_high_cache_offset": 100,
+  "cpp_read_high_cache_type": "EXStgIndexEntry",
+  "cpp_read_type": "EXStgIndexEntry",
+  "pickle_high_reads": {
+    "first": {
+      "key": "value",
+      "nums": [
+        1,
+        2,
+        3
+      ]
+    },
+    "second": {
+      "key": "value",
+      "nums": [
+        1,
+        2,
+        3
+      ]
+    }
+  },
+  "pickle_no_cpp_high_tier": true,
+  "pickle_roundtrip": {
+    "key": "value",
+    "nums": [
+      1,
+      2,
+      3
+    ]
+  },
+  "second_read_fields": {
+    "object_name": "test/entry",
+    "offset": 100
+  },
+  "second_read_type": "EXStgIndexEntry",
+  "stats_after_first_read": {
+    "evictions": 0,
+    "hits": 0,
+    "misses": 1,
+    "puts": 1
+  },
+  "stats_after_second_read": {
+    "evictions": 0,
+    "hits": 1,
+    "misses": 1,
+    "puts": 1
+  },
+  "stream_py_name": "EXStgIndexEntry"
+}

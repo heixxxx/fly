@@ -1,0 +1,37 @@
+{
+  "read_high_first": {
+    "cache_0": 0,
+    "cache_1": 100,
+    "cache_2": 200,
+    "cache_3": 300,
+    "cache_4": 400
+  },
+  "read_high_hit": {
+    "cache_0": 0,
+    "cache_1": 100,
+    "cache_2": 200,
+    "cache_3": 300,
+    "cache_4": 400
+  },
+  "read_low_first": {
+    "cache_0": 0,
+    "cache_1": 100,
+    "cache_2": 200,
+    "cache_3": 300,
+    "cache_4": 400
+  },
+  "read_low_hit": {
+    "cache_0": 0,
+    "cache_1": 100,
+    "cache_2": 200,
+    "cache_3": 300,
+    "cache_4": 400
+  },
+  "read_none": {
+    "cache_0": 0,
+    "cache_1": 100,
+    "cache_2": 200,
+    "cache_3": 300,
+    "cache_4": 400
+  }
+}

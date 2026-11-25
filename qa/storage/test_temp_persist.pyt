@@ -20,5 +20,5 @@ def setup_clean():
 run_subcase("temp_persist_run1.py", timeout=120, setup=setup_clean,
             env={"FLY_DB_PATH": DB_PATH})
 run_subcase("temp_persist_run2.py", timeout=120,
-            env={"FLY_DB_PATH": DB_PATH})
+            env={"FLY_DB_PATH": DB_PATH}, check_list=["result.json"])
 INFO("[PASS] test_temp_persist: temp persisted to db dir + restored across processes")

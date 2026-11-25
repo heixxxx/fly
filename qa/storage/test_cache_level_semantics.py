@@ -11,7 +11,7 @@ from _fly_log import INFO
 import os
 import shutil
 
-from test import write_data
+from test import write_data, record
 from fly import open_db, get_config
 DB_PATH = os.path.join(get_config().get_str("log_dir"), "db")
 
@@ -48,58 +48,70 @@ rc = get_read_cache()
 write_data(db, "lvl/obj", 42)
 assert wait_for(lambda: len(master.completed_tasks) >= 1, timeout=30.0)
 
-v = db.read_object("lvl/obj")  # 默认 cache="low"
-assert v == 42
+# 原断言：assert v == 42
+record("default_read_value", db.read_object("lvl/obj"))  # 默认 cache="low"
 key = f"{DB_PATH}:lvl/obj"
 entry = rc._main.get(key)
-assert entry is not None, "默认读应 populate 主池"
-assert entry.level == "low", f"默认等级应为 low，got {entry.level}"
-v2 = db.read_object("lvl/obj")  # 第二次读：命中缓存
-assert v2 == 42
-INFO("[PASS] read_object 默认 populate low + 命中")
+# 原断言：assert entry is not None, "默认读应 populate 主池"
+# 原断言：assert entry.level == "low", f"默认等级应为 low，got {entry.level}"
+record("default_read/main_populated", entry is not None)
+record("default_read/level", entry.level if entry else None)
+# 原断言：assert v2 == 42
+record("default_read_hit_value", db.read_object("lvl/obj"))  # 第二次读：命中缓存
+INFO("[DONE] read_object 默认 populate low + 命中")
 
 # ── 2. 显式 high 升级（重写后用 high 读 → 主池 high 等级）──
 db.remove_object("lvl/obj")
 db.write_object("lvl/obj", 43)
-v = db.read_object("lvl/obj", cache="high")
-assert v == 43
-assert rc._main[key].level == "high", "显式 high 读应升级等级"
-INFO("[PASS] 显式 high 读取升级等级")
+# 原断言：assert v == 43
+record("high_read_value", db.read_object("lvl/obj", cache="high"))
+entry_high = rc._main.get(key)
+# 原断言：assert rc._main[key].level == "high", "显式 high 读应升级等级"
+record("high_read_level", entry_high.level if entry_high else None)
+INFO("[DONE] 显式 high 读取升级等级")
 
 # ── 3. temp 对象：读后路由 temp 池 ──
 from test import write_temp
 write_temp(db, "lvl/temp_obj", "temp_val")
 assert wait_for(lambda: len(master.completed_tasks) >= 2, timeout=30.0)
 
-tv = db.read_object("lvl/temp_obj")
-assert tv == "temp_val"
+# 原断言：assert tv == "temp_val"
+record("temp_read_value", db.read_object("lvl/temp_obj"))
 tkey = f"{DB_PATH}:lvl/temp_obj"
-assert tkey in rc._temp, "temp 对象读后应入 temp 池"
-assert tkey not in rc._main, "temp 对象不得占主池"
-assert rc._main.get(key) is not None, "temp 读不影响主池既有条目"
-INFO("[PASS] temp 对象路由独立 temp 池")
+# 原断言：assert tkey in rc._temp, "temp 对象读后应入 temp 池"
+# 原断言：assert tkey not in rc._main, "temp 对象不得占主池"
+# 原断言：assert rc._main.get(key) is not None, "temp 读不影响主池既有条目"
+record("temp_pool_keys", sorted(rc._temp))
+record("main_pool_keys_after_temp", sorted(rc._main))
+record("main_entry_preserved", rc._main.get(key) is not None, detail=rc._main.get(key) is not None)
+INFO("[DONE] temp 对象路由独立 temp 池")
 
 # ── 4. write 预热（正式 low / temp 池）──
 db.write_object("lvl/warm", "warm_val", cache="low")
-assert rc._main[f"{DB_PATH}:lvl/warm"].level == "low", "写后预热应入主池 low"
+# 原断言：assert rc._main[f"{DB_PATH}:lvl/warm"].level == "low", "写后预热应入主池 low"
+warm_entry = rc._main.get(f"{DB_PATH}:lvl/warm")
+record("warm_write_level", warm_entry.level if warm_entry else None)
 db.write_object("lvl/warm_t", "wt", save_to_db=False, cache="low")
-assert f"{DB_PATH}:lvl/warm_t" in rc._temp, "temp 写预热应入 temp 池"
-INFO("[PASS] write 预热（正式→主池 / temp→temp 池）")
+# 原断言：assert f"{DB_PATH}:lvl/warm_t" in rc._temp, "temp 写预热应入 temp 池"
+record("warm_temp_pool_keys", sorted(rc._temp))
+INFO("[DONE] write 预热（正式→主池 / temp→temp 池）")
 
 # ── 5. cache="none" 显式零缓存 ──
 # 写前清理（键首用必不存在——missing_ok 清理语义，2026-09-17 幂等删除原语）
 db.remove_object("lvl/none_obj", missing_ok=True)
 db.write_object("lvl/none_obj", "x")
-v = db.read_object("lvl/none_obj", cache="none")
-assert v == "x"
-assert f"{DB_PATH}:lvl/none_obj" not in rc._main, "none 不得 populate"
-INFO("[PASS] cache=none 显式零缓存")
+# 原断言：assert v == "x"
+record("none_cache_read_value", db.read_object("lvl/none_obj", cache="none"))
+# 原断言：assert f"{DB_PATH}:lvl/none_obj" not in rc._main, "none 不得 populate"
+record("none_cache_main_keys", sorted(rc._main))
+INFO("[DONE] cache=none 显式零缓存")
 
 # ── 6. 失效一致性：remove+rewrite 后读到新值（不吐陈旧缓存）──
 db.remove_object("lvl/obj")
 db.write_object("lvl/obj", 44)
-assert db.read_object("lvl/obj") == 44, "重写后必须读到新值（缓存失效）"
-INFO("[PASS] 写后失效一致性")
+# 原断言：assert db.read_object("lvl/obj") == 44, "重写后必须读到新值（缓存失效）"
+record("invalidated_read_value", db.read_object("lvl/obj"))
+INFO("[DONE] 写后失效一致性")
 
-INFO("[PASS] test_cache_level_semantics")
+INFO("[DONE] test_cache_level_semantics")
 cleanup()

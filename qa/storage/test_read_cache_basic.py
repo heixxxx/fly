@@ -5,7 +5,7 @@ import shutil
 
 
 
-from test import write_data
+from test import write_data, record
 from fly import open_db, get_config
 DB_PATH = os.path.join(get_config().get_str("log_dir"), "db")
 
@@ -42,24 +42,34 @@ for i in range(n):
 assert wait_for(lambda: len(master.completed_tasks) >= n, timeout=30.0), \
     f"Expected {n} writes to complete, got {len(master.completed_tasks)}"
 
+read_low_first = {}
 for i in range(n):
-    val = db.read_object(f"cache_{i}", cache="low")
-    assert val == i * 100, f"Expected {i * 100}, got {val}"
+    read_low_first[f"cache_{i}"] = db.read_object(f"cache_{i}", cache="low")
+# 原断言：assert val == i * 100, f"Expected {i * 100}, got {val}"
+record("read_low_first", read_low_first)
 
+read_low_hit = {}
 for i in range(n):
-    val = db.read_object(f"cache_{i}", cache="low")
-    assert val == i * 100, f"LOW cache hit failed: expected {i * 100}, got {val}"
+    read_low_hit[f"cache_{i}"] = db.read_object(f"cache_{i}", cache="low")
+# 原断言：assert val == i * 100, f"LOW cache hit failed: expected {i * 100}, got {val}"
+record("read_low_hit", read_low_hit)
 
+read_high_first = {}
 for i in range(n):
-    val = db.read_object(f"cache_{i}", cache="high")
-    assert val == i * 100, f"HIGH cache failed: expected {i * 100}, got {val}"
+    read_high_first[f"cache_{i}"] = db.read_object(f"cache_{i}", cache="high")
+# 原断言：assert val == i * 100, f"HIGH cache failed: expected {i * 100}, got {val}"
+record("read_high_first", read_high_first)
 
+read_high_hit = {}
 for i in range(n):
-    val = db.read_object(f"cache_{i}", cache="high")
-    assert val == i * 100, f"HIGH cache hit failed: expected {i * 100}, got {val}"
+    read_high_hit[f"cache_{i}"] = db.read_object(f"cache_{i}", cache="high")
+# 原断言：assert val == i * 100, f"HIGH cache hit failed: expected {i * 100}, got {val}"
+record("read_high_hit", read_high_hit)
 
+read_none = {}
 for i in range(n):
-    val = db.read_object(f"cache_{i}", cache="none")
-    assert val == i * 100, f"NONE cache failed: expected {i * 100}, got {val}"
+    read_none[f"cache_{i}"] = db.read_object(f"cache_{i}", cache="none")
+# 原断言：assert val == i * 100, f"NONE cache failed: expected {i * 100}, got {val}"
+record("read_none", read_none)
 
-INFO(f"[PASS] test_read_cache_basic: {n} objects, all cache modes verified")
+INFO(f"[DONE] test_read_cache_basic: {n} objects, all cache modes verified")

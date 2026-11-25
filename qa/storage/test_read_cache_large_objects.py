@@ -5,7 +5,7 @@ import shutil
 
 
 
-from test import write_data
+from test import write_data, record
 from fly import open_db, get_config
 DB_PATH = os.path.join(get_config().get_str("log_dir"), "db")
 
@@ -40,13 +40,16 @@ write_data(db, "large_obj", large_data)
 
 assert wait_for(lambda: len(master.completed_tasks) >= 1, timeout=30.0)
 
+# 原断言：assert val == large_data, "Large object read failed"
 val = db.read_object("large_obj", cache="low")
-assert val == large_data, "Large object read failed"
+record("read_low_matches_original", val == large_data, detail=len(val))
 
+# 原断言：assert val == large_data, "Large object HIGH cache failed"
 val = db.read_object("large_obj", cache="high")
-assert val == large_data, "Large object HIGH cache failed"
+record("read_high_first_matches_original", val == large_data, detail=len(val))
 
+# 原断言：assert val == large_data, "Large object HIGH cache hit failed"
 val = db.read_object("large_obj", cache="high")
-assert val == large_data, "Large object HIGH cache hit failed"
+record("read_high_hit_matches_original", val == large_data, detail=len(val))
 
-INFO("[PASS] test_read_cache_large_objects: large object caching verified")
+INFO("[DONE] test_read_cache_large_objects: large object caching verified")

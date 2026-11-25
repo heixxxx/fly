@@ -1,0 +1,8 @@
+{
+  "db_meta_exists": true,
+  "read_dict": {
+    "x": 1
+  },
+  "read_master_key": "master_value",
+  "worker_connected": true
+}

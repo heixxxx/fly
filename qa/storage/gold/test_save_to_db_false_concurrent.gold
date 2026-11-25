@@ -1,0 +1,16 @@
+{
+  "read_back": {
+    "ctemp_0": 0,
+    "ctemp_1": 100,
+    "ctemp_2": 200,
+    "ctemp_3": 300,
+    "ctemp_4": 400,
+    "ctemp_5": 500,
+    "ctemp_6": 600,
+    "ctemp_7": 700,
+    "ctemp_8": 800,
+    "ctemp_9": 900
+  },
+  "reads/no_failed_tasks": true,
+  "writes/no_failed_tasks": true
+}

@@ -7,7 +7,9 @@
 import os
 import time
 
+from _fly_log import INFO
 from fly import open_db, get_config, get_work_directory
+from test import record
 
 
 def rss_mb():
@@ -30,7 +32,8 @@ db = open_db(DB_PATH)
 
 # 稳定基线：小写 + 读回预热。
 db.write_object("warmup", "x" * 1000)
-assert db.read_object("warmup") == "x" * 1000
+# 原断言：assert db.read_object("warmup") == "x" * 1000
+record("warmup_read", db.read_object("warmup"))
 base = rss_mb()
 
 # 大对象写（128MB 原始）：流式路径（序列化→压缩块→WBQ）。
@@ -59,13 +62,16 @@ peak = peak_rss[0] - base
 # 流式路径上界 = Python payload（bytes 复制）+ WBQ 队列（~40MB）。
 # 阈值 320MB 为 Python 层 payload 的理论上界宽松值；核心断言是压缩侧
 # 峰值不叠加 R+2C（对比整缓冲路径 ≥ 384MB）。
-assert peak < 320, f"streaming write RSS delta {peak:.1f}MB exceeded Python-side bound"
+# 原断言：assert peak < 320, f"streaming write RSS delta {peak:.1f}MB exceeded Python-side bound"
+record("rss_delta_under_bound", peak < 320, detail=peak)
 
 # 读回验证数据正确（流式读路径）。
 got = db.read_object("big")
-assert len(got) == 128 * 1024 * 1024 and got[:4] == b'MMMM'
+# 原断言：assert len(got) == 128 * 1024 * 1024 and got[:4] == b'MMMM'
+record("read_back_len", len(got))
+record("read_back_prefix", got[:4])
 
 master_done = rss_mb() - base
-print(f"[PASS] WriteMemoryCeiling: 128MB object, RSS delta peak={peak:.1f}MB "
-      f"after_read={master_done:.1f}MB (< 320MB bound; peak = Python payload "
-      f"copies only — C++ streaming side adds zero)")
+INFO(f"[DONE] WriteMemoryCeiling: 128MB object, RSS delta peak={peak:.1f}MB "
+     f"after_read={master_done:.1f}MB (< 320MB bound; peak = Python payload "
+     f"copies only — C++ streaming side adds zero)")

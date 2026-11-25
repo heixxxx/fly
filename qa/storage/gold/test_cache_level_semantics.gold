@@ -1,0 +1,27 @@
+{
+  "default_read/level": "low",
+  "default_read/main_populated": true,
+  "default_read_hit_value": 42,
+  "default_read_value": 42,
+  "high_read_level": "high",
+  "high_read_value": 43,
+  "invalidated_read_value": 44,
+  "main_entry_preserved": true,
+  "main_pool_keys_after_temp": [
+    "<sub_log_dir>/db:lvl/obj"
+  ],
+  "none_cache_main_keys": [
+    "<sub_log_dir>/db:lvl/obj",
+    "<sub_log_dir>/db:lvl/warm"
+  ],
+  "none_cache_read_value": "x",
+  "temp_pool_keys": [
+    "<sub_log_dir>/db:lvl/temp_obj"
+  ],
+  "temp_read_value": "temp_val",
+  "warm_temp_pool_keys": [
+    "<sub_log_dir>/db:lvl/temp_obj",
+    "<sub_log_dir>/db:lvl/warm_t"
+  ],
+  "warm_write_level": "low"
+}

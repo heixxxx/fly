@@ -1,0 +1,8 @@
+{
+  "initial_read": 1,
+  "k_cached_after_read": true,
+  "rm_cache_dropped": true,
+  "rm_cached_before_removal": true,
+  "setup_read_rm": 10,
+  "write_invalidation_value": 2
+}

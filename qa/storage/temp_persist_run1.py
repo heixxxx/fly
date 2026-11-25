@@ -29,7 +29,10 @@ def write_temp_and_final(db):
 db = open_db(DB_PATH)
 write_temp_and_final(db)
 completed = master.wait_for_all_tasks(timeout=60)
-assert len(completed) >= 1, f"task should complete, got {completed}"
+# 保留：等待门槛——wait_for_all_tasks 超时返回部分完成列表，等不到完成时
+# run2 的读回必然失败；等待语义留在脚本里，本子阶段不写结果文件。
+assert len(completed) >= 1, f"task should complete, got {completed}"  # 保留：等待门槛
 
 # 不 freeze（freeze 会清理 temp）——run2 验证跨进程恢复。
 master.stop()
+

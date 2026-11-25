@@ -1,0 +1,38 @@
+{
+  "basics": {
+    "entry_b_size": 4,
+    "entry_s_level": "low",
+    "get_b_default": {
+      "len": 4,
+      "sha256": "88d4266fd4e6338d13b845fcf289579d209c897823b9217da3e161936f031589"
+    },
+    "get_b_high": {
+      "len": 4,
+      "sha256": "88d4266fd4e6338d13b845fcf289579d209c897823b9217da3e161936f031589"
+    },
+    "get_s_default": "stored"
+  },
+  "clear": {
+    "entry_count": 0,
+    "high_bytes": 0
+  },
+  "constructor/max_bytes_positive": true,
+  "evict_hard_limit/bytes_under_max": true,
+  "evict_hard_limit/entries_evicted": true,
+  "evict_normal/bytes_under_max": true,
+  "evict_normal/high_score_entry_kept": true,
+  "overwrite": {
+    "entry_b_size": 8,
+    "get_b_high": {
+      "len": 8,
+      "sha256": "9c56cc51b374c3ba189210d5b6d4bf57790d351c96c47c02190ecf1e430635ab"
+    },
+    "high_bytes": 8
+  },
+  "protected_window": {
+    "entry_count": 3,
+    "high_bytes": 12
+  },
+  "remove/b_gone": true,
+  "remove/high_bytes_zero": true
+}

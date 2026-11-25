@@ -13,7 +13,7 @@ import time
 import os
 import shutil
 
-from test import write_temp_large
+from test import write_temp_large, record
 from fly import open_db, get_config
 DB_PATH = os.path.join(get_config().get_str("log_dir"), "db")
 
@@ -61,17 +61,20 @@ assert wait_for(lambda: len(master.completed_tasks) >= n, timeout=60.0), \
     f"Expected {n} tasks, got {len(master.completed_tasks)}"
 
 INFO(f"Write complete: {n} objects")
-assert len(temp_files(DB_PATH)) > 0, \
-    "temp 落盘文件应存在（.temp. 前缀：write-through 语义）"
+# 原断言：assert len(temp_files(DB_PATH)) > 0, \
+record("temp_files_on_disk", len(temp_files(DB_PATH)) > 0, detail=len(temp_files(DB_PATH)))
 
 # ============================================================
 # Read: each object 3 times（恒流式统一盘路径）
 # ============================================================
 for round in range(3):
     INFO(f"Read round {round + 1}/3...")
+    lengths = {}
     for i in range(n):
         val = db.read_object(f"temp_{i}")
-        assert len(val) == obj_size, f"Object {i} size mismatch: {len(val)} != {obj_size}"
+        lengths[f"temp_{i}"] = len(val)
+    # 原断言：assert len(val) == obj_size, f"Object {i} size mismatch: {len(val)} != {obj_size}"
+    record(f"read_round_{round}", lengths)
 
 INFO("All reads complete, data integrity verified")
 
@@ -79,11 +82,16 @@ INFO("All reads complete, data integrity verified")
 # Lifecycle: remove → temp idx REMOVE + 内存清理（文件保留——共享滚动文件）
 # ============================================================
 db.remove_object("temp_0")
+removed_raised = None
 try:
     db.read_object("temp_0")
-    raise AssertionError("removed temp object should not be readable")
-except KeyError:
-    pass
+except Exception as e:
+    removed_raised = {"type": type(e).__name__, "msg": str(e)}
+# 原断言（try 块内 raise AssertionError，被 except KeyError 捕获之外传播——
+# 机械核对不追踪 raise 语句，转成记录保持等价语义）：
+#   raise AssertionError("removed temp object should not be readable")
+record("removed_temp_unreadable", removed_raised is not None, detail=removed_raised)
+record("removed_temp_error_type", removed_raised["type"] if removed_raised else None)
 INFO("remove(temp): read raises KeyError as expected")
 
 # ============================================================
@@ -96,7 +104,7 @@ INFO("  - read: 恒流式盘路径（无内存压缩 record）")
 INFO("  - remove: idx REMOVE 条目 + 内存清理（文件随 freeze 批量回收）")
 INFO("  - freeze: temp data/idx 全删（cleanup_temp_files）")
 INFO("")
-INFO("[PASS] test_temp_zero_copy")
+INFO("[DONE] test_temp_zero_copy")
 
 # Cleanup: remove temp data produced by this test
 cleanup()

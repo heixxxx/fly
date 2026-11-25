@@ -1,0 +1,12 @@
+{
+  "db_path_unchanged": {
+    "run1": "<case_log_dir>/project_load/step1",
+    "run2": "<case_log_dir>/project_load/step1"
+  },
+  "flows": [
+    "make_db"
+  ],
+  "meta_file_exists": true,
+  "restored_class": "DemoProject",
+  "val": 12345
+}

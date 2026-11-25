@@ -1,0 +1,5 @@
+{
+  "read_perm": 100,
+  "read_temp": 200,
+  "writes/no_failed_tasks": true
+}

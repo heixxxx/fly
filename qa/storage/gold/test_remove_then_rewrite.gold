@@ -1,0 +1,6 @@
+{
+  "master_rewrite_value": "master_new",
+  "rewrite/no_failed_tasks": true,
+  "two_workers_connected": true,
+  "worker_rewrite_value": 999
+}

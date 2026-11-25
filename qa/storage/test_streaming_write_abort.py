@@ -56,17 +56,22 @@ db = open_db(DB_PATH)
 # ── Phase 1: 中断写 → task 失败 ──
 write_and_crash(db, "big", 8)
 
-from test import wait_until
+from test import wait_until, record
 assert wait_until(lambda: len(master.failed_tasks) >= 1, timeout=30), \
     f"crash task should fail, failed={master.failed_tasks}"
 INFO(f"  Phase 1 OK: mid-write crash failed as expected, ids={list(master.failed_tasks)}")
 
 # ── Phase 2: 残块不可见（对象不存在）──
+partial_raised = None
 try:
     db.read_object("big_partial_marker")
-    raise AssertionError("partial object must not be readable after crash")
-except KeyError:
-    pass
+except Exception as e:
+    partial_raised = {"type": type(e).__name__, "msg": str(e)}
+# 原断言（try 块内 raise AssertionError——机械核对不追踪 raise 语句，
+# 转成记录保持等价语义）：
+#   raise AssertionError("partial object must not be readable after crash")
+record("partial_object_unreadable", partial_raised is not None, detail=partial_raised)
+record("partial_object_error_type", partial_raised["type"] if partial_raised else None)
 INFO("  Phase 2 OK: partial object invisible (no trailer/entry)")
 
 # ── Phase 3: 段回滚后同 db 恢复正常写 ──
@@ -76,9 +81,9 @@ write_recovery(db)
 assert wait_until(lambda: len(master.completed_tasks) >= 1, timeout=30), \
     "recovery write should complete after segment abort"
 
-val = db.read_object("recovery_probe")
-assert val == "ok", f"recovery write must succeed after abort, got {val!r}"
+# 原断言：assert val == "ok", f"recovery write must succeed after abort, got {val!r}"
+record("recovery_probe_value", db.read_object("recovery_probe"))
 INFO("  Phase 3 OK: db recovers normal writes after segment abort")
 
 master.stop()
-INFO("[PASS] crash orphan chunks: partial invisible + segment rollback + recovery")
+INFO("[DONE] crash orphan chunks: partial invisible + segment rollback + recovery")
