@@ -1,0 +1,5 @@
+{
+  "early_death/error_type": "RuntimeError",
+  "early_death/failed_fast_within_5s": true,
+  "early_death/msg_mentions_exited_and_id": true
+}

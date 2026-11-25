@@ -12,7 +12,7 @@ import shutil
 
 
 
-from test import write_data
+from test import write_data, record
 from fly import open_db, get_config
 DB_PATH = os.path.join(get_config().get_str("log_dir"), "db")
 
@@ -51,22 +51,24 @@ def test_write_provenance_mismatch():
         f"First write should complete, got {len(master.completed_tasks)}"
 
     val1 = db.read_object("clash_key")
-    assert val1 == 42, f"Expected 42, got {val1}"
+    # 原断言：assert val1 == 42, f"Expected 42, got {val1}"
+    record("first_write/value", val1)
 
     write_data(db, "clash_key", 99)
 
     assert wait_for(lambda: len(master.completed_tasks) + len(master.failed_tasks) >= 2, timeout=30.0), \
         f"Second task should finish, got {len(master.completed_tasks)} completed, {len(master.failed_tasks)} failed"
 
-    assert len(master.failed_tasks) >= 1, \
-        f"Second write should fail (provenance mismatch), got {len(master.failed_tasks)} failed"
+    failed_at_least_1 = len(master.failed_tasks) >= 1
+    # 原断言：assert len(master.failed_tasks) >= 1, \
+    record("mismatch/second_write_failed", failed_at_least_1, detail=master.failed_tasks)
 
     val2 = db.read_object("clash_key")
-    assert val2 == 42, \
-        f"Original value should be preserved after mismatch, expected 42 got {val2}"
+    # 原断言：assert val2 == 42, \
+    record("mismatch/preserved_value", val2)
 
-    INFO("[PASS] test_write_provenance_mismatch: different-args write rejected, original preserved")
+    INFO("[DONE] test_write_provenance_mismatch: different-args write rejected, original preserved")
 
 
 test_write_provenance_mismatch()
-INFO("\nAll tests passed!")
+INFO("\nAll stages done!")

@@ -1,0 +1,9 @@
+{
+  "data_plane/ssh_key_value": "ssh_value",
+  "fly_config/exists_after_master_start": true,
+  "fly_config/master_host_ip_not_loopback": true,
+  "fly_config/master_host_nonloopback": true,
+  "fly_config/master_port_is_final": true,
+  "ssh_launch/ids_unique": true,
+  "ssh_launch/returns_two_ids": true
+}

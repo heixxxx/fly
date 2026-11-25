@@ -1,0 +1,9 @@
+{
+  "message_log/multi_0001_lines": 14,
+  "message_log/multims_0001_lines": 3,
+  "summary/multi_0001_total_14": true,
+  "summary/multi_domain_total_14": true,
+  "summary/multims_0001_total_3": true,
+  "summary/multims_domain_total_3": true,
+  "worker_send/no_failed_tasks": true
+}

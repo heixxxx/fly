@@ -18,7 +18,7 @@ import socket
 import subprocess
 
 from _fly_log import INFO
-from test import read_data, write_data, wait_until
+from test import read_data, write_data, wait_until, record
 from fly import (open_db, wait_tasks, launch_ssh_workers,
                  wait_workers_registered, get_agent, get_config)
 
@@ -40,6 +40,7 @@ def _ssh_ok():
 
 
 # 1. 前置检测：ssh 免密不可用则 fail 并给出一次性配置指引
+# 保留：环境前置检查——ssh 免密不可用时后续场景全部无法进行，必须立即失败并附配置指引
 assert _ssh_ok(), (
     "ssh localhost 免密不可用——launch_ssh_workers 测试要求本机 sshd 运行且密钥免密：\n"
     "  sudo apt-get install -y openssh-server && sudo service ssh start\n"
@@ -49,29 +50,39 @@ INFO("[1] ssh localhost BatchMode OK")
 # 2. .fly_config 首写完备：get_agent() 触发 start 后（launch 前）文件即存在
 master = get_agent()
 master.start()
-assert os.path.isfile(CONFIG_PATH), \
-    f".fly_config must exist right after master start: {CONFIG_PATH}"
+config_written = os.path.isfile(CONFIG_PATH)
+# 原断言：assert os.path.isfile(CONFIG_PATH), \
+record("fly_config/exists_after_master_start", config_written, detail=CONFIG_PATH)
 cfg_body = open(CONFIG_PATH).read()
 advertised = get_config().get_str("master_host")
 configured_port = get_config().get_int("master_port")
-assert advertised and advertised != "127.0.0.1", \
-    f"advertised master_host must be a non-loopback address, got {advertised!r}"
+advertised_nonloopback = bool(advertised) and advertised != "127.0.0.1"
+# 原断言：assert advertised and advertised != "127.0.0.1", \
+record("fly_config/master_host_nonloopback", advertised_nonloopback, detail=advertised)
 try:
     import ipaddress
-    assert not ipaddress.ip_address(advertised).is_loopback, advertised
+    advertised_ip_not_loopback = not ipaddress.ip_address(advertised).is_loopback
+    # 原断言：assert not ipaddress.ip_address(advertised).is_loopback, advertised
+    record("fly_config/master_host_ip_not_loopback", advertised_ip_not_loopback,
+           detail=advertised)
 except ValueError:
     raise AssertionError(f"advertised master_host is not an IP: {advertised!r}")
-assert configured_port == master.port and configured_port > 0, \
-    f"master_port in config must be the final port, got {configured_port} vs {master.port}"
+port_is_final = configured_port == master.port and configured_port > 0
+# 原断言：assert configured_port == master.port and configured_port > 0, \
+record("fly_config/master_port_is_final", port_is_final,
+       detail={"configured": configured_port, "master": master.port})
 INFO(f"[2] .fly_config first-write complete: master_host={advertised} "
      f"master_port={configured_port}")
 
 # 3. ssh 启动 2 worker（其一含属性）：worker cmd 无地址参数，纯 config 引导
 worker_ids = launch_ssh_workers(
     [{"host": "localhost"}, {"host": "localhost", "attributes": ["ssh_attr"]}])
-assert isinstance(worker_ids, list) and len(worker_ids) == 2, \
-    f"launch_ssh_workers should return 2 worker ids, got {worker_ids}"
-assert len(set(worker_ids)) == 2, f"worker ids must be unique, got {worker_ids}"
+ids_are_two = isinstance(worker_ids, list) and len(worker_ids) == 2
+# 原断言：assert isinstance(worker_ids, list) and len(worker_ids) == 2, \
+record("ssh_launch/returns_two_ids", ids_are_two, detail=worker_ids)
+ids_unique = len(set(worker_ids)) == 2
+# 原断言：assert len(set(worker_ids)) == 2, f"worker ids must be unique, got {worker_ids}"
+record("ssh_launch/ids_unique", ids_unique, detail=worker_ids)
 assert wait_workers_registered(timeout=60) is True, \
     "ssh workers should register (via .fly_config addressing) within 60s"
 INFO(f"[3] {len(worker_ids)} ssh workers registered via config bootstrap: {worker_ids}")
@@ -81,7 +92,9 @@ db = open_db(DB_PATH)
 write_data(db, "ssh_key", "ssh_value")
 read_data(db, "ssh_key", deps=[db.get_full_name("ssh_key")])
 wait_tasks(timeout=30)
-assert db.read_object("ssh_key") == "ssh_value"
+ssh_val = db.read_object("ssh_key")
+# 原断言：assert db.read_object("ssh_key") == "ssh_value"
+record("data_plane/ssh_key_value", ssh_val)
 INFO("[4] write/read data plane over ssh workers OK")
 
 # 5. 生命周期：stop 广播 Shutdown → 远端 nohup worker 自杀，进程退干净
@@ -98,4 +111,4 @@ assert wait_until(_worker_gone, timeout=20), \
     "ssh worker process should exit after master stop (ShutdownMessage)"
 INFO("[5] ssh workers exited cleanly after stop")
 
-INFO("[PASS] test_launch_ssh_workers")
+INFO("[DONE] test_launch_ssh_workers")

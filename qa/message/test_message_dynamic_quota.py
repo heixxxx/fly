@@ -16,6 +16,7 @@ from fly import (
     message, register_message_id, set_message_global_limit,
 )
 from _msgtest import wait_for, get_message_log_content
+from test import record, wait_tasks_no_failure
 
 DB_PATH = os.path.join(get_work_directory(), "msg_dyn_db")
 
@@ -65,7 +66,7 @@ set_message_global_limit(2)
 # 的异步广播（reactor send，无 ack 回执），worker 侧 MessageRegistry 无
 # 配额查询导出——「已同步」不可 wait_until 观察。窗口取 1.0s（本机回环
 # 广播 ms 量级，留 >10x 余量）。下方断言以「窗口内传播完成」为前提：
-# 若未同步，phase1_small 的 2 条会被旧配额 emit，末尾 count==3 断言失败。
+# 若未同步，phase1_small 的 2 条会被旧配额 emit，末尾 count==3 的记录与基准不一致，用例失败。
 import time
 time.sleep(1.0)
 
@@ -117,8 +118,8 @@ def phase2_large(db):
 
 
 phase2_large(db)
-assert wait_for(lambda: len(master.completed_tasks) >= 4)
-assert len(master.failed_tasks) == 0
+# 原断言：assert len(master.failed_tasks) == 0
+assert wait_tasks_no_failure(master, 4, "phases/no_failed_tasks", timeout=20.0)
 
 master.stop()
 
@@ -127,16 +128,22 @@ content = get_message_log_content()
 # === 场景 1 断言：大→小 ===
 # DYNS::0001：limit=10 发 3 条全 emit，改 limit=2 后 emit=3>=2 全丢弃 → 共 3 条进 message.log。
 dyns_count = content.count("[DYNS::0001]")
-assert dyns_count == 3, f"DYNS::0001 大→小应有 3 条（改小后不再输出），实际 {dyns_count}"
+# 原断言：assert dyns_count == 3, f"DYNS::0001 大→小应有 3 条（改小后不再输出），实际 {dyns_count}"
+record("shrink/dyns_0001_count", dyns_count)
 # summary trigger = 3 + 2 = 5（trigger 持续累加，含丢弃的）。
-assert "DYNS::0001 : 5" in content, f"summary DYNS::0001 trigger 应为 5:\n{content}"
+dyns_summary = "DYNS::0001 : 5" in content
+# 原断言：assert "DYNS::0001 : 5" in content, f"summary DYNS::0001 trigger 应为 5:\n{content}"
+record("shrink/dyns_0001_trigger_5", dyns_summary, detail=content)
 
 # === 场景 2 断言：小→大 ===
 # DNBG::0001：limit=2 发 3 条 emit 2，改 limit=5 后 emit=2，发 4 条 emit 3（到5）→
 #   共 emit = 2 + 3 = 5 条进 message.log。
 dnbg_count = content.count("[DNBG::0001]")
-assert dnbg_count == 5, f"DNBG::0001 小→大应有 5 条（改大后恢复输出至新配额），实际 {dnbg_count}"
+# 原断言：assert dnbg_count == 5, f"DNBG::0001 小→大应有 5 条（改大后恢复输出至新配额），实际 {dnbg_count}"
+record("grow/dnbg_0001_count", dnbg_count)
 # summary trigger = 3 + 4 = 7（trigger 持续累加，含丢弃的）。
-assert "DNBG::0001 : 7" in content, f"summary DNBG::0001 trigger 应为 7:\n{content}"
+dnbg_summary = "DNBG::0001 : 7" in content
+# 原断言：assert "DNBG::0001 : 7" in content, f"summary DNBG::0001 trigger 应为 7:\n{content}"
+record("grow/dnbg_0001_trigger_7", dnbg_summary)
 
-INFO("[PASS] test_message_dynamic_quota")
+INFO("[DONE] test_message_dynamic_quota")

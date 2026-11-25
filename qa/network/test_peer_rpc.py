@@ -57,11 +57,13 @@ def compute_task(db, group_id):
         t0 = time.perf_counter()
         status, resp = chan.rpc(serialize_array(arr), timeout=10)
         elapsed = (time.perf_counter() - t0) * 1000
+        # 保留：@as_task 任务函数内的断言，record 只能在子阶段的主进程里调用
         assert status == PeerRpcStatus.OK, f"rpc {i} failed status={status}"
         result = deserialize_array(resp)
         expected = arr * 2
         ok = np.allclose(result, expected)
         print(f"[COMPUTE] rpc {i}: status={status} elapsed={elapsed:.2f}ms ok={ok}", flush=True)
+        # 保留：@as_task 任务函数内的断言，record 只能在子阶段的主进程里调用
         assert ok, f"rpc {i} result mismatch"
     # 测纯 RPC 往返延迟（小 payload）
     times = []
@@ -94,7 +96,7 @@ def main():
     compute_task(db, group.group_id)
     wait_tasks()  # 两个 task 都正常完成 = RPC 往返成功
 
-    print("[PASS] peer RPC round-trip (check responded 3x + compute rpc 3x + 3 small ping)")
+    print("[DONE] peer RPC round-trip (check responded 3x + compute rpc 3x + 3 small ping)")
     print("  check avg respond time reported in worker log (~0.26ms)")
     master.stop()
 

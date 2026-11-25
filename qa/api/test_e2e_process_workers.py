@@ -48,4 +48,4 @@ write_data(db, "key2", "value2")
 assert wait_for(lambda: len(master.completed_tasks) >= 2)
 
 master.stop()
-INFO("[PASS] test_e2e_process_workers")
+INFO("[DONE] test_e2e_process_workers")

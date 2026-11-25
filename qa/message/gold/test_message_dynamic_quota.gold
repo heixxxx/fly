@@ -1,0 +1,7 @@
+{
+  "grow/dnbg_0001_count": 5,
+  "grow/dnbg_0001_trigger_7": true,
+  "phases/no_failed_tasks": true,
+  "shrink/dyns_0001_count": 3,
+  "shrink/dyns_0001_trigger_5": true
+}

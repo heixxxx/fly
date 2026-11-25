@@ -13,7 +13,8 @@ from fly import (
     message, register_message_id,
     set_message_global_limit,
 )
-from _msgtest import wait_for, get_message_log_content
+from _msgtest import get_message_log_content
+from test import record, wait_tasks_no_failure
 
 DB_PATH = os.path.join(get_work_directory(), "msg_boundary_db")
 
@@ -56,8 +57,8 @@ def worker_send(db):
 
 
 worker_send(db)
-assert wait_for(lambda: len(master.completed_tasks) >= 1)
-assert len(master.failed_tasks) == 0
+# 原断言：assert len(master.failed_tasks) == 0
+assert wait_tasks_no_failure(master, 1, "worker_send/no_failed_tasks", timeout=20.0)
 
 master.stop()
 
@@ -65,14 +66,20 @@ content = get_message_log_content()
 
 # 验证 1：id 配额 -1 → 15 条全进 message.log。
 unlim_count = content.count("[BDUNLIM::0001]")
-assert unlim_count == 15, f"配额 -1 应有 15 条，实际 {unlim_count}"
+# 原断言：assert unlim_count == 15, f"配额 -1 应有 15 条，实际 {unlim_count}"
+record("boundary/unlimited_count", unlim_count)
 
 # 验证 2：id 配额 0 → 0 条进 message.log（完全禁止），但 summary 计数 1。
 zero_count = content.count("[BDZERO::0001]")
-assert zero_count == 0, f"配额 0 应有 0 条，实际 {zero_count}"
-assert "BDZERO::0001 : 1" in content, f"配额 0 summary 应计数 1:\n{content}"
+# 原断言：assert zero_count == 0, f"配额 0 应有 0 条，实际 {zero_count}"
+record("boundary/zero_count", zero_count)
+zero_trigger_1 = "BDZERO::0001 : 1" in content
+# 原断言：assert "BDZERO::0001 : 1" in content, f"配额 0 summary 应计数 1:\n{content}"
+record("boundary/zero_trigger_1", zero_trigger_1, detail=content)
 
 # 验证 3：summary 显示 BDUNLIM::0001 触发 15 次。
-assert "BDUNLIM::0001 : 15" in content, f"summary 应显示 15 次:\n{content}"
+unlim_trigger_15 = "BDUNLIM::0001 : 15" in content
+# 原断言：assert "BDUNLIM::0001 : 15" in content, f"summary 应显示 15 次:\n{content}"
+record("boundary/unlim_trigger_15", unlim_trigger_15)
 
-INFO("[PASS] test_message_quota_boundary")
+INFO("[DONE] test_message_quota_boundary")

@@ -1,0 +1,8 @@
+{
+  "message_log/mzdom_0001_count": 2,
+  "message_log/mzdom_0002_count": 2,
+  "summary/mzdom_0001_trigger_3": true,
+  "summary/mzdom_0002_trigger_2": true,
+  "summary/mzdom_domain_trigger_5": true,
+  "worker_send/no_failed_tasks": true
+}

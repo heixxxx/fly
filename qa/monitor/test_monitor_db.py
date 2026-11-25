@@ -20,7 +20,7 @@ import urllib.request
 
 from _fly_log import INFO
 
-from test import write_data, slow_write, chain_stage, wait_until
+from test import write_data, slow_write, chain_stage, wait_until, record
 from fly import open_db, get_config
 from fly.runtime import get_agent
 
@@ -156,14 +156,30 @@ def assert_db_content():
         "SELECT task_id, name, status, created_ms, started_ms, completed_ms, "
         "ready_ms, exec_start_ms, exec_end_ms, dbs FROM tasks").fetchall()
     by_id = {r[0]: r for r in rows}
-    assert len(rows) == 5, f"tasks 行数 {len(rows)} != 5"
+    # 原断言：assert len(rows) == 5, f"tasks 行数 {len(rows)} != 5"
+    record("tasks/row_count", len(rows))
+    status_oks, ts_oks, ready_oks, exec_oks, dbs_oks = [], [], [], [], []
     for tid, name, status, created, started, completed, ready, es, ee, dbs in rows:
-        assert status == "COMPLETED", f"task {tid} 状态 {status}"
-        assert created > 0 and started >= created and completed >= started, \
-            f"task {tid} 调度时间戳错序"
-        assert ready > 0, f"task {tid} ready_ms 未落盘"
-        assert es > 0 and ee > es, f"task {tid} 执行窗口无效"
-        assert DB_PATH in (dbs or ""), f"task {tid} dbs 解析失败: {dbs!r}"
+        status_oks.append(status == "COMPLETED")
+        ts_oks.append(created > 0 and started >= created and completed >= started)
+        ready_oks.append(ready > 0)
+        exec_oks.append(es > 0 and ee > es)
+        dbs_oks.append(DB_PATH in (dbs or ""))
+    # 原断言：assert status == "COMPLETED", f"task {tid} 状态 {status}"
+    record("tasks/all_completed", all(status_oks),
+           detail=[i for i, ok in enumerate(status_oks) if not ok])
+    # 原断言：assert created > 0 and started >= created and completed >= started, \
+    record("tasks/all_timestamps_ordered", all(ts_oks),
+           detail=[i for i, ok in enumerate(ts_oks) if not ok])
+    # 原断言：assert ready > 0, f"task {tid} ready_ms 未落盘"
+    record("tasks/all_ready_ms_recorded", all(ready_oks),
+           detail=[i for i, ok in enumerate(ready_oks) if not ok])
+    # 原断言：assert es > 0 and ee > es, f"task {tid} 执行窗口无效"
+    record("tasks/all_exec_windows_valid", all(exec_oks),
+           detail=[i for i, ok in enumerate(exec_oks) if not ok])
+    # 原断言：assert DB_PATH in (dbs or ""), f"task {tid} dbs 解析失败: {dbs!r}"
+    record("tasks/all_dbs_parsed", all(dbs_oks),
+           detail=[i for i, ok in enumerate(dbs_oks) if not ok])
 
     # 大内存 task（无 sleep）：write 事件采样点捕捉峰值——事件驱动采样对
     # 亚秒 task 盲区的根治验收。
@@ -171,15 +187,18 @@ def assert_db_content():
     mem_rows = c.execute(
         "SELECT task_id, mem_peak_bytes, mem_baseline_bytes FROM tasks "
         "WHERE name LIKE '__user_func__:%' ORDER BY task_id").fetchall()
-    assert len(mem_rows) == 2, f"user func task 数 {len(mem_rows)} != 2"
+    # 原断言：assert len(mem_rows) == 2, f"user func task 数 {len(mem_rows)} != 2"
+    record("mem_tasks/user_func_count", len(mem_rows))
     hog_peak, hog_base = mem_rows[0][1], mem_rows[0][2]
     pure_peak, pure_base = mem_rows[1][1], mem_rows[1][2]
     # mem_hog（64MB，先提交）：write 钩子采样应抓到大部分分配。
-    assert hog_peak - hog_base >= 32 * 1024 * 1024, \
-        f"write 事件采样未捕捉到 64MB 峰值: {hog_peak - hog_base}"
+    hog_delta_ok = hog_peak - hog_base >= 32 * 1024 * 1024
+    # 原断言：assert hog_peak - hog_base >= 32 * 1024 * 1024, \
+    record("mem_tasks/hog_peak_captured", hog_delta_ok, detail=hog_peak - hog_base)
     # pure_compute（32MB，无 IO，~600ms）：执行窗口 200ms 加密周期采样捕捉。
-    assert pure_peak - pure_base >= 16 * 1024 * 1024, \
-        f"执行期加密采样未捕捉 32MB 计算峰值: {pure_peak - pure_base}"
+    pure_delta_ok = pure_peak - pure_base >= 16 * 1024 * 1024
+    # 原断言：assert pure_peak - pure_base >= 16 * 1024 * 1024, \
+    record("mem_tasks/pure_peak_captured", pure_delta_ok, detail=pure_peak - pure_base)
 
     # IO task：read/write 时间与字节。
     io_tid = c.execute(
@@ -187,73 +206,104 @@ def assert_db_content():
     r_ms, r_bytes, w_ms, w_bytes = c.execute(
         "SELECT read_time_ms, read_bytes, write_time_ms, write_bytes FROM tasks "
         "WHERE task_id=?", (io_tid,)).fetchone()
-    assert w_ms > 0 and w_bytes > 0, f"write 指标未落盘: {w_ms}, {w_bytes}"
+    io_metrics_ok = w_ms > 0 and w_bytes > 0
+    # 原断言：assert w_ms > 0 and w_bytes > 0, f"write 指标未落盘: {w_ms}, {w_bytes}"
+    record("io_task/write_metrics_recorded", io_metrics_ok, detail={"w_ms": w_ms, "w_bytes": w_bytes})
     # cpu_time 为 getrusage 微秒差分：亚秒快 task（write_data）也应非零——
     # jiffies 10ms 粒度下短 task 恒 0 的回归验收。
     fast_cpu = c.execute(
         "SELECT cpu_time_ms FROM tasks WHERE task_id=?", (io_tid,)).fetchone()[0]
-    assert fast_cpu > 0, f"微秒精度下快 task cpu_time 仍为 0: {fast_cpu}"
+    fast_cpu_ok = fast_cpu > 0
+    # 原断言：assert fast_cpu > 0, f"微秒精度下快 task cpu_time 仍为 0: {fast_cpu}"
+    record("io_task/fast_cpu_time_positive", fast_cpu_ok, detail=fast_cpu)
 
     # 依赖链 task：read 明细 + read 指标（chain_stage 读输入对象）。
     chain_r = c.execute(
         "SELECT read_time_ms FROM tasks WHERE name='chain_stage'").fetchone()[0]
-    assert chain_r >= 0, "chain task read 指标缺失"
+    chain_r_ok = chain_r >= 0
+    # 原断言：assert chain_r >= 0, "chain task read 指标缺失"
+    record("chain_task/read_metric_present", chain_r_ok, detail=chain_r)
 
     # ── object_io 明细 ──
     n_io = c.execute("SELECT COUNT(*) FROM object_io").fetchone()[0]
-    assert n_io >= 3, f"object_io 行数 {n_io} < 3"
+    n_io_ok = n_io >= 3
+    # 原断言：assert n_io >= 3, f"object_io 行数 {n_io} < 3"
+    record("object_io/row_count_at_least_3", n_io_ok, detail=n_io)
     # MONITOR_TASK_IO 为异步成组上报，落库次序随批次到达顺序翻转——
     # 无 ORDER BY 的位置性 LIMIT 1 是顺序竞态（stability 100 轮 R23 实锤
     # obj_mem 抢在 obj_plain 前）。改按对象名定点断言存在性；明细行
     # bytes=0 属正常（字节口径聚合在 tasks 表，上方断言已覆盖）。
+    write_details = {}
     for obj in ("obj_plain", "obj_mem", "obj_slow"):
         row = c.execute(
             "SELECT bytes FROM object_io WHERE direction='w' "
             "AND object_name LIKE ? LIMIT 1", (f"%{obj}",)).fetchone()
-        assert row is not None, f"obj {obj} 的 write 明细缺失: {row}"
+        write_details[obj] = row is not None
+    # 原断言：assert row is not None, f"obj {obj} 的 write 明细缺失: {row}"
+    record("object_io/write_details_present", all(write_details.values()),
+           detail=write_details)
 
     # ── workers / events ──
     # master（wid=0，role=master）run 启动时自登记进 workers 表——GUI
     # Workers 页 master 样本有归属行（显示 master 而非 worker 0）。
     n_workers = c.execute("SELECT COUNT(*) FROM workers").fetchone()[0]
-    assert n_workers == 4, f"workers 行数 {n_workers} != 4（3 worker + master）"
+    # 原断言：assert n_workers == 4, f"workers 行数 {n_workers} != 4（3 worker + master）"
+    record("workers/row_count", n_workers)
     master_row = c.execute(
         "SELECT role, hostname FROM workers WHERE worker_id=0").fetchone()
-    assert master_row and master_row[0] == "master", \
-        f"master 自登记行异常: {master_row}"
+    master_row_ok = master_row is not None and master_row[0] == "master"
+    # 原断言：assert master_row and master_row[0] == "master", \
+    record("workers/master_row_role", master_row_ok, detail=master_row)
 
     events = [r[0] for r in c.execute("SELECT event FROM events")]
-    for expected in ["SUBMIT", "ASSIGN", "COMPLETE", "DB_CREATED",
-                     "DRAIN_START", "DRAIN_DONE", "REGISTER"]:
-        assert expected in events, f"事件 {expected} 缺失（现有: {sorted(set(events))}）"
+    missing_events = [e for e in ["SUBMIT", "ASSIGN", "COMPLETE", "DB_CREATED",
+                                  "DRAIN_START", "DRAIN_DONE", "REGISTER"]
+                      if e not in events]
+    # 原断言：assert expected in events, f"事件 {expected} 缺失（现有: {sorted(set(events))}）"
+    record("events/all_milestones_present", not missing_events, detail=missing_events)
 
     # ── worker_samples：三个 worker + master 自监控，字段非零 ──
     per_worker = dict(c.execute(
         "SELECT worker_id, COUNT(*) FROM worker_samples GROUP BY worker_id").fetchall())
-    assert set(per_worker) == {0, 1, 2, 3}, f"样本 worker 覆盖异常: {per_worker}"
+    worker_cover_ok = set(per_worker) == {0, 1, 2, 3}
+    # 原断言：assert set(per_worker) == {0, 1, 2, 3}, f"样本 worker 覆盖异常: {per_worker}"
+    record("worker_samples/coverage", worker_cover_ok,
+           detail={str(k): v for k, v in per_worker.items()})
     # 长任务 run（12s+）每 worker 至少一组上报（10s 周期）。
+    sample_cnt_oks = True
     for wid, cnt in per_worker.items():
-        assert cnt >= 1, f"worker {wid} 样本数 {cnt} < 1"
+        sample_cnt_oks = sample_cnt_oks and cnt >= 1
+    # 原断言：assert cnt >= 1, f"worker {wid} 样本数 {cnt} < 1"
+    record("worker_samples/all_have_samples", sample_cnt_oks,
+           detail={str(k): v for k, v in per_worker.items()})
     rss_ok = c.execute(
         "SELECT COUNT(*) FROM worker_samples WHERE proc_rss_bytes>0").fetchone()[0]
     net_ok = c.execute(
         "SELECT COUNT(*) FROM worker_samples WHERE net_read_bytes>0").fetchone()[0]
-    assert rss_ok > 0 and net_ok > 0, f"RSS/net 计数全零: {rss_ok}, {net_ok}"
+    rss_net_ok = rss_ok > 0 and net_ok > 0
+    # 原断言：assert rss_ok > 0 and net_ok > 0, f"RSS/net 计数全零: {rss_ok}, {net_ok}"
+    record("worker_samples/rss_and_net_nonzero", rss_net_ok,
+           detail={"rss_rows": rss_ok, "net_rows": net_ok})
     # 事件驱动采样验收：kind=1 样本（assign/执行起止等 cluster 事件时刻的
     # worker 快照）应与周期样本（kind=0）并存。
     n_event = c.execute(
         "SELECT COUNT(*) FROM worker_samples WHERE kind=1").fetchone()[0]
     n_periodic = c.execute(
         "SELECT COUNT(*) FROM worker_samples WHERE kind=0").fetchone()[0]
-    assert n_event > 0, "无事件驱动样本（kind=1）——sample_now_event 未生效"
-    assert n_periodic > 0, "无周期样本（kind=0）"
+    n_event_ok = n_event > 0
+    # 原断言：assert n_event > 0, "无事件驱动样本（kind=1）——sample_now_event 未生效"
+    record("worker_samples/event_samples_present", n_event_ok, detail=n_event)
+    n_periodic_ok = n_periodic > 0
+    # 原断言：assert n_periodic > 0, "无周期样本（kind=0）"
+    record("worker_samples/periodic_samples_present", n_periodic_ok, detail=n_periodic)
 
     conn.close()
 
     # ── 心跳迁移回归：runtime.summary 仍产出（monitor 通道喂 RunMetrics）──
-    assert os.path.exists(os.path.join(LOG_DIR, "runtime.summary")), \
-        "runtime.summary 缺失（RunMetrics 喂样通道异常）"
-    INFO("[PASS] monitor.db 全维度断言通过")
+    summary_exists = os.path.exists(os.path.join(LOG_DIR, "runtime.summary"))
+    # 原断言：assert os.path.exists(os.path.join(LOG_DIR, "runtime.summary")), \
+    record("runtime/summary_exists", summary_exists)
+    INFO("[DONE] monitor.db 全维度断言通过")
 
 
 cleanup()

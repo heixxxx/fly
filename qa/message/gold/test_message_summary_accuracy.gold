@@ -1,0 +1,9 @@
+{
+  "message_log/summs_lines_2": 2,
+  "message_log/sumw_lines_5": 5,
+  "summary/summs_0001_total_2": true,
+  "summary/summs_domain_total_2": true,
+  "summary/sumw_0001_total_10": true,
+  "summary/sumw_domain_total_10": true,
+  "worker_send/no_failed_tasks": true
+}

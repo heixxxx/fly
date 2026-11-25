@@ -1,0 +1,6 @@
+{
+  "quota/master_local_count": 2,
+  "quota/mquota_trigger_5": true,
+  "quota/worker_pushed_count": 3,
+  "worker_send/no_failed_tasks": true
+}

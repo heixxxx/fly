@@ -5,6 +5,7 @@ import shutil
 
 
 
+from test import record
 from fly import as_task, open_db, get_config
 DB_PATH = os.path.join(get_config().get_str("log_dir"), "db")
 
@@ -30,8 +31,9 @@ def setup_workers():
     master = get_agent()
     master.launch_local_workers([{}])
     assert master.wait_workers_registered(timeout=60)
-    assert master.worker_count >= 1, \
-        f"Only {master.worker_count}/1 workers connected"
+    workers_connected = master.worker_count >= 1
+    # 原断言：assert master.worker_count >= 1, \
+    record("workers/connected", workers_connected, detail=master.worker_count)
     return master
 
 
@@ -57,12 +59,18 @@ def test_user_script_task():
     user_read_after_write(db, "ukey", "uresult")
 
     completed = wait_completed(master, 2, timeout=30)
-    assert len(completed) >= 2, f"Expected 2 completed tasks, got {len(completed)}"
+    completed_enough = len(completed) >= 2
+    # 原断言：assert len(completed) >= 2, f"Expected 2 completed tasks, got {len(completed)}"
+    record("tasks/completed_at_least_2", completed_enough, detail=len(completed))
 
-    assert db.read_object("ukey") == 42
-    assert db.read_object("uresult") == "echo:42"
+    ukey_val = db.read_object("ukey")
+    # 原断言：assert db.read_object("ukey") == 42
+    record("user_write/value", ukey_val)
+    uresult_val = db.read_object("uresult")
+    # 原断言：assert db.read_object("uresult") == "echo:42"
+    record("user_read_after_write/value", uresult_val)
 
-    INFO(f"[PASS] test_user_script_task: {len(completed)} tasks completed")
+    INFO(f"[DONE] test_user_script_task: {len(completed)} tasks completed")
 
 
 test_user_script_task()

@@ -15,7 +15,8 @@ from fly import (
     message, register_message_id,
     set_message_global_limit,
 )
-from _msgtest import wait_for, get_message_log_content
+from _msgtest import get_message_log_content
+from test import record, wait_tasks_no_failure
 
 DB_PATH = os.path.join(get_work_directory(), "msg_mquota_db")
 
@@ -57,8 +58,8 @@ def worker_send(db):
 
 
 worker_send(db)
-assert wait_for(lambda: len(master.completed_tasks) >= 1)
-assert len(master.failed_tasks) == 0
+# 原断言：assert len(master.failed_tasks) == 0
+assert wait_tasks_no_failure(master, 1, "worker_send/no_failed_tasks", timeout=20.0)
 
 master.stop()
 
@@ -66,13 +67,17 @@ content = get_message_log_content()
 
 # 验证 1：worker 发送配额=3 → MQUOTA::0001 只 3 条进 message.log。
 worker_count = content.count("[MQUOTA::0001]")
-assert worker_count == 3, f"worker 推送应有 3 条进 message.log，实际 {worker_count}"
+# 原断言：assert worker_count == 3, f"worker 推送应有 3 条进 message.log，实际 {worker_count}"
+record("quota/worker_pushed_count", worker_count)
 
 # 验证 2：master 自身 MLOCAL::0001 发 2 条（< 3）全进 message.log。
 local_count = content.count("[MLOCAL::0001]")
-assert local_count == 2, f"master 自身 2 条应全进 message.log，实际 {local_count}"
+# 原断言：assert local_count == 2, f"master 自身 2 条应全进 message.log，实际 {local_count}"
+record("quota/master_local_count", local_count)
 
 # 验证 3：summary 反映 trigger 计数（MQUOTA::0001 worker 触发 5 次，配额不影响计数）。
-assert "MQUOTA::0001 : 5" in content, f"summary 应显示 worker 触发 5 次:\n{content}"
+trigger_5 = "MQUOTA::0001 : 5" in content
+# 原断言：assert "MQUOTA::0001 : 5" in content, f"summary 应显示 worker 触发 5 次:\n{content}"
+record("quota/mquota_trigger_5", trigger_5, detail=content)
 
-INFO("[PASS] test_message_master_quota")
+INFO("[DONE] test_message_master_quota")

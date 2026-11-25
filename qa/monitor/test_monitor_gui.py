@@ -9,7 +9,7 @@ import urllib.request
 
 from _fly_log import INFO
 
-from test import write_data, wait_until
+from test import write_data, wait_until, record
 from fly import open_db, get_config, wait_tasks
 from fly.runtime import get_agent
 
@@ -39,7 +39,9 @@ def run_and_stop():
     slow_write(db, "obj_slow", 256 * 1024, 11)  # >10s：master 自监控/worker 上报落盘
     wait_tasks(60)  # 等全部提交的 task 完成
     master.stop()
-    assert os.path.exists(MONITOR_DB), "monitor.db 未产生"
+    monitor_db_exists = os.path.exists(MONITOR_DB)
+    # 原断言：assert os.path.exists(MONITOR_DB), "monitor.db 未产生"
+    record("run/monitor_db_exists", monitor_db_exists)
 
 
 def main():
@@ -67,30 +69,47 @@ def main():
         _, body = http_get(base + "/api/meta")
         meta = json.loads(body)
         # workers 表只含真实 worker（master wid=0 仅在 worker_samples 出现）。
-        assert meta["workers"] >= 1, f"meta.workers={meta['workers']}"
+        meta_workers_ok = meta["workers"] >= 1
+        # 原断言：assert meta["workers"] >= 1, f"meta.workers={meta['workers']}"
+        record("api/meta_workers_at_least_1", meta_workers_ok, detail=meta["workers"])
         _, body = http_get(base + "/api/tasks")
         tasks = json.loads(body)
-        assert tasks["total"] >= 1, "tasks 表为空"
-        assert tasks["tasks"][0]["name"] in ("write_data", "slow_write"), \
-            f"task[0] name 异常: {tasks['tasks'][0]['name']}"
+        tasks_total_ok = tasks["total"] >= 1
+        # 原断言：assert tasks["total"] >= 1, "tasks 表为空"
+        record("api/tasks_total_at_least_1", tasks_total_ok, detail=tasks["total"])
+        task0_name_ok = tasks["tasks"][0]["name"] in ("write_data", "slow_write")
+        # 原断言：assert tasks["tasks"][0]["name"] in ("write_data", "slow_write"), \
+        record("api/task0_name_known", task0_name_ok, detail=tasks["tasks"][0]["name"])
         _, body = http_get(base + f"/api/tasks/{tasks['tasks'][0]['task_id']}")
         detail = json.loads(body)
-        assert "events" in detail and "io" in detail
+        detail_keys_ok = "events" in detail and "io" in detail
+        # 原断言：assert "events" in detail and "io" in detail
+        record("api/task_detail_keys", detail_keys_ok,
+               detail={"has_events": "events" in detail, "has_io": "io" in detail})
         _, body = http_get(base + "/api/workers/0/samples")
-        assert len(json.loads(body)["samples"]) >= 1, "master 自监控样本缺失"
+        master_samples_ok = len(json.loads(body)["samples"]) >= 1
+        # 原断言：assert len(json.loads(body)["samples"]) >= 1, "master 自监控样本缺失"
+        record("api/worker0_samples_at_least_1", master_samples_ok)
         _, body = http_get(base + "/api/timeline")
-        assert len(json.loads(body)["tasks"]) >= 1
+        timeline_ok = len(json.loads(body)["tasks"]) >= 1
+        # 原断言：assert len(json.loads(body)["tasks"]) >= 1
+        record("api/timeline_tasks_at_least_1", timeline_ok)
         _, body = http_get(base + "/api/dbs")
-        assert len(json.loads(body)["dbs"]) >= 1
+        dbs_ok = len(json.loads(body)["dbs"]) >= 1
+        # 原断言：assert len(json.loads(body)["dbs"]) >= 1
+        record("api/dbs_at_least_1", dbs_ok)
 
         # 静态前端（index + ECharts + 页面模块）。
         for path in ["/", "/static/vendor/echarts.min.js",
                      "/static/js/app.js", "/static/js/pages/timeline.js",
                      "/static/css/app.css"]:
             status, body = http_get(base + path)
-            assert status == 200 and len(body) > 0, f"静态资源 {path} 异常"
+            res_ok = status == 200 and len(body) > 0
+            # 原断言：assert status == 200 and len(body) > 0, f"静态资源 {path} 异常"
+            record(f"static_resource{path}", res_ok,
+                   detail={"status": status, "len": len(body)})
 
-        INFO("[PASS] monitor GUI API 与静态资源全部通过")
+        INFO("[DONE] monitor GUI API 与静态资源全部通过")
     finally:
         proc.terminate()
         try:

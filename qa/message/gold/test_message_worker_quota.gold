@@ -1,0 +1,6 @@
+{
+  "quota/message_log_count": 20,
+  "quota/trigger_total_22": true,
+  "quota/worker_log_count": 20,
+  "worker_id_quota/no_failed_tasks": true
+}

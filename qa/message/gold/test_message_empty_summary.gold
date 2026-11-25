@@ -1,0 +1,6 @@
+{
+  "empty_summary/by_domain_header": true,
+  "empty_summary/by_message_id_header": true,
+  "empty_summary/no_message_triggered_hint": true,
+  "empty_summary/summary_printed": true
+}

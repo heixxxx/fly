@@ -1,0 +1,6 @@
+{
+  "per_id/count_is_3": 3,
+  "per_id/overrides_domain_quota": true,
+  "per_id/trigger_total_5": true,
+  "worker_send/no_failed_tasks": true
+}

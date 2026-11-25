@@ -1,0 +1,12 @@
+{
+  "edge/conn_err": true,
+  "edge/reason1": "biz_reason",
+  "edge/status1_is_error": true,
+  "edge/status2_is_failed": true,
+  "edge/type_guard": true,
+  "listener/port_property": 12345,
+  "pickle_roundtrip/group_id": "edge_gid_123",
+  "pickle_roundtrip/restored_type": "PeerChannelGroup",
+  "pickle_roundtrip/temp_name": "__fly_chan_edge_gid_123",
+  "rpc_type_guard/msg_mentions_bytes": true
+}

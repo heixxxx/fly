@@ -1,0 +1,21 @@
+{
+  "debug_log/master_startup_info": true,
+  "message_log/no_worker_startup_info": true,
+  "startup/binary_absolute_path": true,
+  "startup/build_type_at_time": true,
+  "startup/commit_field_present": true,
+  "startup/commit_not_unknown": true,
+  "startup/host_user_at_host": true,
+  "startup/listen_ip_port": true,
+  "startup/log_path_present": true,
+  "startup/master_in_message_log": true,
+  "startup/msg_log_path_present": true,
+  "startup/pid_field_present": true,
+  "startup/section_binary": true,
+  "startup/section_machine": true,
+  "startup/section_network": true,
+  "startup/section_runtime": true,
+  "startup/started_field_present": true,
+  "summary/fly_0000_exempt": true,
+  "worker_log/startup_info": true
+}

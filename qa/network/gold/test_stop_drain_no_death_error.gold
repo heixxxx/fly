@@ -1,0 +1,4 @@
+{
+  "data_plane/stop_key_value": "stop_value",
+  "stop_drain/no_death_markers": true
+}

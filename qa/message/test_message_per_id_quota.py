@@ -13,7 +13,8 @@ from fly import (
     message, register_message_id,
     set_message_id_limit, set_message_domain_limit,
 )
-from _msgtest import wait_for, get_message_log_content
+from _msgtest import get_message_log_content
+from test import record, wait_tasks_no_failure
 
 DB_PATH = os.path.join(get_work_directory(), "msg_perid_db")
 
@@ -54,8 +55,8 @@ def worker_send(db):
 
 
 worker_send(db)
-assert wait_for(lambda: len(master.completed_tasks) >= 1)
-assert len(master.failed_tasks) == 0
+# 原断言：assert len(master.failed_tasks) == 0
+assert wait_tasks_no_failure(master, 1, "worker_send/no_failed_tasks", timeout=20.0)
 
 master.stop()
 
@@ -63,12 +64,17 @@ content = get_message_log_content()
 
 # 验证 1：per-id=3 → PERID::0001 只 3 条进 message.log。
 perid1_count = content.count("[PERID::0001]")
-assert perid1_count == 3, f"per-id=3 应有 3 条进 message.log，实际 {perid1_count}"
+# 原断言：assert perid1_count == 3, f"per-id=3 应有 3 条进 message.log，实际 {perid1_count}"
+record("per_id/count_is_3", perid1_count)
 
 # 验证 2：per-id 屏蔽 domain —— 若 domain(100) 生效则会有 5 条，实际按 per-id=3。
-assert perid1_count == 3, "per-id 应屏蔽宽松的 domain 配额"
+perid_over_domain = perid1_count == 3
+# 原断言：assert perid1_count == 3, "per-id 应屏蔽宽松的 domain 配额"
+record("per_id/overrides_domain_quota", perid_over_domain, detail=perid1_count)
 
 # 验证 3：summary 反映 trigger 计数（per-id 配额不影响计数）。
-assert "PERID::0001 : 5" in content, f"summary 应显示 worker 触发 5 次:\n{content}"
+trigger_5 = "PERID::0001 : 5" in content
+# 原断言：assert "PERID::0001 : 5" in content, f"summary 应显示 worker 触发 5 次:\n{content}"
+record("per_id/trigger_total_5", trigger_5, detail=content)
 
-INFO("[PASS] test_message_per_id_quota")
+INFO("[DONE] test_message_per_id_quota")

@@ -1,0 +1,9 @@
+{
+  "clear_cache/a_b_cleared": true,
+  "clear_cache/a_b_present": true,
+  "consumed_sum/done_is_true": true,
+  "master_api/default_for_missing": "X",
+  "master_api/get_mkey": "mval",
+  "master_api/mkey_present_after_put": true,
+  "master_api/mkey_removed": true
+}

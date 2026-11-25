@@ -1,0 +1,6 @@
+{
+  "sync/master_log_count": 3,
+  "sync/trigger_total_5": true,
+  "sync/worker_log_count": 3,
+  "worker_send/no_failed_tasks": true
+}

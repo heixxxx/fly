@@ -6,7 +6,7 @@ import shutil
 
 
 
-from test import write_data
+from test import write_data, record
 from fly import open_db, get_config
 DB_PATH = os.path.join(get_config().get_str("log_dir"), "db")
 from fly.runtime import get_agent
@@ -35,11 +35,15 @@ assert master.wait_workers_registered(timeout=60)
 
 db = open_db(DB_PATH)
 obj_name = db.get_full_name("output/result")
-assert ":" in obj_name
-assert obj_name.endswith(":output/result")
+has_colon = ":" in obj_name
+# 原断言：assert ":" in obj_name
+record("obj_name/contains_colon", has_colon, detail=obj_name)
+ends_with = obj_name.endswith(":output/result")
+# 原断言：assert obj_name.endswith(":output/result")
+record("obj_name/ends_with_output_result", ends_with, detail=obj_name)
 
 write_data(db, "test_key", "test_value")
 assert wait_for(lambda: len(master.completed_tasks) >= 1)
 
 master.stop()
-INFO("[PASS] test_e2e_fly_api")
+INFO("[DONE] test_e2e_fly_api")

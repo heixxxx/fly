@@ -15,7 +15,8 @@ from fly import (
     open_db, get_config, get_work_directory, as_task,
     message, register_message_id, set_message_global_limit,
 )
-from _msgtest import wait_for, get_message_log_content, get_worker_debug_log
+from _msgtest import get_message_log_content, get_worker_debug_log
+from test import record, wait_tasks_no_failure
 
 DB_PATH = os.path.join(get_work_directory(), "msg_sync_db")
 
@@ -53,8 +54,8 @@ def worker_send(db):
 
 
 worker_send(db)
-assert wait_for(lambda: len(master.completed_tasks) >= 1)
-assert len(master.failed_tasks) == 0
+# 原断言：assert len(master.failed_tasks) == 0
+assert wait_tasks_no_failure(master, 1, "worker_send/no_failed_tasks", timeout=20.0)
 
 master.stop()
 
@@ -63,13 +64,17 @@ worker1_log = get_worker_debug_log(1)
 
 # 验证 1（关键）：worker log 只 3 条 —— 证明配额同步到了 worker。
 worker_count = worker1_log.count("[SYNC::0001]")
-assert worker_count == 3, f"worker log 应只有 3 条（配额同步生效），实际 {worker_count}"
+# 原断言：assert worker_count == 3, f"worker log 应只有 3 条（配额同步生效），实际 {worker_count}"
+record("sync/worker_log_count", worker_count)
 
 # 验证 2：master message.log 收 3 条（worker 只推了 3 条）。
 master_count = content.count("[SYNC::0001]")
-assert master_count == 3, f"master message.log 应有 3 条，实际 {master_count}"
+# 原断言：assert master_count == 3, f"master message.log 应有 3 条，实际 {master_count}"
+record("sync/master_log_count", master_count)
 
 # 验证 3：summary trigger 计数 = 5（配额不影响计数）。
-assert "SYNC::0001 : 5" in content, f"summary 应显示触发 5 次:\n{content}"
+trigger_5 = "SYNC::0001 : 5" in content
+# 原断言：assert "SYNC::0001 : 5" in content, f"summary 应显示触发 5 次:\n{content}"
+record("sync/trigger_total_5", trigger_5, detail=content)
 
-INFO("[PASS] test_message_limit_sync")
+INFO("[DONE] test_message_limit_sync")

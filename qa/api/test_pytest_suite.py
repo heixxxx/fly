@@ -19,6 +19,8 @@ import traceback
 
 from _fly_log import INFO, WARN
 
+from test import record
+
 REPO = "/root/fly"   # QA 进程 cwd 为 case 目录，用绝对路径定位源文件
 
 # (模块名, 源文件相对路径)——与 src/*/tests BUILD 的 py_test 对齐
@@ -93,10 +95,12 @@ def main():
         total_ran += ran
         total_skip += skipped
         INFO(f"[PYTEST-SUITE] {mod_name}: ran={ran} skipped={skipped}")
-    assert total_ran > 0, "pytest suite must execute at least one case"
-    INFO(f"[PASS] test_pytest_suite: total ran={total_ran} "
+    ran_positive = total_ran > 0
+    # 原断言：assert total_ran > 0, "pytest suite must execute at least one case"
+    record("suite/ran_positive", ran_positive, detail=total_ran)
+    INFO(f"[DONE] test_pytest_suite: total ran={total_ran} "
          f"skipped(fixture)={total_skip}")
 
 
 main()
-INFO("[PASS] test_pytest_suite done")
+INFO("[DONE] test_pytest_suite done")

@@ -12,6 +12,8 @@
 import subprocess
 
 from _fly_log import INFO
+
+from test import record
 from fly.runtime import get_agent
 import time
 
@@ -24,18 +26,26 @@ fake.wait()
 master._spawned_procs[999] = fake
 
 t0 = time.time()
+err_type = None
+msg_full = False
 try:
     master._wait_spawned_workers([999])
     raise AssertionError("must raise on early-death spawn")
 except RuntimeError as e:
     msg = str(e)
-    assert "exited before registering" in msg and "999" in msg, f"bad detail: {msg}"
+    err_type = type(e).__name__
+    msg_full = "exited before registering" in msg and "999" in msg
+# 原断言：assert "exited before registering" in msg and "999" in msg, f"bad detail: {msg}"
+record("early_death/error_type", err_type)
+record("early_death/msg_mentions_exited_and_id", msg_full, detail=msg)
 elapsed = time.time() - t0
-assert elapsed < 5.0, f"早夭必须立即失败而非等待, took {elapsed:.1f}s"
-INFO(f"[PASS] early-death spawn failed fast in {elapsed:.2f}s")
+fast = elapsed < 5.0
+# 原断言：assert elapsed < 5.0, f"早夭必须立即失败而非等待, took {elapsed:.1f}s"
+record("early_death/failed_fast_within_5s", fast, detail=elapsed)
+INFO(f"[DONE] early-death spawn failed fast in {elapsed:.2f}s")
 
 # 对照：默认入口（不传 batch_ids）不做早夭检测——既有语义不变
 master._wait_spawned_workers()
 
 master.stop()
-INFO("[PASS] test_spawn_early_death")
+INFO("[DONE] test_spawn_early_death")

@@ -17,7 +17,7 @@ from _fly_log import INFO
 from agent import PeerChannel, PeerListener, PeerChannelGroup, PeerRpcStatus
 from fly import open_db, as_task, wait_tasks
 from fly.runtime import get_agent
-from test import qa_tmp
+from test import qa_tmp, record
 
 DB_PATH = qa_tmp("peer_rpc_edge_db")
 if os.path.isdir(DB_PATH):
@@ -25,12 +25,16 @@ if os.path.isdir(DB_PATH):
 
 # ── 1. master 进程本地：类型校验 / pickle / port（不触网）────────────
 chan = PeerChannel(None, 1)
+rpc_guard_results = {}
 for bad_payload in ("str_payload", 123, None):
     try:
         chan.rpc(bad_payload)
         raise AssertionError("rpc non-bytes must raise TypeError")
     except TypeError as e:
-        assert "bytes" in str(e), str(e)
+        rpc_guard_results[repr(bad_payload)] = "bytes" in str(e)
+# 原断言：assert "bytes" in str(e), str(e)
+record("rpc_type_guard/msg_mentions_bytes", all(rpc_guard_results.values()),
+       detail=rpc_guard_results)
 try:
     chan.notify_failure("not_bytes")
     raise AssertionError("notify_failure non-bytes must raise TypeError")
@@ -48,20 +52,27 @@ for call in (
         raise AssertionError("listener non-bytes must raise TypeError")
     except TypeError:
         pass
-INFO("[PASS] PeerChannel/PeerListener payload type guards")
+INFO("[DONE] PeerChannel/PeerListener payload type guards")
 
 # PeerChannel __del__ 兜底 close 对假 agent 安全（异常吞掉）
 del chan
 
 group = PeerChannelGroup("edge_gid_123")
 restored = pickle.loads(pickle.dumps(group))
-assert isinstance(restored, PeerChannelGroup)
-assert restored.group_id == "edge_gid_123", "pickle 往返必须保留 group_id"
-assert restored._temp_name() == "__fly_chan_edge_gid_123"
-INFO("[PASS] PeerChannelGroup pickle round-trip (group_id preserved)")
+restored_type = type(restored).__name__
+# 原断言：assert isinstance(restored, PeerChannelGroup)
+record("pickle_roundtrip/restored_type", restored_type)
+# 原断言：assert restored.group_id == "edge_gid_123", "pickle 往返必须保留 group_id"
+record("pickle_roundtrip/group_id", restored.group_id)
+restored_temp_name = restored._temp_name()
+# 原断言：assert restored._temp_name() == "__fly_chan_edge_gid_123"
+record("pickle_roundtrip/temp_name", restored_temp_name)
+INFO("[DONE] PeerChannelGroup pickle round-trip (group_id preserved)")
 
-assert PeerListener(None, 12345).port == 12345
-INFO("[PASS] PeerListener.port property")
+listener_port = PeerListener(None, 12345).port
+# 原断言：assert PeerListener(None, 12345).port == 12345
+record("listener/port_property", listener_port)
+INFO("[DONE] PeerListener.port property")
 
 # ── 2. 双 worker 真连：失败通道 + ConnectionError ───────────────────
 master = get_agent()
@@ -77,6 +88,7 @@ def edge_server(db, group_id):
     """服务端：respond_failure 打第一个请求，notify_failure 打第二个。"""
     g = PeerChannelGroup(group_id)
     lst = g.listen(db)
+    # 保留：@as_task 任务函数内的断言，record 只能在子阶段的主进程里调用
     assert lst.port > 0
     conn1, rpc1, _, payload1 = lst.accept_one(timeout=30)
     lst.respond_failure(conn1, rpc1, b"biz_reason")
@@ -123,12 +135,18 @@ edge_client(db, group_ok.group_id)
 wait_tasks(timeout=90)
 
 results = db.read_object("edge_results")
-assert results["status1"] == PeerRpcStatus.ERROR, results
-assert results["reason1"] == "biz_reason", results
-assert results["status2"] == PeerRpcStatus.FAILED, results
-assert results["type_guard"] is True, results
-assert results["conn_err"] is True, results
-INFO(f"[PASS] peer rpc edge statuses: {results}")
+r = results if isinstance(results, dict) else {}
+# 原断言：assert results["status1"] == PeerRpcStatus.ERROR, results
+record("edge/status1_is_error", r.get("status1") == PeerRpcStatus.ERROR, detail=results)
+# 原断言：assert results["reason1"] == "biz_reason", results
+record("edge/reason1", r.get("reason1"), detail=results)
+# 原断言：assert results["status2"] == PeerRpcStatus.FAILED, results
+record("edge/status2_is_failed", r.get("status2") == PeerRpcStatus.FAILED, detail=results)
+# 原断言：assert results["type_guard"] is True, results
+record("edge/type_guard", r.get("type_guard") is True, detail=results)
+# 原断言：assert results["conn_err"] is True, results
+record("edge/conn_err", r.get("conn_err") is True, detail=results)
+INFO(f"[DONE] peer rpc edge statuses: {results}")
 
 master.stop()
-INFO("[PASS] test_peer_rpc_edge")
+INFO("[DONE] test_peer_rpc_edge")

@@ -1,0 +1,17 @@
+{
+  "build_matrix_empty_name/error_type": "ValueError",
+  "build_matrix_empty_name/mentions_name": true,
+  "help_all/mentions_build_matrix": true,
+  "help_all/mentions_solve": true,
+  "help_solve/mentions_nsd": true,
+  "help_solve/mentions_owner": true,
+  "help_solve/mentions_prototype": true,
+  "help_solve/mentions_solve": true,
+  "solve_agg_invalid/error_type": "ValueError",
+  "solve_agg_invalid/mentions_matrix_db": true,
+  "solve_agg_invalid/mentions_nsd_bounds": true,
+  "solve_agg_invalid/mentions_overlap_ratio": true,
+  "solve_omega_invalid/error_type": "ValueError",
+  "solve_omega_invalid/hints_valid_values": true,
+  "solve_omega_invalid/mentions_omega": true
+}

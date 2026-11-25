@@ -13,7 +13,8 @@ from fly import (
     message, register_message_id,
     set_message_domain_limit,
 )
-from _msgtest import wait_for, get_message_log_content, get_worker_debug_log
+from _msgtest import get_message_log_content, get_worker_debug_log
+from test import record, wait_tasks_no_failure
 
 DB_PATH = os.path.join(get_work_directory(), "msg_domquota_db")
 
@@ -59,8 +60,9 @@ def worker_send(db):
 
 
 worker_send(db)
-assert wait_for(lambda: len(master.completed_tasks) >= 1)
-assert len(master.failed_tasks) == 0
+# 原断言：assert len(master.failed_tasks) == 0
+assert wait_tasks_no_failure(master, 1, "worker_send/no_failed_tasks", timeout=20.0), \
+    "task 未完成"
 
 master.stop()
 
@@ -68,16 +70,30 @@ content = get_message_log_content()
 worker1_log = get_worker_debug_log(1)
 
 # 验证 1：DOMQ::0001 每 id 独立配额 4 → 4 条进 message.log；DOMQ::0002 3 条。
-assert content.count("[DOMQ::0001]") == 4, f"DOMQ::0001 应有 4 条，实际 {content.count('[DOMQ::0001]')}"
-assert content.count("[DOMQ::0002]") == 3, f"DOMQ::0002 应有 3 条，实际 {content.count('[DOMQ::0002]')}"
+domq1_count = content.count("[DOMQ::0001]")
+# 原断言：assert content.count("[DOMQ::0001]") == 4, f"DOMQ::0001 应有 4 条，实际 {content.count('[DOMQ::0001]')}"
+record("message_log/domq_0001_count", domq1_count)
+domq2_count = content.count("[DOMQ::0002]")
+# 原断言：assert content.count("[DOMQ::0002]") == 3, f"DOMQ::0002 应有 3 条，实际 {content.count('[DOMQ::0002]')}"
+record("message_log/domq_0002_count", domq2_count)
 
 # 验证 2：worker 本地 debug log 同步受控（DOMQ::0001 4 条，DOMQ::0002 3 条）。
-assert worker1_log.count("[DOMQ::0001]") == 4, f"worker DOMQ::0001 应有 4 条，实际 {worker1_log.count('[DOMQ::0001]')}"
-assert worker1_log.count("[DOMQ::0002]") == 3, f"worker DOMQ::0002 应有 3 条，实际 {worker1_log.count('[DOMQ::0002]')}"
+w_domq1_count = worker1_log.count("[DOMQ::0001]")
+# 原断言：assert worker1_log.count("[DOMQ::0001]") == 4, f"worker DOMQ::0001 应有 4 条，实际 {worker1_log.count('[DOMQ::0001]')}"
+record("worker_log/domq_0001_count", w_domq1_count)
+w_domq2_count = worker1_log.count("[DOMQ::0002]")
+# 原断言：assert worker1_log.count("[DOMQ::0002]") == 3, f"worker DOMQ::0002 应有 3 条，实际 {worker1_log.count('[DOMQ::0002]')}"
+record("worker_log/domq_0002_count", w_domq2_count)
 
 # 验证 3：summary 反映总触发次数（DOMQ::0001 含超限丢弃共 5，DOMQ::0002 共 3，domain 合计 8）。
-assert "DOMQ::0001 : 5" in content, f"summary DOMQ::0001 应为 5:\n{content}"
-assert "DOMQ::0002 : 3" in content, f"summary DOMQ::0002 应为 3:\n{content}"
-assert "DOMQ : 8" in content, f"summary domain DOMQ 应为 8:\n{content}"
+sum_domq1 = "DOMQ::0001 : 5" in content
+# 原断言：assert "DOMQ::0001 : 5" in content, f"summary DOMQ::0001 应为 5:\n{content}"
+record("summary/domq_0001_total_5", sum_domq1, detail=content)
+sum_domq2 = "DOMQ::0002 : 3" in content
+# 原断言：assert "DOMQ::0002 : 3" in content, f"summary DOMQ::0002 应为 3:\n{content}"
+record("summary/domq_0002_total_3", sum_domq2)
+sum_domq = "DOMQ : 8" in content
+# 原断言：assert "DOMQ : 8" in content, f"summary domain DOMQ 应为 8:\n{content}"
+record("summary/domq_domain_total_8", sum_domq)
 
-INFO("[PASS] test_message_domain_quota")
+INFO("[DONE] test_message_domain_quota")

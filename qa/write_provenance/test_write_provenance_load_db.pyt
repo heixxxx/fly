@@ -11,6 +11,8 @@ import os
 db_path = os.path.join(FLY_CASE_LOG_DIR, "prov_db")
 shared_env = {"FLY_DB_PATH": db_path}
 
-run_subcase("provenance_load_db_run1.py", timeout=60, env=shared_env)
-run_subcase("provenance_load_db_run2.py", timeout=60, env=shared_env)
+run_subcase("provenance_load_db_run1.py", timeout=60, env=shared_env,
+            check_list=["result.json"])
+run_subcase("provenance_load_db_run2.py", timeout=60, env=shared_env,
+            check_list=["result.json"])
 INFO("[PASS] test_write_provenance_load_db: provenance rebuilt from idx after load_db")

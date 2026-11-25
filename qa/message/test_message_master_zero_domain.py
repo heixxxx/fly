@@ -13,7 +13,8 @@ from fly import (
     message, register_message_id,
     set_message_domain_limit,
 )
-from _msgtest import wait_for, get_message_log_content
+from _msgtest import get_message_log_content
+from test import record, wait_tasks_no_failure
 
 DB_PATH = os.path.join(get_work_directory(), "msg_mdom_db")
 
@@ -57,20 +58,30 @@ def worker_send(db):
 
 
 worker_send(db)
-assert wait_for(lambda: len(master.completed_tasks) >= 1)
-assert len(master.failed_tasks) == 0
+# 原断言：assert len(master.failed_tasks) == 0
+assert wait_tasks_no_failure(master, 1, "worker_send/no_failed_tasks", timeout=20.0)
 
 master.stop()
 
 content = get_message_log_content()
 
 # 验证 1：MZDOM::0001 每 id 独立配额 2 → 2 条进 message.log；MZDOM::0002 全 2 条。
-assert content.count("[MZDOM::0001]") == 2, f"MZDOM::0001 应有 2 条，实际 {content.count('[MZDOM::0001]')}"
-assert content.count("[MZDOM::0002]") == 2, f"MZDOM::0002 应有 2 条，实际 {content.count('[MZDOM::0002]')}"
+mz1_count = content.count("[MZDOM::0001]")
+# 原断言：assert content.count("[MZDOM::0001]") == 2, f"MZDOM::0001 应有 2 条，实际 {content.count('[MZDOM::0001]')}"
+record("message_log/mzdom_0001_count", mz1_count)
+mz2_count = content.count("[MZDOM::0002]")
+# 原断言：assert content.count("[MZDOM::0002]") == 2, f"MZDOM::0002 应有 2 条，实际 {content.count('[MZDOM::0002]')}"
+record("message_log/mzdom_0002_count", mz2_count)
 
 # 验证 2：summary 反映 worker 实际触发次数（配额不影响 trigger 计数）。
-assert "MZDOM::0001 : 3" in content, f"summary MZDOM::0001 应为 3:\n{content}"
-assert "MZDOM::0002 : 2" in content, f"summary MZDOM::0002 应为 2:\n{content}"
-assert "MZDOM : 5" in content, f"summary domain MZDOM 应为 5:\n{content}"
+mz1_trigger = "MZDOM::0001 : 3" in content
+# 原断言：assert "MZDOM::0001 : 3" in content, f"summary MZDOM::0001 应为 3:\n{content}"
+record("summary/mzdom_0001_trigger_3", mz1_trigger, detail=content)
+mz2_trigger = "MZDOM::0002 : 2" in content
+# 原断言：assert "MZDOM::0002 : 2" in content, f"summary MZDOM::0002 应为 2:\n{content}"
+record("summary/mzdom_0002_trigger_2", mz2_trigger)
+mz_domain_trigger = "MZDOM : 5" in content
+# 原断言：assert "MZDOM : 5" in content, f"summary domain MZDOM 应为 5:\n{content}"
+record("summary/mzdom_domain_trigger_5", mz_domain_trigger)
 
-INFO("[PASS] test_message_master_domain_quota")
+INFO("[DONE] test_message_master_domain_quota")

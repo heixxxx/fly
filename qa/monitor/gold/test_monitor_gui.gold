@@ -1,0 +1,15 @@
+{
+  "api/dbs_at_least_1": true,
+  "api/meta_workers_at_least_1": true,
+  "api/task0_name_known": true,
+  "api/task_detail_keys": true,
+  "api/tasks_total_at_least_1": true,
+  "api/timeline_tasks_at_least_1": true,
+  "api/worker0_samples_at_least_1": true,
+  "run/monitor_db_exists": true,
+  "static_resource/": true,
+  "static_resource/static/css/app.css": true,
+  "static_resource/static/js/app.js": true,
+  "static_resource/static/js/pages/timeline.js": true,
+  "static_resource/static/vendor/echarts.min.js": true
+}

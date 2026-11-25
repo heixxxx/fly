@@ -24,7 +24,7 @@ import subprocess
 from _fly_log import INFO
 
 from fly import get_fly_binary
-from test import qa_tmp, wait_until
+from test import qa_tmp, wait_until, record
 
 CASE_TMP = qa_tmp("fatal_exit")
 os.makedirs(CASE_TMP, exist_ok=True)
@@ -108,23 +108,30 @@ def scenario_worker_fatal():
     p = _spawn_fly_master(script, log_base)
     rc = _wait_exit(p)
     p.stderr_file.close()
-    assert rc == 80, f"worker-fatal child fly must exit 80, got {rc}"
-    INFO("[PASS] worker fatal -> child fly exit code 80")
+    # 原断言：assert rc == 80, f"worker-fatal child fly must exit 80, got {rc}"
+    record("worker_fatal/exit_code", rc)
+    INFO("[DONE] worker fatal -> child fly exit code 80")
 
     # 子 master 的实际日志目录（--log-dir 存在时 resolve 出 .N 变体）。
     master_log = log_base if os.path.isfile(os.path.join(log_base, "message.log")) \
         else log_base + ".1"
     message_log = _read_log(master_log, "message.log")
-    assert "[FATAL]" in message_log and "QAFATAL::0001" in message_log, \
-        f"message.log must contain FATAL row: {message_log[-2000:]}"
-    assert "[worker" in message_log, \
-        f"worker fatal row must carry [workerN] tag: {message_log[-2000:]}"
-    INFO("[PASS] message.log carries [workerN] [FATAL] row")
+    log_has_fatal_and_id = "[FATAL]" in message_log and "QAFATAL::0001" in message_log
+    # 原断言：assert "[FATAL]" in message_log and "QAFATAL::0001" in message_log, \
+    record("worker_fatal/log_has_fatal_and_id", log_has_fatal_and_id,
+           detail={"has_fatal": "[FATAL]" in message_log,
+                   "has_id": "QAFATAL::0001" in message_log,
+                   "tail": message_log[-2000:]})
+    log_has_worker_tag = "[worker" in message_log
+    # 原断言：assert "[worker" in message_log, \
+    record("worker_fatal/log_has_worker_tag", log_has_worker_tag, detail=message_log[-2000:])
+    INFO("[DONE] message.log carries [workerN] [FATAL] row")
 
     debug_log = _read_log(master_log, "master.log")
-    assert "fatal message from worker" in debug_log, \
-        "master debug log must record fast_exit reason"
-    INFO("[PASS] master debug log records fast_exit reason")
+    debug_has_reason = "fatal message from worker" in debug_log
+    # 原断言：assert "fatal message from worker" in debug_log, \
+    record("worker_fatal/debug_has_fast_exit_reason", debug_has_reason, detail=debug_log[-2000:])
+    INFO("[DONE] master debug log records fast_exit reason")
 
     # 无 worker 残留进程：StopNow 广播后 worker SIGKILL 自身；以共享
     # .fly_config 路径精确定位本拓扑的 worker 命令行。
@@ -140,8 +147,8 @@ def scenario_worker_fatal():
 
     assert wait_until(lambda: not _worker_left(), timeout=15), \
         "no worker process may survive master fast_exit"
-    INFO("[PASS] no leftover worker process")
-    INFO("[PASS] scenario_worker_fatal")
+    INFO("[DONE] no leftover worker process")
+    INFO("[DONE] scenario_worker_fatal")
 
 
 def scenario_master_fatal():
@@ -151,19 +158,25 @@ def scenario_master_fatal():
     p = _spawn_fly_master(script, log_base)
     rc = _wait_exit(p)
     p.stderr_file.close()
-    assert rc == 80, f"master-fatal child fly must exit 80, got {rc}"
-    INFO("[PASS] master self fatal -> child fly exit code 80")
+    # 原断言：assert rc == 80, f"master-fatal child fly must exit 80, got {rc}"
+    record("master_fatal/exit_code", rc)
+    INFO("[DONE] master self fatal -> child fly exit code 80")
 
     master_log = log_base if os.path.isfile(os.path.join(log_base, "message.log")) \
         else log_base + ".1"
     message_log = _read_log(master_log, "message.log")
-    assert "[FATAL]" in message_log and "[master]" in message_log \
-        and "QAFATAL::0002" in message_log, \
-        f"message.log must contain [master] [FATAL] row: {message_log[-2000:]}"
-    INFO("[PASS] message.log carries [master] [FATAL] row")
-    INFO("[PASS] scenario_master_fatal")
+    log_has_master_row = ("[FATAL]" in message_log and "[master]" in message_log
+                          and "QAFATAL::0002" in message_log)
+    # 原断言：assert "[FATAL]" in message_log and "[master]" in message_log \
+    record("master_fatal/log_has_master_fatal_row", log_has_master_row,
+           detail={"has_fatal": "[FATAL]" in message_log,
+                   "has_master": "[master]" in message_log,
+                   "has_id": "QAFATAL::0002" in message_log,
+                   "tail": message_log[-2000:]})
+    INFO("[DONE] message.log carries [master] [FATAL] row")
+    INFO("[DONE] scenario_master_fatal")
 
 
 scenario_worker_fatal()
 scenario_master_fatal()
-INFO("[PASS] test_fatal_exit")
+INFO("[DONE] test_fatal_exit")

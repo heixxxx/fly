@@ -13,7 +13,8 @@ from fly import (
     open_db, get_config, get_work_directory, as_task,
     message, register_message_id, set_message_global_limit,
 )
-from _msgtest import wait_for, get_message_log_content, count_summary_block
+from _msgtest import get_message_log_content, count_summary_block
+from test import record, wait_tasks_no_failure
 
 DB_PATH = os.path.join(get_work_directory(), "msg_sum_db")
 
@@ -61,8 +62,9 @@ def worker_send(db):
 # 两个 worker 各跑一次。
 worker_send(db)
 worker_send(db)
-assert wait_for(lambda: len(master.completed_tasks) >= 2), "2 task 未完成"
-assert len(master.failed_tasks) == 0
+# 原断言：assert len(master.failed_tasks) == 0
+assert wait_tasks_no_failure(master, 2, "worker_send/no_failed_tasks", timeout=20.0), \
+    "2 task 未完成"
 
 master.stop()
 
@@ -72,25 +74,33 @@ summary = count_summary_block(content)
 # === 验证 1（核心）：master 丢弃不影响 worker trigger 计数 ===
 # 2 worker 各 trigger 5 = 10。master 打印配额=5 只打印 5 条（丢弃 5 条），
 # 但 summary 应显示 worker trigger 总和 = 10（不是被 master 丢弃后的 5，也不是双算）。
-assert "SUMW::0001 : 10" in summary, (
-    f"summary SUMW::0001 应为 10（2 worker × 5 trigger，master 丢弃不影响计数）:\n{summary}")
+sum_id_10 = "SUMW::0001 : 10" in summary
+# 原断言：assert "SUMW::0001 : 10" in summary, (
+record("summary/sumw_0001_total_10", sum_id_10, detail=summary)
 
 # domain 级：SUMW = 10。
-assert "SUMW : 10" in summary, f"summary domain SUMW 应为 10:\n{summary}"
+sum_dom_10 = "SUMW : 10" in summary
+# 原断言：assert "SUMW : 10" in summary, f"summary domain SUMW 应为 10:\n{summary}"
+record("summary/sumw_domain_total_10", sum_dom_10)
 
 # === 验证 2：master 自身 message trigger 进 summary ===
 # master 自身发 2 条，进 master 自己的 Registry trigger 计数。
-assert "SUMMS::0001 : 2" in summary, f"summary SUMMS::0001 应为 2（master 自身）:\n{summary}"
-assert "SUMMS : 2" in summary, f"summary domain SUMMS 应为 2:\n{summary}"
+summs_id_2 = "SUMMS::0001 : 2" in summary
+# 原断言：assert "SUMMS::0001 : 2" in summary, f"summary SUMMS::0001 应为 2（master 自身）:\n{summary}"
+record("summary/summs_0001_total_2", summs_id_2)
+summs_dom_2 = "SUMMS : 2" in summary
+# 原断言：assert "SUMMS : 2" in summary, f"summary domain SUMMS 应为 2:\n{summary}"
+record("summary/summs_domain_total_2", summs_dom_2)
 
 # === 验证 3：master 打印配额确实丢弃了（message.log 行数 < trigger 总和）===
 # master 打印配额=5，2 worker 共推 10 条 → message.log 只 5 条 SUMW 行（master 丢弃 5 条）。
 sumw_lines = content.count("[SUMW::0001]")
-assert sumw_lines == 5, (
-    f"master 打印配额=5，message.log 应只 5 条 SUMW 行（丢弃 5 条），实际 {sumw_lines}")
+# 原断言：assert sumw_lines == 5, (
+record("message_log/sumw_lines_5", sumw_lines)
 
 # master 自身 2 条不受 master 打印配额丢弃（master 自己 Registry 配额=5 内）。
 summs_lines = content.count("[SUMMS::0001]")
-assert summs_lines == 2, f"master 自身 2 条应全打印，实际 {summs_lines}"
+# 原断言：assert summs_lines == 2, f"master 自身 2 条应全打印，实际 {summs_lines}"
+record("message_log/summs_lines_2", summs_lines)
 
-INFO("[PASS] test_message_summary_accuracy")
+INFO("[DONE] test_message_summary_accuracy")

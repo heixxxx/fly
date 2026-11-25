@@ -1,0 +1,8 @@
+{
+  "advertise/config_override_wins": "10.123.0.9",
+  "advertise/detected_ip_not_loopback": true,
+  "advertise/override_cleared": true,
+  "role/storage_only_worker_count_is_1": true,
+  "ssh_target_missing_host/error_type": "RuntimeError",
+  "ssh_target_missing_host/msg_mentions_host": true
+}

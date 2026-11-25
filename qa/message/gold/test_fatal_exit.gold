@@ -1,0 +1,8 @@
+{
+  "master_fatal/exit_code": 80,
+  "master_fatal/log_has_master_fatal_row": true,
+  "worker_fatal/debug_has_fast_exit_reason": true,
+  "worker_fatal/exit_code": 80,
+  "worker_fatal/log_has_fatal_and_id": true,
+  "worker_fatal/log_has_worker_tag": true
+}

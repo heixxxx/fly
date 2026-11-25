@@ -1,0 +1,26 @@
+{
+  "cache_miss/get_k_default": "dflt",
+  "cache_miss/get_k_value": null,
+  "cache_miss/has_k_is_false": true,
+  "cache_remove/has_k_is_false": true,
+  "cache_roundtrip/get_k_overwritten": "overwritten",
+  "cache_roundtrip/get_k_value": {
+    "v": [
+      1,
+      2,
+      3
+    ]
+  },
+  "cache_roundtrip/has_k_is_true": true,
+  "clear_cache/both_absent": true,
+  "fly_binary/executable": true,
+  "fly_binary/exists": true,
+  "getattr_unknown/error_type": "AttributeError",
+  "getattr_unknown/msg_mentions_symbol": true,
+  "passthrough/completed_tasks_equal": true,
+  "passthrough/failed_tasks_equal": true,
+  "passthrough/pending_tasks_equal": true,
+  "passthrough/port_ok": true,
+  "passthrough/running_tasks_equal": true,
+  "task_error/unknown_id_empty": ""
+}

@@ -1,0 +1,6 @@
+{
+  "tasks/completed_at_least_2": true,
+  "user_read_after_write/value": "echo:42",
+  "user_write/value": 42,
+  "workers/connected": true
+}

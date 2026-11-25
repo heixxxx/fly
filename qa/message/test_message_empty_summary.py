@@ -11,6 +11,7 @@ import os
 from _fly_log import INFO
 from fly import get_config, get_work_directory
 from _msgtest import get_message_log_content, count_summary_block
+from test import record
 
 get_config().set_int("fail_unscheduleable_tasks", 0)
 
@@ -26,11 +27,19 @@ content = get_message_log_content()
 summary = count_summary_block(content)
 
 # 验证 1：summary 正常打印（不崩溃）。
-assert "Message Trigger Summary" in summary, f"summary 未打印:\n{summary}"
-assert "By message id" in summary
-assert "By domain" in summary
+summary_printed = "Message Trigger Summary" in summary
+# 原断言：assert "Message Trigger Summary" in summary, f"summary 未打印:\n{summary}"
+record("empty_summary/summary_printed", summary_printed, detail=summary)
+by_id = "By message id" in summary
+# 原断言：assert "By message id" in summary
+record("empty_summary/by_message_id_header", by_id, detail=summary)
+by_domain = "By domain" in summary
+# 原断言：assert "By domain" in summary
+record("empty_summary/by_domain_header", by_domain)
 
 # 验证 2：无 message 时的空提示分支。
-assert "no message triggered" in summary, f"应有 no message triggered 提示:\n{summary}"
+empty_hint = "no message triggered" in summary
+# 原断言：assert "no message triggered" in summary, f"应有 no message triggered 提示:\n{summary}"
+record("empty_summary/no_message_triggered_hint", empty_hint)
 
-INFO("[PASS] test_message_empty_summary")
+INFO("[DONE] test_message_empty_summary")

@@ -5,7 +5,7 @@ import os
 
 
 
-from test import write_data
+from test import write_data, record
 from fly import load_db, get_config
 DB_PATH = os.environ.get("FLY_DB_PATH") or os.path.join(get_config().get_str("log_dir"), "db")
 
@@ -30,18 +30,21 @@ assert master.wait_for_workers(1), \
     "load_db should spawn worker"
 
 val = db.read_object("prov_key")
-assert val == 42, f"load_db should restore data, expected 42 got {val}"
+# 原断言：assert val == 42, f"load_db should restore data, expected 42 got {val}"
+record("load_db/restored_value", val)
 
 write_data(db, "prov_key", 42)
 
 assert wait_for(lambda: len(master.completed_tasks) >= 1, timeout=30.0), \
     f"Rerun should succeed, got {len(master.completed_tasks)} completed, {len(master.failed_tasks)} failed"
 
-assert len(master.failed_tasks) == 0, \
-    f"Expected 0 failed, got {len(master.failed_tasks)}"
+no_failed = len(master.failed_tasks) == 0
+# 原断言：assert len(master.failed_tasks) == 0, \
+record("rerun/no_failed_tasks", no_failed, detail=master.failed_tasks)
 
 val2 = db.read_object("prov_key")
-assert val2 == 42, f"Expected 42 after rerun, got {val2}"
+# 原断言：assert val2 == 42, f"Expected 42 after rerun, got {val2}"
+record("rerun/value", val2)
 
 # Part B: load_db 从 idx 重建 write_provenance_。用不同 context（value=999）写 prov_key，
 # 应被 provenance 拒（mismatch）—— 重建后 hash 与原 42 的 context 不匹配。

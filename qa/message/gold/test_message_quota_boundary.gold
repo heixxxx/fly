@@ -1,0 +1,7 @@
+{
+  "boundary/unlim_trigger_15": true,
+  "boundary/unlimited_count": 15,
+  "boundary/zero_count": 0,
+  "boundary/zero_trigger_1": true,
+  "worker_send/no_failed_tasks": true
+}

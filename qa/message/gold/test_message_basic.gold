@@ -1,0 +1,10 @@
+{
+  "debug_log/master_row": true,
+  "levels/error_bound": true,
+  "levels/warn_bound": true,
+  "message_log/master_row": true,
+  "message_log/worker_error_row": true,
+  "message_log/worker_warn_row": true,
+  "unregistered/dropped": true,
+  "worker_send/no_failed_tasks": true
+}

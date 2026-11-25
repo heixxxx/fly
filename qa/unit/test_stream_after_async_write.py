@@ -26,7 +26,7 @@ from _fly_storage import (ex_stg_get_data_service, ex_stg_get_storage_manager,
                           EXStgIndexEntry)
 from fly import open_db
 from stream_after_async_data import PythonTaskData
-from test import qa_tmp
+from test import qa_tmp, record
 
 ITERATIONS = 50
 
@@ -34,6 +34,9 @@ ITERATIONS = 50
 def _drain():
     ex_stg_get_data_service().drain_write_back()
 
+
+passed_iters = 0
+failed_iters = []
 
 for i in range(ITERATIONS):
     # 数据目录与 case 日志同目录共生共死（qa_tmp：runqa 下落 FLY_CASE_LOG_DIR，
@@ -49,10 +52,17 @@ for i in range(ITERATIONS):
         py_obj = PythonTaskData(i, "py_data")
         db.write_object("py/data", py_obj)
         _drain()
-        assert db.read_object("cpp/data") is not None, f"iter {i}: cpp read"
+        cpp_val = db.read_object("cpp/data")
+        iter_cpp_ok = cpp_val is not None
+        # 原断言：assert db.read_object("cpp/data") is not None, f"iter {i}: cpp read"
         py_result = db.read_object("py/data")
-        assert py_result.name == "py_data" and py_result.value == i, \
-            f"iter {i}: py mismatch {py_result}"
+        iter_py_ok = (py_result is not None
+                      and py_result.name == "py_data" and py_result.value == i)
+        # 原断言：assert py_result.name == "py_data" and py_result.value == i, \
+        if iter_cpp_ok and iter_py_ok:
+            passed_iters += 1
+        else:
+            failed_iters.append(i)
         db = None
     finally:
         # 每迭代单例复位（同 storage_test fixture 三步收尾）：① gc 收网析构
@@ -63,4 +73,8 @@ for i in range(ITERATIONS):
         ex_stg_get_storage_manager().reset()
         ex_stg_get_data_service().reset_state()
 
-INFO(f"[PASS] test_stream_after_async_write: {ITERATIONS}/{ITERATIONS} iterations passed")
+# 原断言：assert db.read_object("cpp/data") is not None, f"iter {i}: cpp read"
+# 原断言：assert py_result.name == "py_data" and py_result.value == i, \
+record("iterations/all_passed", passed_iters == ITERATIONS, detail=failed_iters)
+record("iterations/completed", passed_iters, detail=failed_iters)
+INFO(f"[DONE] test_stream_after_async_write: {passed_iters}/{ITERATIONS} iterations passed")

@@ -14,7 +14,7 @@ from _fly_log import INFO
 
 from fly import launch_workers, launch_ssh_workers, get_config
 from fly.runtime import get_agent
-from test import wait_until
+from test import wait_until, record
 
 master = get_agent()
 master.start()
@@ -23,29 +23,41 @@ master.start()
 cfg = get_config()
 cfg.set_str("master_advertise_host", "10.123.0.9")
 try:
-    assert master._advertise_host() == "10.123.0.9", \
-        "config override must win over detection chain"
+    overridden = master._advertise_host()
+    # 原断言：assert master._advertise_host() == "10.123.0.9", \
+    record("advertise/config_override_wins", overridden)
 finally:
     cfg.set_str("master_advertise_host", "")
-assert master._advertise_host() != "10.123.0.9", "override must be cleared"
-INFO("[PASS] master_advertise_host override wins + clears")
+cleared_host = master._advertise_host()
+override_cleared = cleared_host != "10.123.0.9"
+# 原断言：assert master._advertise_host() != "10.123.0.9", "override must be cleared"
+record("advertise/override_cleared", override_cleared, detail=cleared_host)
+INFO("[DONE] master_advertise_host override wins + clears")
 
 # 清覆盖后走探测链：本机应解析出非环回地址（UDP connect 出口 IP / hostname）
 advertised = master._advertise_host()
 try:
     import ipaddress
-    assert not ipaddress.ip_address(advertised).is_loopback, advertised
+    advertised_ip_not_loopback = not ipaddress.ip_address(advertised).is_loopback
+    # 原断言：assert not ipaddress.ip_address(advertised).is_loopback, advertised
+    record("advertise/detected_ip_not_loopback", advertised_ip_not_loopback,
+           detail=advertised)
 except ValueError:
     raise AssertionError(f"advertised host is not an IP: {advertised!r}")
-INFO(f"[PASS] detection chain returns non-loopback address ({advertised})")
+INFO(f"[DONE] detection chain returns non-loopback address ({advertised})")
 
 # ── 2. launch_ssh_workers target 缺 host → 立即 RuntimeError ─────────
 try:
     launch_ssh_workers([{"attributes": ["x"]}])
     raise AssertionError("ssh target without 'host' must raise")
 except RuntimeError as e:
-    assert "missing 'host'" in str(e), str(e)
-INFO("[PASS] launch_ssh_workers rejects target without host (pre-ssh)")
+    err_msg = str(e)
+    err_type = type(e).__name__
+    msg_mentions_host = "missing 'host'" in err_msg
+# 原断言：assert "missing 'host'" in str(e), str(e)
+record("ssh_target_missing_host/error_type", err_type)
+record("ssh_target_missing_host/msg_mentions_host", msg_mentions_host, detail=err_msg)
+INFO("[DONE] launch_ssh_workers rejects target without host (pre-ssh)")
 
 # ── 3. role 传递：storage_only 注册为存储 worker；非法 role 回退 hybrid ─
 launch_workers([{"role": "storage_only"}, {"role": "bogus_role"}])
@@ -53,9 +65,11 @@ assert wait_until(lambda: master.worker_count >= 2, timeout=60), \
     f"both workers should register, got {master.worker_count}"
 
 storage_ids = set(master._agent.get_storage_only_workers())
-assert len(storage_ids) == 1, f"exactly one storage_only worker expected: {storage_ids}"
-INFO(f"[PASS] role=storage_only registered as storage worker {storage_ids}; "
+one_storage_worker = len(storage_ids) == 1
+# 原断言：assert len(storage_ids) == 1, f"exactly one storage_only worker expected: {storage_ids}"
+record("role/storage_only_worker_count_is_1", one_storage_worker, detail=sorted(storage_ids))
+INFO(f"[DONE] role=storage_only registered as storage worker {storage_ids}; "
      "bogus role fell back to hybrid")
 
 master.stop()
-INFO("[PASS] test_launch_variants")
+INFO("[DONE] test_launch_variants")

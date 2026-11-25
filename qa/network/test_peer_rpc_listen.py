@@ -14,6 +14,7 @@ def listen_test(db):
     try:
         listener = group.listen(db)
         print(f"[LISTEN_TEST] OK port={listener.port}", flush=True)
+        # 保留：@as_task 任务函数内的断言，record 只能在子阶段的主进程里调用
         assert listener.port > 0, f"port should be >0, got {listener.port}"
         listener.close()
         print("[LISTEN_TEST] close OK", flush=True)
@@ -36,7 +37,7 @@ def main():
     listen_test(db)
     from fly import wait_tasks
     wait_tasks()
-    print("[PASS] listen test")
+    print("[DONE] listen test")
     master.stop()
 
 

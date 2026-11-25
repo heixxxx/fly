@@ -1,0 +1,10 @@
+{
+  "message_log/domq_0001_count": 4,
+  "message_log/domq_0002_count": 3,
+  "summary/domq_0001_total_5": true,
+  "summary/domq_0002_total_3": true,
+  "summary/domq_domain_total_8": true,
+  "worker_log/domq_0001_count": 4,
+  "worker_log/domq_0002_count": 3,
+  "worker_send/no_failed_tasks": true
+}
