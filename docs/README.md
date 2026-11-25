@@ -70,6 +70,7 @@ agent、common（模块族）、container、core、emir（含子模块开发规�
   - 消息类型语义全表 → [network/module.md](network/module.md)「消息类型总表」
   - `from fly import ...` 公开符号总表 → [python-api/module.md](python-api/module.md)「公开符号总表」
   - runqa 并行度/发现机制/case 总数口径 → [qa/README.md](../qa/README.md)「并行度权威口径」
+  - QA 用例基准比对（记录接口、`check_list`、基准重录、测例产物命名约定）→ [qa/README.md](../qa/README.md)「基准比对机制」
   - task 参数编码（`__fly_db2__`）与 db 身份/uid → [db-chain-design.md](db-chain-design.md)
   - pre-push 流水线配方 → `scripts/pre-push`（源码即权威），行为说明见 [push-hook.md](push-hook.md)
 - 所有结构性改动记入 [DOC_CHANGELOG.md](DOC_CHANGELOG.md)（倒序追加）

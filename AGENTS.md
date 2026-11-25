@@ -156,6 +156,7 @@ These clangd errors are **not real** — they come from Bazel's virtual include 
 - **多轮稳定性测试用 `-j4` 跑一次**（全量 case 一次跑完，数量以 runqa 运行输出为准），而非 for 循环跑多轮。要验证多轮稳定性，每轮之间必须**检查是否有失败**，有失败则立即停止分析，不得继续。
 - **失败日志位置**：`qa/{category}/{test_name}/fly.log`（stdout+stderr 合并）、`master.log`、`worker1.log` 等。这些是分析 timeout/fail 的唯一现场。
 - **runqa 的 `qa/logs/qa.log`** 每轮重建（覆盖），但 per-case 的 `fly.log` 只被同 case 下一轮覆盖。
+- **基准重录是显式操作**：`./qa/runqa --regold <用例.pyt>` 用上次运行的结果文件覆盖基准文件（`qa/<类别>/gold/` 下的 `.gold` 文件），只在开发者判定差异合理之后执行；推送前校验不调用它，运行用例时也绝不写基准。重录后必须重跑确认通过，基准文件的变更随提交评审。迁移用例时先保留原有断言并行加 `record`，运行确认断言全部通过之后再重录初始基准——直接删断言再重录会把实现缺陷固化成期望值。结果文件顶层布尔为假的条目，重录会被拒绝（判定型条目期望恒为 true）。规则见 `qa/README.md`「基准比对机制」。
 
 ## Config vs ProcessInfo
 

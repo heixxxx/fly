@@ -97,6 +97,8 @@ QA 测试按模块分类在 `qa/<category>/` 子目录下（分类全表与运�
 
 **QA case 脚本不需要 `sys.path.insert`** — fly 启动时已自动配好所有模块路径。获取 fly binary 路径用 `get_fly_binary()`，不要硬编码 `bazel-bin/...`。
 
+**QA 用例的通过判定可以用基准比对代替 `assert`**：子阶段脚本用 `from test import record` 把待检查的数据写进结果文件，编排脚本在 `run_subcase(..., check_list=[...])` 里声明要检查的结果文件，运行器与 `qa/<类别>/gold/` 下的基准文件按 key 比对。期望值变化时用 `./qa/runqa --regold <用例.pyt>` 重录，这是显式操作，推送前校验不会调用。等待原语和判空守卫仍然用 `assert`。完整规则见 `qa/README.md`「基准比对机制」。
+
 添加新 QA case 时的工作流：
 
 1. **评估是否需要新任务**：检查 `e2e_tasks.py` 中是否已有满足需求的任务（write_data, read_data, compute_sum, cross_db_* 等）

@@ -23,6 +23,7 @@ import sys
 import os
 import time
 import argparse
+import json
 import signal
 import shutil
 import tempfile
@@ -32,6 +33,27 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
 FLY_BIN = os.path.join(PROJECT_ROOT, "build", "bin", "fly")
+
+
+def _load_qa_record():
+    """按源码树路径加载 qa_record 模块。
+
+    runqa 没有 .py 扩展名不能被常规导入，所以记录接口、比对预设、基准文件
+    读写、重录规则这些共享逻辑全部放在 src/test/py/qa_record.py 里，这里用
+    importlib 加载（qa_record 顶层只用标准库，在 runqa 进程内可用）。fly 子
+    进程内的子阶段脚本则走 `from test import record` 的包导入，两边互不通信。
+    """
+    import importlib.util
+    module_path = os.path.join(PROJECT_ROOT, "src", "test", "py", "qa_record.py")
+    spec = importlib.util.spec_from_file_location("qa_record", module_path)
+    if spec is None or spec.loader is None:
+        sys.exit(f"Error: cannot load qa_record module from {module_path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+qa_record = _load_qa_record()
 
 _log_lock = threading.Lock()
 _log_file = None
@@ -182,13 +204,22 @@ class SubcaseResult:
 
 
 class SubcaseError(Exception):
-    """run_subcase 未达 expect_pass 期望时抛出 → .pyt exec 中断 → 整个 case 失败。"""
-    def __init__(self, script, result, expect_pass):
+    """run_subcase 未达 expect_pass 期望时抛出 → .pyt exec 中断 → 整个 case 失败。
+
+    report_lines 非 None 时承载检查清单的完整失败报告（差异在前，退出状态问题
+    在后，见设计 5.8：记录不会中断脚本，后面的崩溃往往是前面差异的后果），
+    run_pyt 直接逐行打印；为 None 时保持原有退出状态报告格式。
+    """
+    def __init__(self, script, result, expect_pass, report_lines=None):
         self.script = script
         self.result = result
         self.expect_pass = expect_pass
-        want = "PASSED" if expect_pass else "FAILED"
-        super().__init__(f"{script}: expected {want} but got {result.status}")
+        self.report_lines = report_lines
+        if report_lines:
+            super().__init__("\n".join(report_lines))
+        else:
+            want = "PASSED" if expect_pass else "FAILED"
+            super().__init__(f"{script}: expected {want} but got {result.status}")
 
 
 def _run_fly(script_path, log_dir, timeout, cwd, extra_env=None):
@@ -328,25 +359,108 @@ def _run_fly(script_path, log_dir, timeout, cwd, extra_env=None):
                          log_path=out_log, elapsed_ms=elapsed_ms)
 
 
-def run_subcase(script, timeout=30, setup=None, teardown=None, expect_pass=True, env=None):
-    """跑一个 sub case（一个 fly 进程）。未达 expect_pass 期望 → raise SubcaseError
-    （.pyt exec 中断，整个 case 失败）。
+def _next_sub_index():
+    """子阶段序号（case 内从 0 递增）。
+
+    正常运行与重录模式共用同一规则：重录时编排脚本按相同顺序调度子阶段，
+    算出的子阶段日志目录与上次运行一致，结果文件才能被找到。
+    """
+    n = getattr(_case_state, "counter", 0)
+    _case_state.counter = n + 1
+    return n
+
+
+def _check_script_repeated(script_name):
+    """同一编排脚本重复调度同一子阶段脚本时报错（基准按脚本文件名区分）。
+
+    只对带检查清单的调度登记与检测：不带清单的用例不引入这个约束，存量行为
+    不变。集合挂在 threading.local 的 case 状态上（每 case 一线程，互不污染）。
+    """
+    executed = getattr(_case_state, "executed_scripts", None)
+    if executed is None:
+        executed = set()
+        _case_state.executed_scripts = executed
+    if script_name in executed:
+        raise ValueError(
+            f"重复调度同一子阶段脚本 {script_name}：基准文件按脚本文件名区分，"
+            "同一编排脚本不可重复调度同一脚本")
+    executed.add(script_name)
+
+
+def _write_check_report(case_log_dir, pyt_stem, script_name, report_lines):
+    """检查失败报告追加写 {用例日志目录}/<编排脚本名>.check.txt（终端与 qa.log
+    之外的第三个落点，承载完整差异列表）。同一次运行里多个子阶段先后失败时
+    各占一段，以带子阶段脚本名的分隔行开头；用例目录每轮运行前被整体清理，
+    不会跨轮累积。落盘失败不影响用例判定。"""
+    try:
+        os.makedirs(case_log_dir, exist_ok=True)
+        with open(os.path.join(case_log_dir, pyt_stem + ".check.txt"), "a",
+                  encoding="utf-8") as f:
+            f.write(f"===== sub case {script_name} =====\n")
+            f.write("\n".join(report_lines) + "\n")
+    except OSError:
+        pass
+
+
+def _check_report_relpath(case_log_dir, pyt_stem):
+    path = os.path.join(case_log_dir, pyt_stem + ".check.txt")
+    try:
+        return os.path.relpath(path, PROJECT_ROOT)
+    except ValueError:
+        return path
+
+
+def run_subcase(script, timeout=30, setup=None, teardown=None, expect_pass=True,
+                env=None, check_list=None):
+    """跑一个 sub case（一个 fly 进程）。未达 expect_pass 期望或检查清单比对有
+    差异 → raise SubcaseError（.pyt exec 中断，整个 case 失败）。
 
     script: sub case .py 路径（相对 FLY_CASE_DIR 或绝对）
     timeout: 单阶段超时秒
     setup/teardown: 无参 callable，sub case 级预处理/后处理（teardown 无论成败都跑）
     expect_pass: True=期望 fly PASSED；False=期望 fly FAILED（如测试失败场景）。
                  PASSED/TIMEOUT 在 expect_pass=False 时都算未达期望（场景没复现 / hang）。
+    env: per-subcase env（如 FLY_DB_PATH），不污染全局 os.environ
+    check_list: 检查清单。None/[] 不做基准比对，行为与无清单完全一致。每项是结果
+                文件的相对路径（相对子阶段日志目录，用缺省预设 kv）或选项字典，
+                见 qa_record.validate_check_item。清单校验在启动子进程之前完成，
+                非法写法抛 ValueError。比对与退出状态判定独立：通过的条件是退出
+                状态符合预期且差异为空；expect_pass=False 的子阶段同样执行检查。
     """
+    # 清单校验先行（含「同一清单里 file 重复」与命名约定展开）：不消耗子阶段
+    # 序号、不启动进程。清单项的自动补前缀需要子阶段脚本名（S）。
     case_dir = getattr(_case_state, "case_dir", os.getcwd())
     case_log_dir = getattr(_case_state, "log_dir", case_dir)
-    n = getattr(_case_state, "counter", 0)
-    _case_state.counter = n + 1
+    pyt_path = getattr(_case_state, "pyt_path", None)
+
     script_abs = script if os.path.isabs(script) else os.path.join(case_dir, script)
-    script_stem = os.path.splitext(os.path.basename(script_abs))[0]
+    script_name = os.path.basename(script_abs)
+    script_stem = os.path.splitext(script_name)[0]
+    validated = qa_record.validate_check_list(check_list, script_stem)
+    if validated:
+        _check_script_repeated(script_name)
+    n = _next_sub_index()
     sub_log_dir = os.path.join(case_log_dir, f"{n}_{script_stem}")
     # 不预创建 sub_log_dir：让 fly --log-dir 自己创建。否则 fly 发现目录已存在会 resolve 到 .N
     # 变体，导致 master 的 failed_tasks.bin/master.log 落在 .N 而非 sub_log_dir（跨 sub case 找不到）。
+
+    if getattr(_case_state, "mode", "run") == "regold":
+        # 重录模式：不调 setup/teardown、不启动进程，只按清单用上次运行的结果
+        # 文件重录基准。结果文件就在按同一规则算出的 sub_log_dir 里。
+        if not validated:
+            return None
+        fly_bin_mtime = os.path.getmtime(FLY_BIN) if os.path.isfile(FLY_BIN) else 0.0
+        pending, notes = qa_record.regold_result_files(
+            validated, sub_log_dir, fly_bin_mtime, script_stem)
+        for line in notes:
+            log(line)
+        if pending:
+            pending_all = getattr(_case_state, "pending_gold", None)
+            if pending_all is None:
+                pending_all = {}
+                _case_state.pending_gold = pending_all
+            pending_all.setdefault(script_name, {}).update(pending)
+        return None
 
     extra_env = {
         "FLY_CASE_DIR": case_dir,
@@ -367,8 +481,33 @@ def run_subcase(script, timeout=30, setup=None, teardown=None, expect_pass=True,
     else:
         result.ok = (result.status == "FAILED")  # 仅 FAILED 接受；PASSED/TIMEOUT 都未达期望
 
-    if not result.ok:
-        raise SubcaseError(script, result, expect_pass)
+    # 检查清单比对（退出状态已判，返回码检查到此为止，不进结果文件）。
+    report_lines = None
+    if validated:
+        if pyt_path:
+            gold_dir = os.path.join(os.path.dirname(pyt_path), "gold")
+            regold_hint = f"./qa/runqa --regold {os.path.relpath(pyt_path, PROJECT_ROOT)}"
+            pyt_stem = os.path.splitext(os.path.basename(pyt_path))[0]
+        else:
+            gold_dir = os.path.join(case_dir, "gold")
+            regold_hint = "./qa/runqa --regold <用例.pyt>"
+            pyt_stem = script_stem
+        check_lines, bad_items = qa_record.check_result_files(
+            validated, sub_log_dir, gold_dir, script_stem, regold_hint)
+        if check_lines:
+            summary = (f"sub case {script_name}: 检查清单 {len(validated)} 项，"
+                       f"{bad_items} 项不一致")
+            report_lines = [summary] + check_lines
+            _write_check_report(case_log_dir, pyt_stem, script_name, report_lines)
+            report_lines.append(f"  [check: {_check_report_relpath(case_log_dir, pyt_stem)}]")
+
+    if report_lines and not result.ok:
+        # 报告顺序：先列差异，再附退出状态问题（记录不会中断脚本，后面的崩溃
+        # 往往是前面差异的后果）。
+        want = "PASSED" if expect_pass else "FAILED"
+        report_lines.append(f"sub case {script}: expected {want} but got {result.status}")
+    if report_lines or not result.ok:
+        raise SubcaseError(script, result, expect_pass, report_lines=report_lines)
     return result
 
 
@@ -414,29 +553,18 @@ def run_pyt(pyt_path, timeout=20):
     _clean_case_logs(pyt_dir, stem)
 
     _case_state.counter = 0  # 每 case 重置 sub case 序号
+    _case_state.executed_scripts = set()  # 带 check_list 的已调度子阶段脚本
+    _case_state.pending_gold = {}  # 重录模式：{子阶段脚本名: {结果文件: 基准值}}
+    _case_state.pyt_path = abs_pyt
 
     # thread_local 存 case 上下文（不污染全局 os.environ，-j 并发 case 互不干扰）。
     _case_state.case_dir = pyt_dir
     _case_state.log_dir = log_dir
     _case_state.stem = stem
 
-    def pyt_INFO(msg=""):
-        log(f"    {msg}")
-
-    # FLY_CASE_* 注入为 .pyt 全局变量（.pyt 直接用 FLY_CASE_LOG_DIR 等，不依赖 os.environ）
-    pyt_globals = {
-        "__name__": "__main__",
-        "__file__": abs_pyt,
-        "__builtins__": __builtins__,
-        "run_subcase": run_subcase,
-        "SubcaseResult": SubcaseResult,
-        "SubcaseError": SubcaseError,
-        "INFO": pyt_INFO,
-        "os": os, "sys": sys, "shutil": shutil,
-        "FLY_CASE_DIR": pyt_dir,
-        "FLY_CASE_LOG_DIR": log_dir,
-        "FLY_CASE_STEM": stem,
-    }
+    # FLY_CASE_* 注入为 .pyt 全局变量（.pyt 直接用 FLY_CASE_LOG_DIR 等，不依赖
+    # os.environ）。注入符号与重录模式共用 _make_pyt_globals，保证一致。
+    pyt_globals = _make_pyt_globals(abs_pyt, pyt_dir, stem, log_dir)
 
     t0 = time.monotonic()
     _t_start = time.strftime("%H:%M:%S")
@@ -448,10 +576,15 @@ def run_pyt(pyt_path, timeout=20):
         exec(code, pyt_globals)
     except SubcaseError as e:
         status = "FAILED"
-        want = "PASSED" if e.expect_pass else "FAILED"
-        err_lines.append(f"sub case {e.script}: expected {want} but got {e.result.status}")
-        err_lines.append(f"  [log: {e.result.log_path}]")
-        err_lines.extend(f"  {ln}" for ln in e.result.tail(1200).splitlines()[-12:])
+        if e.report_lines:
+            # 检查清单失败的完整报告（差异在前、退出状态问题在后）。
+            err_lines.extend(e.report_lines)
+        else:
+            want = "PASSED" if e.expect_pass else "FAILED"
+            err_lines.append(f"sub case {e.script}: expected {want} but got {e.result.status}")
+        if e.result is not None:
+            err_lines.append(f"  [log: {e.result.log_path}]")
+            err_lines.extend(f"  {ln}" for ln in e.result.tail(1200).splitlines()[-12:])
     except SystemExit as e:
         status = "PASSED" if (e.code == 0 or e.code is None) else "FAILED"
         if status == "FAILED":
@@ -543,6 +676,189 @@ def run_one(test_path, timeout=20):
     }
 
 
+def _collect_regold_cases(paths):
+    """解析 --regold 的路径参数：省略（全量）、目录、.pyt 文件，可给多个。
+
+    只收 .pyt（编排脚本是唯一的用例单位）；显式给 .py 报错退出（退出码 2）。
+    目录扫描沿用 find_tests 的日志残留跳过规则， realpath 去重。
+    """
+    cases = set()
+    if not paths:
+        for candidate in find_tests():
+            if candidate.endswith(".pyt"):
+                cases.add(candidate)
+        return sorted(cases)
+    for p in paths:
+        rp = os.path.realpath(os.path.abspath(p))
+        if rp.endswith(".py"):
+            log(f"Error: --regold 只接受编排脚本（.pyt），收到 {p!r}")
+            sys.exit(2)
+        if os.path.isdir(rp):
+            hits = set()
+            for root, dirs, files in os.walk(rp, followlinks=False):
+                dirs[:] = [d for d in dirs if not _is_log_artifact(d)]
+                for f in files:
+                    if f.endswith(".pyt"):
+                        hits.add(os.path.realpath(os.path.join(root, f)))
+            if not hits:
+                log(f"Warning: no .pyt found under {p!r}")
+            cases.update(hits)
+        elif os.path.isfile(rp) and rp.endswith(".pyt"):
+            cases.add(rp)
+        else:
+            log(f"Error: path does not exist or is not a .pyt: {p!r}")
+            sys.exit(2)
+    return sorted(cases)
+
+
+def _make_pyt_globals(abs_pyt, pyt_dir, stem, log_dir):
+    """编排脚本的注入符号（正常运行与重录模式共用，保证两种模式下的可用名字一致）。"""
+
+    def pyt_INFO(msg=""):
+        log(f"    {msg}")
+
+    return {
+        "__name__": "__main__",
+        "__file__": abs_pyt,
+        "__builtins__": __builtins__,
+        "run_subcase": run_subcase,
+        "SubcaseResult": SubcaseResult,
+        "SubcaseError": SubcaseError,
+        "INFO": pyt_INFO,
+        "os": os, "sys": sys, "shutil": shutil,
+        "FLY_CASE_DIR": pyt_dir,
+        "FLY_CASE_LOG_DIR": log_dir,
+        "FLY_CASE_STEM": stem,
+        "QA_MODE": getattr(_case_state, "mode", "run"),
+        "qa_record": qa_record,
+    }
+
+
+def _regold_one(pyt_path):
+    """重录单个编排脚本（串行执行）。返回 True=成功。
+
+    不调用 _clean_case_logs（上次运行的结果文件正是重录的输入，删了就没得录）；
+    编排脚本抛异常 → 该用例计为失败并打印，继续下一个用例（由调用方统计）。
+    """
+    abs_pyt = os.path.abspath(pyt_path)
+    pyt_dir = os.path.dirname(abs_pyt)
+    name = os.path.basename(abs_pyt)
+    stem = os.path.splitext(name)[0]
+    log_dir = os.path.join(pyt_dir, stem)
+
+    # 模式保存在线程局部的 case 状态上（E2）：--regold 串行处理期间该线程的
+    # 调度函数走重录分支；用例线程并发运行时各自的 mode 互不可见，退出时恢复
+    # 原值，同一进程内先正常运行后重录（如自测）也不会波及其他用例。
+    saved_mode = getattr(_case_state, "mode", "run")
+    _case_state.mode = "regold"
+    try:
+        return _regold_one_inner(abs_pyt, pyt_dir, name, stem, log_dir)
+    finally:
+        _case_state.mode = saved_mode
+
+
+def _regold_one_inner(abs_pyt, pyt_dir, name, stem, log_dir):
+    """_regold_one 的主体（模式设置与恢复在外层）。返回 True=成功。"""
+    # case 上下文与 run_pyt 相同：序号与子阶段日志目录的算法一致，调度函数才能
+    # 找到上次运行的结果文件。
+    _case_state.counter = 0
+    _case_state.executed_scripts = set()
+    _case_state.pending_gold = {}
+    _case_state.pyt_path = abs_pyt
+    _case_state.case_dir = os.path.dirname(abs_pyt)
+    _case_state.log_dir = log_dir
+    _case_state.stem = stem
+
+    t0 = time.monotonic()
+    ok = True
+    try:
+        with open(abs_pyt) as f:
+            code = compile(f.read(), abs_pyt, "exec")
+        exec(code, _make_pyt_globals(abs_pyt, os.path.dirname(abs_pyt), stem, log_dir))
+    except SystemExit as e:
+        if not (e.code == 0 or e.code is None):
+            ok = False
+            log(f"  SystemExit({e.code})")
+    except Exception as e:
+        ok = False
+        import traceback
+        log(f"  {type(e).__name__}: {e}")
+        for ln in traceback.format_exc().splitlines()[-15:]:
+            log(f"  {ln}")
+
+    # 收尾：重录期间积累的基准值按测例产物命名约定逐结果文件落盘（缺省
+    # <S>.gold，其他类型 <S>.<类型>.gold，gold= 声明的独立基准在 gold/data/ 下）；
+    # 内容有变化才写盘（临时文件 + os.replace）。注意：某个结果文件被拒绝重录
+    # （顶层布尔为假）时，不回滚该用例此前已生成的其他合法基准——那些基准同样
+    # 来自上次真实运行的结果，回滚只会丢掉本可以保留的更新。
+    pending_all = getattr(_case_state, "pending_gold", None) or {}
+    gold_dir = os.path.join(pyt_dir, "gold")
+    updated_files = 0
+    for script_name, files in pending_all.items():
+        for file_rel, entry in files.items():
+            gold_path = os.path.join(gold_dir, entry["gold_rel"])
+            old = qa_record.load_gold_file(gold_path)
+            value = entry["value"]
+            stats = qa_record.gold_change_stats(old, value)
+            log(f"  [重录] {script_name} / {file_rel}: 新增 {stats['added']} 键，"
+                f"删除 {stats['removed']} 键，改值 {stats['changed']} 键")
+            old_text = json.dumps(old, ensure_ascii=False, sort_keys=True) if old is not None else ""
+            new_text = json.dumps(value, ensure_ascii=False, sort_keys=True)
+            if new_text != old_text:
+                os.makedirs(os.path.dirname(gold_path), exist_ok=True)
+                qa_record.save_gold_file(gold_path, value)
+                updated_files += 1
+    if updated_files:
+        gold_note = (f"基准已更新 {updated_files} 个文件 → "
+                     f"{os.path.relpath(gold_dir, PROJECT_ROOT)}/")
+    else:
+        gold_note = "基准无变化"
+
+    elapsed_ms = int((time.monotonic() - t0) * 1000)
+    log(f"  {'✓ DONE' if ok else '✗ FAILED'}  {elapsed_ms:>6}ms  {name}  ({gold_note})")
+    return ok
+
+
+def run_regold(args):
+    """--regold 重录模式总控：逐用例串行处理。
+
+    不做的事：不构建和安装 fly、不执行临时目录残留清扫、不清理任何用例的日志
+    目录（上次的结果文件是重录的输入）、不重建 qa/logs/qa.log（保留上一轮失败
+    现场）。本轮日志写 qa/logs/regold.log。
+    """
+    global _log_file
+    cases = _collect_regold_cases(args.paths)
+    if not cases:
+        log("Error: --regold 没有找到任何编排脚本（.pyt）")
+        sys.exit(2)
+
+    qa_log_dir = os.path.join(SCRIPT_DIR, "logs")
+    os.makedirs(qa_log_dir, exist_ok=True)
+    _log_file = open(os.path.join(qa_log_dir, "regold.log"), "w")
+
+    log("=" * 50)
+    log(f"Fly QA Regold （重录基准）  {time.strftime('%Y-%m-%d %H:%M:%S')}")
+    log("=" * 50)
+    log(f"Fly binary: {FLY_BIN}")
+    log(f"Cases:       {len(cases)}")
+    log("=" * 50)
+    log()
+
+    ok_count = fail_count = 0
+    for pyt_path in cases:
+        if _regold_one(pyt_path):
+            ok_count += 1
+        else:
+            fail_count += 1
+
+    log()
+    log(f"Regold summary: {ok_count} ok, {fail_count} failed")
+    log("请重新运行已重录的用例确认通过")
+    _log_file.close()
+    _log_file = None
+    sys.exit(1 if fail_count else 0)
+
+
 _MAX_PARALLEL = 32
 
 
@@ -605,7 +921,18 @@ def main():
     parser.add_argument("--fail-fast", action="store_true",
                         help="Stop on first failure (cancel remaining tests). "
                              "Preserves failed test logs from being overwritten.")
+    parser.add_argument("--regold", action="store_true",
+                        help="Regold mode: rewrite gold files from the LAST run's "
+                             "result files instead of running tests. Serial, accepts "
+                             "the same paths (no paths = all .pyt); never touches "
+                             "case log dirs or qa/logs/qa.log. Explicit .py paths "
+                             "are rejected.")
     args = parser.parse_args()
+
+    if args.regold:
+        # 重录模式不做的事都在 run_regold 里：不构建/安装 fly、不清日志、
+        # 不重建 qa.log、不做临时目录清扫。
+        run_regold(args)
 
     if not os.path.isfile(FLY_BIN) or not os.access(FLY_BIN, os.X_OK):
         log("Installing fly binary...")

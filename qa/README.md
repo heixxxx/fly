@@ -129,12 +129,14 @@ qa/storage/
 **`run_subcase` 原语**（runqa 注入 .pyt globals，直接用，无需 import）：
 
 ```python
-run_subcase(script, timeout=30, setup=None, teardown=None, expect_pass=True, env=None)
+run_subcase(script, timeout=30, setup=None, teardown=None, expect_pass=True, env=None,
+            check_list=None)
 ```
 - `script`：sub case .py 路径（相对 .pyt 目录或绝对）
 - `setup`/`teardown`：无参 callable，sub case 级预处理/后处理（teardown 无论成败都跑）
 - `expect_pass`：True=期望 fly 正常退出（默认）；**False=期望 fly 失败**（测试失败场景，如 failed task）。未达期望 → `raise SubcaseError` → .pyt 中断 → case 失败
 - `env`：per-subcase env（如 `{"FLY_DB_PATH": ...}`），不污染全局 os.environ（-j 并发安全）
+- `check_list`：基准比对清单，`None` 或空表示不比对，行为与从前完全一致。每项是该子阶段产出的一个结果文件，子阶段结束后运行器与基准文件按 key 比对，有差异即 `raise SubcaseError`。写法与规则见下文「基准比对机制」
 - 返回 `SubcaseResult`（`.ok`/`.status`/`.tail()` 等；失败时不返回，直接 raise）
 
 **示例**（failed task + load_db + rerun）：
@@ -160,6 +162,62 @@ INFO("[PASS] case passed")
 - **sub case 未达 `expect_pass` 期望 → run_subcase raise → .pyt exec 中断 → 整个 case 失败**（fail-fast；teardown 仍跑）
 
 **发现机制**：runqa 发现 `*.pyt`（+ 过渡期 `test_*.py`）。同 stem 的 `test_*.py` 被 `.pyt` 接管（退为 sub case 脚本，不独立发现）。sub case 日志在 `{case_log_dir}/{N}_{script_stem}/fly.log`（N = sub case 序号，避免多阶段互相覆盖）。
+
+### 基准比对机制（记录接口 + check_list + gold 文件）
+
+通过判定可以不靠脚本里的 `assert`，改为「子阶段脚本把待检查的数据写进结果文件，运行器按 key 与基准文件比对」。退出状态符合预期且比对无差异才算通过；差异非空时 `run_subcase` 抛 `SubcaseError`（差异在前、退出状态问题在后），完整报告追加落盘到 `{case_log_dir}/<编排脚本名>.check.txt`（多个子阶段先后失败时各占一段）。
+
+**测例产物的命名约定**：记 S 为子阶段脚本的文件名去掉 `.py`，产物一律以测试脚本名称为主题、后缀区分类型：
+
+| 产物 | 命名 | 位置 |
+|---|---|---|
+| 结果文件（缺省） | `S.result.json` | 子阶段日志目录 |
+| 结果文件（其他类型） | `S.<类型>.<扩展名>` | 子阶段日志目录 |
+| 诊断信息 | `S.detail.json`（一个子阶段一份，键为 `<结果文件名>/<键>`） | 子阶段日志目录 |
+| 基准文件（缺省类型） | `S.gold` | `qa/<编排脚本所在目录>/gold/` |
+| 基准文件（其他类型） | `S.<类型>.gold` | `qa/<编排脚本所在目录>/gold/` |
+| 差异报告 | `<编排脚本名>.check.txt` | 用例日志目录 |
+
+**记录接口**（子阶段脚本内）：
+
+```python
+from test import record
+
+# 取值型条目：基准存期望值
+record("stage1", {"alpha": db.read_object("stage1/alpha")})
+# 判定型条目：基准恒为 true，detail 只用于失败报告（不比对、不进基准）
+record("no_failed_tasks", len(master.failed_tasks) == 0, detail=master.failed_tasks)
+```
+
+- 落点：本子阶段的日志目录（运行器注入 `FLY_CASE_SUB_DIR`）；每次调用立即写盘（临时文件 + 原子替换），进程中途崩溃时已记录的键保留。
+- `file` 参数：缺省是 `S.result.json`；传入其他文件名时必须是纯文件名（不允许路径分隔符）且以 `S.` 开头，否则抛 `ValueError`；同一个结果文件里重复记录同一键抛 `RuntimeError`。
+- **顶层布尔条目是判定**：结果文件顶层的布尔条目基准恒为 `true`，结果为 `false` 报「判定不成立」，重录时拒绝。期望值本来就是假的布尔量，要么改写成应为真的判定（如 `record("not_large", not result.is_large)`），要么放进字典里作为数据（如 `record("entry", {"is_large": result.is_large})`）——**嵌套在字典、列表里的布尔值是数据，`false` 是合法的期望值，可正常比对与重录**。
+- 值规范化后写入：元组/列表→列表、集合→排序后的列表、字典键转字符串、字节串→`{len, sha256}`、`pathlib.Path`→字符串、numpy 标量/数组→Python 标量/嵌套列表、其他对象抛 `TypeError`（逐字段记录，不静默跳过）。
+- 路径掩蔽缺省开启：字符串里的五个路径来源分别替换为对应占位符——子阶段日志目录（`FLY_CASE_SUB_DIR`）→ `<sub_log_dir>`、用例日志目录（`FLY_CASE_LOG_DIR`）→ `<case_log_dir>`、用例目录（`FLY_CASE_DIR`）→ `<case_dir>`、build 目录（`FLY_BUILD`）→ `<build>`、仓库根 → `<repo>`（环境变量不存在时跳过对应项），换机器换检出位置后基准仍然有效。
+- 等待原语（`assert wait_until(...)`）与后续步骤还要使用的对象的判空守卫仍是 `assert`，不转记录。
+
+**基准文件（gold）**：一个结果文件一个基准文件，按命名约定放在 `qa/<编排脚本所在目录>/gold/`：`S.result.json` 的基准是 `S.gold`，`S.<类型>.<扩展名>` 的基准是 `S.<类型>.gold`。`kv` 预设的基准内容就是与结果同形的 JSON 对象本身；`contains` 的基准内容是 `{"must": [...], "must_not": [...]}`。写入格式：缩进 2、键排序、末尾换行（文件名不带 `.json`，内容仍是 JSON）。基准里**顶层**的布尔值只允许 `true`（判定型条目）；嵌套布尔不受限。
+
+**check_list**（`run_subcase` 的参数）：清单为空时行为与从前完全一致。每项是结果文件的类型后缀（运行器自动补 `S.` 前缀，如 `"result.json"` → `S.result.json`）、完整文件名（以 `S.` 开头），或选项字典：
+
+```python
+run_subcase("load_db_run2.py", timeout=60, env=shared_env, check_list=[
+    "result.json",                                       # 仅类型后缀：自动补 S. 前缀，用缺省预设 kv
+    {"file": "messages.txt", "method": "contains"},      # contains 预设（手工维护），基准是 S.messages.gold
+    {"file": "trace.txt", "compare": compare_trace},     # 自定义比较方式
+])
+```
+
+清单项的 `file` 必须是带扩展名的纯文件名（不允许路径分隔符；缺扩展名在启动子进程之前就报 `ValueError`）。
+
+- **产品生成的文件不能直接写进 `check_list`**：写进去会被按命名约定展开成 `S.` 开头的名字，结果文件缺失时会提示已按命名约定展开。要让运行器检查产品文件（如 `message.log`），先由子阶段脚本把它复制或摘录成 `S.<类型>` 文件再列入清单。
+- 预设：`kv`（缺省，JSON 键值比对，可重录）、`contains`（文本包含 `must`/`must_not`，手工维护）。
+- 非法写法（缺 `file`、未知键、`method` 与 `compare` 同时出现、含路径分隔符或 `..`、缺扩展名、同一清单里 `file` 重复、预设名不存在、`gold` 不符合命名约定）在启动子进程之前抛 `ValueError`。
+- 自定义比较方式是普通 Python 函数 `compare(result_path, gold)`，返回差异字符串列表（空列表表示通过）。`gold` 入参：声明了 `gold=` 时是 `gold/data/<gold>` 独立基准文件的绝对路径（文件名同样以 `S.` 开头、以 `.gold` 结尾，内容格式由自定义函数自己约定）；否则是 `S.<类型>.gold` 文件里的 JSON 值（不存在则传 `None`）。函数对象上定义 `make_gold(result_path)` 可支持重录（返回值写到对应基准位置）。编排脚本里注入了 `qa_record` 模块对象，可复用 `qa_record.diff_value(实际值, 期望值, 路径)` 等比对原语。
+- 同一编排脚本不可重复调度同一子阶段脚本（基准按子阶段脚本名区分）。
+
+**重录模式（`--regold`）**：`./qa/runqa --regold [<路径>...]`（路径可省略=全部 `.pyt`、目录、单个 `.pyt`，可多个；显式 `.py` 报错退出）。逐用例串行执行编排脚本：不启动 fly 子进程、不调 `setup`/`teardown`，调度函数按与正常运行相同的规则定位上次运行的结果文件，只对 `check_list` 逐项重录基准；基准内容有变化才写盘，并打印每个结果文件的新增/删除/改值键数。不做的事：不构建 fly、不清用例日志目录（上次的结果正是重录的输入）、不重建 `qa/logs/qa.log`（本轮日志写 `qa/logs/regold.log`）。单项规则：结果文件不存在 → 未重录；结果**顶层**布尔为 `false` → 拒绝重录并计为失败（判定型条目的期望恒为 true，重录会把 false 写成期望，检查从此永久失效；嵌套布尔是数据，可重录）；手工维护项 → 跳过并提示（`contains`、没有 `make_gold` 的自定义比较，以及显式写了 `manual=True` 的项）；结果文件比 `build/bin/fly` 旧 → 非阻断提示。编排脚本可用注入的 `QA_MODE`（`"run"`/`"regold"`）感知当前模式。**重录是显式操作，推送前校验不会调用它**。
+
 
 **expect_pass 期望矩阵**：
 

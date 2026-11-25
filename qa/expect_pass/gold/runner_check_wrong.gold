@@ -1,0 +1,11 @@
+{
+  "alpha": 100,
+  "nested": {
+    "x": [
+      1,
+      2
+    ],
+    "y": "hello"
+  },
+  "verdict_bad": true
+}
