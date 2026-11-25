@@ -64,7 +64,7 @@ def test_database_write_updates_local_index():
     log.shutdown_log()
     shutil.rmtree(test_dir, ignore_errors=True)
     shutil.rmtree(log_dir, ignore_errors=True)
-    print("PASS: test_database_write_updates_local_index")
+    print("DONE: test_database_write_updates_local_index")
 
 
 def test_database_multiple_objects():
@@ -112,7 +112,7 @@ def test_database_multiple_objects():
     log.shutdown_log()
     shutil.rmtree(test_dir, ignore_errors=True)
     shutil.rmtree(log_dir, ignore_errors=True)
-    print("PASS: test_database_multiple_objects")
+    print("DONE: test_database_multiple_objects")
 
 
 def test_storage_manager_singleton():
@@ -130,7 +130,7 @@ def test_storage_manager_singleton():
     
     log.shutdown_log()
     shutil.rmtree(log_dir, ignore_errors=True)
-    print("PASS: test_storage_manager_singleton")
+    print("DONE: test_storage_manager_singleton")
 
 
 def test_data_service_remote_index():
@@ -177,7 +177,7 @@ def test_data_service_remote_index():
     log.shutdown_log()
     shutil.rmtree(test_dir, ignore_errors=True)
     shutil.rmtree(log_dir, ignore_errors=True)
-    print("PASS: test_data_service_remote_index")
+    print("DONE: test_data_service_remote_index")
 
 
 test_database_write_updates_local_index()

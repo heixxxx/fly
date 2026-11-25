@@ -54,7 +54,7 @@ def test_dependency_graph_basic():
     # 原断言：assert 3 in ready, f"Task 3 should be ready, got: {ready}"
     record("graph_basic/task3_ready", 3 in ready, detail=ready)
 
-    print("PASS: test_dependency_graph_basic")
+    print("DONE: test_dependency_graph_basic")
 
 
 def test_dependency_graph_diamond():
@@ -97,7 +97,7 @@ def test_dependency_graph_diamond():
     # 原断言：assert 4 in ready
     record("diamond/task4_ready", 4 in ready, detail=ready)
 
-    print("PASS: test_dependency_graph_diamond")
+    print("DONE: test_dependency_graph_diamond")
 
 
 def test_dependency_graph_add_and_remove():
@@ -136,7 +136,7 @@ def test_dependency_graph_is_task_ready():
     # 原断言：assert graph.is_task_ready(2) == True
     record("is_task_ready/task2_after_dep", graph.is_task_ready(2) == True)
 
-    print("PASS: test_dependency_graph_is_task_ready")
+    print("DONE: test_dependency_graph_is_task_ready")
 
 
 def test_master_submit_and_track():
@@ -154,7 +154,7 @@ def test_master_submit_and_track():
     # 原断言：assert len(pending) > 0, "Should have pending tasks"
     record("master_submit/has_pending", len(pending) > 0, detail=len(pending))
 
-    print("PASS: test_master_submit_and_track")
+    print("DONE: test_master_submit_and_track")
 
 
 test_dependency_graph_basic()
