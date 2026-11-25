@@ -17,6 +17,7 @@ import time
 import zlib
 
 from fly import get_config, open_db, as_task, wait_tasks
+from test import record
 from fly.runtime import get_agent
 
 PAYLOADS = [
@@ -37,6 +38,7 @@ def member_serve(db, gen):
     agent = get_agent()
     agent.stop_peer_rpc()
     port = agent.start_peer_rpc_listen("127.0.0.1", 0)
+    # 保留：@as_task 任务函数内的断言，record 只能在子阶段的主进程里调用
     assert port > 0, "listen failed"
     db.write_object(f"{gen}_addr", {"host": "127.0.0.1", "port": port},
                     save_to_db=False)
@@ -73,6 +75,7 @@ def check_run(db, gen):
     agent = get_agent()
     addr = db.read_object(f"{gen}_addr")
     conn = agent.peer_rpc_connect(addr["host"], addr["port"])
+    # 保留：@as_task 任务函数内的断言，record 只能在子阶段的主进程里调用
     assert conn, "connect failed"
 
     failures = []
@@ -100,6 +103,7 @@ def check_run(db, gen):
 
     # 并发收集圈：两连接各一个流式请求同时发（RAS 动态链模式）。
     conn2 = agent.peer_rpc_connect(addr["host"], addr["port"])
+    # 保留：@as_task 任务函数内的断言，record 只能在子阶段的主进程里调用
     assert conn2
     results = {}
 
@@ -138,7 +142,7 @@ def check_run(db, gen):
     if failures:
         raise RuntimeError(f"[STREAM-STRESS] {len(failures)} failures: " +
                            "; ".join(failures[:5]))
-    INFO("[STREAM-STRESS] all rounds passed")
+    INFO("[STREAM-STRESS] all rounds done")
     # 结果落库（持久对象）：任务失败时 wait_tasks 不报错，main 凭该对象
     # 判 case 成败，防静默假绿（审查 P0 连锁——wait_tasks 静默吞失败）。
     db.write_object(f"{gen}_result", {"rounds": ROUNDS,
@@ -159,8 +163,9 @@ def main():
     wait_tasks(600)
     # 显式校验：check_run 失败（含断言/异常）时结果对象缺失 → case 失败。
     res = db.read_object(f"{gen}_result")
-    assert res and res["rounds"] == ROUNDS, \
-        f"stress incomplete: {res}"
+    res_ok = bool(res) and res["rounds"] == ROUNDS
+    # 原断言：assert res and res["rounds"] == ROUNDS, \
+    record("stress_result_complete", res_ok, detail=res)
 
 
 if __name__ == "__main__":

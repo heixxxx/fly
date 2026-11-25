@@ -6,7 +6,7 @@ import shutil
 
 
 
-from test import write_data
+from test import write_data, record
 from fly import open_db, get_config
 DB_PATH = os.path.join(get_config().get_str("log_dir"), "db")
 
@@ -46,22 +46,30 @@ def test_stress():
     assert wait_for(lambda: len(master.completed_tasks) >= 50, timeout=60.0), \
         f"All 50 tasks should complete, got {len(master.completed_tasks)} completed"
 
-    assert len(master.completed_tasks) >= 50, \
-        f"Expected >= 50 completed tasks, got {len(master.completed_tasks)}"
+    completed_count = len(master.completed_tasks)
+    completed_ok = completed_count >= 50
+    # 原断言：assert len(master.completed_tasks) >= 50, \
+    record("all_completed", completed_ok, detail=completed_count)
+    # 保留：守卫——后面的 read_object 读的是这 50 个任务写出的对象
+    assert completed_ok, \
+        f"Expected >= 50 completed tasks, got {completed_count}"
 
-    assert db.read_object("stress_0") == 0, \
-        f"stress_0 should be 0, got {db.read_object('stress_0')}"
-    assert db.read_object("stress_49") == 49, \
-        f"stress_49 should be 49, got {db.read_object('stress_49')}"
+    stress_0_val = db.read_object("stress_0")
+    # 原断言：assert db.read_object("stress_0") == 0, \
+    record("stress_0", stress_0_val)
+    stress_49_val = db.read_object("stress_49")
+    # 原断言：assert db.read_object("stress_49") == 49, \
+    record("stress_49", stress_49_val)
 
     large_data = db.read_object("large")
-    assert len(large_data) == 1_000_000, \
-        f"large object should be 1_000_000 chars, got {len(large_data)}"
+    # 原断言：assert len(large_data) == 1_000_000, \
+    record("large_len", len(large_data))
 
-    assert len(master.failed_tasks) == 0, \
-        f"Expected 0 failed tasks, got {len(master.failed_tasks)}"
+    no_failed = len(master.failed_tasks) == 0
+    # 原断言：assert len(master.failed_tasks) == 0, \
+    record("no_failed_tasks", no_failed, detail=master.failed_tasks)
 
-    INFO("[PASS] test_stress")
+    INFO("[DONE] test_stress")
 
 
 test_stress()

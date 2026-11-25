@@ -1,0 +1,15 @@
+{
+  "run2/computed_values": {
+    "alpha_result": 10,
+    "gpu_result": 99,
+    "model_out": 109,
+    "triple_out": 109
+  },
+  "run2/db_raw_frozen": true,
+  "run2/loaded_values": {
+    "feat_xy_from_raw": 10,
+    "x": 10,
+    "z": 30
+  },
+  "run2/new_data": 99
+}

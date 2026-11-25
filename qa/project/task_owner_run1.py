@@ -11,6 +11,7 @@ import time
 
 from _fly_log import INFO
 from fly import as_task, get_config, open_project
+from test import record
 from fly.runtime import get_agent
 
 PROJ_PATH = os.environ["FLY_PROJ_PATH"]
@@ -68,9 +69,20 @@ assert wait_for(lambda: len(master.failed_tasks) >= 2), \
 
 bin_a = os.path.join(PROJ_PATH, "stage_a", "failed_tasks.bin")
 bin_b = os.path.join(PROJ_PATH, "stage_b", "failed_tasks.bin")
-assert os.path.isfile(bin_a), f"stage_a owner bin missing: {bin_a}"
-assert os.path.isfile(bin_b), f"stage_b owner bin missing: {bin_b}"
-assert os.path.getsize(bin_a) > 0 and os.path.getsize(bin_b) > 0, "bins must be non-empty"
+bin_a_exists = os.path.isfile(bin_a)
+# 原断言：assert os.path.isfile(bin_a), f"stage_a owner bin missing: {bin_a}"
+record("owner_run1/bin_a_in_owner_dir", bin_a_exists, detail=bin_a)
+# 保留：守卫——后面 getsize(bin_a) 依赖文件存在
+assert bin_a_exists, f"stage_a owner bin missing: {bin_a}"
+bin_b_exists = os.path.isfile(bin_b)
+# 原断言：assert os.path.isfile(bin_b), f"stage_b owner bin missing: {bin_b}"
+record("owner_run1/bin_b_in_owner_dir", bin_b_exists, detail=bin_b)
+# 保留：守卫——后面 getsize(bin_b) 依赖文件存在
+assert bin_b_exists, f"stage_b owner bin missing: {bin_b}"
+bins_nonempty = os.path.getsize(bin_a) > 0 and os.path.getsize(bin_b) > 0
+# 原断言：assert os.path.getsize(bin_a) > 0 and os.path.getsize(bin_b) > 0, "bins must be non-empty"
+record("owner_run1/bins_nonempty", bins_nonempty,
+       detail={"bin_a": os.path.getsize(bin_a), "bin_b": os.path.getsize(bin_b)})
 
-INFO(f"[PASS] task_owner_run1: per-owner bins landed (a={bin_a}, b={bin_b})")
+INFO(f"[DONE] task_owner_run1: per-owner bins landed (a={bin_a}, b={bin_b})")
 master.stop()

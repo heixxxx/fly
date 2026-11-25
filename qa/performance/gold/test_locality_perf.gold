@@ -1,0 +1,11 @@
+{
+  "locality/off_imperfect_hit": true,
+  "locality/on_full_hit": true,
+  "locality/on_not_slower_than_off": true,
+  "locality/r0_off/worker_count": 3,
+  "locality/r0_on/worker_count": 3,
+  "locality/r1_off/worker_count": 3,
+  "locality/r1_on/worker_count": 3,
+  "locality/r2_off/worker_count": 3,
+  "locality/r2_on/worker_count": 3
+}

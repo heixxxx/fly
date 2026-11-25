@@ -13,7 +13,7 @@ import shutil
 
 
 
-from test import write_data, freeze_db, write_after_freeze
+from test import write_data, freeze_db, write_after_freeze, record
 from fly import open_db, get_config
 DB_PATH = os.path.join(get_config().get_str("log_dir"), "db")
 
@@ -66,16 +66,21 @@ def test_freeze_reject_stress():
     # （静默假成功曾是覆盖率测试暴露的生产缺陷，2026-09-02 修复）。
     assert wait_for(lambda: len(master.failed_tasks) >= post_freeze_count, timeout=30.0), \
         f"All post-freeze writes should FAIL: failed={len(master.failed_tasks)}"
-    assert len(master.completed_tasks) == pre_freeze_count + 1, \
-        f"only pre-freeze writes + freeze task complete, got {len(master.completed_tasks)}"
+
+    completed_count = len(master.completed_tasks)
+    completed_only_pre = completed_count == pre_freeze_count + 1
+    # 原断言：assert len(master.completed_tasks) == pre_freeze_count + 1, \
+    record("completed_only_pre_freeze", completed_only_pre, detail=completed_count)
+    # 非守卫：后面读取的 pre_{i} 由上面保留的等待（完成数达到 pre_freeze_count）把关，与这条「完成数恰为 pre+1」无关
 
     for i in range(pre_freeze_count):
         val = db.read_object(f"pre_{i}")
-        assert val == i, f"pre_{i} should be {i}, got {val}"
+        # 原断言：assert val == i, f"pre_{i} should be {i}, got {val}"
+        record(f"freeze/pre_{i}", val)
 
-    INFO(f"[PASS] test_freeze_reject_stress: {pre_freeze_count} pre-freeze OK, "
+    INFO(f"[DONE] test_freeze_reject_stress: {pre_freeze_count} pre-freeze OK, "
           f"{post_freeze_count} post-freeze rejected")
 
 
 test_freeze_reject_stress()
-INFO("\nAll tests passed!")
+INFO("\nAll stages done!")

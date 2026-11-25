@@ -8,6 +8,7 @@ import os
 
 from _fly_log import INFO
 from fly import load_project, restart_failed_tasks, wait_tasks
+from test import record
 from fly.runtime import get_agent
 
 PROJ_PATH = os.environ["FLY_PROJ_PATH"]
@@ -31,15 +32,24 @@ restarted = restart_failed_tasks([
     os.path.join(PROJ_PATH, "stage_a"),
     os.path.join(PROJ_PATH, "stage_b"),
 ])
-assert restarted == 2, f"expected 2 restarted tasks, got {restarted}"
+# 原断言：assert restarted == 2, f"expected 2 restarted tasks, got {restarted}"
+record("owner_run2/restarted", restarted)
 
 ok = wait_tasks(timeout=120)
 assert ok, "all restarted tasks should complete"
 
-assert db_a.read_object("ok_a") == 11
-assert db_a.read_object("dep_a") == "pa"
-assert db_b.read_object("ok_b") == 22
-assert db_b.read_object("cross") == "pb"
+ok_a_val = db_a.read_object("ok_a")
+# 原断言：assert db_a.read_object("ok_a") == 11
+record("owner_run2/ok_a", ok_a_val)
+dep_a_val = db_a.read_object("dep_a")
+# 原断言：assert db_a.read_object("dep_a") == "pa"
+record("owner_run2/dep_a", dep_a_val)
+ok_b_val = db_b.read_object("ok_b")
+# 原断言：assert db_b.read_object("ok_b") == 22
+record("owner_run2/ok_b", ok_b_val)
+cross_val = db_b.read_object("cross")
+# 原断言：assert db_b.read_object("cross") == "pb"
+record("owner_run2/cross", cross_val)
 
 # 成功摘除：两个归属 bin 均应被清空删除。
 from test import wait_until
@@ -47,5 +57,5 @@ bins = [os.path.join(PROJ_PATH, s, "failed_tasks.bin") for s in ("stage_a", "sta
 assert wait_until(lambda: not any(os.path.isfile(b) for b in bins), timeout=30), \
     "owner bins should be deleted after success"
 
-INFO("[PASS] task_owner_run2: db-list restart + per-owner bins consumed")
+INFO("[DONE] task_owner_run2: db-list restart + per-owner bins consumed")
 master.stop()

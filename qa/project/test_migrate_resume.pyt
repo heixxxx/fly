@@ -20,9 +20,11 @@ def setup_clean():
             shutil.rmtree(p, ignore_errors=True)
 
 run_subcase("migrate_resume_run1.py", timeout=120, setup=setup_clean,
-            env={"FLY_PROJ_PATH": PROJ_PATH})
+            env={"FLY_PROJ_PATH": PROJ_PATH}, check_list=["result.json"])
 run_subcase("migrate_resume_run2.py", timeout=120,
-            env={"FLY_PROJ_PATH": PROJ_PATH, "FLY_NEW_PROJ_PATH": NEW_PATH})
+            env={"FLY_PROJ_PATH": PROJ_PATH, "FLY_NEW_PROJ_PATH": NEW_PATH},
+            check_list=["result.json"])
 run_subcase("migrate_resume_run3.py", timeout=180,
-            env={"FLY_NEW_PROJ_PATH": NEW_PATH, "FLY_OLD_PROJ_PATH": PROJ_PATH})
+            env={"FLY_NEW_PROJ_PATH": NEW_PATH, "FLY_OLD_PROJ_PATH": PROJ_PATH},
+            check_list=["result.json"])
 INFO("[PASS] test_migrate_resume: migration + uid-resolved resume verified")

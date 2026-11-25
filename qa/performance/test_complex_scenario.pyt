@@ -17,6 +17,7 @@ def setup_clean():
 
 shared_env = {"FLY_DB_DIR": DB_DIR}
 
-run_subcase("complex_run1.py", timeout=120, setup=setup_clean, env=shared_env)
-run_subcase("complex_run2.py", timeout=120, env=shared_env)
+run_subcase("complex_run1.py", timeout=120, setup=setup_clean, env=shared_env,
+            check_list=["result.json"])
+run_subcase("complex_run2.py", timeout=120, env=shared_env, check_list=["result.json"])
 INFO("[PASS] test_complex_scenario — all features verified across 2 runs")

@@ -6,7 +6,7 @@ import time
 
 from test import (write_data, cross_db_copy, cross_db_sum,
                        add_alpha_property, alpha_cross_db_copy,
-                       gpu_cross_db_copy, triple_db_sum)
+                       gpu_cross_db_copy, triple_db_sum, record)
 from fly import open_db, load_db
 from fly import get_config
 _DB_DIR = os.environ.get("FLY_DB_DIR") or get_config().get_str("log_dir")
@@ -41,12 +41,15 @@ db_model = open_db(DB_MODEL)
 x_val = db_raw.read_object("x")
 z_val = db_raw.read_object("z")
 feat_val = db_feat.read_object("feat_xy_from_raw")
-assert x_val == 10, f"Expected x=10, got {x_val}"
-assert z_val == 30, f"Expected z=30, got {z_val}"
-assert feat_val == 10, f"Expected feat_xy_from_raw=10, got {feat_val}"
+# 原断言：assert x_val == 10, f"Expected x=10, got {x_val}"
+# 原断言：assert z_val == 30, f"Expected z=30, got {z_val}"
+# 原断言：assert feat_val == 10, f"Expected feat_xy_from_raw=10, got {feat_val}"
+record("run2/loaded_values", {"x": x_val, "z": z_val, "feat_xy_from_raw": feat_val})
 INFO(f"  Phase 1 OK: loaded DB_raw(x={x_val},z={z_val}), DB_feat(feat_xy={feat_val})")
 
-assert db_raw.is_frozen(), "DB_raw should be frozen from Run 1"
+db_raw_frozen = db_raw.is_frozen()
+# 原断言：assert db_raw.is_frozen(), "DB_raw should be frozen from Run 1"
+record("run2/db_raw_frozen", db_raw_frozen)
 INFO("  Phase 1b OK: DB_raw confirmed frozen")
 
 master.launch_local_workers([{}])
@@ -102,15 +105,18 @@ alpha_result = db_model.read_object("alpha_result")
 gpu_result = db_model.read_object("gpu_result")
 triple_out = db_model.read_object("triple_out")
 
-assert model_out == 109, f"Expected model_out=109 (10+99), got {model_out}"
-assert alpha_result == 10, f"Expected alpha_result=10, got {alpha_result}"
-assert gpu_result == 99, f"Expected gpu_result=99, got {gpu_result}"
-assert triple_out == 109, f"Expected triple_out=109 (10+99), got {triple_out}"
+# 原断言：assert model_out == 109, f"Expected model_out=109 (10+99), got {model_out}"
+# 原断言：assert alpha_result == 10, f"Expected alpha_result=10, got {alpha_result}"
+# 原断言：assert gpu_result == 99, f"Expected gpu_result=99, got {gpu_result}"
+# 原断言：assert triple_out == 109, f"Expected triple_out=109 (10+99), got {triple_out}"
+record("run2/computed_values", {"model_out": model_out, "alpha_result": alpha_result,
+                                "gpu_result": gpu_result, "triple_out": triple_out})
 
 new_data = db_feat.read_object("new_data")
-assert new_data == 99, f"Expected new_data=99, got {new_data}"
+# 原断言：assert new_data == 99, f"Expected new_data=99, got {new_data}"
+record("run2/new_data", new_data)
 
 INFO(f"  Phase 8 OK: all data verified — model_out={model_out}, alpha={alpha_result}, "
       f"gpu={gpu_result}, triple={triple_out}")
 
-INFO("[PASS] Run 2 complete — all 12 checks passed")
+INFO("[DONE] Run 2 complete — all 12 checks done")

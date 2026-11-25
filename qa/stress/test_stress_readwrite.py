@@ -11,7 +11,7 @@ import shutil
 
 
 
-from test import write_data, read_data
+from test import write_data, read_data, record
 from fly import open_db, get_config
 DB_PATH = os.path.join(get_config().get_str("log_dir"), "db")
 
@@ -57,13 +57,17 @@ def test_readwrite_mix():
     assert wait_for(lambda: len(master.completed_tasks) >= 2 * n, timeout=60.0), \
         f"Phase 2: {2*n} total tasks should complete, got {len(master.completed_tasks)}"
 
-    assert len(master.completed_tasks) >= 2 * n, \
-        f"Expected >= {2*n} completed, got {len(master.completed_tasks)}"
-    assert len(master.failed_tasks) == 0, \
-        f"Expected 0 failed, got {len(master.failed_tasks)}"
+    completed_count = len(master.completed_tasks)
+    completed_ok = completed_count >= 2 * n
+    # 原断言：assert len(master.completed_tasks) >= 2 * n, \
+    record("all_completed", completed_ok, detail=completed_count)
 
-    INFO(f"[PASS] test_readwrite_mix: {n} writes + {n} reads, all completed")
+    no_failed = len(master.failed_tasks) == 0
+    # 原断言：assert len(master.failed_tasks) == 0, \
+    record("no_failed_tasks", no_failed, detail=master.failed_tasks)
+
+    INFO(f"[DONE] test_readwrite_mix: {n} writes + {n} reads, all completed")
 
 
 test_readwrite_mix()
-INFO("\nAll tests passed!")
+INFO("\nAll stages done!")

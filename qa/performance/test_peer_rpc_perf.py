@@ -12,6 +12,7 @@ import time
 import zlib
 
 from fly import get_config, open_db, as_task, wait_tasks
+from test import record
 from fly.runtime import get_agent
 
 PAYLOAD_SIZES = [256 * 1024, 4 * 1024 * 1024, 16 * 1024 * 1024, 64 * 1024 * 1024]
@@ -25,6 +26,7 @@ def member_serve(db, gen):
     agent = get_agent()
     agent.stop_peer_rpc()
     port = agent.start_peer_rpc_listen("127.0.0.1", 0)
+    # 保留：@as_task 任务函数内的断言，record 只能在子阶段的主进程里调用
     assert port > 0
     db.write_object(f"{gen}_addr", {"host": "127.0.0.1", "port": port},
                     save_to_db=False)
@@ -51,6 +53,7 @@ def check_run(db, gen):
     agent = get_agent()
     addr = db.read_object(f"{gen}_addr")
     conn = agent.peer_rpc_connect(addr["host"], addr["port"])
+    # 保留：@as_task 任务函数内的断言，record 只能在子阶段的主进程里调用
     assert conn
 
     results = {}
@@ -180,8 +183,11 @@ def main():
         if os.environ.get("PEER_RPC_PERF_FULL") == "1" \
         else 4 * len(small)
     res = db.read_object(f"{gen}_result")
-    assert res and len(res["tags"]) == expected, \
-        f"bench incomplete: {len(res['tags']) if res else 0}/{expected}"
+    bench_ok = bool(res) and len(res["tags"]) == expected
+    # 原断言：assert res and len(res["tags"]) == expected, \
+    # expected 随 PEER_RPC_PERF_FULL 模式变化，记判定不记取值（两种模式键相同）。
+    record("perf/bench_all_tags_present", bench_ok,
+           detail={"tags": res["tags"] if res else [], "expected": expected})
 
 
 if __name__ == "__main__":

@@ -1,0 +1,6 @@
+{
+  "resume_run3/data_in_migrated_data_path": true,
+  "resume_run3/dep_obj": "pd",
+  "resume_run3/no_ghost_dir_at_old_path": true,
+  "resume_run3/ok_obj": 42
+}

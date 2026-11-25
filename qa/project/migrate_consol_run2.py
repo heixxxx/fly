@@ -4,6 +4,7 @@ import os
 
 from _fly_log import INFO
 from fly import migrate_project
+from test import record
 from fly.runtime import get_agent
 
 PROJ_PATH = os.environ["FLY_PROJ_PATH"]
@@ -18,6 +19,8 @@ proj = migrate_project(PROJ_PATH, NEW_PATH, consolidate=True)
 
 # 集中产物自包含：merged data 目录随 project 搬到新位置。
 merged_dirs = [d for d in os.listdir(NEW_PATH) if d.endswith(".merged_data")]
-assert merged_dirs, f".merged_data should move with project, got: {os.listdir(NEW_PATH)}"
-INFO(f"[PASS] migrate_consol_run2: consolidated + moved, merged_data={merged_dirs}")
+# 原断言：assert merged_dirs, f".merged_data should move with project, got: {os.listdir(NEW_PATH)}"
+# 目录名含运行时生成的标识，记判定不记取值。
+record("consol/merged_data_present", bool(merged_dirs), detail=merged_dirs)
+INFO(f"[DONE] migrate_consol_run2: consolidated + moved, merged_data={merged_dirs}")
 master.stop()

@@ -1,0 +1,13 @@
+{
+  "migrate/find_db_matrix_found": true,
+  "migrate/list_dbs": [
+    "matrix",
+    "solve"
+  ],
+  "migrate/matrix": {
+    "n": 4
+  },
+  "migrate/sol": {
+    "converged": true
+  }
+}

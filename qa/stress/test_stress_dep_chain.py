@@ -11,7 +11,7 @@ import shutil
 
 
 
-from test import write_data, increment
+from test import write_data, increment, record
 from fly import open_db, get_config
 DB_PATH = os.path.join(get_config().get_str("log_dir"), "db")
 
@@ -53,17 +53,24 @@ def test_dependency_chain():
     assert wait_for(lambda: len(master.completed_tasks) >= chain_length, timeout=120.0), \
         f"All {chain_length} tasks should complete, got {len(master.completed_tasks)} completed"
 
-    assert len(master.completed_tasks) >= chain_length, \
-        f"Expected >= {chain_length} completed, got {len(master.completed_tasks)}"
-    assert len(master.failed_tasks) == 0, \
-        f"Expected 0 failed, got {len(master.failed_tasks)}"
+    completed_count = len(master.completed_tasks)
+    completed_ok = completed_count >= chain_length
+    # 原断言：assert len(master.completed_tasks) >= chain_length, \
+    record("all_completed", completed_ok, detail=completed_count)
+    # 保留：守卫——后面的 read_object 读的是链上任务写出的对象
+    assert completed_ok, \
+        f"Expected >= {chain_length} completed, got {completed_count}"
+
+    no_failed = len(master.failed_tasks) == 0
+    # 原断言：assert len(master.failed_tasks) == 0, \
+    record("no_failed_tasks", no_failed, detail=master.failed_tasks)
 
     final = db.read_object(f"chain_{chain_length}")
-    assert final == chain_length, \
-        f"chain_{chain_length} should be {chain_length}, got {final}"
+    # 原断言：assert final == chain_length, \
+    record("chain/final", final)
 
-    INFO(f"[PASS] test_dependency_chain: {chain_length}-step serial chain, final={final}")
+    INFO(f"[DONE] test_dependency_chain: {chain_length}-step serial chain, final={final}")
 
 
 test_dependency_chain()
-INFO("\nAll tests passed!")
+INFO("\nAll stages done!")

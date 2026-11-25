@@ -14,7 +14,7 @@ DB_B = qa_tmp("fly_e2e_stress_crossdb_b")
 DB_C = qa_tmp("fly_e2e_stress_crossdb_c")
 
 
-from test import write_data, cross_db_copy, triple_db_sum
+from test import write_data, cross_db_copy, triple_db_sum, record
 from fly import open_db, get_config
 
 
@@ -70,18 +70,25 @@ def test_cross_db_transfer():
     assert wait_for(lambda: len(master.completed_tasks) >= total_expected, timeout=60.0), \
         f"Phase 3: {total_expected} total should complete, got {len(master.completed_tasks)}"
 
-    assert len(master.completed_tasks) >= total_expected, \
-        f"Expected >= {total_expected} completed, got {len(master.completed_tasks)}"
-    assert len(master.failed_tasks) == 0, \
-        f"Expected 0 failed, got {len(master.failed_tasks)}"
+    completed_count = len(master.completed_tasks)
+    completed_ok = completed_count >= total_expected
+    # 原断言：assert len(master.completed_tasks) >= total_expected, \
+    record("all_completed", completed_ok, detail=completed_count)
+    # 保留：守卫——后面的 read_object 读的是这些任务写出的对象
+    assert completed_ok, \
+        f"Expected >= {total_expected} completed, got {completed_count}"
+
+    no_failed = len(master.failed_tasks) == 0
+    # 原断言：assert len(master.failed_tasks) == 0, \
+    record("no_failed_tasks", no_failed, detail=master.failed_tasks)
 
     for i in range(n):
         result = db_c.read_object(f"result_{i}")
-        assert result == i * 100 + i * 100, \
-            f"result_{i} should be {i * 200}, got {result}"
+        # 原断言：assert result == i * 100 + i * 100, \
+        record(f"results/result_{i}", result)
 
-    INFO(f"[PASS] test_cross_db_transfer: 3 DBs, {n} cross-DB chains, all verified")
+    INFO(f"[DONE] test_cross_db_transfer: 3 DBs, {n} cross-DB chains, all verified")
 
 
 test_cross_db_transfer()
-INFO("\nAll tests passed!")
+INFO("\nAll stages done!")

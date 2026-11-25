@@ -8,6 +8,7 @@ import time
 
 from _fly_log import INFO
 from fly import as_task, get_config, open_project
+from test import record
 from fly.runtime import get_agent
 
 PROJ_PATH = os.environ["FLY_PROJ_PATH"]
@@ -52,7 +53,10 @@ assert wait_for(lambda: len(master.failed_tasks) >= 1), \
     f"expected 1 failed, got {len(master.failed_tasks)}"
 
 bin_path = os.path.join(PROJ_PATH, "workdb", "failed_tasks.bin")
-assert os.path.isfile(bin_path), f"bin should land in owner db dir: {bin_path}"
+bin_exists = os.path.isfile(bin_path)
+# 原断言：assert os.path.isfile(bin_path), f"bin should land in owner db dir: {bin_path}"
+record("resume_run1/bin_in_owner_db_dir", bin_exists, detail=bin_path)
+# 非守卫：bin_path 之后只出现在日志里，后面的代码不打开这个文件
 
-INFO(f"[PASS] migrate_resume_run1: failure persisted at {bin_path}")
+INFO(f"[DONE] migrate_resume_run1: failure persisted at {bin_path}")
 master.stop()

@@ -10,7 +10,7 @@ import shutil
 
 
 
-from test import write_data
+from test import write_data, record
 from fly import open_db, get_config
 DB_PATH = os.path.join(get_config().get_str("log_dir"), "db")
 
@@ -49,17 +49,25 @@ def test_concurrent_writes():
     assert wait_for(lambda: len(master.completed_tasks) >= 50, timeout=60.0), \
         f"All 50 tasks should complete, got {len(master.completed_tasks)} completed"
 
-    assert len(master.completed_tasks) >= 50, \
-        f"Expected >= 50 completed, got {len(master.completed_tasks)}"
-    assert len(master.failed_tasks) == 0, \
-        f"Expected 0 failed, got {len(master.failed_tasks)}"
+    completed_count = len(master.completed_tasks)
+    completed_ok = completed_count >= 50
+    # 原断言：assert len(master.completed_tasks) >= 50, \
+    record("all_completed", completed_ok, detail=completed_count)
+    # 保留：守卫——后面的 read_object 读的是这 50 个任务写出的对象
+    assert completed_ok, \
+        f"Expected >= 50 completed, got {completed_count}"
+
+    no_failed = len(master.failed_tasks) == 0
+    # 原断言：assert len(master.failed_tasks) == 0, \
+    record("no_failed_tasks", no_failed, detail=master.failed_tasks)
 
     for i in range(50):
         val = db.read_object(f"concurrent_{i}")
-        assert val == i, f"concurrent_{i} should be {i}, got {val}"
+        # 原断言：assert val == i, f"concurrent_{i} should be {i}, got {val}"
+        record(f"values/concurrent_{i}", val)
 
-    INFO("[PASS] test_concurrent_writes: 50 objects written by 2 workers, all readable")
+    INFO("[DONE] test_concurrent_writes: 50 objects written by 2 workers, all readable")
 
 
 test_concurrent_writes()
-INFO("\nAll tests passed!")
+INFO("\nAll stages done!")

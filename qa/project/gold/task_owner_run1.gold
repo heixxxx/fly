@@ -1,0 +1,5 @@
+{
+  "owner_run1/bin_a_in_owner_dir": true,
+  "owner_run1/bin_b_in_owner_dir": true,
+  "owner_run1/bins_nonempty": true
+}

@@ -12,6 +12,7 @@ import time
 import zlib
 
 from fly import get_config, open_db, as_task, wait_tasks
+from test import record
 from fly.runtime import get_agent
 
 SIZES = [16 * 1024 * 1024, 64 * 1024 * 1024]
@@ -71,9 +72,17 @@ def main():
         write_large(db, f"perf_blob_{size}", size)
         read_large_remote(db, f"perf_blob_{size}", size)
     wait_tasks(1200)
+    # 循环遍历的 sizes 随 PEER_RPC_PERF_FULL 模式变化（重模式多一个 512MB 档），
+    # 记录不能按档位拆键（两种模式键必须完全相同）：累计成一条顶层判定。
+    all_verified = True
+    verify_detail = {}
     for size in sizes:
         res = db.read_object(f"perf_blob_{size}_result")
-        assert res and res.get("ok"), f"read verify missing/failed: size={size}"
+        ok = bool(res) and res.get("ok")
+        verify_detail[str(size)] = ok
+        all_verified = all_verified and ok
+    # 原断言：assert res and res.get("ok"), f"read verify missing/failed: size={size}"
+    record("perf/read_results_verified", all_verified, detail=verify_detail)
 
 
 if __name__ == "__main__":

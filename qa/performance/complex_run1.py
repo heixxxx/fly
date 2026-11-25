@@ -4,7 +4,7 @@ import os
 import shutil
 import time
 
-from test import write_data, cross_db_copy, freeze_db
+from test import write_data, cross_db_copy, freeze_db, record
 from fly import open_db
 from fly import get_config
 _DB_DIR = os.environ.get("FLY_DB_DIR") or get_config().get_str("log_dir")
@@ -34,7 +34,10 @@ master = get_agent()
 
 master.launch_local_workers([{}])
 assert master.wait_workers_registered(timeout=60)
-assert master.worker_count >= 1, "Worker should connect"
+worker_count = master.worker_count
+# 原断言：assert master.worker_count >= 1, "Worker should connect"
+record("run1/worker_count", worker_count)
+# 非守卫：worker 数由上面保留的等待把关，后面的代码不依赖对它的解引用
 
 db_raw = open_db(DB_RAW)
 db_feat = open_db(DB_FEAT)
@@ -53,11 +56,12 @@ assert wait_for(lambda: len(master.completed_tasks) >= 4), \
     f"Phase 2: expected 4 completed, got {len(master.completed_tasks)}"
 
 result = db_feat.read_object("feat_xy_from_raw")
-assert result == 10, f"Expected feat_xy_from_raw=10, got {result}"
+# 原断言：assert result == 10, f"Expected feat_xy_from_raw=10, got {result}"
+record("run1/feat_xy_from_raw", result)
 INFO(f"  Phase 2 OK: cross-DB copy feat_xy_from_raw={result}")
 
 db_raw.write_object("finish", 1)
 db_raw.freeze()
 INFO("  Phase 3 OK: DB_raw frozen")
 
-INFO("[PASS] Run 1 complete")
+INFO("[DONE] Run 1 complete")

@@ -17,7 +17,7 @@ def setup_clean():
         shutil.rmtree(PROJ_PATH, ignore_errors=True)
 
 run_subcase("task_owner_run1.py", timeout=120, setup=setup_clean,
-            env={"FLY_PROJ_PATH": PROJ_PATH})
+            env={"FLY_PROJ_PATH": PROJ_PATH}, check_list=["result.json"])
 run_subcase("task_owner_run2.py", timeout=180,
-            env={"FLY_PROJ_PATH": PROJ_PATH})
+            env={"FLY_PROJ_PATH": PROJ_PATH}, check_list=["result.json"])
 INFO("[PASS] test_task_owner: per-owner persist + db-list restart verified")

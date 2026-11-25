@@ -1,0 +1,19 @@
+{
+  "migrate_reject/consolidate_unfrozen_msg": true,
+  "migrate_reject/existing_msg": true,
+  "migrate_reject/identical_msg": true,
+  "migrate_reject/missing_dir_msg": true,
+  "migrate_reject/not_selfcontained_msg": true,
+  "migrate_reject/outside_msg": true,
+  "status/db_count": 2,
+  "status/entry_fields": true,
+  "status/frozen_one_frozen": true,
+  "status/get_db_latest_msg_has_name": true,
+  "status/list_dbs": [
+    "frozen_one",
+    "unfrozen_one"
+  ],
+  "status/reloaded_project": true,
+  "status/type": "list",
+  "status/unfrozen_one_not_frozen": true
+}

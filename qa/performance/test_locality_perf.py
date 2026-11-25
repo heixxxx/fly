@@ -29,6 +29,7 @@ import shutil
 import time
 
 from fly import as_task, open_db, get_config
+from test import record
 
 N_WORKERS = 3
 PAYLOAD_SIZE = 2_000_000   # ~16MB per object
@@ -90,7 +91,12 @@ def run_round(locality_on, round_idx):
     worker_attrs = [{"attributes": [f"seed_{i}"]} for i in range(N_WORKERS)]
     master.launch_local_workers(worker_attrs)
     assert master.wait_workers_registered(timeout=60)
-    assert master.worker_count >= N_WORKERS, f"workers {master.worker_count}/{N_WORKERS}"
+    mode_tag = "on" if locality_on else "off"
+    worker_count = master.worker_count
+    # 原断言：assert master.worker_count >= N_WORKERS, f"workers {master.worker_count}/{N_WORKERS}"
+    # run_round 每个用例跑 6 轮（3 轮 × ON/OFF），键带轮次与模式避免重复键。
+    record(f"locality/r{round_idx}_{mode_tag}/worker_count", worker_count)
+    # 非守卫：worker 数由上面保留的等待把关，后面的代码不依赖对它的解引用
 
     db = open_db(round_db_path)
 
@@ -158,17 +164,22 @@ read_speedup = (off_read_min - on_read_min) / off_read_min * 100 if off_read_min
 INFO("  improvement:  read {}→{}ms ({:+.1f}%), hit_rate {:.0%}→{:.0%}".format(
     off_read_min, on_read_min, read_speedup, off_hit_rate, on_hit_rate))
 
-# 硬断言
-assert on_hit_rate == 1.0, \
-    f"locality ON should hit all holders: {on_hits_total}/{on_consumes_total}"
+# 硬断言（耗时/命中率为运行时测得的量：判定记布尔，实际值放 detail）
+on_full_hit = on_hit_rate == 1.0
+# 原断言：assert on_hit_rate == 1.0, \
+record("locality/on_full_hit", on_full_hit,
+       detail={"hits": on_hits_total, "total": on_consumes_total})
 
-assert off_hit_rate < 1.0, \
-    "locality OFF should miss some holders (reverse-dependency design): " \
-    f"{off_hits_total}/{off_consumes_total}"
+off_imperfect = off_hit_rate < 1.0
+# 原断言：assert off_hit_rate < 1.0, \
+record("locality/off_imperfect_hit", off_imperfect,
+       detail={"hits": off_hits_total, "total": off_consumes_total})
 
 # ON 应不劣于 OFF（含 high cache 预热，ON 省 67% 的反序列化+跨网络）
-assert on_wall_min <= off_wall_min * 1.05, \
-    f"locality ON ({on_wall_min:.2f}s) should not be slower than OFF ({off_wall_min:.2f}s)"
+on_not_slower = on_wall_min <= off_wall_min * 1.05
+# 原断言：assert on_wall_min <= off_wall_min * 1.05, \
+record("locality/on_not_slower_than_off", on_not_slower,
+       detail={"on_wall_min": round(on_wall_min, 3), "off_wall_min": round(off_wall_min, 3)})
 
-INFO("[PASS] locality perf verified: ON {:.0%} hits vs OFF {:.0%}, read {}→{}ms".format(
+INFO("[DONE] locality perf verified: ON {:.0%} hits vs OFF {:.0%}, read {}→{}ms".format(
     on_hit_rate, off_hit_rate, off_read_min, on_read_min))

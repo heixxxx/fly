@@ -24,5 +24,5 @@ run_subcase("project_resume_run1.py", timeout=120, setup=setup_clean,
             env={"FLY_PROJ_PATH": PROJ_PATH})
 
 run_subcase("project_resume_run2.py", timeout=180,
-            env={"FLY_PROJ_PATH": PROJ_PATH})
+            env={"FLY_PROJ_PATH": PROJ_PATH}, check_list=["result.json"])
 INFO("[PASS] test_project_resume: task-level resume verified")

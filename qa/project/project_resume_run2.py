@@ -4,6 +4,7 @@ import os
 
 from _fly_log import INFO
 from fly import open_project, wait_tasks
+from test import record
 from fly.runtime import get_agent
 
 PROJ_PATH = os.environ["FLY_PROJ_PATH"]
@@ -14,8 +15,10 @@ PROJ_PATH = os.environ["FLY_PROJ_PATH"]
 # 的工作刚结束、本 sub case 开始工作之前（原脚本在 launch worker 之后做的
 # 就是这同一句检查，现挪到最前）。
 bin_path = os.path.join(PROJ_PATH, "workdb", "failed_tasks.bin")
-assert os.path.isfile(bin_path), \
-    "failed_tasks.bin should persist into the owner db dir on graceful interrupt"
+bin_exists = os.path.isfile(bin_path)
+# 原断言：assert os.path.isfile(bin_path), \
+record("resume_run2/bin_before_resume", bin_exists, detail=bin_path)
+# 非守卫：bin_path 之后只被 wait_until 的 isfile 检查消费，缺失时返回 False，不解引用
 
 master = get_agent()
 master.launch_local_workers([{}, {}])
@@ -33,12 +36,13 @@ assert ok, "all resumed tasks should complete"
 
 for i in range(6):
     v = db.read_object(f"obj_{i}")
-    assert v == i * 10, f"obj_{i} expected {i * 10}, got {v}"
+    # 原断言：assert v == i * 10, f"obj_{i} expected {i * 10}, got {v}"
+    record(f"resume_run2/obj_{i}", v)
 
 # resume 消费后 bin 应被清（全部 task 成功 → remove_persisted_task 清空删文件）。
 from test import wait_until
 assert wait_until(lambda: not os.path.isfile(bin_path), timeout=30), \
     "bin should be emptied after successful resume"
 
-INFO("[PASS] project_resume_run2: task-level resume from project-local failed_tasks.bin")
+INFO("[DONE] project_resume_run2: task-level resume from project-local failed_tasks.bin")
 master.stop()

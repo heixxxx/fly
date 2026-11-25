@@ -12,7 +12,7 @@ import shutil
 DB_PATHS = [qa_tmp(f"fly_e2e_stress_multidb_{i}") for i in range(4)]
 
 
-from test import write_data
+from test import write_data, record
 from fly import open_db, get_config
 
 
@@ -54,19 +54,31 @@ def test_multi_db_parallel():
     assert wait_for(lambda: len(master.completed_tasks) >= total, timeout=60.0), \
         f"All {total} tasks should complete, got {len(master.completed_tasks)} completed"
 
-    assert len(master.completed_tasks) >= total, \
-        f"Expected >= {total} completed, got {len(master.completed_tasks)}"
-    assert len(master.failed_tasks) == 0, \
-        f"Expected 0 failed, got {len(master.failed_tasks)}"
+    completed_count = len(master.completed_tasks)
+    completed_ok = completed_count >= total
+    # 原断言：assert len(master.completed_tasks) >= total, \
+    record("all_completed", completed_ok, detail=completed_count)
+    # 保留：守卫——后面的 read_object 读的是这 40 个任务写出的对象
+    assert completed_ok, \
+        f"Expected >= {total} completed, got {completed_count}"
 
+    no_failed = len(master.failed_tasks) == 0
+    # 原断言：assert len(master.failed_tasks) == 0, \
+    record("no_failed_tasks", no_failed, detail=master.failed_tasks)
+
+    # 循环外层遍历的是运行时集合（dbs），记录不能写在循环里：先累计成字典，
+    # 循环结束后整体记录一次。
+    readback_values = {}
     for db_idx, db in enumerate(dbs):
         for i in range(writes_per_db):
-            val = db.read_object(f"db{db_idx}_key_{i}")
-            assert val == db_idx * 100 + i, \
-                f"db{db_idx}_key_{i} should be {db_idx * 100 + i}, got {val}"
+            key = f"db{db_idx}_key_{i}"
+            val = db.read_object(key)
+            readback_values[key] = val
+    # 原断言：assert val == db_idx * 100 + i, \
+    record("readback_values", readback_values)
 
-    INFO(f"[PASS] test_multi_db_parallel: 4 DBs x {writes_per_db} writes, all verified")
+    INFO(f"[DONE] test_multi_db_parallel: 4 DBs x {writes_per_db} writes, all verified")
 
 
 test_multi_db_parallel()
-INFO("\nAll tests passed!")
+INFO("\nAll stages done!")

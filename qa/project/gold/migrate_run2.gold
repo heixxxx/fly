@@ -1,0 +1,8 @@
+{
+  "migrate/db_path": "<case_log_dir>/proj_migrated",
+  "migrate/matrix_next_rewritten": true,
+  "migrate/meta_db_path_rewritten": true,
+  "migrate/old_dir_gone": true,
+  "migrate/solve_prev_rewritten": true,
+  "migrate/uid_preserved": true
+}

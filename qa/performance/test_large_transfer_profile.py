@@ -24,7 +24,7 @@ from test import qa_tmp
 PERF_DIR = qa_tmp(f"fly_profile_perf_{os.getpid()}")
 
 
-from test import gpu_write_large_temp, cpu_read_large_remote
+from test import gpu_write_large_temp, cpu_read_large_remote, record
 from fly import open_db, get_config
 DB_PATH = os.path.join(get_config().get_str("log_dir"), "db")
 
@@ -49,8 +49,10 @@ def setup_workers_under_perf():
         {"attributes": []},
     ])
     assert master.wait_workers_registered(timeout=60)
-    assert master.worker_count >= 2, \
-        f"Only {master.worker_count}/2 workers connected"
+    worker_count = master.worker_count
+    # 原断言：assert master.worker_count >= 2, \
+    record("transfer/worker_count", worker_count)
+    # 非守卫：worker 数由上面保留的等待把关，后面的代码不依赖对它的解引用
     return master
 
 
@@ -79,7 +81,9 @@ def main():
     cpu_read_large_remote(db, "large_blob")
 
     completed = wait_completed(master, 2, timeout=120)
-    assert len(completed) >= 2, f"Expected 2 completed, got {len(completed)}"
+    completed_ok = len(completed) >= 2
+    # 原断言：assert len(completed) >= 2, f"Expected 2 completed, got {len(completed)}"
+    record("transfer/two_completed", completed_ok, detail=len(completed))
     print(f"[DEBUG] completed: {completed}")
 
     # Output ObjectCache stats to show cache behavior
@@ -89,7 +93,7 @@ def main():
     print(f"[STATS] high: hits={stats[0]} misses={stats[1]} puts={stats[2]} evictions={stats[3]}")
 
     db.reset()
-    print("\nLarge transfer profiling test passed!")
+    print("\nLarge transfer profiling test done!")
     print("Perf data hint: run under 'perf record -e cpu-cycles ./build/bin/fly qa/test_large_transfer_profile.py'")
     print("Then 'perf report' to see hot copy functions (memcpy/memmove/__memcpy_sse)")
 
