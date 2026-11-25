@@ -42,6 +42,8 @@ write_data(db, "moved/beta", 58)
 completed = master.wait_for_all_tasks(expected=2, timeout=30)
 # 原断言：assert len(completed) >= 2, f"Expected 2 completed tasks, got {len(completed)}"
 record("worker_tasks_completed", len(completed) >= 2, detail=len(completed))
+# 非守卫：后面读的是主进程自己写入的对象（moved/master_key、moved/dict），不依赖这两个任务完成；
+# 任务写出的对象由下一个子阶段（run2）读取
 
 # Master writes
 db.write_object("moved/master_key", "master_value")

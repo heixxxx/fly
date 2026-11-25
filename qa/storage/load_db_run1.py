@@ -46,6 +46,8 @@ write_data(db, "stage1/gamma", "hello")
 completed = master.wait_for_all_tasks(expected=3, timeout=30)
 # 原断言：assert len(completed) >= 3, f"Expected 3 completed tasks, got {len(completed)}"
 record("worker_tasks_completed", len(completed) >= 3, detail=len(completed))
+# 非守卫：后面读的是主进程自己写入的对象（stage1/master_only、stage1/config），不依赖这三个任务完成；
+# 任务写出的对象由下一个子阶段（run2）读取
 
 # Master also writes directly
 db.write_object("stage1/master_only", "from_master")

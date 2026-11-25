@@ -85,6 +85,7 @@ wait_tasks(timeout=30)
 completed = master.completed_tasks
 # 原断言：assert len(completed) >= 2, f"expected 2 completed tasks, got {len(completed)}"
 record("merged_handle_read_completed", len(completed) >= 2, detail=len(completed))
+# 非守卫：这两个任务是读任务，不写对象；后面读取的 matrix 在更早的阶段已由主进程写入
 INFO("[CROSS-SOLVE] merged_db handle read in task: DONE")
 
 # master 句柄直接读

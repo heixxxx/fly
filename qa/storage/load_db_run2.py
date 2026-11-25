@@ -88,6 +88,8 @@ write_data(db, "stage2/final", "completed_by_run2")
 completed = master.wait_for_all_tasks(expected=2, timeout=30)
 # 原断言：assert len(completed) >= 2, f"Expected 2 completed tasks, got {len(completed)}"
 record("new_tasks_completed", len(completed) >= 2, detail=len(completed))
+# 保留：守卫——后面读取 stage2/sum、stage2/final 依赖两个任务都已完成
+assert len(completed) >= 2, f"守卫：后面要读任务写出的结果, got {len(completed)} completed"
 
 # Drain write-back for task outputs
 time.sleep(0.5)
