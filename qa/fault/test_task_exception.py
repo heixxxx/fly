@@ -57,11 +57,14 @@ def test_task_exception():
         f"Error should contain 'intentional_test_error', got: {error_msg}"
 
     # The key should NOT be readable because the task raised before writing
+    # 旧写法失效：assert False 抛出的 AssertionError 是 Exception 的子类，会被下方
+    # 同一个 except Exception 一并吞掉，读操作没按预期失败时用例照样通过。
+    raised = False
     try:
         db.read_object("never_written")
-        assert False, "read_object should have failed for unwritten key"
     except Exception:
-        pass
+        raised = True
+    assert raised, "read_object should have failed for unwritten key"
 
     INFO("[PASS] test_task_exception")
 

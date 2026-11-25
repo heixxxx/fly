@@ -68,11 +68,14 @@ disk_after = get_temp_disk_bytes()
 assert disk_after <= disk_before, \
     f"Disk should not grow after remove: before={disk_before}, after={disk_after}"
 
+# 旧写法失效：assert False 抛出的 AssertionError 是 Exception 的子类，会被下方
+# 同一个 except Exception 一并吞掉，读操作没按预期失败时用例照样通过。
+raised = False
 try:
     db.read_object("d1")
-    assert False, "Should fail after remove"
 except Exception:
-    pass
+    raised = True
+assert raised, "Should fail after remove"
 
 # ── 幂等删除原语（2026-09-17 §19 批次）：remove_object(missing_ok) ──
 # missing_ok=False（默认，严格模式）：对象不存在 → KeyError——清理清单

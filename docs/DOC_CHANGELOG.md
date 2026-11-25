@@ -2,6 +2,41 @@
 
 ---
 
+## 2026-11-25: 修复 4 处从未生效的否定性检查——「预期异常」写法把断言自己吞掉了
+
+**问题**：QA 用例里有 5 处否定性检查写成了：
+
+```python
+try:
+    db.read_object("xxx")      # 期望这一句抛异常
+    assert False, "should fail"
+except Exception:
+    pass
+```
+
+`assert False` 抛出的是 `AssertionError`，它是 `Exception` 的子类，会被同一个
+`except` 吞掉。操作没有按预期失败时，用例照样通过，这些检查从来没有生效过。
+QA 改造的调研阶段发现（预期异常写法共 16 处，其余 11 处捕获的是具体的异常
+类型，有效）。
+
+**落地**：4 处改成 `raised` 标志加断言，保留原来的失败消息：
+
+- `qa/storage/test_save_to_db_false_remove.py`
+- `qa/storage/test_frozen_db_write.py`
+- `qa/storage/load_db_abort_run2.py`
+- `qa/fault/test_task_exception.py`
+
+第 5 处 `qa/storage/save_to_db_false_run2.py` 没有改。它和 `save_to_db_false_run1.py`
+是没有被任何编排脚本调度的孤儿脚本，全量 QA 从不运行；它断言的「临时对象不应
+跨进程保留」是已经废弃的旧语义（现行语义由 `qa/storage/test_temp_persist.pyt`
+覆盖：临时对象落盘，可经 `load_db` 跨进程恢复）。把写法修好只会让这个从不运行
+的脚本一运行就失败。这一对孤儿脚本是否删除，待用户裁定。
+
+**验证**：4 个用例各自运行通过。每一处都做了变异验证：把被检查的操作换成必然
+成功的操作，用例判为失败；恢复后重新运行通过。全量 QA 201 个全过。
+
+**文档同步**：`CLAUDE.md`「测试稳定性」新增一条禁止的写法。
+
 ## 2026-11-25: 救活空转的回归测试——流式写紧跟异步写（数据损坏场景，50 次迭代）
 
 **问题**：`qa/unit/test_stream_after_async_write.py` 是 2026-09-04 随提交 `2af57a5a`

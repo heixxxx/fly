@@ -122,6 +122,7 @@ QA 测试按模块分类在 `qa/<category>/` 子目录下（分类全表与运�
 - **禁止 `sleep(Xms); assert(condition)` 模式** — 异步操作必须用 CV 等待（`wait_for()`、`wait_for_completion()`）或事件驱动轮询
 - **禁止删除失败测试**
 - **禁止 `time.sleep()` 作为同步手段** — 使用 `wait_for_*` 方法
+- **预期异常的检查不能写成 `try: 操作; assert False; except Exception: pass`** — `AssertionError` 是 `Exception` 的子类，会被同一个 `except` 吞掉，操作没有按预期失败时检查照样通过。用 `raised` 标志加断言，或捕获具体的异常类型（2026-11-25 在 `qa/` 里发现 5 处，全部从未生效）
 - **QA 测试同样适用** — `bash qa/run_qa_tests.sh` 必须 100% 稳定通过
 
 ---

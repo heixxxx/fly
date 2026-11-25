@@ -54,11 +54,14 @@ def test_frozen_db_write():
     assert db.is_frozen(), "DB should be frozen"
 
     # Master-side write after freeze should fail
+    # 旧写法失效：assert False 抛出的 AssertionError 是 Exception 的子类，会被下方
+    # 同一个 except Exception 一并吞掉，写操作没按预期失败时用例照样通过。
+    raised = False
     try:
         db.write_object("master_write_after_freeze", "fail")
-        assert False, "Master-side write_object should raise after freeze"
     except Exception:
-        pass  # Expected: write to frozen DB raises
+        raised = True  # Expected: write to frozen DB raises
+    assert raised, "Master-side write_object should raise after freeze"
 
     INFO("[PASS] test_frozen_db_write: master-side write blocked after freeze")
 

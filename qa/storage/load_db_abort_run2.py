@@ -46,12 +46,17 @@ assert baseline == "base_value", f"baseline should be readable: {baseline}"
 INFO("[RUN2] baseline data correctly loaded after abort cleanup")
 
 # 2. 脏数据应不可读（ABORT 段被丢弃）
+# 旧写法失效：assert False 抛出的 AssertionError 是 Exception 的子类，会被下方
+# 同一个 except Exception 一并吞掉，脏数据意外可读时用例照样通过。
 for key in ["dirty1", "dirty2", "dirty3", "dirty_clean"]:
+    raised = False
     try:
         val = db.read_object(key)
-        ERR(f"[FAIL] dirty object {key} unexpectedly readable after load_db: {val}")
-        assert False, f"dirty object {key} should NOT be readable after load_db (abort cleanup)"
     except Exception:
-        INFO(f"[RUN2] dirty object {key} correctly absent after load_db")
+        raised = True
+    if not raised:
+        ERR(f"[FAIL] dirty object {key} unexpectedly readable after load_db: {val}")
+    assert raised, f"dirty object {key} should NOT be readable after load_db (abort cleanup)"
+    INFO(f"[RUN2] dirty object {key} correctly absent after load_db")
 
 INFO("[RUN2] PASS: load_db correctly skips aborted segment data")
