@@ -147,7 +147,8 @@ def gen_spef(nets, path):
     return offsets
 
 
-# ── 断言辅助（同 test_emir_spef_flow 的口径）────────────────────────
+# ── 检查辅助（同 test_emir_spef_flow 的口径）────────────────────────
+# 名字以 _record_ 开头的只记实测值，期望值在基准文件里。
 
 _FILE_FIELDS = (
     "net_count", "rnet_count", "pnet_skip_count", "broken_net_count",
@@ -166,8 +167,8 @@ _SUMMARY_FIELDS = (
 )
 
 
-def _assert_summary(summary, tag, **expect):
-    """全局统计记录（未给的计数按 0 期望；浮点不进基准）。"""
+def _record_summary(summary, tag):
+    """全局统计：各计数字段记实测值，期望值在基准的 <标签>/summary_stats。"""
     # 原断言：assert got == want, (field, got, want)
     record(f"{tag}/summary_stats",
            {field: getattr(summary, field) for field in _SUMMARY_FIELDS})
@@ -286,11 +287,9 @@ INFO("[DONE] per-file stats: 20002 nets parsed and hit, chunk count 3 vs 1")
 
 # ═══ §5.3 第 3 条：全局统计（两库相同）═══════════════════════════════
 
+# 路由信号网 20008 = 20000 张局部网 + clk、rn 在 4 个分区各计一次；覆盖数与之相同
 for tag, s in (("multi", s_multi), ("single", s_single)):
-    _assert_summary(s, f"summary_{tag}",
-                    routed_signal_net_count=20008,  # 20000 局部网 + clk/
-                    covered_net_count=20008,        # rn 在 4 区各计一次
-                    cap_mismatch_max_rel=0.0)
+    _record_summary(s, f"summary_{tag}")
 INFO("[DONE] global stats: routed 20008 = covered 20008, flat design "
      "(0 electrical groups), no mismatch")
 

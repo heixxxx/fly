@@ -138,13 +138,10 @@ RNET_REDUCED = {"clk", "rn", "n_and", "n_b1"}
 # sp_pg.spef：VDD（1000）/ VSS（800）电源网段跳过；clk 照常收录
 PG_CLK = (33, 22, 11)
 
-# SPMG 消息族按批计数的期望（测试设计稿 §3.10；实现语义——0002 =
-# strip 前缀未匹配、0007 = 同作用域重合，本批两者都是 0）
-FLOW_MSGS = {1: 6, 3: 1, 4: 1, 5: 7, 6: 3, 10: 2, 11: 1, 12: 2, 13: 6,
-             14: 2}
 
-
-# ── 断言辅助 ─────────────────────────────────────────────────────────
+# ── 检查辅助 ─────────────────────────────────────────────────────────
+# 名字以 _record_ 开头的只记实测值，期望值在基准文件里；以 _assert_ 开头的把
+# 期望值变成判定记下来，不中止脚本。
 
 _FILE_FIELDS = (
     "net_count", "rnet_count", "pnet_skip_count", "broken_net_count",
@@ -172,9 +169,9 @@ def _file_stats(summary, suffix, tag):
     return hits[0]
 
 
-def _assert_file(f, tag, c_unit, **expect):
-    """逐文件统计全字段记录（未给的数值字段按 0 期望）；*C_UNIT 换算
-    系数是浮点——按相对容差记判定，不进基准。"""
+def _record_file_stats(f, tag, c_unit):
+    """逐文件统计：全部字段记实测值，期望值在基准的 <标签>/file_stats；
+    *C_UNIT 换算系数是浮点——按相对容差记判定，不进基准。"""
     # 原断言：assert got == want, (field, got, want)
     record(f"{tag}/file_stats",
            {field: getattr(f, field) for field in _FILE_FIELDS})
@@ -184,9 +181,9 @@ def _assert_file(f, tag, c_unit, **expect):
            detail=f"{f.c_unit_ff_per_unit!r}")
 
 
-def _assert_summary(summary, tag, **expect):
-    """全局统计记录（未给的计数按 0 期望；max_rel 是浮点——由调用点
-    按相对误差记判定，不进基准）。"""
+def _record_summary(summary, tag):
+    """全局统计：各计数字段记实测值，期望值在基准的 <标签>/summary_stats；
+    max_rel 是浮点——由调用点按相对误差记判定，不进基准。"""
     # 原断言：assert got == want, (field, got, want)
     record(f"{tag}/summary_stats",
            {field: getattr(summary, field) for field in _SUMMARY_FIELDS})
@@ -234,7 +231,9 @@ def _spmg_counts():
     return {i: text.count("SPMG::%04d" % i) for i in range(1, 15)}
 
 
-def _assert_msg_delta(before, after, tag, expect):
+def _record_msg_delta(before, after, tag):
+    """各消息族在一段流程里出现的次数（前后计数之差），期望值在基准的
+    <标签>/spmg_msg_deltas。"""
     delta = {k: after[k] - before[k] for k in after}
     # 原断言：assert delta[i] == want, (f"SPMG::{i:04d}", delta[i], want)
     record(f"{tag}/spmg_msg_deltas", delta)
@@ -438,15 +437,9 @@ _assert_entries(entries, _BASIC_PART_0_0, "basic/part00")
 record("basic/partition_list", list(iter_spef_partition(sp_basic)))
 INFO("[DONE] sp_basic: PART_0_0 = 15 exact entries (net-id ascending)")
 
-_assert_file(_file_stats(s_basic, "sp_small.spef", "basic"), "basic", 1.0,
-             net_count=16, rnet_count=1, value_count_max=1,
-             cap_count=40, coupling_cap_count=13, res_count=14,
-             chunk_count=1, hit_count=15, net_name_miss_count=1)
-_assert_summary(s_basic, "basic",
-                routed_signal_net_count=16, covered_net_count=15,
-                uncovered_net_count=1, uncovered_instance_count=1,
-                zero_cap_instance_count=1, rnet_count=1,
-                cap_mismatch_count=1, electrical_net_count=0)
+_record_file_stats(_file_stats(s_basic, "sp_small.spef", "basic"), "basic",
+                   1.0)
+_record_summary(s_basic, "basic")
 # 原断言：assert abs(summary.cap_mismatch_max_rel - want) <= 1e-9 * want, \
 record("basic/cap_mismatch_max_rel_match",
        abs(s_basic.cap_mismatch_max_rel - 1 / 46) <= 1e-9 * (1 / 46),
@@ -518,15 +511,9 @@ record("dialect/count0_load", sp_dialect.get_net_load("count[0]"))
 # 非守卫：仅检查未命中网返回空，返回值无后续解引用
 INFO("[DONE] sp_dialect: 8 net(s) converted from PF (rel 1e-9) + misses")
 
-_assert_file(_file_stats(s_dialect, "sp_small_dialect.spef", "dialect"),
-             "dialect", 1000.0,
-             net_count=8, pnet_skip_count=2, broken_net_count=1,
-             name_map_miss_count=1, multi_value_net_count=2,
-             value_count_max=3, cap_count=20, coupling_cap_count=5,
-             res_count=2, chunk_count=1, hit_count=8)
-_assert_summary(s_dialect, "dialect",
-                routed_signal_net_count=16, covered_net_count=8,
-                uncovered_net_count=8, uncovered_instance_count=13)
+_record_file_stats(_file_stats(s_dialect, "sp_small_dialect.spef", "dialect"),
+                   "dialect", 1000.0)
+_record_summary(s_dialect, "dialect")
 INFO("[DONE] sp_dialect: file stats (broken=1, name_map_miss=1, "
      "pnet=2) + coverage")
 
@@ -542,17 +529,9 @@ settings = sp_dialect_idx.read_object("alpha_settings")
 record("idx/chunk_size_mb", settings.chunk_size_mb)
 # 原断言：assert settings.value_index == 2, settings.value_index
 record("idx/value_index", settings.value_index)
-_assert_file(_file_stats(s_idx, "sp_small_dialect.spef", "idx"), "idx",
-             1000.0,
-             net_count=8, pnet_skip_count=2, broken_net_count=1,
-             name_map_miss_count=1, multi_value_net_count=2,
-             value_count_max=3, value_index_fallback_count=25,
-             cap_count=20, coupling_cap_count=5, res_count=2,
-             chunk_count=1, hit_count=8)
-_assert_summary(s_idx, "idx",
-                routed_signal_net_count=16, covered_net_count=8,
-                uncovered_net_count=8, uncovered_instance_count=13,
-                cap_mismatch_count=1)
+_record_file_stats(_file_stats(s_idx, "sp_small_dialect.spef", "idx"), "idx",
+                   1000.0)
+_record_summary(s_idx, "idx")
 # 原断言：assert abs(summary.cap_mismatch_max_rel - want) <= 1e-9 * want, \
 record("idx/cap_mismatch_max_rel_match",
        abs(s_idx.cap_mismatch_max_rel - 0.1) <= 1e-9 * 0.1,
@@ -571,14 +550,9 @@ for name, (total, ground, coupling) in RNET_NETS.items():
            rec["reduced"] == (name in RNET_REDUCED), detail=rec["reduced"])
 INFO("[DONE] sp_rnet: 8 net(s) exact, 4 reduced-flagged")
 
-_assert_file(_file_stats(s_rnet, "sp_small_rnet.spef", "rnet"), "rnet", 1.0,
-             net_count=8, rnet_count=4, multi_value_net_count=1,
-             value_count_max=3, cap_count=6, coupling_cap_count=2,
-             res_count=0, chunk_count=1, hit_count=8)
-_assert_summary(s_rnet, "rnet",
-                routed_signal_net_count=16, covered_net_count=8,
-                uncovered_net_count=8, uncovered_instance_count=12,
-                rnet_count=4)
+_record_file_stats(_file_stats(s_rnet, "sp_small_rnet.spef", "rnet"), "rnet",
+                   1.0)
+_record_summary(s_rnet, "rnet")
 INFO("[DONE] sp_rnet: file stats + coverage (rnet_count 4)")
 
 # ═══ §3.6 sp_grid：多分区落点与覆盖率口径 ════════════════════════════
@@ -626,11 +600,7 @@ for name in BOTH_PARTS:
 INFO("[DONE] sp_grid: per-net partition placement + same values in "
      "both partitions")
 
-_assert_summary(s_grid, "grid",
-                routed_signal_net_count=23, covered_net_count=22,
-                uncovered_net_count=1, uncovered_instance_count=1,
-                zero_cap_instance_count=1, rnet_count=1,
-                cap_mismatch_count=2)
+_record_summary(s_grid, "grid")
 # 原断言：assert abs(summary.cap_mismatch_max_rel - want) <= 1e-9 * want, \
 record("grid/cap_mismatch_max_rel_match",
        abs(s_grid.cap_mismatch_max_rel - 1 / 46) <= 1e-9 * (1 / 46),
@@ -641,13 +611,9 @@ INFO("[DONE] sp_grid: coverage 23/22/1 per-partition scope, mismatch "
 # ═══ §3.7 sp_unrouted：未布线设计 ════════════════════════════════════
 
 s_unrouted = load_spef_summary(sp_unrouted)
-_assert_file(_file_stats(s_unrouted, "sp_small.spef", "unrouted"),
-             "unrouted", 1.0,
-             net_count=16, rnet_count=1, value_count_max=1,
-             cap_count=40, coupling_cap_count=13, res_count=14,
-             chunk_count=1, hit_count=0, net_name_miss_count=1,
-             unrouted_net_count=15)
-_assert_summary(s_unrouted, "unrouted", rnet_count=1)
+_record_file_stats(_file_stats(s_unrouted, "sp_small.spef", "unrouted"),
+                   "unrouted", 1.0)
+_record_summary(s_unrouted, "unrouted")
 obj, entries = _partition_entries(sp_unrouted, 0, 0)
 # 原断言：assert obj.size == 0, obj.size
 record("unrouted/part00_size", obj.size)
@@ -656,13 +622,8 @@ INFO("[DONE] sp_unrouted: 0 hit / 15 unrouted, empty PART_0_0, coverage 0")
 # ═══ §3.8 sp_pg：电源网段跳过 ════════════════════════════════════════
 
 s_pg = load_spef_summary(sp_pg)
-_assert_file(_file_stats(s_pg, "sp_pg.spef", "pg"), "pg", 1.0,
-             net_count=3, value_count_max=1, pg_net_skip_count=2,
-             cap_count=4, coupling_cap_count=1, res_count=0,
-             chunk_count=1, hit_count=1)
-_assert_summary(s_pg, "pg",
-                routed_signal_net_count=16, covered_net_count=1,
-                uncovered_net_count=15, uncovered_instance_count=14)
+_record_file_stats(_file_stats(s_pg, "sp_pg.spef", "pg"), "pg", 1.0)
+_record_summary(s_pg, "pg")
 # 原断言：assert sp_pg.get_net_load("VDD") is None
 record("pg/vdd_load", sp_pg.get_net_load("VDD"))
 # 非守卫：仅检查电源网段不入库，返回值无后续解引用
@@ -697,8 +658,9 @@ for tag, db in (("det_a", sp_det_a), ("det_b", sp_det_b)):
 INFO("[DONE] determinism: sp_det_a / sp_det_b byte-identical to sp_basic")
 
 # ═══ §3.10 SPMG 消息族按批计数（十个库一批的增量）════════════════════
-
-_assert_msg_delta(msg_before, _spmg_counts(), "batch", FLOW_MSGS)
+# 实现语义：0002 = strip 前缀未匹配、0007 = 同作用域重合，本批两者都是 0。
+# 各族次数在基准的 batch/spmg_msg_deltas。
+_record_msg_delta(msg_before, _spmg_counts(), "batch")
 INFO("[DONE] SPMG message counts over the 10-db batch (§3.10)")
 
 # ═══ §3.11 破损文件：库不冻结 + 失败原因 + 不影响消息计数 ════════════
@@ -714,7 +676,7 @@ reason = proj.db_failure_reason("sp_bad")
 record("bad/reason_has_c_unit",
        reason is not None and "C_UNIT" in reason[1], detail=reason)
 # 破损文件那一个不影响前面批次的 SPMG 消息计数
-_assert_msg_delta(msg_before, _spmg_counts(), "bad_file", FLOW_MSGS)
+_record_msg_delta(msg_before, _spmg_counts(), "bad_file")
 INFO("[DONE] broken spef: db not frozen, reason carries C_UNIT, "
      "message counts untouched")
 

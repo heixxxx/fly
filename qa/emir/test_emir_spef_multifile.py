@@ -178,12 +178,10 @@ MF_MAIN_PROBES = [
     (["u_blk_a/u_sub/n2"], (8, 5, 3), 16, [12]),
 ]
 
-# 消息总次数（§4.7；实现语义——0002 = strip 前缀未匹配、0007 = 同作用
-# 域重合，mf 用例里两者的次数恰好一致，按次数断言）
-MF_MSGS = {1: 4, 2: 2, 7: 2, 9: 2, 11: 1}
 
-
-# ── 断言辅助（同 test_emir_spef_flow 的口径）────────────────────────
+# ── 检查辅助（同 test_emir_spef_flow 的口径）────────────────────────
+# 名字以 _record_ 开头的只记实测值，期望值在基准文件里；以 _assert_ 开头的把
+# 期望值变成判定记下来，不中止脚本。
 
 _FILE_FIELDS = (
     "net_count", "rnet_count", "pnet_skip_count", "broken_net_count",
@@ -211,15 +209,15 @@ def _file_stats(summary, suffix, tag):
     return hits[0]
 
 
-def _assert_file(f, tag, **expect):
-    """逐文件统计全字段记录（未给的数值字段按 0 期望）。"""
+def _record_file_stats(f, tag):
+    """逐文件统计：全部字段记实测值，期望值在基准的 <标签>/file_stats。"""
     # 原断言：assert got == want, (field, got, want)
     record(f"{tag}/file_stats",
            {field: getattr(f, field) for field in _FILE_FIELDS})
 
 
-def _assert_summary(summary, tag, **expect):
-    """全局统计记录（未给的计数按 0 期望）。"""
+def _record_summary(summary, tag):
+    """全局统计：各计数字段记实测值，期望值在基准的 <标签>/summary_stats。"""
     # 原断言：assert got == want, (field, got, want)
     record(f"{tag}/summary_stats",
            {field: getattr(summary, field) for field in _SUMMARY_FIELDS})
@@ -285,7 +283,9 @@ def _spmg_counts():
     return {i: text.count("SPMG::%04d" % i) for i in range(1, 15)}
 
 
-def _assert_msg_delta(before, after, tag, expect):
+def _record_msg_delta(before, after, tag):
+    """各消息族在一段流程里出现的次数（前后计数之差），期望值在基准的
+    <标签>/spmg_msg_deltas。"""
     delta = {k: after[k] - before[k] for k in after}
     # 原断言：assert delta[i] == want, (f"SPMG::{i:04d}", delta[i], want)
     record(f"{tag}/spmg_msg_deltas", delta)
@@ -446,35 +446,21 @@ record("main/partition_list", list(iter_spef_partition(mf_main)))
 _assert_entries(entries, MF_MAIN_PART, "main/part00")
 INFO("[DONE] mf_main: 19 entries (12 attached + 7 completed) exact")
 
-_assert_file(_file_stats(s_main, "blk_top.spef", "main/blk_top"),
-             "main/blk_top",
-             net_count=10, value_count_max=1, cap_count=20,
-             coupling_cap_count=10, res_count=1, chunk_count=1,
-             hit_count=9, net_name_miss_count=1)
-_assert_file(_file_stats(s_main, "blk_a_inst.spef", "main/blk_a_inst"),
-             "main/blk_a_inst",
-             net_count=3, value_count_max=1, cap_count=6,
-             coupling_cap_count=3, chunk_count=1, hit_count=3)
-_assert_file(_file_stats(s_main, "blk_top_overlap.spef",
-                         "main/blk_top_overlap"), "main/blk_top_overlap",
-             net_count=3, value_count_max=1, cap_count=6,
-             coupling_cap_count=3, chunk_count=1, hit_count=3)
-_assert_file(_file_stats(s_main, "blk_strip.spef", "main/blk_strip"),
-             "main/blk_strip",
-             net_count=4, value_count_max=1, cap_count=7,
-             coupling_cap_count=3, chunk_count=1, hit_count=2,
-             strip_miss_count=2)
-_assert_file(_file_stats(s_main, "blk_sub_cell.spef", "main/blk_sub_cell"),
-             "main/blk_sub_cell",
-             net_count=3, value_count_max=1, cap_count=6,
-             coupling_cap_count=3, chunk_count=1, hit_count=3)
+_record_file_stats(_file_stats(s_main, "blk_top.spef", "main/blk_top"),
+                   "main/blk_top")
+_record_file_stats(_file_stats(s_main, "blk_a_inst.spef", "main/blk_a_inst"),
+                   "main/blk_a_inst")
+_record_file_stats(
+    _file_stats(s_main, "blk_top_overlap.spef", "main/blk_top_overlap"),
+    "main/blk_top_overlap")
+_record_file_stats(_file_stats(s_main, "blk_strip.spef", "main/blk_strip"),
+                   "main/blk_strip")
+_record_file_stats(
+    _file_stats(s_main, "blk_sub_cell.spef", "main/blk_sub_cell"),
+    "main/blk_sub_cell")
 INFO("[DONE] mf_main: per-file stats for 5 file(s)")
 
-_assert_summary(s_main, "main",
-                routed_signal_net_count=20, covered_net_count=19,
-                uncovered_net_count=1, uncovered_instance_count=2,
-                same_scope_overlap_count=4, cross_scope_sum_count=4,
-                invalid_binding_count=1, electrical_net_count=5)
+_record_summary(s_main, "main")
 INFO("[DONE] mf_main: overlap 4 / cross-scope sum 4 / 1 invalid binding / "
      "electrical 5 / coverage 20/19/1/2/0")
 
@@ -499,15 +485,9 @@ obj, entries = _partition_entries(mf_top_only, 0, 0)
 # 原断言：assert obj.size == 17, obj.size
 record("top_only/part00_size", obj.size)
 _assert_entries(entries, TOP_ONLY_PART, "top_only/part00")
-_assert_file(_file_stats(s_top, "blk_top.spef", "top_only/blk_top"),
-             "top_only/blk_top",
-             net_count=10, value_count_max=1, cap_count=20,
-             coupling_cap_count=10, res_count=1, chunk_count=1,
-             hit_count=9, net_name_miss_count=1)
-_assert_summary(s_top, "top_only",
-                routed_signal_net_count=20, covered_net_count=17,
-                uncovered_net_count=3, uncovered_instance_count=5,
-                electrical_net_count=5)
+_record_file_stats(_file_stats(s_top, "blk_top.spef", "top_only/blk_top"),
+                   "top_only/blk_top")
+_record_summary(s_top, "top_only")
 INFO("[DONE] mf_top_only: 17 entries (bitmap all 1), coverage 20/17/3/5/0")
 
 # ═══ §4.3 mf_nameforms：点分隔符与转义分隔符 ═════════════════════════
@@ -517,15 +497,10 @@ obj, entries = _partition_entries(mf_nameforms, 0, 0)
 # 原断言：assert obj.size == 4, obj.size
 record("nameforms/part00_size", obj.size)
 _assert_entries(entries, NAMEFORMS_PART, "nameforms/part00")
-_assert_file(_file_stats(s_nf, "blk_top_nameforms.spef",
-                         "nameforms/blk_top_nameforms"),
-             "nameforms/blk_top_nameforms",
-             net_count=3, value_count_max=1, cap_count=6,
-             coupling_cap_count=3, chunk_count=1, hit_count=3)
-_assert_summary(s_nf, "nameforms",
-                routed_signal_net_count=20, covered_net_count=4,
-                uncovered_net_count=16, uncovered_instance_count=11,
-                electrical_net_count=5)
+_record_file_stats(
+    _file_stats(s_nf, "blk_top_nameforms.spef", "nameforms/blk_top_nameforms"),
+    "nameforms/blk_top_nameforms")
+_record_summary(s_nf, "nameforms")
 rec = mf_nameforms.get_net_load("u_blk_a/n_a1")
 # 原断言：assert rec["electrical_members"] == [9, 16]
 record("nameforms/n_a1_members",
@@ -545,21 +520,12 @@ obj, entries = _partition_entries(mf_reordered, 0, 0)
 # 原断言：assert obj.size == 19, obj.size
 record("reordered/part00_size", obj.size)
 _assert_entries(entries, MF_REORDERED_PART, "reordered/part00")
-_assert_file(_file_stats(s_re, "blk_top_overlap.spef",
-                         "reordered/blk_top_overlap"),
-             "reordered/blk_top_overlap",
-             net_count=3, value_count_max=1, cap_count=6,
-             coupling_cap_count=3, chunk_count=1, hit_count=3)
-_assert_file(_file_stats(s_re, "blk_top.spef", "reordered/blk_top"),
-             "reordered/blk_top",
-             net_count=10, value_count_max=1, cap_count=20,
-             coupling_cap_count=10, res_count=1, chunk_count=1,
-             hit_count=9, net_name_miss_count=1)
-_assert_summary(s_re, "reordered",
-                routed_signal_net_count=20, covered_net_count=19,
-                uncovered_net_count=1, uncovered_instance_count=2,
-                same_scope_overlap_count=4, cross_scope_sum_count=4,
-                electrical_net_count=5)
+_record_file_stats(
+    _file_stats(s_re, "blk_top_overlap.spef", "reordered/blk_top_overlap"),
+    "reordered/blk_top_overlap")
+_record_file_stats(_file_stats(s_re, "blk_top.spef", "reordered/blk_top"),
+                   "reordered/blk_top")
+_record_summary(s_re, "reordered")
 rec = mf_reordered.get_net_load("n_top")
 # 原断言：assert (rec["total_cap_reported_ff"], rec["ground_cap_ff"],
 record("reordered/n_top_caps_1038_623_415",
@@ -582,15 +548,9 @@ obj, entries = _partition_entries(mf_dangling, 0, 0)
 # 原断言：assert obj.size == 15, obj.size
 record("dangling/part00_size", obj.size)
 _assert_entries(entries, DANGLING_PART, "dangling/part00")
-_assert_file(_file_stats(s_dg, "blk_top.spef", "dangling/blk_top"),
-             "dangling/blk_top",
-             net_count=10, value_count_max=1, cap_count=20,
-             coupling_cap_count=10, res_count=1, chunk_count=1,
-             hit_count=8, net_name_miss_count=1, unrouted_net_count=1)
-_assert_summary(s_dg, "dangling",
-                routed_signal_net_count=19, covered_net_count=15,
-                uncovered_net_count=4, uncovered_instance_count=7,
-                electrical_net_count=4)
+_record_file_stats(_file_stats(s_dg, "blk_top.spef", "dangling/blk_top"),
+                   "dangling/blk_top")
+_record_summary(s_dg, "dangling")
 # 原断言：assert mf_dangling.get_net_load("n_top2") is None
 record("dangling/miss_n_top2", mf_dangling.get_net_load("n_top2"))
 # 非守卫：仅检查未命中网返回空，返回值无后续解引用
@@ -636,8 +596,9 @@ INFO("[DONE] mf_all_invalid: db not frozen, reason names the unresolved "
      "binding target")
 
 # ═══ §4.7 消息总次数（正常批 + all_invalid 全部结束之后）═════════════
-
-_assert_msg_delta(msg_before, _spmg_counts(), "msgs", MF_MSGS)
+# 实现语义：0002 = strip 前缀未匹配、0007 = 同作用域重合，mf 用例里两者的
+# 次数恰好一致。各族次数在基准的 msgs/spmg_msg_deltas。
+_record_msg_delta(msg_before, _spmg_counts(), "msgs")
 INFO("[DONE] SPMG message counts over the whole file (§4.7)")
 
 shutil.rmtree(qa_tmp("spef_mf_def"), ignore_errors=True)
