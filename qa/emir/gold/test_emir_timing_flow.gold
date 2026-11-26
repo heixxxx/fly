@@ -1,0 +1,135 @@
+{
+  "flows/build_timing_db_registered": true,
+  "meta/build_meta": {
+    "def_count": 1
+  },
+  "sc1/mixed/cross_file_conflict_count": 0,
+  "sc1/mixed/dangling_net_count": 7,
+  "sc1/mixed/entry_count": 26,
+  "sc1/mixed/files_1_and_suffix": true,
+  "sc1/mixed/hit_count": 15,
+  "sc1/mixed/skipped_pin_count": 4,
+  "sc1/mixed/time_scale_1ns": true,
+  "sc1/net/cross_file_conflict_count": 0,
+  "sc1/net/dangling_net_count": 7,
+  "sc1/net/entry_count": 7,
+  "sc1/net/files_1_and_suffix": true,
+  "sc1/net/hit_count": 0,
+  "sc1/net/skipped_pin_count": 0,
+  "sc1/net/time_scale_1ns": true,
+  "sc1/pins/cross_file_conflict_count": 0,
+  "sc1/pins/dangling_net_count": 0,
+  "sc1/pins/entry_count": 19,
+  "sc1/pins/files_1_and_suffix": true,
+  "sc1/pins/hit_count": 15,
+  "sc1/pins/skipped_pin_count": 4,
+  "sc1/pins/time_scale_1ns": true,
+  "sc1_clocks/entry0_name": "clk",
+  "sc1_clocks/entry0_negedge_05ns": true,
+  "sc1_clocks/entry0_period_1ns": true,
+  "sc1_clocks/size": 1,
+  "sc1_pins/a_not_constant": true,
+  "sc1_pins/a_rise_arrival_readable": true,
+  "sc1_pins/bad_id_miss": null,
+  "sc1_pins/gid_cb": 1,
+  "sc1_pins/info_clock": "clk",
+  "sc1_pins/info_exists": true,
+  "sc1_pins/info_instance_id": true,
+  "sc1_pins/info_partition": [
+    0,
+    0
+  ],
+  "sc1_pins/no_such_inst_miss": null,
+  "sc1_pins/part_size": 5,
+  "sc1_pins/partition_list": [
+    [
+      0,
+      0
+    ]
+  ],
+  "sc1_pins/pin_names": [
+    "A",
+    "Z"
+  ],
+  "sc2/gids": {
+    "top3": 3,
+    "u1": 5
+  },
+  "sc2/meta_blk": {
+    "def_count": 2
+  },
+  "sc2a/dangling_net_count": 1,
+  "sc2a/miss_counts": {
+    "net_name_miss": 0,
+    "skipped_pin": 0
+  },
+  "sc2a/summary": {
+    "entry": 5,
+    "hit": 4
+  },
+  "sc2a/time_scale_1ns": true,
+  "sc2a/top3_info_exists": true,
+  "sc2a/top3_port_pins": [
+    "PIN_IN"
+  ],
+  "sc2a/u1_clock": "wclk",
+  "sc2a/u1_info_exists": true,
+  "sc2a/u1_pins": [
+    "A",
+    "ZN"
+  ],
+  "sc2allmiss/no_such_inst_in_reason": true,
+  "sc2allmiss/reason_surfaced": true,
+  "sc2amiss/files_count": 1,
+  "sc2amiss/invalid_binding_count": 1,
+  "sc2amiss/submit_immediate": true,
+  "sc2amiss/summary": {
+    "entry": 5,
+    "hit": 4
+  },
+  "sc2amiss/timg0011_in_msg": true,
+  "sc2b/hit_count": 4,
+  "sc2c/summary": {
+    "entry": 3,
+    "hit": 1,
+    "strip_miss": 2
+  },
+  "sc2d/clks_entry0_name": "clk",
+  "sc2d/clks_entry0_negedge_05ns": true,
+  "sc2d/clks_entry0_period_1ns": true,
+  "sc2d/clks_size": 1,
+  "sc2d/clock_conflict_count": 1,
+  "sc2d/cross_file_conflict_count": 0,
+  "sc2d/dangling_net_count": 1,
+  "sc2d/entry_count": 7,
+  "sc2d/hit_count": 3,
+  "sc2d/named_query_exists": true,
+  "sc2d/net_name_miss_count": 1,
+  "sc2d/skipped_instance_count": 1,
+  "sc2d/skipped_pin_count": 1,
+  "sc3/cb_clock": "wclk",
+  "sc3/clks_entry0_name": "wclk",
+  "sc3/clks_entry0_period_2ns": true,
+  "sc3/clks_entry1_name": "clk",
+  "sc3/clks_entry1_period_1ns": true,
+  "sc3/clks_size": 2,
+  "sc3/clock_conflict_count": 0,
+  "sc3/inv_clock": "clk",
+  "sc3/missing_clock_count": 0,
+  "sc3/nand_clock": "clk",
+  "sc3/nand_info_exists": true,
+  "sc3/nand_pin0_rise_arrival": true,
+  "sc3/summary": {
+    "entry": 4,
+    "hit": 4
+  },
+  "sc4/fixture_chunks_at_least_2": true,
+  "sc4/inv_clock": "clk",
+  "sc4/inv_info_exists": true,
+  "sc4/inv_pin0_rise_arrival": true,
+  "sc4/missing_clock_count": 0,
+  "sc4/summary": {
+    "entry": 2,
+    "hit": 2
+  }
+}

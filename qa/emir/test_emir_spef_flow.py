@@ -44,7 +44,7 @@ from fly import get_config, launch_workers, wait_tasks
 from fly.runtime import get_agent
 from emir import EMIRProject
 
-from test import qa_tmp
+from test import qa_tmp, record
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA = os.path.join(SCRIPT_DIR, "data", "spef")
@@ -163,48 +163,50 @@ _SUMMARY_FIELDS = (
 )
 
 
-def _file_stats(summary, suffix):
+def _file_stats(summary, suffix, tag):
     hits = [f for f in summary.files if f.source_file.endswith(suffix)]
-    assert len(hits) == 1, (suffix, [f.source_file for f in summary.files])
+    # 原断言：assert len(hits) == 1, (suffix, [f.source_file for f in summary.files])
+    record(f"{tag}/file_stats_hit_1", len(hits) == 1,
+           detail=[f.source_file for f in summary.files])
+    assert len(hits) == 1  # 保留：守卫（后面 hits[0] 按下标取，空列表时会以 IndexError 崩溃）
     return hits[0]
 
 
-def _assert_file(f, **expect):
-    """逐文件统计全字段断言（未给的数值字段按 0 断言）。"""
-    for field in _FILE_FIELDS:
-        want = expect.get(field, 0)
-        got = getattr(f, field)
-        assert got == want, (field, got, want)
-    if "c_unit_ff_per_unit" in expect:
-        unit = expect["c_unit_ff_per_unit"]
-        assert abs(f.c_unit_ff_per_unit - unit) <= 1e-9 * unit, \
-            (f.c_unit_ff_per_unit, unit)
+def _assert_file(f, tag, c_unit, **expect):
+    """逐文件统计全字段记录（未给的数值字段按 0 期望）；*C_UNIT 换算
+    系数是浮点——按相对容差记判定，不进基准。"""
+    # 原断言：assert got == want, (field, got, want)
+    record(f"{tag}/file_stats",
+           {field: getattr(f, field) for field in _FILE_FIELDS})
+    # 原断言：assert abs(f.c_unit_ff_per_unit - unit) <= 1e-9 * unit, \
+    record(f"{tag}/c_unit_ff_match",
+           abs(f.c_unit_ff_per_unit - c_unit) <= 1e-9 * c_unit,
+           detail=f"{f.c_unit_ff_per_unit!r}")
 
 
-def _assert_summary(summary, **expect):
-    """全局统计断言（未给的计数按 0 断言；max_rel 用相对误差）。"""
-    for field in _SUMMARY_FIELDS:
-        want = expect.get(field, 0)
-        got = getattr(summary, field)
-        assert got == want, (field, got, want)
-    if "cap_mismatch_max_rel" in expect:
-        want = expect["cap_mismatch_max_rel"]
-        assert abs(summary.cap_mismatch_max_rel - want) <= 1e-9 * want, \
-            (summary.cap_mismatch_max_rel, want)
+def _assert_summary(summary, tag, **expect):
+    """全局统计记录（未给的计数按 0 期望；max_rel 是浮点——由调用点
+    按相对误差记判定，不进基准）。"""
+    # 原断言：assert got == want, (field, got, want)
+    record(f"{tag}/summary_stats",
+           {field: getattr(summary, field) for field in _SUMMARY_FIELDS})
 
 
-def _assert_load(rec, total, ground, coupling, rel=0.0):
-    """get_net_load 点查断言（rel=0 飞法精确；rel>0 相对误差——皮法刻
-    度样张换算后的双精度残差）。"""
-    assert rec is not None
+def _assert_load(rec, total, ground, coupling, tag, rel=0.0):
+    """get_net_load 点查记录（rel=0 飞法精确；rel>0 相对误差——皮法刻
+    度样张换算后的双精度残差）。三值是浮点——记「满足容差/相等」的判
+    定，实际值放 detail。"""
+    # 原断言：assert rec is not None
+    record(f"{tag}/load_exists", rec is not None)
+    assert rec is not None  # 保留：守卫（后面 rec["total_cap_reported_ff"] 等解引用）
     got = (rec["total_cap_reported_ff"], rec["ground_cap_ff"],
            rec["coupling_cap_ff"])
     want = (total, ground, coupling)
-    if rel:
-        for g, w in zip(got, want):
-            assert abs(g - w) <= rel * abs(w), (got, want)
-    else:
-        assert got == want, (got, want)
+    ok = got == want if not rel else \
+        all(abs(g - w) <= rel * abs(w) for g, w in zip(got, want))
+    # 原断言：assert got == want, (got, want)
+    # 原断言：assert abs(g - w) <= rel * abs(w), (got, want)
+    record(f"{tag}/loads_match", ok, detail=(got, want))
 
 
 def _partition_entries(db, xp, yp):
@@ -214,13 +216,16 @@ def _partition_entries(db, xp, yp):
                  for e in obj.items]
 
 
-def _assert_entries(entries, expect, where):
-    """全量条目断言（net_id 升序 + 逐条精确值）。"""
+def _assert_entries(entries, expect, tag):
+    """全量条目记录（net_id 升序 + 逐条精确值——电容三值是浮点，记判定）。"""
     got_ids = [e[0] for e in entries]
     want_ids = [e[0] for e in expect]
-    assert got_ids == want_ids, (where, got_ids, want_ids)
-    for g, w in zip(entries, expect):
-        assert g == w, (where, g, w)
+    # 原断言：assert got_ids == want_ids, (where, got_ids, want_ids)
+    record(f"{tag}/entries_net_id_order", got_ids == want_ids,
+           detail=(got_ids, want_ids))
+    # 原断言：assert g == w, (where, g, w)
+    record(f"{tag}/entries_exact", entries == expect,
+           detail=[(g, w) for g, w in zip(entries, expect) if g != w])
 
 
 def _spmg_counts():
@@ -229,11 +234,10 @@ def _spmg_counts():
     return {i: text.count("SPMG::%04d" % i) for i in range(1, 15)}
 
 
-def _assert_msg_delta(before, after, expect):
+def _assert_msg_delta(before, after, tag, expect):
     delta = {k: after[k] - before[k] for k in after}
-    for i in range(1, 15):
-        want = expect.get(i, 0)
-        assert delta[i] == want, (f"SPMG::{i:04d}", delta[i], want)
+    # 原断言：assert delta[i] == want, (f"SPMG::{i:04d}", delta[i], want)
+    record(f"{tag}/spmg_msg_deltas", delta)
 
 
 def cleanup():
@@ -248,8 +252,10 @@ assert get_agent().wait_workers_registered(timeout=60), "workers connect"
 INFO("  2 workers connected (user-managed)")
 
 proj = EMIRProject(PROJ_PATH)
-assert "build_spef_db" in proj.list_flows()
-INFO("[OK] build_spef_db registered on EMIRProject")
+# 原断言：assert "build_spef_db" in proj.list_flows()
+record("flows/build_spef_db_registered", "build_spef_db" in proj.list_flows(),
+       detail=sorted(proj.list_flows()))
+INFO("[DONE] build_spef_db registered on EMIRProject")
 
 # ── 前置：lib db + design db 族（一批提交，一次等待）─────────────────
 lib_db = proj.build_lib_db(name="sp_lib", lib_paths=[LIBERTY])
@@ -319,16 +325,22 @@ INFO("[WAIT] design db family frozen (4 db(s), one batch)")
 
 # 设计库前置事实（测试设计稿 §1.1 / §1.2 与 §3 的前提断言）
 grid_parts = list(iter_design_partition(d_grid))
-assert grid_parts == [(0, 0), (2, 0)], grid_parts
-INFO("[OK] sp_design_grid: 2 partitions (partition_count is a floor)")
+# 原断言：assert grid_parts == [(0, 0), (2, 0)], grid_parts
+record("design_grid/partition_list", grid_parts)
+INFO("[DONE] sp_design_grid: 2 partitions (partition_count is a floor)")
 
 pg_nets = load_design_pg_nets(d_pg)
-assert pg_nets.power_count == 1, pg_nets.power_count
-assert pg_nets.ground_count == 1, pg_nets.ground_count
 vdd = d_pg.get_net("VDD")
-assert vdd is not None, "VDD must be registered as a power net"
-assert vdd["connection_count"] == 14, vdd["connection_count"]
-INFO("[OK] sp_design_pg: 1 power + 1 ground net, VDD wildcard-connected")
+# 原断言：assert pg_nets.power_count == 1, pg_nets.power_count
+record("design_pg/power_count", pg_nets.power_count)
+# 原断言：assert pg_nets.ground_count == 1, pg_nets.ground_count
+record("design_pg/ground_count", pg_nets.ground_count)
+# 原断言：assert vdd is not None, "VDD must be registered as a power net"
+record("design_pg/vdd_exists", vdd is not None)
+assert vdd is not None  # 保留：守卫（后面 vdd["connection_count"] 按下标取）
+# 原断言：assert vdd["connection_count"] == 14, vdd["connection_count"]
+record("design_pg/vdd_connection_count", vdd["connection_count"])
+INFO("[DONE] sp_design_pg: 1 power + 1 ground net, VDD wildcard-connected")
 
 # ── 寄生库十个（一批提交，一次等待）──────────────────────────────────
 
@@ -385,66 +397,110 @@ INFO("[WAIT] spef db batch frozen (10 db(s), one batch)")
 # ═══ §3.1 sp_basic：逐网三值 + 全量分区条目 + 统计 ═══════════════════
 
 s_basic = load_spef_summary(sp_basic)
-assert len(s_basic.files) == 1, s_basic.files
-assert s_basic.files[0].source_file.endswith("sp_small.spef")
+# 原断言：assert len(s_basic.files) == 1, s_basic.files
+record("basic/files_count", len(s_basic.files))
+assert len(s_basic.files) >= 1  # 保留：守卫（后面 s_basic.files[0] 按下标取，越界在 C++ 侧是未定义行为）
+# 原断言：assert s_basic.files[0].source_file.endswith("sp_small.spef")
+record("basic/source_suffix",
+       s_basic.files[0].source_file.endswith("sp_small.spef"),
+       detail=s_basic.files[0].source_file)
 for name, (total, ground, coupling) in SMALL_NETS.items():
     rec = sp_basic.get_net_load(name)
-    _assert_load(rec, total, ground, coupling)
-    assert rec["net_id"] == NET_ID[name], (name, rec["net_id"])
-    assert rec["reduced"] == (name in SMALL_REDUCED), name
-    assert rec["source_mask"] == 1, name
-    assert rec["partitions"] == [(0, 0)], name
-    assert rec["electrical_members"] == [NET_ID[name]], name
-assert sp_basic.get_net_load("n_xor") is None
-assert sp_basic.get_net_load("ghost_net") is None
+    _assert_load(rec, total, ground, coupling, f"basic/{name}")
+    # 原断言：assert rec["net_id"] == NET_ID[name], (name, rec["net_id"])
+    record(f"basic/{name}/net_id", rec["net_id"])
+    # 原断言：assert rec["reduced"] == (name in SMALL_REDUCED), name
+    record(f"basic/{name}/reduced_matches",
+           rec["reduced"] == (name in SMALL_REDUCED), detail=rec["reduced"])
+    # 原断言：assert rec["source_mask"] == 1, name
+    record(f"basic/{name}/source_mask", rec["source_mask"])
+    # 原断言：assert rec["partitions"] == [(0, 0)], name
+    record(f"basic/{name}/partitions", rec["partitions"])
+    # 原断言：assert rec["electrical_members"] == [NET_ID[name]], name
+    record(f"basic/{name}/electrical_members", rec["electrical_members"])
+# 原断言：assert sp_basic.get_net_load("n_xor") is None
+record("basic/n_xor_load", sp_basic.get_net_load("n_xor"))
+# 非守卫：仅检查未命中网返回空，返回值无后续解引用
+# 原断言：assert sp_basic.get_net_load("ghost_net") is None
+record("basic/ghost_net_load", sp_basic.get_net_load("ghost_net"))
+# 非守卫：仅检查未命中网返回空，返回值无后续解引用
 # 点查入参双形态：网编号 int 与名字 str 同值
-assert sp_basic.get_net_load(NET_ID["clk"]) == \
-    sp_basic.get_net_load("clk")
-INFO(f"[OK] sp_basic: {len(SMALL_NETS)} net(s) exact + misses are None")
+# 原断言：assert sp_basic.get_net_load(NET_ID["clk"]) == \
+record("basic/clk_load_by_id_equals_by_name",
+       sp_basic.get_net_load(NET_ID["clk"]) == sp_basic.get_net_load("clk"))
+INFO(f"[DONE] sp_basic: {len(SMALL_NETS)} net(s) exact + misses are None")
 
 obj, entries = _partition_entries(sp_basic, 0, 0)
-assert obj.size == 15, obj.size
-_assert_entries(entries, _BASIC_PART_0_0, "sp_basic PART_0_0")
-assert list(iter_spef_partition(sp_basic)) == [(0, 0)]
-INFO("[OK] sp_basic: PART_0_0 = 15 exact entries (net-id ascending)")
+# 原断言：assert obj.size == 15, obj.size
+record("basic/part00_size", obj.size)
+_assert_entries(entries, _BASIC_PART_0_0, "basic/part00")
+# 原断言：assert list(iter_spef_partition(sp_basic)) == [(0, 0)]
+record("basic/partition_list", list(iter_spef_partition(sp_basic)))
+INFO("[DONE] sp_basic: PART_0_0 = 15 exact entries (net-id ascending)")
 
-_assert_file(_file_stats(s_basic, "sp_small.spef"),
+_assert_file(_file_stats(s_basic, "sp_small.spef", "basic"), "basic", 1.0,
              net_count=16, rnet_count=1, value_count_max=1,
              cap_count=40, coupling_cap_count=13, res_count=14,
-             chunk_count=1, hit_count=15, net_name_miss_count=1,
-             c_unit_ff_per_unit=1.0)
-_assert_summary(s_basic,
+             chunk_count=1, hit_count=15, net_name_miss_count=1)
+_assert_summary(s_basic, "basic",
                 routed_signal_net_count=16, covered_net_count=15,
                 uncovered_net_count=1, uncovered_instance_count=1,
                 zero_cap_instance_count=1, rnet_count=1,
-                cap_mismatch_count=1, cap_mismatch_max_rel=1 / 46,
-                electrical_net_count=0)
-assert s_basic.internal_cap_unit_ff == 1.0
-assert s_basic.internal_res_unit_ohm == 1.0
-INFO("[OK] sp_basic: file stats + coverage + mismatch 1/46 exact")
+                cap_mismatch_count=1, electrical_net_count=0)
+# 原断言：assert abs(summary.cap_mismatch_max_rel - want) <= 1e-9 * want, \
+record("basic/cap_mismatch_max_rel_match",
+       abs(s_basic.cap_mismatch_max_rel - 1 / 46) <= 1e-9 * (1 / 46),
+       detail=f"{s_basic.cap_mismatch_max_rel!r}")
+# 原断言：assert s_basic.internal_cap_unit_ff == 1.0
+record("basic/internal_cap_unit_1ff", s_basic.internal_cap_unit_ff == 1.0,
+       detail=f"{s_basic.internal_cap_unit_ff!r}")
+# 原断言：assert s_basic.internal_res_unit_ohm == 1.0
+record("basic/internal_res_unit_1ohm", s_basic.internal_res_unit_ohm == 1.0,
+       detail=f"{s_basic.internal_res_unit_ohm!r}")
+INFO("[DONE] sp_basic: file stats + coverage + mismatch 1/46 exact")
 
 # ═══ §3.2 sp_gzip：与明文逐项一致 + 解压副本清理 ═════════════════════
 
 s_gz = load_spef_summary(sp_gzip)
-assert s_gz.files[0].source_file != s_basic.files[0].source_file
+fa, fb = s_gz.files[0], s_basic.files[0]
+# 原断言：assert s_gz.files[0].source_file != s_basic.files[0].source_file
+record("gzip/source_files_differ",
+       s_gz.files[0].source_file != s_basic.files[0].source_file,
+       detail=(s_gz.files[0].source_file, s_basic.files[0].source_file))
+gzip_partition_diffs = []
 for xp, yp in iter_spef_partition(sp_gzip):
     a = load_partition_net_load(sp_gzip, xp, yp).__getstate__()
     b = load_partition_net_load(sp_basic, xp, yp).__getstate__()
-    assert a == b, f"partition ({xp},{yp}) bytes differ"
-for field in _SUMMARY_FIELDS + ("cap_mismatch_max_rel",
-                                "internal_cap_unit_ff",
-                                "internal_res_unit_ohm"):
-    assert getattr(s_gz, field) == getattr(s_basic, field), field
-assert len(s_gz.files) == len(s_basic.files) == 1
-fa, fb = s_gz.files[0], s_basic.files[0]
-for field in _FILE_FIELDS:
-    assert getattr(fa, field) == getattr(fb, field), field
-assert abs(fa.c_unit_ff_per_unit - fb.c_unit_ff_per_unit) <= 1e-12
+    if a != b:
+        gzip_partition_diffs.append((xp, yp))
+# 原断言：assert a == b, f"partition ({xp},{yp}) bytes differ"
+record("gzip/partitions_byte_identical", not gzip_partition_diffs,
+       detail=gzip_partition_diffs)
+gz_summary_diffs = [field for field in _SUMMARY_FIELDS
+                    + ("cap_mismatch_max_rel", "internal_cap_unit_ff",
+                       "internal_res_unit_ohm")
+                    if getattr(s_gz, field) != getattr(s_basic, field)]
+# 原断言：assert getattr(s_gz, field) == getattr(s_basic, field), field
+record("gzip/summary_fields_equal", not gz_summary_diffs,
+       detail=gz_summary_diffs)
+# 原断言：assert len(s_gz.files) == len(s_basic.files) == 1
+record("gzip/files_count_matches_basic",
+       len(s_gz.files) == len(s_basic.files) == 1,
+       detail=(len(s_gz.files), len(s_basic.files)))
+gz_file_diffs = [field for field in _FILE_FIELDS
+                 if getattr(fa, field) != getattr(fb, field)]
+# 原断言：assert getattr(fa, field) == getattr(fb, field), field
+record("gzip/file_fields_equal", not gz_file_diffs, detail=gz_file_diffs)
+# 原断言：assert abs(fa.c_unit_ff_per_unit - fb.c_unit_ff_per_unit) <= 1e-12
+record("gzip/c_unit_ff_close", abs(fa.c_unit_ff_per_unit
+                                   - fb.c_unit_ff_per_unit) <= 1e-12,
+       detail=f"{fa.c_unit_ff_per_unit!r} vs {fb.c_unit_ff_per_unit!r}")
 # 解压副本冻结前清理（汇总任务单点——库冻结时已删除）
-assert not os.path.isdir(os.path.join(PROJ_PATH, "sp_gzip",
-                                      "sp_scratch")), \
-    "gzip scratch dir must be cleaned before freeze"
-INFO("[OK] sp_gzip: byte-identical partitions, stats equal, "
+# 原断言：assert not os.path.isdir(os.path.join(PROJ_PATH, "sp_gzip",
+record("gzip/scratch_dir_cleaned",
+       not os.path.isdir(os.path.join(PROJ_PATH, "sp_gzip", "sp_scratch")),
+       detail=os.path.join(PROJ_PATH, "sp_gzip", "sp_scratch"))
+INFO("[DONE] sp_gzip: byte-identical partitions, stats equal, "
      "scratch cleaned")
 
 # ═══ §3.3 sp_dialect：皮法刻度 + 方言计数 ════════════════════════════
@@ -453,44 +509,55 @@ s_dialect = load_spef_summary(sp_dialect)
 REL = 1e-9
 for name, (total, ground, coupling) in DIALECT_NETS.items():
     rec = sp_dialect.get_net_load(name)
-    _assert_load(rec, total, ground, coupling, rel=REL)
-assert sp_dialect.get_net_load("n_xor") is None
-assert sp_dialect.get_net_load("count[0]") is None
-INFO("[OK] sp_dialect: 8 net(s) converted from PF (rel 1e-9) + misses")
+    _assert_load(rec, total, ground, coupling, f"dialect/{name}", rel=REL)
+# 原断言：assert sp_dialect.get_net_load("n_xor") is None
+record("dialect/n_xor_load", sp_dialect.get_net_load("n_xor"))
+# 非守卫：仅检查未命中网返回空，返回值无后续解引用
+# 原断言：assert sp_dialect.get_net_load("count[0]") is None
+record("dialect/count0_load", sp_dialect.get_net_load("count[0]"))
+# 非守卫：仅检查未命中网返回空，返回值无后续解引用
+INFO("[DONE] sp_dialect: 8 net(s) converted from PF (rel 1e-9) + misses")
 
-_assert_file(_file_stats(s_dialect, "sp_small_dialect.spef"),
+_assert_file(_file_stats(s_dialect, "sp_small_dialect.spef", "dialect"),
+             "dialect", 1000.0,
              net_count=8, pnet_skip_count=2, broken_net_count=1,
              name_map_miss_count=1, multi_value_net_count=2,
              value_count_max=3, cap_count=20, coupling_cap_count=5,
-             res_count=2, chunk_count=1, hit_count=8,
-             c_unit_ff_per_unit=1000.0)
-_assert_summary(s_dialect,
+             res_count=2, chunk_count=1, hit_count=8)
+_assert_summary(s_dialect, "dialect",
                 routed_signal_net_count=16, covered_net_count=8,
                 uncovered_net_count=8, uncovered_instance_count=13)
-INFO("[OK] sp_dialect: file stats (broken=1, name_map_miss=1, "
+INFO("[DONE] sp_dialect: file stats (broken=1, name_map_miss=1, "
      "pnet=2) + coverage")
 
 # ═══ §3.4 sp_dialect_idx：value_index=2 覆盖与越界回退 ═══════════════
 
 s_idx = load_spef_summary(sp_dialect_idx)
 rec = sp_dialect_idx.get_net_load("n_b2")
-_assert_load(rec, *DIALECT_IDX_N_B2, rel=REL)
+_assert_load(rec, *DIALECT_IDX_N_B2, "idx/n_b2", rel=REL)
 rec = sp_dialect_idx.get_net_load("n_and")
-_assert_load(rec, 45, 30, 15, rel=REL)  # 两值形态下标越界回退缺省规则
+_assert_load(rec, 45, 30, 15, "idx/n_and", rel=REL)  # 两值形态下标越界回退缺省规则
 settings = sp_dialect_idx.read_object("alpha_settings")
-assert settings.chunk_size_mb == 256, settings.chunk_size_mb
-assert settings.value_index == 2, settings.value_index
-_assert_file(_file_stats(s_idx, "sp_small_dialect.spef"),
+# 原断言：assert settings.chunk_size_mb == 256, settings.chunk_size_mb
+record("idx/chunk_size_mb", settings.chunk_size_mb)
+# 原断言：assert settings.value_index == 2, settings.value_index
+record("idx/value_index", settings.value_index)
+_assert_file(_file_stats(s_idx, "sp_small_dialect.spef", "idx"), "idx",
+             1000.0,
              net_count=8, pnet_skip_count=2, broken_net_count=1,
              name_map_miss_count=1, multi_value_net_count=2,
              value_count_max=3, value_index_fallback_count=25,
              cap_count=20, coupling_cap_count=5, res_count=2,
-             chunk_count=1, hit_count=8, c_unit_ff_per_unit=1000.0)
-_assert_summary(s_idx,
+             chunk_count=1, hit_count=8)
+_assert_summary(s_idx, "idx",
                 routed_signal_net_count=16, covered_net_count=8,
                 uncovered_net_count=8, uncovered_instance_count=13,
-                cap_mismatch_count=1, cap_mismatch_max_rel=0.1)
-INFO("[OK] sp_dialect_idx: n_b2 takes value #2, fallback count 25, "
+                cap_mismatch_count=1)
+# 原断言：assert abs(summary.cap_mismatch_max_rel - want) <= 1e-9 * want, \
+record("idx/cap_mismatch_max_rel_match",
+       abs(s_idx.cap_mismatch_max_rel - 0.1) <= 1e-9 * 0.1,
+       detail=f"{s_idx.cap_mismatch_max_rel!r}")
+INFO("[DONE] sp_dialect_idx: n_b2 takes value #2, fallback count 25, "
      "mismatch 0.1, alpha_settings persisted")
 
 # ═══ §3.5 sp_rnet：缩减网形态 ════════════════════════════════════════
@@ -498,89 +565,113 @@ INFO("[OK] sp_dialect_idx: n_b2 takes value #2, fallback count 25, "
 s_rnet = load_spef_summary(sp_rnet)
 for name, (total, ground, coupling) in RNET_NETS.items():
     rec = sp_rnet.get_net_load(name)
-    _assert_load(rec, total, ground, coupling)
-    assert rec["reduced"] == (name in RNET_REDUCED), name
-INFO("[OK] sp_rnet: 8 net(s) exact, 4 reduced-flagged")
+    _assert_load(rec, total, ground, coupling, f"rnet/{name}")
+    # 原断言：assert rec["reduced"] == (name in RNET_REDUCED), name
+    record(f"rnet/{name}/reduced_matches",
+           rec["reduced"] == (name in RNET_REDUCED), detail=rec["reduced"])
+INFO("[DONE] sp_rnet: 8 net(s) exact, 4 reduced-flagged")
 
-_assert_file(_file_stats(s_rnet, "sp_small_rnet.spef"),
+_assert_file(_file_stats(s_rnet, "sp_small_rnet.spef", "rnet"), "rnet", 1.0,
              net_count=8, rnet_count=4, multi_value_net_count=1,
              value_count_max=3, cap_count=6, coupling_cap_count=2,
-             res_count=0, chunk_count=1, hit_count=8,
-             c_unit_ff_per_unit=1.0)
-_assert_summary(s_rnet,
+             res_count=0, chunk_count=1, hit_count=8)
+_assert_summary(s_rnet, "rnet",
                 routed_signal_net_count=16, covered_net_count=8,
                 uncovered_net_count=8, uncovered_instance_count=12,
                 rnet_count=4)
-INFO("[OK] sp_rnet: file stats + coverage (rnet_count 4)")
+INFO("[DONE] sp_rnet: file stats + coverage (rnet_count 4)")
 
 # ═══ §3.6 sp_grid：多分区落点与覆盖率口径 ════════════════════════════
 
 s_grid = load_spef_summary(sp_grid)
-assert list(iter_spef_partition(sp_grid)) == [(0, 0), (2, 0)]
 obj00, entries00 = _partition_entries(sp_grid, 0, 0)
 obj20, entries20 = _partition_entries(sp_grid, 2, 0)
-assert obj00.size == 15, obj00.size
-assert obj20.size == 10, obj20.size
-_assert_entries(entries00, _BASIC_PART_0_0, "sp_grid PART_0_0")
-_assert_entries(entries20, _GRID_PART_2_0, "sp_grid PART_2_0")
-INFO("[OK] sp_grid: PART_0_0 = 15 (12 attached + 3 completed), "
+# 原断言：assert list(iter_spef_partition(sp_grid)) == [(0, 0), (2, 0)]
+record("grid/partition_list", list(iter_spef_partition(sp_grid)))
+# 原断言：assert obj00.size == 15, obj00.size
+record("grid/part00_size", obj00.size)
+# 原断言：assert obj20.size == 10, obj20.size
+record("grid/part20_size", obj20.size)
+_assert_entries(entries00, _BASIC_PART_0_0, "grid/part00")
+_assert_entries(entries20, _GRID_PART_2_0, "grid/part20")
+INFO("[DONE] sp_grid: PART_0_0 = 15 (12 attached + 3 completed), "
      "PART_2_0 = 10 attached")
 
 ONLY_00 = ("n_cnt0_d", "n_cnt1_d", "n_b1", "n_cnt2_d", "n_b2")
 BOTH_PARTS = ("count[0]", "count[1]", "count[2]", "count[3]",
               "n_cnt3_d", "clk", "rn", "clk_div2", "n_div_d", "n_and")
 for name in ONLY_00:
-    assert sp_grid.get_net_load(name)["partitions"] == [(0, 0)], name
+    parts = sp_grid.get_net_load(name)["partitions"]
+    # 原断言：assert sp_grid.get_net_load(name)["partitions"] == [(0, 0)], name
+    record(f"grid/{name}/partitions_only_00", parts == [(0, 0)],
+           detail=parts)
 for name in BOTH_PARTS:
     rec = sp_grid.get_net_load(name)
-    assert rec["partitions"] == [(0, 0), (2, 0)], (name, rec["partitions"])
-assert sp_grid.get_net_load("n_xor") is None
+    # 原断言：assert rec["partitions"] == [(0, 0), (2, 0)], (name, rec["partitions"])
+    record(f"grid/{name}/partitions_both",
+           rec["partitions"] == [(0, 0), (2, 0)], detail=rec["partitions"])
+# 原断言：assert sp_grid.get_net_load("n_xor") is None
+record("grid/n_xor_load", sp_grid.get_net_load("n_xor"))
+# 非守卫：仅检查未命中网返回空，返回值无后续解引用
 # 同一张网在两个分区里的数值相同（上面 _assert_entries 已逐条精确——
 # 此处按网名对照两分区的三值再钉一次口径）
 vals00 = {e[0]: e[1:4] for e in entries00}
 vals20 = {e[0]: e[1:4] for e in entries20}
 for name in BOTH_PARTS:
     nid = NET_ID[name]
-    assert vals00[nid] == vals20[nid], (name, vals00[nid], vals20[nid])
-INFO("[OK] sp_grid: per-net partition placement + same values in "
+    # 原断言：assert vals00[nid] == vals20[nid], (name, vals00[nid], vals20[nid])
+    record(f"grid/{name}_values_same_both_parts",
+           vals00[nid] == vals20[nid],
+           detail=(vals00[nid], vals20[nid]))
+INFO("[DONE] sp_grid: per-net partition placement + same values in "
      "both partitions")
 
-_assert_summary(s_grid,
+_assert_summary(s_grid, "grid",
                 routed_signal_net_count=23, covered_net_count=22,
                 uncovered_net_count=1, uncovered_instance_count=1,
                 zero_cap_instance_count=1, rnet_count=1,
-                cap_mismatch_count=2, cap_mismatch_max_rel=1 / 46)
-INFO("[OK] sp_grid: coverage 23/22/1 per-partition scope, mismatch "
+                cap_mismatch_count=2)
+# 原断言：assert abs(summary.cap_mismatch_max_rel - want) <= 1e-9 * want, \
+record("grid/cap_mismatch_max_rel_match",
+       abs(s_grid.cap_mismatch_max_rel - 1 / 46) <= 1e-9 * (1 / 46),
+       detail=f"{s_grid.cap_mismatch_max_rel!r}")
+INFO("[DONE] sp_grid: coverage 23/22/1 per-partition scope, mismatch "
      "counted per partition (= 2)")
 
 # ═══ §3.7 sp_unrouted：未布线设计 ════════════════════════════════════
 
 s_unrouted = load_spef_summary(sp_unrouted)
-_assert_file(_file_stats(s_unrouted, "sp_small.spef"),
+_assert_file(_file_stats(s_unrouted, "sp_small.spef", "unrouted"),
+             "unrouted", 1.0,
              net_count=16, rnet_count=1, value_count_max=1,
              cap_count=40, coupling_cap_count=13, res_count=14,
              chunk_count=1, hit_count=0, net_name_miss_count=1,
-             unrouted_net_count=15, c_unit_ff_per_unit=1.0)
-_assert_summary(s_unrouted, rnet_count=1)
+             unrouted_net_count=15)
+_assert_summary(s_unrouted, "unrouted", rnet_count=1)
 obj, entries = _partition_entries(sp_unrouted, 0, 0)
-assert obj.size == 0, obj.size
-INFO("[OK] sp_unrouted: 0 hit / 15 unrouted, empty PART_0_0, coverage 0")
+# 原断言：assert obj.size == 0, obj.size
+record("unrouted/part00_size", obj.size)
+INFO("[DONE] sp_unrouted: 0 hit / 15 unrouted, empty PART_0_0, coverage 0")
 
 # ═══ §3.8 sp_pg：电源网段跳过 ════════════════════════════════════════
 
 s_pg = load_spef_summary(sp_pg)
-_assert_file(_file_stats(s_pg, "sp_pg.spef"),
+_assert_file(_file_stats(s_pg, "sp_pg.spef", "pg"), "pg", 1.0,
              net_count=3, value_count_max=1, pg_net_skip_count=2,
              cap_count=4, coupling_cap_count=1, res_count=0,
-             chunk_count=1, hit_count=1, c_unit_ff_per_unit=1.0)
-_assert_summary(s_pg,
+             chunk_count=1, hit_count=1)
+_assert_summary(s_pg, "pg",
                 routed_signal_net_count=16, covered_net_count=1,
                 uncovered_net_count=15, uncovered_instance_count=14)
-assert sp_pg.get_net_load("VDD") is None
-assert sp_pg.get_net_load("VSS") is None
+# 原断言：assert sp_pg.get_net_load("VDD") is None
+record("pg/vdd_load", sp_pg.get_net_load("VDD"))
+# 非守卫：仅检查电源网段不入库，返回值无后续解引用
+# 原断言：assert sp_pg.get_net_load("VSS") is None
+record("pg/vss_load", sp_pg.get_net_load("VSS"))
+# 非守卫：仅检查电源网段不入库，返回值无后续解引用
 rec = sp_pg.get_net_load("clk")
-_assert_load(rec, *PG_CLK)
-INFO("[OK] sp_pg: VDD/VSS skipped (2), clk stored 33/22/11")
+_assert_load(rec, *PG_CLK, "pg/clk")
+INFO("[DONE] sp_pg: VDD/VSS skipped (2), clk stored 33/22/11")
 
 # ═══ §3.9 确定性：同输入双跑逐字节一致 ═══════════════════════════════
 
@@ -594,17 +685,21 @@ def _db_bytes(db):
 
 
 fp_ref = _db_bytes(sp_basic)
-for db in (sp_det_a, sp_det_b):
+for tag, db in (("det_a", sp_det_a), ("det_b", sp_det_b)):
     fp = _db_bytes(db)
-    assert len(fp) == len(fp_ref)
-    for i, (a, b) in enumerate(zip(fp, fp_ref)):
-        assert a == b, f"object {i} bytes differ across identical runs"
-INFO("[OK] determinism: sp_det_a / sp_det_b byte-identical to sp_basic")
+    # 原断言：assert len(fp) == len(fp_ref)
+    record(f"det/{tag}_object_count", len(fp) == len(fp_ref),
+           detail=(len(fp), len(fp_ref)))
+    byte_diffs = [i for i, (a, b) in enumerate(zip(fp, fp_ref)) if a != b]
+    # 原断言：assert a == b, f"object {i} bytes differ across identical runs"
+    record(f"det/{tag}_objects_identical", not byte_diffs,
+           detail=byte_diffs)
+INFO("[DONE] determinism: sp_det_a / sp_det_b byte-identical to sp_basic")
 
 # ═══ §3.10 SPMG 消息族按批计数（十个库一批的增量）════════════════════
 
-_assert_msg_delta(msg_before, _spmg_counts(), FLOW_MSGS)
-INFO("[OK] SPMG message counts over the 10-db batch (§3.10)")
+_assert_msg_delta(msg_before, _spmg_counts(), "batch", FLOW_MSGS)
+INFO("[DONE] SPMG message counts over the 10-db batch (§3.10)")
 
 # ═══ §3.11 破损文件：库不冻结 + 失败原因 + 不影响消息计数 ════════════
 
@@ -615,13 +710,15 @@ assert not proj.wait_frozen("sp_bad", timeout=300), \
     "broken spef must not freeze"
 reason = proj.db_failure_reason("sp_bad")
 # db_failure_reason 返回 (task_id, error) 元组或 None——error 是失败文案
-assert reason is not None and "C_UNIT" in reason[1], reason
+# 原断言：assert reason is not None and "C_UNIT" in reason[1], reason
+record("bad/reason_has_c_unit",
+       reason is not None and "C_UNIT" in reason[1], detail=reason)
 # 破损文件那一个不影响前面批次的 SPMG 消息计数
-_assert_msg_delta(msg_before, _spmg_counts(), FLOW_MSGS)
-INFO("[OK] broken spef: db not frozen, reason carries C_UNIT, "
+_assert_msg_delta(msg_before, _spmg_counts(), "bad_file", FLOW_MSGS)
+INFO("[DONE] broken spef: db not frozen, reason carries C_UNIT, "
      "message counts untouched")
 
 shutil.rmtree(os.path.dirname(GZ_PATH), ignore_errors=True)
 shutil.rmtree(os.path.dirname(ROUTED_SMALL_DEF), ignore_errors=True)
 
-INFO("[PASS] test_emir_spef_flow")
+INFO("[DONE] test_emir_spef_flow")

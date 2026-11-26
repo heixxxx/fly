@@ -1,0 +1,627 @@
+{
+  "bad/reason_has_c_unit": true,
+  "bad_file/spmg_msg_deltas": {
+    "1": 6,
+    "10": 2,
+    "11": 1,
+    "12": 2,
+    "13": 6,
+    "14": 2,
+    "2": 0,
+    "3": 1,
+    "4": 1,
+    "5": 7,
+    "6": 3,
+    "7": 0,
+    "8": 0,
+    "9": 0
+  },
+  "basic/c_unit_ff_match": true,
+  "basic/cap_mismatch_max_rel_match": true,
+  "basic/clk/electrical_members": [
+    11
+  ],
+  "basic/clk/load_exists": true,
+  "basic/clk/loads_match": true,
+  "basic/clk/net_id": 11,
+  "basic/clk/partitions": [
+    [
+      0,
+      0
+    ]
+  ],
+  "basic/clk/reduced_matches": true,
+  "basic/clk/source_mask": 1,
+  "basic/clk_div2/electrical_members": [
+    13
+  ],
+  "basic/clk_div2/load_exists": true,
+  "basic/clk_div2/loads_match": true,
+  "basic/clk_div2/net_id": 13,
+  "basic/clk_div2/partitions": [
+    [
+      0,
+      0
+    ]
+  ],
+  "basic/clk_div2/reduced_matches": true,
+  "basic/clk_div2/source_mask": 1,
+  "basic/clk_load_by_id_equals_by_name": true,
+  "basic/count[0]/electrical_members": [
+    1
+  ],
+  "basic/count[0]/load_exists": true,
+  "basic/count[0]/loads_match": true,
+  "basic/count[0]/net_id": 1,
+  "basic/count[0]/partitions": [
+    [
+      0,
+      0
+    ]
+  ],
+  "basic/count[0]/reduced_matches": true,
+  "basic/count[0]/source_mask": 1,
+  "basic/count[1]/electrical_members": [
+    3
+  ],
+  "basic/count[1]/load_exists": true,
+  "basic/count[1]/loads_match": true,
+  "basic/count[1]/net_id": 3,
+  "basic/count[1]/partitions": [
+    [
+      0,
+      0
+    ]
+  ],
+  "basic/count[1]/reduced_matches": true,
+  "basic/count[1]/source_mask": 1,
+  "basic/count[2]/electrical_members": [
+    6
+  ],
+  "basic/count[2]/load_exists": true,
+  "basic/count[2]/loads_match": true,
+  "basic/count[2]/net_id": 6,
+  "basic/count[2]/partitions": [
+    [
+      0,
+      0
+    ]
+  ],
+  "basic/count[2]/reduced_matches": true,
+  "basic/count[2]/source_mask": 1,
+  "basic/count[3]/electrical_members": [
+    9
+  ],
+  "basic/count[3]/load_exists": true,
+  "basic/count[3]/loads_match": true,
+  "basic/count[3]/net_id": 9,
+  "basic/count[3]/partitions": [
+    [
+      0,
+      0
+    ]
+  ],
+  "basic/count[3]/reduced_matches": true,
+  "basic/count[3]/source_mask": 1,
+  "basic/file_stats": {
+    "broken_net_count": 0,
+    "cap_count": 40,
+    "chunk_count": 1,
+    "coupling_cap_count": 13,
+    "dropped_record_count": 0,
+    "failed_chunk_count": 0,
+    "hit_count": 15,
+    "multi_value_net_count": 0,
+    "name_map_miss_count": 0,
+    "net_count": 16,
+    "net_name_miss_count": 1,
+    "pg_net_skip_count": 0,
+    "pnet_skip_count": 0,
+    "res_count": 14,
+    "rnet_count": 1,
+    "strip_miss_count": 0,
+    "unplaced_instance_count": 0,
+    "unrouted_net_count": 0,
+    "value_count_max": 1,
+    "value_index_fallback_count": 0
+  },
+  "basic/file_stats_hit_1": true,
+  "basic/files_count": 1,
+  "basic/ghost_net_load": null,
+  "basic/internal_cap_unit_1ff": true,
+  "basic/internal_res_unit_1ohm": true,
+  "basic/n_and/electrical_members": [
+    15
+  ],
+  "basic/n_and/load_exists": true,
+  "basic/n_and/loads_match": true,
+  "basic/n_and/net_id": 15,
+  "basic/n_and/partitions": [
+    [
+      0,
+      0
+    ]
+  ],
+  "basic/n_and/reduced_matches": true,
+  "basic/n_and/source_mask": 1,
+  "basic/n_b1/electrical_members": [
+    5
+  ],
+  "basic/n_b1/load_exists": true,
+  "basic/n_b1/loads_match": true,
+  "basic/n_b1/net_id": 5,
+  "basic/n_b1/partitions": [
+    [
+      0,
+      0
+    ]
+  ],
+  "basic/n_b1/reduced_matches": true,
+  "basic/n_b1/source_mask": 1,
+  "basic/n_b2/electrical_members": [
+    8
+  ],
+  "basic/n_b2/load_exists": true,
+  "basic/n_b2/loads_match": true,
+  "basic/n_b2/net_id": 8,
+  "basic/n_b2/partitions": [
+    [
+      0,
+      0
+    ]
+  ],
+  "basic/n_b2/reduced_matches": true,
+  "basic/n_b2/source_mask": 1,
+  "basic/n_cnt0_d/electrical_members": [
+    2
+  ],
+  "basic/n_cnt0_d/load_exists": true,
+  "basic/n_cnt0_d/loads_match": true,
+  "basic/n_cnt0_d/net_id": 2,
+  "basic/n_cnt0_d/partitions": [
+    [
+      0,
+      0
+    ]
+  ],
+  "basic/n_cnt0_d/reduced_matches": true,
+  "basic/n_cnt0_d/source_mask": 1,
+  "basic/n_cnt1_d/electrical_members": [
+    4
+  ],
+  "basic/n_cnt1_d/load_exists": true,
+  "basic/n_cnt1_d/loads_match": true,
+  "basic/n_cnt1_d/net_id": 4,
+  "basic/n_cnt1_d/partitions": [
+    [
+      0,
+      0
+    ]
+  ],
+  "basic/n_cnt1_d/reduced_matches": true,
+  "basic/n_cnt1_d/source_mask": 1,
+  "basic/n_cnt2_d/electrical_members": [
+    7
+  ],
+  "basic/n_cnt2_d/load_exists": true,
+  "basic/n_cnt2_d/loads_match": true,
+  "basic/n_cnt2_d/net_id": 7,
+  "basic/n_cnt2_d/partitions": [
+    [
+      0,
+      0
+    ]
+  ],
+  "basic/n_cnt2_d/reduced_matches": true,
+  "basic/n_cnt2_d/source_mask": 1,
+  "basic/n_cnt3_d/electrical_members": [
+    10
+  ],
+  "basic/n_cnt3_d/load_exists": true,
+  "basic/n_cnt3_d/loads_match": true,
+  "basic/n_cnt3_d/net_id": 10,
+  "basic/n_cnt3_d/partitions": [
+    [
+      0,
+      0
+    ]
+  ],
+  "basic/n_cnt3_d/reduced_matches": true,
+  "basic/n_cnt3_d/source_mask": 1,
+  "basic/n_div_d/electrical_members": [
+    14
+  ],
+  "basic/n_div_d/load_exists": true,
+  "basic/n_div_d/loads_match": true,
+  "basic/n_div_d/net_id": 14,
+  "basic/n_div_d/partitions": [
+    [
+      0,
+      0
+    ]
+  ],
+  "basic/n_div_d/reduced_matches": true,
+  "basic/n_div_d/source_mask": 1,
+  "basic/n_xor_load": null,
+  "basic/part00/entries_exact": true,
+  "basic/part00/entries_net_id_order": true,
+  "basic/part00_size": 15,
+  "basic/partition_list": [
+    [
+      0,
+      0
+    ]
+  ],
+  "basic/rn/electrical_members": [
+    12
+  ],
+  "basic/rn/load_exists": true,
+  "basic/rn/loads_match": true,
+  "basic/rn/net_id": 12,
+  "basic/rn/partitions": [
+    [
+      0,
+      0
+    ]
+  ],
+  "basic/rn/reduced_matches": true,
+  "basic/rn/source_mask": 1,
+  "basic/source_suffix": true,
+  "basic/summary_stats": {
+    "cap_mismatch_count": 1,
+    "covered_net_count": 15,
+    "cross_scope_sum_count": 0,
+    "electrical_net_count": 0,
+    "invalid_binding_count": 0,
+    "rnet_count": 1,
+    "routed_signal_net_count": 16,
+    "same_scope_overlap_count": 0,
+    "source_mask_overflow_count": 0,
+    "uncovered_instance_count": 1,
+    "uncovered_net_count": 1,
+    "zero_cap_instance_count": 1
+  },
+  "batch/spmg_msg_deltas": {
+    "1": 6,
+    "10": 2,
+    "11": 1,
+    "12": 2,
+    "13": 6,
+    "14": 2,
+    "2": 0,
+    "3": 1,
+    "4": 1,
+    "5": 7,
+    "6": 3,
+    "7": 0,
+    "8": 0,
+    "9": 0
+  },
+  "design_grid/partition_list": [
+    [
+      0,
+      0
+    ],
+    [
+      2,
+      0
+    ]
+  ],
+  "design_pg/ground_count": 1,
+  "design_pg/power_count": 1,
+  "design_pg/vdd_connection_count": 14,
+  "design_pg/vdd_exists": true,
+  "det/det_a_object_count": true,
+  "det/det_a_objects_identical": true,
+  "det/det_b_object_count": true,
+  "det/det_b_objects_identical": true,
+  "dialect/c_unit_ff_match": true,
+  "dialect/clk_div2/load_exists": true,
+  "dialect/clk_div2/loads_match": true,
+  "dialect/count0_load": null,
+  "dialect/count[1]/load_exists": true,
+  "dialect/count[1]/loads_match": true,
+  "dialect/count[3]/load_exists": true,
+  "dialect/count[3]/loads_match": true,
+  "dialect/file_stats": {
+    "broken_net_count": 1,
+    "cap_count": 20,
+    "chunk_count": 1,
+    "coupling_cap_count": 5,
+    "dropped_record_count": 0,
+    "failed_chunk_count": 0,
+    "hit_count": 8,
+    "multi_value_net_count": 2,
+    "name_map_miss_count": 1,
+    "net_count": 8,
+    "net_name_miss_count": 0,
+    "pg_net_skip_count": 0,
+    "pnet_skip_count": 2,
+    "res_count": 2,
+    "rnet_count": 0,
+    "strip_miss_count": 0,
+    "unplaced_instance_count": 0,
+    "unrouted_net_count": 0,
+    "value_count_max": 3,
+    "value_index_fallback_count": 0
+  },
+  "dialect/file_stats_hit_1": true,
+  "dialect/n_and/load_exists": true,
+  "dialect/n_and/loads_match": true,
+  "dialect/n_b1/load_exists": true,
+  "dialect/n_b1/loads_match": true,
+  "dialect/n_b2/load_exists": true,
+  "dialect/n_b2/loads_match": true,
+  "dialect/n_cnt0_d/load_exists": true,
+  "dialect/n_cnt0_d/loads_match": true,
+  "dialect/n_div_d/load_exists": true,
+  "dialect/n_div_d/loads_match": true,
+  "dialect/n_xor_load": null,
+  "dialect/summary_stats": {
+    "cap_mismatch_count": 0,
+    "covered_net_count": 8,
+    "cross_scope_sum_count": 0,
+    "electrical_net_count": 0,
+    "invalid_binding_count": 0,
+    "rnet_count": 0,
+    "routed_signal_net_count": 16,
+    "same_scope_overlap_count": 0,
+    "source_mask_overflow_count": 0,
+    "uncovered_instance_count": 13,
+    "uncovered_net_count": 8,
+    "zero_cap_instance_count": 0
+  },
+  "flows/build_spef_db_registered": true,
+  "grid/cap_mismatch_max_rel_match": true,
+  "grid/clk/partitions_both": true,
+  "grid/clk_div2/partitions_both": true,
+  "grid/clk_div2_values_same_both_parts": true,
+  "grid/clk_values_same_both_parts": true,
+  "grid/count[0]/partitions_both": true,
+  "grid/count[0]_values_same_both_parts": true,
+  "grid/count[1]/partitions_both": true,
+  "grid/count[1]_values_same_both_parts": true,
+  "grid/count[2]/partitions_both": true,
+  "grid/count[2]_values_same_both_parts": true,
+  "grid/count[3]/partitions_both": true,
+  "grid/count[3]_values_same_both_parts": true,
+  "grid/n_and/partitions_both": true,
+  "grid/n_and_values_same_both_parts": true,
+  "grid/n_b1/partitions_only_00": true,
+  "grid/n_b2/partitions_only_00": true,
+  "grid/n_cnt0_d/partitions_only_00": true,
+  "grid/n_cnt1_d/partitions_only_00": true,
+  "grid/n_cnt2_d/partitions_only_00": true,
+  "grid/n_cnt3_d/partitions_both": true,
+  "grid/n_cnt3_d_values_same_both_parts": true,
+  "grid/n_div_d/partitions_both": true,
+  "grid/n_div_d_values_same_both_parts": true,
+  "grid/n_xor_load": null,
+  "grid/part00/entries_exact": true,
+  "grid/part00/entries_net_id_order": true,
+  "grid/part00_size": 15,
+  "grid/part20/entries_exact": true,
+  "grid/part20/entries_net_id_order": true,
+  "grid/part20_size": 10,
+  "grid/partition_list": [
+    [
+      0,
+      0
+    ],
+    [
+      2,
+      0
+    ]
+  ],
+  "grid/rn/partitions_both": true,
+  "grid/rn_values_same_both_parts": true,
+  "grid/summary_stats": {
+    "cap_mismatch_count": 2,
+    "covered_net_count": 22,
+    "cross_scope_sum_count": 0,
+    "electrical_net_count": 0,
+    "invalid_binding_count": 0,
+    "rnet_count": 1,
+    "routed_signal_net_count": 23,
+    "same_scope_overlap_count": 0,
+    "source_mask_overflow_count": 0,
+    "uncovered_instance_count": 1,
+    "uncovered_net_count": 1,
+    "zero_cap_instance_count": 1
+  },
+  "gzip/c_unit_ff_close": true,
+  "gzip/file_fields_equal": true,
+  "gzip/files_count_matches_basic": true,
+  "gzip/partitions_byte_identical": true,
+  "gzip/scratch_dir_cleaned": true,
+  "gzip/source_files_differ": true,
+  "gzip/summary_fields_equal": true,
+  "idx/c_unit_ff_match": true,
+  "idx/cap_mismatch_max_rel_match": true,
+  "idx/chunk_size_mb": 256,
+  "idx/file_stats": {
+    "broken_net_count": 1,
+    "cap_count": 20,
+    "chunk_count": 1,
+    "coupling_cap_count": 5,
+    "dropped_record_count": 0,
+    "failed_chunk_count": 0,
+    "hit_count": 8,
+    "multi_value_net_count": 2,
+    "name_map_miss_count": 1,
+    "net_count": 8,
+    "net_name_miss_count": 0,
+    "pg_net_skip_count": 0,
+    "pnet_skip_count": 2,
+    "res_count": 2,
+    "rnet_count": 0,
+    "strip_miss_count": 0,
+    "unplaced_instance_count": 0,
+    "unrouted_net_count": 0,
+    "value_count_max": 3,
+    "value_index_fallback_count": 25
+  },
+  "idx/file_stats_hit_1": true,
+  "idx/n_and/load_exists": true,
+  "idx/n_and/loads_match": true,
+  "idx/n_b2/load_exists": true,
+  "idx/n_b2/loads_match": true,
+  "idx/summary_stats": {
+    "cap_mismatch_count": 1,
+    "covered_net_count": 8,
+    "cross_scope_sum_count": 0,
+    "electrical_net_count": 0,
+    "invalid_binding_count": 0,
+    "rnet_count": 0,
+    "routed_signal_net_count": 16,
+    "same_scope_overlap_count": 0,
+    "source_mask_overflow_count": 0,
+    "uncovered_instance_count": 13,
+    "uncovered_net_count": 8,
+    "zero_cap_instance_count": 0
+  },
+  "idx/value_index": 2,
+  "pg/c_unit_ff_match": true,
+  "pg/clk/load_exists": true,
+  "pg/clk/loads_match": true,
+  "pg/file_stats": {
+    "broken_net_count": 0,
+    "cap_count": 4,
+    "chunk_count": 1,
+    "coupling_cap_count": 1,
+    "dropped_record_count": 0,
+    "failed_chunk_count": 0,
+    "hit_count": 1,
+    "multi_value_net_count": 0,
+    "name_map_miss_count": 0,
+    "net_count": 3,
+    "net_name_miss_count": 0,
+    "pg_net_skip_count": 2,
+    "pnet_skip_count": 0,
+    "res_count": 0,
+    "rnet_count": 0,
+    "strip_miss_count": 0,
+    "unplaced_instance_count": 0,
+    "unrouted_net_count": 0,
+    "value_count_max": 1,
+    "value_index_fallback_count": 0
+  },
+  "pg/file_stats_hit_1": true,
+  "pg/summary_stats": {
+    "cap_mismatch_count": 0,
+    "covered_net_count": 1,
+    "cross_scope_sum_count": 0,
+    "electrical_net_count": 0,
+    "invalid_binding_count": 0,
+    "rnet_count": 0,
+    "routed_signal_net_count": 16,
+    "same_scope_overlap_count": 0,
+    "source_mask_overflow_count": 0,
+    "uncovered_instance_count": 14,
+    "uncovered_net_count": 15,
+    "zero_cap_instance_count": 0
+  },
+  "pg/vdd_load": null,
+  "pg/vss_load": null,
+  "rnet/c_unit_ff_match": true,
+  "rnet/clk/load_exists": true,
+  "rnet/clk/loads_match": true,
+  "rnet/clk/reduced_matches": true,
+  "rnet/clk_div2/load_exists": true,
+  "rnet/clk_div2/loads_match": true,
+  "rnet/clk_div2/reduced_matches": true,
+  "rnet/count[0]/load_exists": true,
+  "rnet/count[0]/loads_match": true,
+  "rnet/count[0]/reduced_matches": true,
+  "rnet/file_stats": {
+    "broken_net_count": 0,
+    "cap_count": 6,
+    "chunk_count": 1,
+    "coupling_cap_count": 2,
+    "dropped_record_count": 0,
+    "failed_chunk_count": 0,
+    "hit_count": 8,
+    "multi_value_net_count": 1,
+    "name_map_miss_count": 0,
+    "net_count": 8,
+    "net_name_miss_count": 0,
+    "pg_net_skip_count": 0,
+    "pnet_skip_count": 0,
+    "res_count": 0,
+    "rnet_count": 4,
+    "strip_miss_count": 0,
+    "unplaced_instance_count": 0,
+    "unrouted_net_count": 0,
+    "value_count_max": 3,
+    "value_index_fallback_count": 0
+  },
+  "rnet/file_stats_hit_1": true,
+  "rnet/n_and/load_exists": true,
+  "rnet/n_and/loads_match": true,
+  "rnet/n_and/reduced_matches": true,
+  "rnet/n_b1/load_exists": true,
+  "rnet/n_b1/loads_match": true,
+  "rnet/n_b1/reduced_matches": true,
+  "rnet/n_div_d/load_exists": true,
+  "rnet/n_div_d/loads_match": true,
+  "rnet/n_div_d/reduced_matches": true,
+  "rnet/n_xor/load_exists": true,
+  "rnet/n_xor/loads_match": true,
+  "rnet/n_xor/reduced_matches": true,
+  "rnet/rn/load_exists": true,
+  "rnet/rn/loads_match": true,
+  "rnet/rn/reduced_matches": true,
+  "rnet/summary_stats": {
+    "cap_mismatch_count": 0,
+    "covered_net_count": 8,
+    "cross_scope_sum_count": 0,
+    "electrical_net_count": 0,
+    "invalid_binding_count": 0,
+    "rnet_count": 4,
+    "routed_signal_net_count": 16,
+    "same_scope_overlap_count": 0,
+    "source_mask_overflow_count": 0,
+    "uncovered_instance_count": 12,
+    "uncovered_net_count": 8,
+    "zero_cap_instance_count": 0
+  },
+  "unrouted/c_unit_ff_match": true,
+  "unrouted/file_stats": {
+    "broken_net_count": 0,
+    "cap_count": 40,
+    "chunk_count": 1,
+    "coupling_cap_count": 13,
+    "dropped_record_count": 0,
+    "failed_chunk_count": 0,
+    "hit_count": 0,
+    "multi_value_net_count": 0,
+    "name_map_miss_count": 0,
+    "net_count": 16,
+    "net_name_miss_count": 1,
+    "pg_net_skip_count": 0,
+    "pnet_skip_count": 0,
+    "res_count": 14,
+    "rnet_count": 1,
+    "strip_miss_count": 0,
+    "unplaced_instance_count": 0,
+    "unrouted_net_count": 15,
+    "value_count_max": 1,
+    "value_index_fallback_count": 0
+  },
+  "unrouted/file_stats_hit_1": true,
+  "unrouted/part00_size": 0,
+  "unrouted/summary_stats": {
+    "cap_mismatch_count": 0,
+    "covered_net_count": 0,
+    "cross_scope_sum_count": 0,
+    "electrical_net_count": 0,
+    "invalid_binding_count": 0,
+    "rnet_count": 1,
+    "routed_signal_net_count": 0,
+    "same_scope_overlap_count": 0,
+    "source_mask_overflow_count": 0,
+    "uncovered_instance_count": 0,
+    "uncovered_net_count": 0,
+    "zero_cap_instance_count": 0
+  }
+}

@@ -1,0 +1,191 @@
+{
+  "s10_chk/partition_ids": {
+    "chk0": 0,
+    "chk1": 1
+  },
+  "s10_msg/dsgn0024_present": true,
+  "s10_msg/no_DSGN::0019": true,
+  "s10_msg/no_DSGN::0020": true,
+  "s10_msg/no_DSGN::0021": true,
+  "s10_msg/no_DSGN::0022": true,
+  "s10_msg/no_DSGN::0023": true,
+  "s10_verify/coverage_gap": "",
+  "s10_verify/density_totals": {
+    "instance": 3,
+    "metal": 8,
+    "via": 0
+  },
+  "s10_verify/density_variance": "",
+  "s10_verify/instance_ids_actual": 3,
+  "s10_verify/instance_ids_duplicates": 0,
+  "s10_verify/instance_ids_expected": 3,
+  "s10_verify/instance_ids_holes": 0,
+  "s10_verify/namemap_inconsistency": "",
+  "s10_verify/net_ids_actual": 1,
+  "s10_verify/net_ids_expected": 1,
+  "s10_verify/net_ids_holes": 0,
+  "s10_verify/partition_count": 2,
+  "s10_verify/total_connections": 3,
+  "s10_verify/total_crossing_nets": 1,
+  "s10_verify/total_geometry_entries": 3,
+  "s10_verify/total_instances": 4,
+  "s10_verify/total_nets": 1,
+  "s10_verify/total_primary": 3,
+  "s10_verify/union_inconsistency": "",
+  "s10_verify/via_ids_holes": 0,
+  "s8_density/grid": {
+    "cols": 4,
+    "rows": 2
+  },
+  "s8_density/metal_total": 8,
+  "s8_density/total_count": 3,
+  "s8_density/via_total": 0,
+  "s8_parts/p0_core_rect": [
+    0,
+    0,
+    2000,
+    2000
+  ],
+  "s8_parts/p0_extend_rect": [
+    -2147483648,
+    -2147483648,
+    2140,
+    2147483647
+  ],
+  "s8_parts/p1_core_rect": [
+    2000,
+    0,
+    4000,
+    2000
+  ],
+  "s8_parts/p1_extend_rect": [
+    1860,
+    -2147483648,
+    2147483647,
+    2147483647
+  ],
+  "s8_parts/partition_count": 2,
+  "s8_parts/partition_ids": {
+    "p0": 0,
+    "p1": 1
+  },
+  "s9/partition_list": [
+    [
+      0,
+      0
+    ],
+    [
+      1,
+      0
+    ]
+  ],
+  "s9_alpha/def_aggregate_threshold": 67108864,
+  "s9_geo/net0_obs_count": 1,
+  "s9_geo/net0_wire_count": 0,
+  "s9_geo/obs0_layer_id": 2,
+  "s9_geo/obs0_not_primary": true,
+  "s9_geo/obs0_rect": [
+    100,
+    100,
+    300,
+    400
+  ],
+  "s9_geo/p0_net1_count": 1,
+  "s9_geo/p0_net1_crossing": true,
+  "s9_geo/p0_net1_exists": true,
+  "s9_geo/p0_net1_layer_id": 0,
+  "s9_geo/p0_net1_not_obs": true,
+  "s9_geo/p0_net1_rect": [
+    -35,
+    965,
+    4035,
+    1035
+  ],
+  "s9_geo/p1_net0_entry_count": 0,
+  "s9_geo/p1_net1_count": 1,
+  "s9_geo/p1_net1_crossing": true,
+  "s9_geo/p1_net1_exists": true,
+  "s9_geo/p1_net1_not_obs": true,
+  "s9_geo/pg0_net_count": 0,
+  "s9_geo/pg1_net_count": 0,
+  "s9_iconn/p0_inv1_conns": [
+    [
+      1,
+      0
+    ]
+  ],
+  "s9_iconn/p0_size": 1,
+  "s9_iconn/p1_inv1_conns": [],
+  "s9_iconn/p1_size": 0,
+  "s9_inst/inv1_p0_pos": [
+    100,
+    100
+  ],
+  "s9_inst/inv1_p0_primary": true,
+  "s9_inst/inv3_p0_not_primary": true,
+  "s9_inst/inv3_p1_pos": [
+    2100,
+    100
+  ],
+  "s9_inst/inv3_p1_primary": true,
+  "s9_inst/p0_ids": [
+    1,
+    2,
+    3
+  ],
+  "s9_inst/p0_size": 3,
+  "s9_inst/p1_ids": [
+    3
+  ],
+  "s9_inst/p1_size": 1,
+  "s9_nets/p0_connections": [
+    [
+      1,
+      0
+    ]
+  ],
+  "s9_nets/p0_ids": [
+    1
+  ],
+  "s9_nets/p0_net_exists": true,
+  "s9_nets/p0_net_id": 1,
+  "s9_nets/p0_receiver_flags": [
+    true
+  ],
+  "s9_nets/p0_size": 1,
+  "s9_nets/p0_use": "SIGNAL",
+  "s9_nets/p1_connections": [
+    [
+      1,
+      0
+    ]
+  ],
+  "s9_nets/p1_ids": [
+    1
+  ],
+  "s9_nets/p1_net_exists": true,
+  "s9_nets/p1_net_id": 1,
+  "s9_nets/p1_receiver_flags": [
+    true
+  ],
+  "s9_nets/p1_size": 1,
+  "s9_nets/p1_use": "SIGNAL",
+  "s9_nets/part_ids": {
+    "nets0": 0,
+    "nets1": 1
+  },
+  "s9_nets/pg0_ids": [],
+  "s9_nets/pg0_size": 0,
+  "s9_nets/pg1_ids": [],
+  "s9_nets/pg1_size": 0,
+  "s9_nets/pg_part_ids": {
+    "nets_pg0": 0,
+    "nets_pg1": 1
+  },
+  "s9_pg/ground_count": 0,
+  "s9_pg/net0_not_pg": true,
+  "s9_pg/net1_not_ground": true,
+  "s9_pg/net1_not_pg": true,
+  "s9_pg/net1_not_power": true,
+  "s9_pg/power_count": 0
+}

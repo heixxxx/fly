@@ -23,6 +23,7 @@ from log import INFO
 from fly import get_config, launch_workers
 from fly.runtime import get_agent
 from emir import EMIRProject
+from test import record
 
 DATA = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data",
                     "timing")
@@ -45,8 +46,10 @@ assert get_agent().wait_workers_registered(timeout=60), "workers connect"
 INFO("  2 workers connected (user-managed)")
 
 proj = EMIRProject(PROJ_PATH)
-assert "build_timing_db" in proj.list_flows()
-INFO("[OK] build_timing_db registered on EMIRProject")
+# 原断言：assert "build_timing_db" in proj.list_flows()
+record("flows/build_timing_db_registered", "build_timing_db" in proj.list_flows(),
+       detail=sorted(proj.list_flows()))
+INFO("[DONE] build_timing_db registered on EMIRProject")
 
 # ── 前置：lib db + design db（直接前驱，显式传参）─────────────────────
 TECH_LEF = os.path.join(DATA, "NangateOpenCellLibrary.tech.lef")
@@ -68,8 +71,9 @@ INFO("[WAIT] design db frozen")
 # build_meta 元数据正式对象（§19 批次：freeze 前单点写——def_count = def
 # 文件数；读侧确定性消费的锚点）
 from emir.design import DesignDb
-assert design_db.read_object(DesignDb.BUILD_META_OBJ) == {"def_count": 1}
-INFO("[OK] build_meta: def_count=1")
+# 原断言：assert design_db.read_object(DesignDb.BUILD_META_OBJ) == {"def_count": 1}
+record("meta/build_meta", design_db.read_object(DesignDb.BUILD_META_OBJ))
+INFO("[DONE] build_meta: def_count=1")
 
 # ── 场景 1：三维度 TWF（网络/引脚/混合）──────────────────────────────
 TIMING_FILES = {
@@ -97,49 +101,84 @@ for tag, fname in TIMING_FILES.items():
     timing_dbs[tag] = tdb
     s = tdb.load_timing_summary_obj()
     entry, hit, dangling, skip_pin = EXPECT[tag]
-    assert s.total_entry_count == entry, \
-        f"{tag}: entry={s.total_entry_count} expect {entry}"
-    assert s.total_hit_count == hit, \
-        f"{tag}: hit={s.total_hit_count} expect {hit}"
-    assert s.dangling_net_count == dangling, \
-        f"{tag}: dangling={s.dangling_net_count} expect {dangling}"
-    assert s.skipped_pin_count == skip_pin, \
-        f"{tag}: skip_pin={s.skipped_pin_count} expect {skip_pin}"
-    assert s.cross_file_conflict_count == 0, "single file has no conflict"
-    assert len(s.files) == 1 and s.files[0].source_file.endswith(fname), \
-        "per-file stats traceable"
-    assert abs(s.files[0].time_scale_sec - 1e-9) < 1e-12
-    INFO(f"[OK] timing_{tag}: entry={entry} hit={hit} "
+    # 原断言：assert s.total_entry_count == entry, \
+    record(f"sc1/{tag}/entry_count", s.total_entry_count)
+    # 原断言：assert s.total_hit_count == hit, \
+    record(f"sc1/{tag}/hit_count", s.total_hit_count)
+    # 原断言：assert s.dangling_net_count == dangling, \
+    record(f"sc1/{tag}/dangling_net_count", s.dangling_net_count)
+    # 原断言：assert s.skipped_pin_count == skip_pin, \
+    record(f"sc1/{tag}/skipped_pin_count", s.skipped_pin_count)
+    # 原断言：assert s.cross_file_conflict_count == 0, "single file has no conflict"
+    record(f"sc1/{tag}/cross_file_conflict_count", s.cross_file_conflict_count)
+    # 原断言：assert len(s.files) == 1 and s.files[0].source_file.endswith(fname), \
+    record(f"sc1/{tag}/files_1_and_suffix",
+           len(s.files) == 1 and s.files[0].source_file.endswith(fname),
+           detail=[f.source_file for f in s.files])
+    assert len(s.files) >= 1  # 保留：守卫（后面 s.files[0] 按下标取，越界在 C++ 侧是未定义行为）
+    # 原断言：assert abs(s.files[0].time_scale_sec - 1e-9) < 1e-12
+    record(f"sc1/{tag}/time_scale_1ns",
+           abs(s.files[0].time_scale_sec - 1e-9) < 1e-12,
+           detail=f"{s.files[0].time_scale_sec!r}")
+    INFO(f"[DONE] timing_{tag}: entry={entry} hit={hit} "
          f"dangling={dangling} skip_pin={skip_pin}")
 
 # 时钟表（三库同源：clk 周期 1.0 ns）
 clocks = timing_dbs["net"].load_timing_clocks_obj()
-assert clocks.size == 1 and clocks.entry_at(0).name == "clk"
-assert abs(clocks.entry_at(0).period - 1.0) < 1e-9
-assert abs(clocks.entry_at(0).negedge - 0.5) < 1e-9
-INFO("[OK] clocks table: clk period=1.0 negedge=0.5")
+# 原断言：assert clocks.size == 1 and clocks.entry_at(0).name == "clk"
+record("sc1_clocks/size", clocks.size)
+assert clocks.size >= 1  # 保留：守卫（后面 clocks.entry_at(0) 按下标取，越界在 C++ 侧是未定义行为）
+# 原断言：assert clocks.size == 1 and clocks.entry_at(0).name == "clk"
+record("sc1_clocks/entry0_name", clocks.entry_at(0).name)
+# 原断言：assert abs(clocks.entry_at(0).period - 1.0) < 1e-9
+record("sc1_clocks/entry0_period_1ns",
+       abs(clocks.entry_at(0).period - 1.0) < 1e-9,
+       detail=f"{clocks.entry_at(0).period!r}")
+# 原断言：assert abs(clocks.entry_at(0).negedge - 0.5) < 1e-9
+record("sc1_clocks/entry0_negedge_05ns",
+       abs(clocks.entry_at(0).negedge - 0.5) < 1e-9,
+       detail=f"{clocks.entry_at(0).negedge!r}")
+INFO("[DONE] clocks table: clk period=1.0 negedge=0.5")
 
 # 分区对象 + debug get_timing 点查（u_cb = 实例 global id 1，clk 组 2 pins）
 from emir.timing import iter_timing_partition, load_partition_timing
-assert iter_timing_partition(timing_dbs["pins"]) == [(0, 0)]
+# 原断言：assert iter_timing_partition(timing_dbs["pins"]) == [(0, 0)]
+record("sc1_pins/partition_list",
+       list(iter_timing_partition(timing_dbs["pins"])))
 part = load_partition_timing(timing_dbs["pins"], 0, 0)
-assert part.size == 5, f"part instances={part.size} expect 5"
+# 原断言：assert part.size == 5, f"part instances={part.size} expect 5"
+record("sc1_pins/part_size", part.size)
 gid_cb = design_db.convert_to_id("inst", "u_cb")
-assert gid_cb == 1
+# 原断言：assert gid_cb == 1
+record("sc1_pins/gid_cb", gid_cb)
 info = timing_dbs["pins"].get_timing(gid_cb)
-assert info is not None and info["instance_id"] == gid_cb
-assert info["clock"] == "clk", f"clock={info['clock']}"
-assert info["partition"] == (0, 0)
+# 原断言：assert info is not None and info["instance_id"] == gid_cb
+record("sc1_pins/info_exists", info is not None)
+assert info is not None  # 保留：守卫（后面 info["instance_id"] 等按下标取）
+# 原断言：assert info is not None and info["instance_id"] == gid_cb
+record("sc1_pins/info_instance_id", info["instance_id"] == gid_cb,
+       detail=(info["instance_id"], gid_cb))
+# 原断言：assert info["clock"] == "clk", f"clock={info['clock']}"
+record("sc1_pins/info_clock", info["clock"])
+# 原断言：assert info["partition"] == (0, 0)
+record("sc1_pins/info_partition", info["partition"])
 pin_names = sorted(p["pin_name"] for p in info["pins"])
-assert pin_names == ["A", "Z"], f"pins={pin_names}"
 by_name = {p["pin_name"]: p for p in info["pins"]}
-# u_cb/A 到达可读（OpenSTA 数值——生成器已知局限形态见 data/timing README）
-assert by_name["A"]["rise_arrival"] is not None
-assert by_name["A"]["is_constant"] is False
-# 未命中族显式 None（UNPLACED / 无条目实例 / 坏 id / 坏名）
-assert timing_dbs["pins"].get_timing(99999) is None
-assert timing_dbs["pins"].get_timing("no_such_inst") is None
-INFO("[OK] partitions + debug get_timing point query")
+# 原断言：assert pin_names == ["A", "Z"], f"pins={pin_names}"
+record("sc1_pins/pin_names", pin_names)
+# 原断言：assert by_name["A"]["rise_arrival"] is not None
+record("sc1_pins/a_rise_arrival_readable",
+       by_name["A"]["rise_arrival"] is not None)
+# 原断言：assert by_name["A"]["is_constant"] is False
+record("sc1_pins/a_not_constant", by_name["A"]["is_constant"] is False)
+# 原断言：assert timing_dbs["pins"].get_timing(99999) is None
+record("sc1_pins/bad_id_miss", timing_dbs["pins"].get_timing(99999))
+# 非守卫：仅检查坏 id 未命中，返回值无后续解引用
+# 原断言：assert timing_dbs["pins"].get_timing("no_such_inst") is None
+record("sc1_pins/no_such_inst_miss",
+       timing_dbs["pins"].get_timing("no_such_inst"))
+# 非守卫：仅检查无条目实例未命中，返回值无后续解引用
+INFO("[DONE] partitions + debug get_timing point query")
 
 # ── 场景 2：层级设计块绑定（block_inst / block_cell / strip_prefix /
 #    纯路径全层级名；qa/emir/data/design 两层树）────────────────────────
@@ -155,14 +194,16 @@ design_blk = proj.build_design_db(
 )
 assert proj.wait_frozen("design_blk", timeout=300), "design_blk should freeze"
 # 两份 DEF → def_count=2（build_meta 锚伴生对象全集）
-assert design_blk.read_object(DesignDb.BUILD_META_OBJ) == {"def_count": 2}
-INFO("[OK] build_meta: def_count=2 (two DEFs)")
+# 原断言：assert design_blk.read_object(DesignDb.BUILD_META_OBJ) == {"def_count": 2}
+record("sc2/meta_blk", design_blk.read_object(DesignDb.BUILD_META_OBJ))
+INFO("[DONE] build_meta: def_count=2 (two DEFs)")
 
 # 全局 id（层级树 net 区间含空洞位口径）：top1=1 top3=3 u1=5；
 # 网 n_top=1 n1=3 n2=4；块端口 pin PIN_IN
 gid_top3 = design_blk.convert_to_id("inst", "top3")
 gid_u1 = design_blk.convert_to_id("inst", "top3/u1")
-assert (gid_top3, gid_u1) == (3, 5), (gid_top3, gid_u1)
+# 原断言：assert (gid_top3, gid_u1) == (3, 5), (gid_top3, gid_u1)
+record("sc2/gids", {"top3": gid_top3, "u1": gid_u1})
 
 # 2a. block_inst 块实例绑定（§7.1 局部名偏移换算 + 端口条目归块实例自身）
 # 条目：u1/ZN(5,ZN) ✓ u1/A(5,A) ✓ n2(网→(5,ZN) 同源合一) n1(输入端口
@@ -181,12 +222,18 @@ tdb_inst = proj.build_timing_db(
     design_db=design_blk)
 assert proj.wait_frozen("t_blk_inst", timeout=300)
 s = tdb_inst.load_timing_summary_obj()
-assert (s.total_entry_count, s.total_hit_count) == (5, 4), \
-    (s.total_entry_count, s.total_hit_count)
-assert s.dangling_net_count == 1, s.dangling_net_count
-assert s.net_name_miss_count == 0 and s.skipped_pin_count == 0
-assert abs(s.files[0].time_scale_sec - 1e-9) < 1e-12
-INFO("[OK] block_inst binding: entry=5 hit=4 dangling=1 (input-port "
+# 原断言：assert (s.total_entry_count, s.total_hit_count) == (5, 4), \
+record("sc2a/summary", {"entry": s.total_entry_count,
+                        "hit": s.total_hit_count})
+# 原断言：assert s.dangling_net_count == 1, s.dangling_net_count
+record("sc2a/dangling_net_count", s.dangling_net_count)
+# 原断言：assert s.net_name_miss_count == 0 and s.skipped_pin_count == 0
+record("sc2a/miss_counts", {"net_name_miss": s.net_name_miss_count,
+                            "skipped_pin": s.skipped_pin_count})
+# 原断言：assert abs(s.files[0].time_scale_sec - 1e-9) < 1e-12
+record("sc2a/time_scale_1ns", abs(s.files[0].time_scale_sec - 1e-9) < 1e-12,
+       detail=f"{s.files[0].time_scale_sec!r}")
+INFO("[DONE] block_inst binding: entry=5 hit=4 dangling=1 (input-port "
      "driven n1 attaches to top3/PIN_IN)")
 
 # 2a-miss. 绑定目标未命中条目级兜底（2026-09-17 裁定：单文件绑定无效 →
@@ -204,23 +251,28 @@ tdb_miss = proj.build_timing_db(
                    "block_inst": "top3"}],
     design_db=design_blk)
 _submit_secs = time.time() - _t0
-assert _submit_secs < 30, f"submit must return immediately, took {_submit_secs}s"
-INFO("[OK] submit returned immediately (P2-3 async semantics)")
+# 原断言：assert _submit_secs < 30, f"submit must return immediately, took {_submit_secs}s"
+record("sc2amiss/submit_immediate", _submit_secs < 30,
+       detail=f"{_submit_secs:.3f}s")
+INFO("[DONE] submit returned immediately (P2-3 async semantics)")
 assert proj.wait_frozen("t_blk_inst_miss", timeout=300), \
     "mixed valid+invalid binding must freeze (entry-level fallback)"
 s_mixed = tdb_miss.load_timing_summary_obj()
-assert s_mixed.invalid_binding_count == 1, s_mixed.invalid_binding_count
 # 无效文件零条目：不进逐文件统计表，条目全部来自有效绑定（同 2a 口径）
-assert len(s_mixed.files) == 1, \
-    f"invalid file must contribute zero files entries: {s_mixed.files}"
-assert (s_mixed.total_entry_count, s_mixed.total_hit_count) == (5, 4), \
-    (s_mixed.total_entry_count, s_mixed.total_hit_count)
+# 原断言：assert s_mixed.invalid_binding_count == 1, s_mixed.invalid_binding_count
+record("sc2amiss/invalid_binding_count", s_mixed.invalid_binding_count)
+# 原断言：assert len(s_mixed.files) == 1, \
+record("sc2amiss/files_count", len(s_mixed.files))
+# 原断言：assert (s_mixed.total_entry_count, s_mixed.total_hit_count) == (5, 4), \
+record("sc2amiss/summary", {"entry": s_mixed.total_entry_count,
+                            "hit": s_mixed.total_hit_count})
 # TIMG::0011 error 消息可查（master message.log）
 with open(os.path.join(LOG_DIR, "message.log"), errors="replace") as f:
     _messages = f.read()
-assert "TIMG::0011" in _messages and "no_such_inst" in _messages, \
-    "message.log must carry TIMG::0011 for the skipped binding"
-INFO("[OK] mixed binding: frozen, invalid file skipped, "
+# 原断言：assert "TIMG::0011" in _messages and "no_such_inst" in _messages, \
+record("sc2amiss/timg0011_in_msg",
+       "TIMG::0011" in _messages and "no_such_inst" in _messages)
+INFO("[DONE] mixed binding: frozen, invalid file skipped, "
      "invalid_binding_count=1, TIMG::0011 observable")
 
 # 全无效：唯一文件的绑定未命中 → 任务失败语义（输入整体无意义）
@@ -232,20 +284,32 @@ tdb_all_miss = proj.build_timing_db(
 assert not proj.wait_frozen("t_blk_inst_all_miss", timeout=60), \
     "all-invalid bindings must not freeze (failure signal expected)"
 _miss_reason = proj.db_failure_reason("t_blk_inst_all_miss")
-assert _miss_reason is not None, "failure reason must be observable"
-assert "no_such_inst" in str(_miss_reason), _miss_reason
-INFO("[OK] all-invalid binding: wait_frozen False + failure reason observable")
+# 原断言：assert _miss_reason is not None, "failure reason must be observable"
+record("sc2allmiss/reason_surfaced", _miss_reason is not None)
+assert _miss_reason is not None  # 保留：守卫（后面 str(_miss_reason) 解引用）
+# 原断言：assert "no_such_inst" in str(_miss_reason), _miss_reason
+record("sc2allmiss/no_such_inst_in_reason",
+       "no_such_inst" in str(_miss_reason), detail=str(_miss_reason))
+INFO("[DONE] all-invalid binding: wait_frozen False + failure reason observable")
 
 # 端口语义点查：top3 自身携带 PIN_IN 时序（归属键 = 块实例自身全局 id）
 info_top3 = tdb_inst.get_timing(gid_top3)
-assert info_top3 is not None, "top3 must carry its port timing"
+# 原断言：assert info_top3 is not None, "top3 must carry its port timing"
+record("sc2a/top3_info_exists", info_top3 is not None)
+assert info_top3 is not None  # 保留：守卫（后面 info_top3["pins"] 解引用）
 port_pins = {p["pin_name"] for p in info_top3["pins"]}
-assert "PIN_IN" in port_pins, f"port pins={port_pins}"
+# 原断言：assert "PIN_IN" in port_pins, f"port pins={port_pins}"
+record("sc2a/top3_port_pins", sorted(port_pins))
 info_u1 = tdb_inst.get_timing(gid_u1)
-assert info_u1 is not None and info_u1["clock"] == "wclk"
+# 原断言：assert info_u1 is not None and info_u1["clock"] == "wclk"
+record("sc2a/u1_info_exists", info_u1 is not None)
+assert info_u1 is not None  # 保留：守卫（后面 info_u1["clock"]、info_u1["pins"] 解引用）
+# 原断言：assert info_u1 is not None and info_u1["clock"] == "wclk"
+record("sc2a/u1_clock", info_u1["clock"])
 u1_pins = {p["pin_name"] for p in info_u1["pins"]}
-assert u1_pins == {"A", "ZN"}, u1_pins
-INFO("[OK] port entry attributed to block instance itself (top3/PIN_IN)")
+# 原断言：assert u1_pins == {"A", "ZN"}, u1_pins
+record("sc2a/u1_pins", sorted(u1_pins))
+INFO("[DONE] port entry attributed to block instance itself (top3/PIN_IN)")
 
 # 2b. block_cell 块定义绑定（§7.2 定义级时序对全部实例成立——建库期复制）
 tdb_cell = proj.build_timing_db(
@@ -255,8 +319,9 @@ tdb_cell = proj.build_timing_db(
     design_db=design_blk)
 assert proj.wait_frozen("t_blk_cell", timeout=300)
 s2 = tdb_cell.load_timing_summary_obj()
-assert s2.total_hit_count == 4, s2.total_hit_count
-INFO("[OK] block_cell binding: definition-level replication hit=4 "
+# 原断言：assert s2.total_hit_count == 4, s2.total_hit_count
+record("sc2b/hit_count", s2.total_hit_count)
+INFO("[DONE] block_cell binding: definition-level replication hit=4 "
      "(n1 now driven by input port)")
 
 # 2c. strip_prefix 段级剥离（§7.4：u_dutx 段不匹配防误配 + 剥后余空）
@@ -268,9 +333,11 @@ tdb_strip = proj.build_timing_db(
     design_db=design_blk)
 assert proj.wait_frozen("t_blk_strip", timeout=300)
 s3 = tdb_strip.load_timing_summary_obj()
-assert (s3.total_entry_count, s3.total_hit_count, s3.strip_miss_count) == \
-    (3, 1, 2), (s3.total_entry_count, s3.total_hit_count, s3.strip_miss_count)
-INFO("[OK] strip_prefix: hit=1 strip_miss=2 (u_dutx mismatch + fully "
+# 原断言：assert (s3.total_entry_count, s3.total_hit_count, s3.strip_miss_count) == \
+record("sc2c/summary", {"entry": s3.total_entry_count,
+                        "hit": s3.total_hit_count,
+                        "strip_miss": s3.strip_miss_count})
+INFO("[DONE] strip_prefix: hit=1 strip_miss=2 (u_dutx mismatch + fully "
      "stripped)")
 
 # 2d. 纯路径全层级名 + 未匹配族计数（2026-09-16 命名裁定：路径不含设计名
@@ -286,26 +353,46 @@ tdb_top = proj.build_timing_db(
     design_db=design_blk)
 assert proj.wait_frozen("t_blk_top", timeout=300)
 s4 = tdb_top.load_timing_summary_obj()
-assert s4.total_entry_count == 7, s4.total_entry_count  # 1+1+5
-assert s4.total_hit_count == 3, s4.total_hit_count  # u1/A(bind) + top1/A + top1/ZN
-assert s4.skipped_instance_count == 1, s4.skipped_instance_count  # ghost_inst
-assert s4.skipped_pin_count == 1, s4.skipped_pin_count            # top1/NOPE
-assert s4.net_name_miss_count == 1, s4.net_name_miss_count        # ghost_net
-assert s4.dangling_net_count == 1, s4.dangling_net_count          # n_top 无 driver
-assert s4.cross_file_conflict_count == 0
-assert s4.clock_conflict_count == 1, s4.clock_conflict_count
 # 顶层定义保留：clk 周期 1.0（块绑定文件先出、顶层后出——顶层仍优先）
 clks = tdb_top.load_timing_clocks_obj()
-assert clks.size == 1 and clks.entry_at(0).name == "clk"
-assert abs(clks.entry_at(0).period - 1.0) < 1e-9, clks.entry_at(0).period
-assert abs(clks.entry_at(0).negedge - 0.5) < 1e-9
-INFO("[OK] top-level full-path names + clock merge top-level priority "
+# 原断言：assert s4.total_entry_count == 7, s4.total_entry_count
+record("sc2d/entry_count", s4.total_entry_count)  # 1+1+5
+# 原断言：assert s4.total_hit_count == 3, s4.total_hit_count
+record("sc2d/hit_count", s4.total_hit_count)  # u1/A(bind) + top1/A + top1/ZN
+# 原断言：assert s4.skipped_instance_count == 1, s4.skipped_instance_count
+record("sc2d/skipped_instance_count", s4.skipped_instance_count)  # ghost_inst
+# 原断言：assert s4.skipped_pin_count == 1, s4.skipped_pin_count
+record("sc2d/skipped_pin_count", s4.skipped_pin_count)            # top1/NOPE
+# 原断言：assert s4.net_name_miss_count == 1, s4.net_name_miss_count
+record("sc2d/net_name_miss_count", s4.net_name_miss_count)        # ghost_net
+# 原断言：assert s4.dangling_net_count == 1, s4.dangling_net_count
+record("sc2d/dangling_net_count", s4.dangling_net_count)          # n_top 无 driver
+# 原断言：assert s4.cross_file_conflict_count == 0
+record("sc2d/cross_file_conflict_count", s4.cross_file_conflict_count)
+# 原断言：assert s4.clock_conflict_count == 1, s4.clock_conflict_count
+record("sc2d/clock_conflict_count", s4.clock_conflict_count)
+# 原断言：assert clks.size == 1 and clks.entry_at(0).name == "clk"
+record("sc2d/clks_size", clks.size)
+assert clks.size >= 1  # 保留：守卫（后面 clks.entry_at(0) 按下标取，越界在 C++ 侧是未定义行为）
+# 原断言：assert clks.size == 1 and clks.entry_at(0).name == "clk"
+record("sc2d/clks_entry0_name", clks.entry_at(0).name)
+# 原断言：assert abs(clks.entry_at(0).period - 1.0) < 1e-9, clks.entry_at(0).period
+record("sc2d/clks_entry0_period_1ns",
+       abs(clks.entry_at(0).period - 1.0) < 1e-9,
+       detail=f"{clks.entry_at(0).period!r}")
+# 原断言：assert abs(clks.entry_at(0).negedge - 0.5) < 1e-9
+record("sc2d/clks_entry0_negedge_05ns",
+       abs(clks.entry_at(0).negedge - 0.5) < 1e-9,
+       detail=f"{clks.entry_at(0).negedge!r}")
+INFO("[DONE] top-level full-path names + clock merge top-level priority "
      "(TIMG::0007 count=1)")
 
 # debug 面名字形态入参（str 层级路径 → design db mapper 转换）
 info_named = tdb_top.get_timing("top1")
-assert info_named is not None, "top-level named instance query"
-INFO("[OK] get_timing accepts hierarchy path name")
+# 原断言：assert info_named is not None, "top-level named instance query"
+record("sc2d/named_query_exists", info_named is not None)
+# 非守卫：仅检查名字形态可查询，返回值无后续解引用
+INFO("[DONE] get_timing accepts hierarchy path name")
 
 # ── 场景 3：多文件异构时钟表 + 时钟归属重映射（评审 P1-1：块内时钟 id
 #    与最终表 id 是两个编号空间，T3 合并必须经 remap 重写——文件 A 表
@@ -320,27 +407,47 @@ tdb_multi = proj.build_timing_db(
     design_db=design_db)
 assert proj.wait_frozen("t_multi", timeout=300)
 s5 = tdb_multi.load_timing_summary_obj()
-assert (s5.total_entry_count, s5.total_hit_count) == (4, 4), \
-    (s5.total_entry_count, s5.total_hit_count)
-assert s5.missing_clock_count == 0, s5.missing_clock_count
-assert s5.clock_conflict_count == 0, s5.clock_conflict_count
 # 最终表：文件序首份 = [wclk(2.0), clk(1.0)]（A 先出）
 clks5 = tdb_multi.load_timing_clocks_obj()
-assert clks5.size == 2, clks5.size
-assert clks5.entry_at(0).name == "wclk" \
-    and abs(clks5.entry_at(0).period - 2.0) < 1e-9
-assert clks5.entry_at(1).name == "clk" \
-    and abs(clks5.entry_at(1).period - 1.0) < 1e-9
 # 时钟归属按来源文件定义：u_cb/u_inv 挂 A 表（wclk/clk），u_nand 挂 B 表
 # 的 clk——B 块内 clk=0 必须重映射为最终表 id 1
-assert tdb_multi.get_timing(gid_cb)["clock"] == "wclk"
-assert tdb_multi.get_timing(gid_inv)["clock"] == "clk"
 info_nand = tdb_multi.get_timing(gid_nand)
-assert info_nand is not None and info_nand["clock"] == "clk", \
-    f"u_nand clock={info_nand['clock'] if info_nand else None}"
-assert info_nand["pins"][0]["rise_arrival"] == (0.03, 0.03), \
-    info_nand["pins"][0]["rise_arrival"]
-INFO("[OK] heterogeneous clock tables: per-file clock id remapped to "
+# 原断言：assert (s5.total_entry_count, s5.total_hit_count) == (4, 4), \
+record("sc3/summary", {"entry": s5.total_entry_count,
+                       "hit": s5.total_hit_count})
+# 原断言：assert s5.missing_clock_count == 0, s5.missing_clock_count
+record("sc3/missing_clock_count", s5.missing_clock_count)
+# 原断言：assert s5.clock_conflict_count == 0, s5.clock_conflict_count
+record("sc3/clock_conflict_count", s5.clock_conflict_count)
+# 原断言：assert clks5.size == 2, clks5.size
+record("sc3/clks_size", clks5.size)
+assert clks5.size >= 2  # 保留：守卫（后面 clks5.entry_at(0)、entry_at(1) 按下标取，越界在 C++ 侧是未定义行为）
+# 原断言：assert clks5.entry_at(0).name == "wclk" \
+record("sc3/clks_entry0_name", clks5.entry_at(0).name)
+# 原断言：assert clks5.entry_at(0).name == "wclk" \
+record("sc3/clks_entry0_period_2ns",
+       abs(clks5.entry_at(0).period - 2.0) < 1e-9,
+       detail=f"{clks5.entry_at(0).period!r}")
+# 原断言：assert clks5.entry_at(1).name == "clk" \
+record("sc3/clks_entry1_name", clks5.entry_at(1).name)
+# 原断言：assert clks5.entry_at(1).name == "clk" \
+record("sc3/clks_entry1_period_1ns",
+       abs(clks5.entry_at(1).period - 1.0) < 1e-9,
+       detail=f"{clks5.entry_at(1).period!r}")
+# 原断言：assert tdb_multi.get_timing(gid_cb)["clock"] == "wclk"
+record("sc3/cb_clock", tdb_multi.get_timing(gid_cb)["clock"])
+# 原断言：assert tdb_multi.get_timing(gid_inv)["clock"] == "clk"
+record("sc3/inv_clock", tdb_multi.get_timing(gid_inv)["clock"])
+# 原断言：assert info_nand is not None and info_nand["clock"] == "clk", \
+record("sc3/nand_info_exists", info_nand is not None)
+assert info_nand is not None  # 保留：守卫（后面 info_nand["clock"]、info_nand["pins"] 解引用）
+# 原断言：assert info_nand is not None and info_nand["clock"] == "clk", \
+record("sc3/nand_clock", info_nand["clock"])
+# 原断言：assert info_nand["pins"][0]["rise_arrival"] == (0.03, 0.03), \
+record("sc3/nand_pin0_rise_arrival",
+       info_nand["pins"][0]["rise_arrival"] == (0.03, 0.03),
+       detail=f"{info_nand['pins'][0]['rise_arrival']!r}")
+INFO("[DONE] heterogeneous clock tables: per-file clock id remapped to "
      "merged table (u_nand stays clk)")
 
 # ── 场景 4：多块切分时钟归属不丢（评审 P1-1：WAVEFORM 只入首块时非首
@@ -371,12 +478,14 @@ with open(BIG_TWF, "w") as f:
             '0.400000:0.400000 0.040000 * *)\n')
     f.write(')\n')
     f.write(')\n')
+# 保留：测试数据生成前置检查——生成的 big.twf 必须超过切块阈值，否则多块场景构造失效
 assert os.path.getsize(BIG_TWF) > CHUNK_MB * 1024 * 1024, "fixture too small"
 # T1 真实切块表：确认输入确实切出 ≥2 块（场景构造性证据）
 from emir.timing import tm_plan_file_chunks
 fp_big = tm_plan_file_chunks(BIG_TWF, CHUNK_MB * 1024 * 1024)
-assert len(fp_big.chunk_starts) >= 2, \
-    f"fixture must chunk into >=2 blocks, got {len(fp_big.chunk_starts)}"
+# 原断言：assert len(fp_big.chunk_starts) >= 2, \
+record("sc4/fixture_chunks_at_least_2", len(fp_big.chunk_starts) >= 2,
+       detail=len(fp_big.chunk_starts))
 INFO(f"[WAIT] multiblock fixture: {os.path.getsize(BIG_TWF)} bytes -> "
      f"{len(fp_big.chunk_starts)} chunks")
 
@@ -389,16 +498,23 @@ assert proj.wait_frozen("t_multiblock", timeout=300)
 s6 = tdb_big.load_timing_summary_obj()
 # 非首块条目时钟不丢：missing_clock 聚合进 summary 且为 0（修复前 = 1 且
 # summary 不可见）
-assert s6.missing_clock_count == 0, s6.missing_clock_count
-assert (s6.total_entry_count, s6.total_hit_count) == (2, 2), \
-    (s6.total_entry_count, s6.total_hit_count)
 info_inv = tdb_big.get_timing(gid_inv)
-assert info_inv is not None and info_inv["clock"] == "clk", \
-    f"u_inv clock={info_inv['clock'] if info_inv else None}"
-assert info_inv["pins"][0]["rise_arrival"] == (0.3, 0.3), \
-    info_inv["pins"][0]["rise_arrival"]
-INFO("[OK] multiblock chunking: non-first-block clock ownership preserved "
+# 原断言：assert s6.missing_clock_count == 0, s6.missing_clock_count
+record("sc4/missing_clock_count", s6.missing_clock_count)
+# 原断言：assert (s6.total_entry_count, s6.total_hit_count) == (2, 2), \
+record("sc4/summary", {"entry": s6.total_entry_count,
+                       "hit": s6.total_hit_count})
+# 原断言：assert info_inv is not None and info_inv["clock"] == "clk", \
+record("sc4/inv_info_exists", info_inv is not None)
+assert info_inv is not None  # 保留：守卫（后面 info_inv["clock"]、info_inv["pins"] 解引用）
+# 原断言：assert info_inv is not None and info_inv["clock"] == "clk", \
+record("sc4/inv_clock", info_inv["clock"])
+# 原断言：assert info_inv["pins"][0]["rise_arrival"] == (0.3, 0.3), \
+record("sc4/inv_pin0_rise_arrival",
+       info_inv["pins"][0]["rise_arrival"] == (0.3, 0.3),
+       detail=f"{info_inv['pins'][0]['rise_arrival']!r}")
+INFO("[DONE] multiblock chunking: non-first-block clock ownership preserved "
      "(missing_clock=0)")
 shutil.rmtree(BIG_DIR, ignore_errors=True)
 
-print("[PASS] test_emir_timing_flow")
+INFO("[DONE] test_emir_timing_flow")
