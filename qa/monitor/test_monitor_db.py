@@ -189,6 +189,8 @@ def assert_db_content():
         "WHERE name LIKE '__user_func__:%' ORDER BY task_id").fetchall()
     # 原断言：assert len(mem_rows) == 2, f"user func task 数 {len(mem_rows)} != 2"
     record("mem_tasks/user_func_count", len(mem_rows))
+    # 保留：守卫——后面取 mem_rows[0]、mem_rows[1]，行数不足时会以 IndexError 崩溃
+    assert len(mem_rows) >= 2, f"user func task 数 {len(mem_rows)} != 2"
     hog_peak, hog_base = mem_rows[0][1], mem_rows[0][2]
     pure_peak, pure_base = mem_rows[1][1], mem_rows[1][2]
     # mem_hog（64MB，先提交）：write 钩子采样应抓到大部分分配。

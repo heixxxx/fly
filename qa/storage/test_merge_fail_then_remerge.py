@@ -73,6 +73,8 @@ record("db_frozen", db_frozen, detail=db_frozen)
 src_dats = dat_files(DB_PATH)
 # 原断言：assert len(src_dats) == 2, f"each object should own one data file, got {src_dats}"
 record("source_dat_count", len(src_dats), detail=src_dats)
+# 保留：守卫——后面取 src_dats[0]，空列表时会以 IndexError 崩溃
+assert len(src_dats) >= 1, f"each object should own one data file, got {src_dats}"
 
 # ── 失败注入：删除一个 .dat（该对象拉源必然失败，其余对象正常成功）──
 victim_file = os.path.join(DB_PATH, src_dats[0])
