@@ -2,6 +2,40 @@
 
 ---
 
+## 2026-11-26: 两个故障用例自己启动的 worker 不再把日志写进源码树
+
+**问题**：`qa/fault/fly_log/worker1.log` 从 2026-08-29 起一直被追加，累积到 4.3 MB。目录被
+`.gitignore` 的 `fly_log*/` 忽略，所以不入库，但日志写进了源码树，违反「日志目录必须显式
+指定」的纪律。
+
+**原因**：worker 的日志目录只来自它自己命令行上的 `--log-dir`，缺省是相对工作目录的
+`fly_log`；`--config-file` 带不过去，入口在加载配置之后会用命令行的值把 `log_dir` 写回去
+（`src/main/cpp/main.cpp`）。`launch_local_workers` 会在命令行上替框架启动的 worker 传
+`--log-dir` 和 `--config-file`。两个用例绕开了它、自己拼 `fly --worker` 命令行，只传了寻址
+参数（`--master-host`、`--master-port`）：
+
+- `qa/fault/test_disconnect_reconnect_grace.py`：原 worker 被杀之后用同一个编号重启，覆盖
+  「重连注册」分支。重启的 worker 每次运行写进约 4 KB，累积的 4.3 MB 来自它。
+- `qa/fault/wait_linkage_run2.py`：要指定主机名并拿住进程句柄来冻结、杀死。它的 worker 一
+  注册就被 SIGSTOP、随后被 SIGKILL，日志还在缓冲区里，所以只是每次建出目录和一个空文件。
+
+**落地**（用户裁定「补充路径」）：两个脚本各补一个 `--log-dir <本用例日志目录>`，与框架
+启动 worker 的做法一致；删除残留目录。寻址仍然用 `--master-host`、`--master-port`（调试
+覆盖口），没有改成配置文件引导——那会让 worker 载入 master 的全部配置，属于场景变更。
+`qa/README.md`「Worker 模式」一节补上「自己启动 worker 进程时必须传日志目录」及原因。
+
+**验证**：两个用例连续 10 轮全过，每轮之后确认 `qa/fault/fly_log/` 没有再出现；全量 QA 203
+个全过，之后同样没有；重录 203 个零变化；全量单测 133 个目标通过。重启的 worker 的启动
+横幅里，日志目录指向子阶段日志目录。对照实验：把 `wait_linkage_run2.py` 临时还原再跑，
+残留目录和一个 0 字节的 `worker1.log` 立刻重新出现，恢复修复后不再出现。
+
+**顺带看到、没有动**：被 SIGKILL 的 worker 的日志会丢。日志器按 64 KB 或 1 秒批量落盘，
+`disconnect_reconnect_grace` 里框架启动的 1 号 worker 启动后不到一秒就被杀，
+`wait_linkage_run2` 里自己起的 worker 被冻结后再杀，两者的日志都还在缓冲区里。这是日志器
+的落盘策略与用例设计共同决定的，与本次改动无关。
+
+---
+
 ## 2026-11-26: 清理三个寄生参数用例里不再起作用的期望参数
 
 **问题**：阶段丁七、丁八把 `test_emir_spef_flow`、`test_emir_spef_big`、

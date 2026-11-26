@@ -40,9 +40,14 @@ mport = master.port
 # 按 _DB_META hostname 匹配到它，不再自行 spawn）。
 expect_workers([1])
 fly_bin = shutil.which("fly") or master._find_fly_binary()
-worker_log = os.path.join(get_config().get_str("log_dir"), "worker1.log")
+log_dir = cfg.get_str("log_dir")
+worker_log = os.path.join(log_dir, "worker1.log")
 proc = subprocess.Popen(
     [fly_bin, "--worker", "--worker-id", "1",
+     # 自己起 worker 要自己传日志目录（launch_local_workers 会替框架启动的 worker
+     # 传）：worker 的日志目录只认命令行上的 --log-dir，不传时落到工作目录下的
+     # fly_log/，写进源码树
+     "--log-dir", log_dir,
      "--master-host", "127.0.0.1", "--master-port", str(mport),
      "--host", "link-host-1"],
     stdin=subprocess.DEVNULL, stdout=open(worker_log, "a"), stderr=subprocess.STDOUT)

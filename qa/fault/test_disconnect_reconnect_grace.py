@@ -96,6 +96,10 @@ fly_bin = shutil.which("fly") or get_agent()._find_fly_binary()
 worker1_log = os.path.join(LOG_DIR, "worker1.log")
 proc = subprocess.Popen(
     [fly_bin, "--worker", "--worker-id", "1",
+     # 自己起 worker 要自己传日志目录（launch_local_workers 会替框架启动的 worker
+     # 传）：worker 的日志目录只认命令行上的 --log-dir，不传时落到工作目录下的
+     # fly_log/，写进源码树
+     "--log-dir", LOG_DIR,
      "--master-host", "127.0.0.1", "--master-port", str(mport),
      "--worker-attributes", "slowhost", "--host", "grace-host-1"],
     stdin=subprocess.DEVNULL, stdout=open(worker1_log, "a"), stderr=subprocess.STDOUT)

@@ -402,6 +402,8 @@ master.launch_local_workers([{}])
 - Worker 进程通过 TCP 连接 Master，实现真正的进程隔离
 - 生产环境与测试环境使用完全一致的通信方式
 
+**自己启动 worker 进程时必须传日志目录**（例如要指定 worker 编号或主机名，用不了 `launch_local_workers` 的时候）：worker 的日志目录只来自它自己命令行上的 `--log-dir`，缺省是相对工作目录的 `fly_log`；`--config-file` 带不过去，入口在加载配置之后会用命令行的值把 `log_dir` 写回去（`src/main/cpp/main.cpp`）。`launch_local_workers` 会在命令行上替框架启动的 worker 传 `--log-dir` 和 `--config-file`；自己拼 `fly --worker` 命令行时要自己传 `--log-dir <本用例日志目录>`（`get_config().get_str("log_dir")`），否则 worker 的日志会写进源码树。参考 `qa/fault/test_worker_exit_code.py`。
+
 ### 在测试脚本中定义 `@as_task()` 函数
 
 测试脚本中可以直接用 `@as_task()` 定义任务（通过 cloudpickle 序列化分发到 worker）。如需确定性调度到指定 worker，配合 `requires` 参数使用。
