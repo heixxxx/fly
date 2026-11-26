@@ -29,6 +29,7 @@ from _fly_log import INFO
 from fly import get_config, get_fly_binary, launch_workers
 from fly.runtime import get_agent
 from emir import EMIRProject
+from test import record
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA = os.path.join(SCRIPT_DIR, "data")
@@ -94,15 +95,15 @@ def scenario1_partial_lib_failure_falls_back():
         "partial failure must fall back and complete (freeze reached)"
     library = lib_db.load_library()
     cell_names = sorted(c.name for c in library.cells)
-    assert cell_names == ["INV_X1"], \
-        f"successful file's cells must survive (cells_a.lib yields INV_X1): " \
-        f"{cell_names}"
+    # 原断言：assert cell_names == ["INV_X1"], \
+    record("scenario1/cell_names", cell_names)
     message_log_path = os.path.join(LOG_DIR, "message.log")
     with open(message_log_path, errors="replace") as f:
         message_log = f.read()
-    assert "LIBR::0003" in message_log, \
-        "message.log must carry LIBR::0003 (partial failure) row"
-    INFO("[PASS] scenario1: partial lib failure -> fallback + LIBR::0003")
+    # 原断言：assert "LIBR::0003" in message_log, \
+    record("scenario1/libr0003_in_msg", "LIBR::0003" in message_log,
+           detail=message_log[-2000:])
+    INFO("[DONE] scenario1: partial lib failure -> fallback + LIBR::0003")
 
 
 def scenario2_all_lib_failure_fatal():
@@ -124,11 +125,14 @@ proj.wait_frozen("lib_all_bad", timeout=120)  # fatal 会在等待期杀掉进�
     p = _spawn_fly(script, log_dir)
     rc = _wait_exit(p)
     p.stderr_file.close()
-    assert rc == 80, f"all-failed lib flow must fatal-exit 80, got {rc}"
+    # 原断言：assert rc == 80, f"all-failed lib flow must fatal-exit 80, got {rc}"
+    record("scenario2/exit_code", rc)
     message_log = _read_message_log(log_dir)
-    assert "LIBR::0004" in message_log and "[FATAL]" in message_log, \
-        f"message.log must carry LIBR::0004 FATAL row: {message_log[-2000:]}"
-    INFO("[PASS] scenario2: all lib files failed -> fatal exit 80 + LIBR::0004")
+    # 原断言：assert "LIBR::0004" in message_log and "[FATAL]" in message_log, \
+    record("scenario2/libr0004_fatal_in_msg",
+           "LIBR::0004" in message_log and "[FATAL]" in message_log,
+           detail=message_log[-2000:])
+    INFO("[DONE] scenario2: all lib files failed -> fatal exit 80 + LIBR::0004")
 
 
 def scenario3_bad_def_fatal():
@@ -156,11 +160,14 @@ proj.wait_frozen("design", timeout=120)  # fatal 会在等待期杀掉进程
     p = _spawn_fly(script, log_dir)
     rc = _wait_exit(p)
     p.stderr_file.close()
-    assert rc == 80, f"bad DEF flow must fatal-exit 80, got {rc}"
+    # 原断言：assert rc == 80, f"bad DEF flow must fatal-exit 80, got {rc}"
+    record("scenario3/exit_code", rc)
     message_log = _read_message_log(log_dir)
-    assert "DSGN::0016" in message_log and "[FATAL]" in message_log, \
-        f"message.log must carry DSGN::0016 FATAL row: {message_log[-2000:]}"
-    INFO("[PASS] scenario3: bad DEF -> fatal exit 80 + DSGN::0016")
+    # 原断言：assert "DSGN::0016" in message_log and "[FATAL]" in message_log, \
+    record("scenario3/dsgn0016_fatal_in_msg",
+           "DSGN::0016" in message_log and "[FATAL]" in message_log,
+           detail=message_log[-2000:])
+    INFO("[DONE] scenario3: bad DEF -> fatal exit 80 + DSGN::0016")
 
 
 def scenario4_lef_mistyped_as_lib_sniffed():
@@ -190,14 +197,15 @@ assert "does not look like a liberty" in error, error
     rc = _wait_exit(p)
     elapsed = time.time() - t0
     p.stderr_file.close()
-    assert rc == 0, \
-        f"scenario script must pass (submit + task-fail + no-freeze), rc={rc}"
+    # 原断言：assert rc == 0, \
+    record("scenario4/exit_code", rc)
     # 无悬挂：worker 注册 + 单 map 任务失败 + 判死感知，与场景 2/3 同量级。
     # 嗅探文案断言在脚本内（db_failure_reason 的 error 含
     # "does not look like a liberty"）——rc=0 即已通过
-    assert elapsed < 60, \
-        f"task-fail path must close promptly (no hang), took {elapsed:.1f}s"
-    INFO(f"[PASS] scenario4: .lef mistyped as lib -> map task failed, "
+    # 原断言：assert elapsed < 60, \
+    record("scenario4/finished_promptly", elapsed < 60,
+           detail=f"{elapsed:.1f}s")
+    INFO(f"[DONE] scenario4: .lef mistyped as lib -> map task failed, "
          f"db not frozen ({elapsed:.1f}s)")
 
 
@@ -229,17 +237,22 @@ def scenario5_judged_death_signal_closes_the_loop():
     ok = proj.wait_frozen("sig", timeout=60)
     elapsed = time.time() - t0
     assert not ok, "judged-death db must not be reported frozen"
-    assert elapsed < 30, \
-        f"wait_frozen must return promptly on failure signal, took {elapsed:.1f}s"
+    # 原断言：assert elapsed < 30, \
+    record("scenario5/wait_frozen_prompt", elapsed < 30,
+           detail=f"{elapsed:.1f}s")
     reason = proj.db_failure_reason("sig")
-    assert reason is not None, "db_failure_reason must surface the signal"
+    # 原断言：assert reason is not None, "db_failure_reason must surface the signal"
+    record("scenario5/reason_surfaced", reason is not None)
+    assert reason is not None  # 保留：守卫（后面 reason 解包 task_id, error）
     task_id, error = reason
     # 首信号 = 根因事件（2026-09-17 起 worker 上任务执行失败即登记归属
     # db 失败信号——先于下游「Unresolvable data dependencies」判死；
     # 首个信号保留语义下诊断代表 = 根因原始 error。旧断言锁文案来源
     # 系实现细节，随根因登记语义更新）
-    assert "simulated producer failure" in error, error
-    INFO(f"[PASS] scenario5: judged-death signal closes the loop "
+    # 原断言：assert "simulated producer failure" in error, error
+    record("scenario5/root_cause_in_error",
+           "simulated producer failure" in error, detail=error)
+    INFO(f"[DONE] scenario5: judged-death signal closes the loop "
          f"(wait {elapsed:.1f}s, task={task_id})")
 
     get_agent().stop()
@@ -256,4 +269,4 @@ scenario3_bad_def_fatal()
 scenario4_lef_mistyped_as_lib_sniffed()
 
 get_agent().stop()
-INFO("[PASS] test_flow_error_handling")
+INFO("[DONE] test_flow_error_handling")

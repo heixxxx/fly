@@ -1,0 +1,15 @@
+{
+  "scenario1/cell_names": [
+    "INV_X1"
+  ],
+  "scenario1/libr0003_in_msg": true,
+  "scenario2/exit_code": 80,
+  "scenario2/libr0004_fatal_in_msg": true,
+  "scenario3/dsgn0016_fatal_in_msg": true,
+  "scenario3/exit_code": 80,
+  "scenario4/exit_code": 0,
+  "scenario4/finished_promptly": true,
+  "scenario5/reason_surfaced": true,
+  "scenario5/root_cause_in_error": true,
+  "scenario5/wait_frozen_prompt": true
+}

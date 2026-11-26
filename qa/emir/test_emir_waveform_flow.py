@@ -48,7 +48,7 @@ from fly import get_config, launch_workers, wait_tasks
 from fly.runtime import get_agent
 from emir import EMIRProject
 
-from test import qa_tmp
+from test import qa_tmp, record
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA = os.path.join(SCRIPT_DIR, "data", "waveform")
@@ -86,8 +86,10 @@ assert get_agent().wait_workers_registered(timeout=60), "workers connect"
 INFO("  2 workers connected (user-managed)")
 
 proj = EMIRProject(PROJ_PATH)
-assert "build_waveform_db" in proj.list_flows()
-INFO("[OK] build_waveform_db registered on EMIRProject")
+# 原断言：assert "build_waveform_db" in proj.list_flows()
+record("flows/waveform_registered", "build_waveform_db" in proj.list_flows(),
+       detail=sorted(proj.list_flows()))
+INFO("[DONE] build_waveform_db registered on EMIRProject")
 
 # ── 前置：lib db + design db 族（直接前驱，显式传参）─────────────────
 lib_db = proj.build_lib_db(name="wf_lib", lib_paths=[LIBERTY])
@@ -193,7 +195,8 @@ os.makedirs(A2_DIR, exist_ok=True)
 A2_RENAMED = os.path.join(A2_DIR, "part_a2_a1.vcd")
 with open(os.path.join(DATA, "part_a2.vcd")) as f:
     text = f.read()
-assert "wf_small_a2" in text
+# 原断言：assert "wf_small_a2" in text
+record("derived/a2_source_has_design_name", "wf_small_a2" in text)
 with open(A2_RENAMED, "w") as f:
     f.write(text.replace("wf_small_a2", "wf_small_a1"))
 
@@ -302,15 +305,20 @@ def _pin_activity(amap, design_db, inst_path, pin_name):
     return amap[gid][pid]
 
 
-def _assert_stats(amap, design_db, table):
+def _assert_stats(amap, design_db, table, tag):
     """README 推导表逐引脚精确断言：(inst, pin) → (t0, t1, tx, tz,
-    rise, fall)（单位 ns；fs = ns × 1e6）。"""
+    rise, fall)（单位 ns；fs = ns × 1e6）。tag 为记录键的常量标签（由
+    调用点字面量传入）。"""
+    mismatches = []
     for (inst_path, pin_name), expect in table.items():
         p = _pin_activity(amap, design_db, inst_path, pin_name)
         actual = (p.t0, p.t1, p.tx, p.tz, p.rise_count, p.fall_count)
         expected = tuple(v * NS for v in expect[:4]) + tuple(expect[4:])
-        assert actual == expected, \
-            f"{inst_path}/{pin_name}: {actual} != {expected}"
+        if actual != expected:
+            mismatches.append(
+                f"{inst_path}/{pin_name}: {actual} != {expected}")
+    # 原断言：assert actual == expected, \
+    record(f"{tag}/table_exact", not mismatches, detail=mismatches)
 
 
 def _all_dual_objects(db):
@@ -323,24 +331,48 @@ def _all_dual_objects(db):
 # ═══ 场景 1：基础建库（small.vcd）════════════════════════════════════
 
 summary = load_waveform_summary(wf_small)
-assert len(summary.files) == 1, summary.files
-assert summary.files[0].source_file.endswith("small.vcd")
-assert abs(summary.files[0].timescale_sec - 1e-9) < 1e-15
-assert summary.files[0].t_start_fs == 0
-assert summary.files[0].t_end_fs == 201 * NS
-assert summary.total_duration_fs == 201 * NS, summary.total_duration_fs
-assert summary.failed_chunk_count == 0
-assert summary.total_hit_count > 0
-assert summary.invalid_binding_count == 0
+# 原断言：assert len(summary.files) == 1, summary.files
+record("s1/files_count", len(summary.files))
+assert len(summary.files) >= 1  # 保留：守卫（后面按下标取 summary.files[0]，越界在 C++ 侧是未定义行为）
+# 原断言：assert summary.files[0].source_file.endswith("small.vcd")
+record("s1/source_suffix",
+       summary.files[0].source_file.endswith("small.vcd"),
+       detail=summary.files[0].source_file)
+# 原断言：assert abs(summary.files[0].timescale_sec - 1e-9) < 1e-15
+record("s1/timescale_1ns",
+       abs(summary.files[0].timescale_sec - 1e-9) < 1e-15,
+       detail=f"{summary.files[0].timescale_sec!r}")
+# 原断言：assert summary.files[0].t_start_fs == 0
+record("s1/t_start_fs", summary.files[0].t_start_fs)
+# 原断言：assert summary.files[0].t_end_fs == 201 * NS
+record("s1/t_end_fs", summary.files[0].t_end_fs)
+# 原断言：assert summary.total_duration_fs == 201 * NS, summary.total_duration_fs
+record("s1/total_duration_fs", summary.total_duration_fs)
+# 原断言：assert summary.failed_chunk_count == 0
+record("s1/failed_chunk_count", summary.failed_chunk_count)
+# 原断言：assert summary.total_hit_count > 0
+record("s1/has_hits", summary.total_hit_count > 0,
+       detail=summary.total_hit_count)
+# 原断言：assert summary.invalid_binding_count == 0
+record("s1/invalid_binding_count", summary.invalid_binding_count)
 # 网形态①连接位展开（派生布线后 design db NETS 全量在册）：16 网全部
 # 挂载成功——无悬空兜底计数
-assert summary.dangling_net_count == 0, summary.dangling_net_count
+# 原断言：assert summary.dangling_net_count == 0, summary.dangling_net_count
+record("s1/dangling_net_count", summary.dangling_net_count)
 # settings 元数据缺省口径（VCD 模式无 settings——缺省值随 summary 落库）
-assert summary.default_toggle_rate == 0.0
-assert summary.default_static_probability == 0.5
-assert summary.duration_sec == 1.0
-assert summary.x_z_handling == "denominator_include"
-INFO("[OK] wf_small summary traceable (201ns window, 1ns scale)")
+# 原断言：assert summary.default_toggle_rate == 0.0
+record("s1/default_toggle_rate_zero", summary.default_toggle_rate == 0.0,
+       detail=f"{summary.default_toggle_rate!r}")
+# 原断言：assert summary.default_static_probability == 0.5
+record("s1/default_static_probability_half",
+       summary.default_static_probability == 0.5,
+       detail=f"{summary.default_static_probability!r}")
+# 原断言：assert summary.duration_sec == 1.0
+record("s1/duration_sec_1", summary.duration_sec == 1.0,
+       detail=f"{summary.duration_sec!r}")
+# 原断言：assert summary.x_z_handling == "denominator_include"
+record("s1/x_z_handling", summary.x_z_handling)
+INFO("[DONE] wf_small summary traceable (201ns window, 1ns scale)")
 
 # README 推导表逐引脚精确断言（cell 端口对偶形态；Q ≡ count[i]，
 # D ≡ n_cnt{i}_d，CK/RN ≡ clk/rn）
@@ -365,8 +397,8 @@ SMALL_TABLE = {
     ("u_and_c3a", "ZN"): (181, 20, 0, 0, 2, 2),  # ≡ n_b2（driver 位）
 }
 amap = _activity_map(wf_small)
-_assert_stats(amap, design_small, SMALL_TABLE)
-INFO(f"[OK] small.vcd README table exact on {len(SMALL_TABLE)} pin(s)")
+_assert_stats(amap, design_small, SMALL_TABLE, "small")
+INFO(f"[DONE] small.vcd README table exact on {len(SMALL_TABLE)} pin(s)")
 
 # 波形去重（裁定 4）+ 四级回落（裁定 V-4）：clk 网 = 同 id 码轨道归并
 #（全部 CK var 与 clk 网同 id 码——引脚名不另立实体，统计挂网身份）→
@@ -378,24 +410,33 @@ gid_cnt0 = design_small.convert_to_id("inst", "u_cnt0")
 clk_ids = {amap[design_small.convert_to_id("inst", p)][
     design_small.convert_to_id("pin", "CK")].waveform_id
     for p in ("u_cnt0", "u_cnt1", "u_cnt2", "u_cnt3", "u_div")}
-assert len(clk_ids) == 1, f"clk net pins must share one id: {clk_ids}"
+# 原断言：assert len(clk_ids) == 1, f"clk net pins must share one id: {clk_ids}"
+record("s1/clk_single_waveform_id", len(clk_ids), detail=sorted(clk_ids))
 cnt0_ids = {amap[design_small.convert_to_id("inst", p)][
     design_small.convert_to_id("pin", pn)].waveform_id
     for p, pn in (("u_cnt0", "Q"), ("u_inv_c0", "A"), ("u_xor_c1", "A"),
                   ("u_and_c2", "A1"), ("u_xor1", "B"))}
-assert len(cnt0_ids) == 5, \
-    f"per-pin own-track waveforms (fallback level 1): {cnt0_ids}"
+# 原断言：assert len(cnt0_ids) == 5, \
+record("s1/cnt0_pin_own_waveform_ids", len(cnt0_ids),
+       detail=sorted(cnt0_ids))
 referenced_ids = {p.waveform_id
                   for pins in amap.values() for p in pins.values()
                   if p.waveform_id != 0xFFFFFFFF}
 waveform_entities = _waveform_container_count(wf_small)
-assert waveform_entities == summary.waveform_count
+# 原断言：assert waveform_entities == summary.waveform_count
+record("s1/entities_match_summary",
+       waveform_entities == summary.waveform_count,
+       detail=(waveform_entities, summary.waveform_count))
 # 全部引用落在实体 id 空间内（引用完整性）；同网连接位共享（clk 归并）
 # 与独立轨道回落（count[0] 五引脚）已在上断言。轨道归并（裁定 V-1）
 # 后同 id 码双名只立网身份实体——首版实现的形态②别名残影实体已消除，
 # 实体数 = 不同身份键实体数（容器实体数 == summary 口径一致）。
-assert all(0 <= i < waveform_entities for i in referenced_ids)
-INFO(f"[OK] waveform dedup: {waveform_entities} entities, "
+# 原断言：assert all(0 <= i < waveform_entities for i in referenced_ids)
+record("s1/referenced_ids_in_range",
+       all(0 <= i < waveform_entities for i in referenced_ids),
+       detail=sorted(i for i in referenced_ids
+                     if not 0 <= i < waveform_entities))
+INFO(f"[DONE] waveform dedup: {waveform_entities} entities, "
      f"{len(referenced_ids)} referenced (clk merged, count[0] per-pin)")
 
 # waveform_id 分配序 = 身份键全序（P1-3 裁定）：net 形态身份按 design db
@@ -418,10 +459,15 @@ key_order_pairs = []
 own_order_pairs = []
 for net_name, (inst_path, pin_name) in NET_PIN_OF.items():
     net_id = design_small.convert_to_id("net", net_name)
-    assert net_id is not None, net_name
+    # 原断言：assert net_id is not None, net_name
+    record(f"s1/net/{net_name}/id_resolved", net_id is not None,
+           detail=net_name)
     wave_id = _pin_activity(amap, design_small, inst_path, pin_name) \
         .waveform_id
-    assert wave_id != 0xFFFFFFFF, net_name
+    # 原断言：assert wave_id != 0xFFFFFFFF, net_name
+    record(f"s1/net/{net_name}/waveform_assigned", wave_id != 0xFFFFFFFF,
+           detail=(net_name, wave_id))
+    assert net_id is not None  # 保留：守卫（net_id 进 key_order_pairs 后参与 sort 排序，None 参与 int 比较会 TypeError）
     if net_name.startswith("count"):
         # count[0..3]：Q var 独立 id 码轨道 → 四级回落第 1 级（own 优先
         # 于所连网轨道）→ 引用形态② own 实体（分配序 (inst, pin) 字典
@@ -435,50 +481,88 @@ for net_name, (inst_path, pin_name) in NET_PIN_OF.items():
 key_order_pairs.sort()  # 按身份键（net id）升序
 wave_id_seq = [w for _, w in key_order_pairs]
 own_id_seq = [w for _, _, w in own_order_pairs]
-assert len(set(wave_id_seq + own_id_seq)) == \
-    len(wave_id_seq) + len(own_id_seq), \
-    "16 distinct net identities must own 16 distinct waveforms"
-assert wave_id_seq == sorted(wave_id_seq), \
-    f"merged-net waveform ids must follow net-id order: {wave_id_seq}"
-assert own_id_seq == sorted(own_id_seq), \
-    f"own-track waveform ids must follow (inst, pin) order: {own_id_seq}"
-INFO("[OK] waveform_id assignment follows identity-key order "
+# 原断言：assert len(set(wave_id_seq + own_id_seq)) == \
+record("s1/all_net_waveforms_distinct",
+       len(set(wave_id_seq + own_id_seq))
+       == len(wave_id_seq) + len(own_id_seq),
+       detail=len(wave_id_seq) + len(own_id_seq)
+       - len(set(wave_id_seq + own_id_seq)))
+# 原断言：assert wave_id_seq == sorted(wave_id_seq), \
+record("s1/merged_ids_net_id_order", wave_id_seq == sorted(wave_id_seq),
+       detail=wave_id_seq)
+# 原断言：assert own_id_seq == sorted(own_id_seq), \
+record("s1/own_ids_inst_pin_order", own_id_seq == sorted(own_id_seq),
+       detail=own_id_seq)
+INFO("[DONE] waveform_id assignment follows identity-key order "
      "(merged nets: net-id ascending / own tracks: inst-pin ascending)")
 
 # 全分区双对象可达（消费接口恒定）
 _all_dual_objects(wf_small)
-INFO(f"[OK] all {_all_partitions(wf_small)} partition(s) yield dual "
+INFO(f"[DONE] all {_all_partitions(wf_small)} partition(s) yield dual "
      f"objects")
 
 # debug get_activity：点查 + 导出视图（summary 元数据口径现算）
 info = wf_small.get_activity("u_cnt0")
 gid_u_cnt0 = design_small.convert_to_id("inst", "u_cnt0")
-assert info is not None and info["instance_id"] == gid_u_cnt0
+# 原断言：assert info is not None and info["instance_id"] == gid_u_cnt0
+record("s1/activity_exists", info is not None)
+record("s1/activity_instance_matches",
+       info is not None and info["instance_id"] == gid_u_cnt0,
+       detail={"exists": info is not None,
+               "instance_id": None if info is None else info["instance_id"],
+               "expected": gid_u_cnt0})
+assert info is not None  # 保留：守卫（后面 info["pins"] 解引用）
 pins = {p["pin_name"]: p for p in info["pins"]}
-assert set(pins) == {"D", "CK", "RN", "Q", "QN"}, set(pins)
+# 原断言：assert set(pins) == {"D", "CK", "RN", "Q", "QN"}, set(pins)
+record("s1/activity_pin_names", sorted(pins))
+# 保留：守卫——后面按键取 pins["CK"]、pins["Q"]，缺键时会以 KeyError 崩溃
+assert "CK" in pins and "Q" in pins, f"pins={sorted(pins)}"
 ck = pins["CK"]
-assert ck["t0"] == 101 * NS and ck["t1"] == 100 * NS
+# 原断言：assert ck["t0"] == 101 * NS and ck["t1"] == 100 * NS
+record("s1/ck_t0", ck["t0"])
+record("s1/ck_t1", ck["t1"])
 duration_s = summary.total_duration_fs * 1e-15
 expect_toggle = (20 + 20) / duration_s
-assert abs(ck["toggle_rate"] - expect_toggle) < 1e-6 * expect_toggle, \
-    (ck["toggle_rate"], expect_toggle)
+# 原断言：assert abs(ck["toggle_rate"] - expect_toggle) < 1e-6 * expect_toggle, \
+record("s1/ck_toggle_rate_matches",
+       abs(ck["toggle_rate"] - expect_toggle) < 1e-6 * expect_toggle,
+       detail=(f"{ck['toggle_rate']!r}", f"{expect_toggle!r}"))
 expect_p1 = 100.0 / 201.0  # denominator_include：t1/(t0+t1+tx+tz)
-assert abs(ck["p1"] - expect_p1) < 1e-12, (ck["p1"], expect_p1)
-assert abs(ck["direction"] - 0.5) < 1e-12
+# 原断言：assert abs(ck["p1"] - expect_p1) < 1e-12, (ck["p1"], expect_p1)
+record("s1/ck_p1_include_formula", abs(ck["p1"] - expect_p1) < 1e-12,
+       detail=(f"{ck['p1']!r}", f"{expect_p1!r}"))
+# 原断言：assert abs(ck["direction"] - 0.5) < 1e-12
+record("s1/ck_direction_half", abs(ck["direction"] - 0.5) < 1e-12,
+       detail=f"{ck['direction']!r}")
 q = pins["Q"]
-assert abs(q["direction"] - 9 / 18) < 1e-12
+# 原断言：assert abs(q["direction"] - 9 / 18) < 1e-12
+record("s1/q_direction_half", abs(q["direction"] - 9 / 18) < 1e-12,
+       detail=f"{q['direction']!r}")
 # 未命中族显式 None
-assert wf_small.get_activity(99999) is None
-assert wf_small.get_activity("no_such_inst") is None
+# 原断言：assert wf_small.get_activity(99999) is None
+record("s1/get_activity_unknown_id", wf_small.get_activity(99999))
+# 原断言：assert wf_small.get_activity("no_such_inst") is None
+record("s1/get_activity_unknown_name", wf_small.get_activity("no_such_inst"))
 # debug get_waveform：事件序列 + 哨兵/过滤
 winfo = wf_small.get_waveform("u_cnt0", pin_name="CK")
-assert winfo is not None and len(winfo["pins"]) == 1
+# 原断言：assert winfo is not None and len(winfo["pins"]) == 1
+record("s1/waveform_info", None if winfo is None
+       else {"pin_count": len(winfo["pins"])})
+assert winfo is not None and len(winfo["pins"]) >= 1  # 保留：守卫（后面按下标取 winfo["pins"][0]）
 events = winfo["pins"][0]["events"]
-assert len(events) == 41, len(events)  # @0 初值 + 20 rise + 20 fall
-assert all(v in ("0", "1", "x", "z") for _, v in events)
-assert events[1][0] == 5 * NS and events[1][1] == "1"
-assert wf_small.get_waveform("no_such_inst") is None
-INFO("[OK] debug get_activity/get_waveform + exported view")
+# 原断言：assert len(events) == 41, len(events)
+record("s1/ck_event_count", len(events))
+assert len(events) >= 2  # 保留：守卫（后面按下标取 events[1]）
+# 原断言：assert all(v in ("0", "1", "x", "z") for _, v in events)
+record("s1/ck_event_values_legal",
+       all(v in ("0", "1", "x", "z") for _, v in events),
+       detail=sorted({v for _, v in events}))
+# 原断言：assert events[1][0] == 5 * NS and events[1][1] == "1"
+record("s1/ck_event1_time", events[1][0])
+record("s1/ck_event1_value", events[1][1])
+# 原断言：assert wf_small.get_waveform("no_such_inst") is None
+record("s1/get_waveform_unknown", wf_small.get_waveform("no_such_inst"))
+INFO("[DONE] debug get_activity/get_waveform + exported view")
 
 # ═══ 场景 1b：空分区空对象（partition_count 强制多分区）══════════════
 
@@ -488,80 +572,112 @@ design_grid_parts = [
      design_grid.read_object(DesignDb.DESIGN_OBJ).partition_at(i).yp)
     for i in range(
         design_grid.read_object(DesignDb.DESIGN_OBJ).partition_count)]
-assert grid_parts == design_grid_parts, (grid_parts, design_grid_parts)
+# 原断言：assert grid_parts == design_grid_parts, (grid_parts, design_grid_parts)
+record("s1b/partitions_match_design", grid_parts == design_grid_parts,
+       detail=(grid_parts, design_grid_parts))
 # 全分区双对象可达 + 逐分区自洽（有数据则双容器非空，无数据则双空——
 # 消费接口恒定；分区数/空否由 S8 负载自适应裁定，不假设具体数）
+inconsistent = []
 for xp, yp in grid_parts:
     wave = load_partition_waveform(wf_grid, xp, yp)
     act = load_partition_activity(wf_grid, xp, yp)
     if wave.waveform_count == 0 or act.size == 0:
-        assert wave.waveform_count == 0 and act.size == 0, \
-            f"partition ({xp},{yp}) containers inconsistent"
-INFO(f"[OK] all {len(grid_parts)} partition(s) yield self-consistent "
+        if wave.waveform_count != 0 or act.size != 0:
+            inconsistent.append((xp, yp, wave.waveform_count, act.size))
+# 原断言：assert wave.waveform_count == 0 and act.size == 0, \
+record("s1b/partitions_self_consistent", not inconsistent,
+       detail=inconsistent)
+INFO(f"[DONE] all {len(grid_parts)} partition(s) yield self-consistent "
      f"dual objects")
 
 # ═══ 场景 2：多文件场景 a（part_a1 + part_a2，统计直和 + 偏移拼接）════
 
 s_a = load_waveform_summary(wf_a)
-assert len(s_a.files) == 2, s_a.files
-assert s_a.files[0].source_file.endswith("part_a1.vcd")
-assert s_a.files[1].source_file.endswith("part_a2_a1.vcd")
+# 原断言：assert len(s_a.files) == 2, s_a.files
+record("s2/files_count", len(s_a.files))
+assert len(s_a.files) >= 2  # 保留：守卫（后面按下标取 s_a.files[0] 与 s_a.files[1]，越界在 C++ 侧是未定义行为）
+# 原断言：assert s_a.files[0].source_file.endswith("part_a1.vcd")
+record("s2/file0_source_suffix",
+       s_a.files[0].source_file.endswith("part_a1.vcd"),
+       detail=s_a.files[0].source_file)
+# 原断言：assert s_a.files[1].source_file.endswith("part_a2_a1.vcd")
+record("s2/file1_source_suffix",
+       s_a.files[1].source_file.endswith("part_a2_a1.vcd"),
+       detail=s_a.files[1].source_file)
 # 逐文件时间范围（偏移对齐依据）：两文件各自 [0,101]
-assert s_a.files[0].t_start_fs == 0 and s_a.files[0].t_end_fs == 101 * NS
-assert s_a.files[1].t_start_fs == 0 and s_a.files[1].t_end_fs == 101 * NS
+# 原断言：assert s_a.files[0].t_start_fs == 0 and s_a.files[0].t_end_fs == 101 * NS
+record("s2/file0_t_start_fs", s_a.files[0].t_start_fs)
+record("s2/file0_t_end_fs", s_a.files[0].t_end_fs)
+# 原断言：assert s_a.files[1].t_start_fs == 0 and s_a.files[1].t_end_fs == 101 * NS
+record("s2/file1_t_start_fs", s_a.files[1].t_start_fs)
+record("s2/file1_t_end_fs", s_a.files[1].t_end_fs)
 # 全局 DURATION 直和（README：101+101 = 202——分段固有语义）
-assert s_a.total_duration_fs == 202 * NS, s_a.total_duration_fs
-assert s_a.time_anomaly_count == 0, s_a.time_anomaly_count
+# 原断言：assert s_a.total_duration_fs == 202 * NS, s_a.total_duration_fs
+record("s2/total_duration_fs", s_a.total_duration_fs)
+# 原断言：assert s_a.time_anomaly_count == 0, s_a.time_anomaly_count
+record("s2/time_anomaly_count", s_a.time_anomaly_count)
 
 amap_a = _activity_map(wf_a)
 # 直和（README 分段表）：count[0]（u_cnt0/Q）a1 61/40 4/4 + a2 51/50 5/5
 p = _pin_activity(amap_a, design_a1, "u_cnt0", "Q")
-assert (p.t0, p.t1, p.rise_count, p.fall_count) == \
-    (112 * NS, 90 * NS, 9, 9), (p.t0, p.t1, p.rise_count, p.fall_count)
+# 原断言：assert (p.t0, p.t1, p.rise_count, p.fall_count) == \
+record("s2/u_cnt0_Q_sum", (p.t0, p.t1, p.rise_count, p.fall_count))
 # count[3]：a1 95/6 1/0 + a2 26/75 0/1（SAIF 原始量直和口径）
 p = _pin_activity(amap_a, design_a1, "u_cnt3", "Q")
-assert (p.t0, p.t1, p.rise_count, p.fall_count) == \
-    (121 * NS, 81 * NS, 1, 1)
+# 原断言：assert (p.t0, p.t1, p.rise_count, p.fall_count) == \
+record("s2/u_cnt3_Q_sum", (p.t0, p.t1, p.rise_count, p.fall_count))
 # rn：a1 23/78 1/0 + a2 0/101 0/0
 p = _pin_activity(amap_a, design_a1, "u_cnt0", "RN")
-assert (p.t0, p.t1, p.rise_count, p.fall_count) == (23 * NS, 179 * NS, 1, 0)
+# 原断言：assert (p.t0, p.t1, p.rise_count, p.fall_count) == (23 * NS, 179 * NS, 1, 0)
+record("s2/u_cnt0_RN_sum", (p.t0, p.t1, p.rise_count, p.fall_count))
 # 偏移拼接：全部波形事件偏移后全局单调不减、存在跨过 a1 窗口（>101ns）
 # 的事件（a2 段整体 +101ns 生效）
 crossed = False
+non_monotonic = []
 for xp, yp in _all_partitions(wf_a):
     wave = load_partition_waveform(wf_a, xp, yp)
     for i in range(wave.waveform_count):
         w = wave.waveform_at(i)
         times = [t for t, _ in w.events]
-        assert times == sorted(times), f"non-monotonic waveform {i}"
+        if times != sorted(times):
+            non_monotonic.append((xp, yp, i))
         if w.t_end > 101 * NS:
             crossed = True
-assert crossed, "a2 segment must be offset beyond a1 window"
-INFO("[OK] scenario a: direct-sum stats + offset-monotonic events + "
+# 原断言：assert times == sorted(times), f"non-monotonic waveform {i}"
+record("s2/waveforms_monotonic", not non_monotonic, detail=non_monotonic)
+# 原断言：assert crossed, "a2 segment must be offset beyond a1 window"
+record("s2/offset_events_cross_a1_window", crossed)
+INFO("[DONE] scenario a: direct-sum stats + offset-monotonic events + "
      "per-file stats")
 
 # ═══ 场景 3：多文件场景 b（block_b1 + block_b2，后文件覆盖）══════════
 
 s_b = load_waveform_summary(wf_b)
-assert s_b.overlap_override_count == 1, s_b.overlap_override_count  # n_a1
+# 原断言：assert s_b.overlap_override_count == 1, s_b.overlap_override_count
+record("s3/overlap_override_count", s_b.overlap_override_count)
 amap_b = _activity_map(wf_b)
 # (1) 重合实体 n_a1 → u_dff_a/Q 取 b2 值（≠ b1 的 54/30/3/3）
 p = _pin_activity(amap_b, design_blk, "u_blk_a/u_dff_a", "Q")
-assert (p.t0, p.t1, p.rise_count, p.fall_count) == \
-    (45 * NS, 29 * NS, 3, 2), (p.t0, p.t1, p.rise_count, p.fall_count)
+# 原断言：assert (p.t0, p.t1, p.rise_count, p.fall_count) == \
+record("s3/override_u_dff_a_Q", (p.t0, p.t1, p.rise_count, p.fall_count))
 # (2) b1 独有保留：clk（u_dff_a/CK）44/40 8/8、n_a2（u_inv1/ZN driver 位
 #     ——b1 表 30/54 3/3；u_dff_a/D receiver 位同值）
 p = _pin_activity(amap_b, design_blk, "u_blk_a/u_dff_a", "CK")
-assert (p.t0, p.t1, p.rise_count, p.fall_count) == (44 * NS, 40 * NS, 8, 8)
+# 原断言：assert (p.t0, p.t1, p.rise_count, p.fall_count) == (44 * NS, 40 * NS, 8, 8)
+record("s3/b1_only_u_dff_a_CK", (p.t0, p.t1, p.rise_count, p.fall_count))
 p = _pin_activity(amap_b, design_blk, "u_blk_a/u_inv1", "ZN")
-assert (p.t0, p.t1, p.rise_count, p.fall_count) == (30 * NS, 54 * NS, 3, 3)
+# 原断言：assert (p.t0, p.t1, p.rise_count, p.fall_count) == (30 * NS, 54 * NS, 3, 3)
+record("s3/b1_only_u_inv1_ZN", (p.t0, p.t1, p.rise_count, p.fall_count))
 # (3) b2 独有：u_sub/n1 → u_dff_s/Q 45/29 2/1
 p = _pin_activity(amap_b, design_blk, "u_blk_a/u_sub/u_dff_s", "Q")
-assert (p.t0, p.t1, p.rise_count, p.fall_count) == (45 * NS, 29 * NS, 2, 1)
+# 原断言：assert (p.t0, p.t1, p.rise_count, p.fall_count) == (45 * NS, 29 * NS, 2, 1)
+record("s3/b2_only_u_dff_s_Q", (p.t0, p.t1, p.rise_count, p.fall_count))
 with open(os.path.join(LOG_DIR, "message.log"), errors="replace") as f:
     _messages = f.read()
-assert "WFMG::0006" in _messages, "message.log must carry WFMG::0006"
-INFO("[OK] scenario b: last-file-wins override + WFMG::0006 count 1")
+# 原断言：assert "WFMG::0006" in _messages, "message.log must carry WFMG::0006"
+record("s3/wfmg0006_in_msg", "WFMG::0006" in _messages,
+       detail=_messages[-2000:])
+INFO("[DONE] scenario b: last-file-wins override + WFMG::0006 count 1")
 
 # ═══ 场景 4：x/z 统计（xz.vcd）═══════════════════════════════════════
 
@@ -575,22 +691,29 @@ XZ_TABLE = {
     ("u_dff", "D"): (42, 51, 8, 0, 2, 1),     # ≡ n_seed
     ("u_dff", "CK"): (51, 50, 0, 0, 10, 10),  # ≡ clk
 }
-_assert_stats(amap_xz, design_xz, XZ_TABLE)
+_assert_stats(amap_xz, design_xz, XZ_TABLE, "xz")
 s_xz = load_waveform_summary(wf_xz)
-assert s_xz.x_z_event_count > 0, s_xz.x_z_event_count
-INFO(f"[OK] xz.vcd TX/TZ exact + rise/fall exclude x/z conversions "
+# 原断言：assert s_xz.x_z_event_count > 0, s_xz.x_z_event_count
+record("s4/has_x_z_events", s_xz.x_z_event_count > 0,
+       detail=s_xz.x_z_event_count)
+INFO(f"[DONE] xz.vcd TX/TZ exact + rise/fall exclude x/z conversions "
      f"(x_z events = {s_xz.x_z_event_count})")
 
 # 概率两口径（消费侧 API 验证）：denominator_include（默认库）vs exclude
 s_xz2 = load_waveform_summary(wf_xz2)
-assert s_xz2.x_z_handling == "exclude"
+# 原断言：assert s_xz2.x_z_handling == "exclude"
+record("s4/xz2_x_z_handling", s_xz2.x_z_handling)
 info_inc = wf_xz.get_activity("u_dff")
 info_exc = wf_xz2.get_activity("u_dff")
 q_inc = {p["pin_name"]: p for p in info_inc["pins"]}["Q"]
 q_exc = {p["pin_name"]: p for p in info_exc["pins"]}["Q"]
-assert abs(q_inc["p1"] - 46 / 101) < 1e-12, q_inc["p1"]  # 分母含 x/z
-assert abs(q_exc["p1"] - 46 / 86) < 1e-12, q_exc["p1"]   # 分母 t0+t1
-INFO("[OK] P1 two formulas: include=46/101, exclude=46/86")
+# 原断言：assert abs(q_inc["p1"] - 46 / 101) < 1e-12, q_inc["p1"]
+record("s4/p1_include_formula", abs(q_inc["p1"] - 46 / 101) < 1e-12,
+       detail=f"{q_inc['p1']!r}")
+# 原断言：assert abs(q_exc["p1"] - 46 / 86) < 1e-12, q_exc["p1"]
+record("s4/p1_exclude_formula", abs(q_exc["p1"] - 46 / 86) < 1e-12,
+       detail=f"{q_exc['p1']!r}")
+INFO("[DONE] P1 two formulas: include=46/101, exclude=46/86")
 
 # ═══ 场景 5：inst pin 直配（instpin.vcd，形态②命中）══════════════════
 
@@ -598,23 +721,32 @@ amap_ip = _activity_map(wf_ip)
 # README instpin 表：u_inv1/A 54/30 3/3、u_inv1/ZN 30/54 3/3（var 名不在
 # 任何 net 名空间——形态①必然未命中 → 落形态②）
 p = _pin_activity(amap_ip, design_blk, "u_blk_a/u_inv1", "A")
-assert (p.t0, p.t1, p.rise_count, p.fall_count) == (54 * NS, 30 * NS, 3, 3)
+# 原断言：assert (p.t0, p.t1, p.rise_count, p.fall_count) == (54 * NS, 30 * NS, 3, 3)
+record("s5/u_inv1_A", (p.t0, p.t1, p.rise_count, p.fall_count))
 p = _pin_activity(amap_ip, design_blk, "u_blk_a/u_inv1", "ZN")
-assert (p.t0, p.t1, p.rise_count, p.fall_count) == (30 * NS, 54 * NS, 3, 3)
+# 原断言：assert (p.t0, p.t1, p.rise_count, p.fall_count) == (30 * NS, 54 * NS, 3, 3)
+record("s5/u_inv1_ZN", (p.t0, p.t1, p.rise_count, p.fall_count))
 # 两引脚各自独享波形（形态②单引脚独享——id 独立）
-assert p.waveform_id != _pin_activity(
-    amap_ip, design_blk, "u_blk_a/u_inv1", "A").waveform_id
+# 原断言：assert p.waveform_id != _pin_activity(
+record("s5/zn_a_distinct_waveform_ids",
+       p.waveform_id != _pin_activity(
+           amap_ip, design_blk, "u_blk_a/u_inv1", "A").waveform_id,
+       detail=(p.waveform_id,
+               _pin_activity(amap_ip, design_blk, "u_blk_a/u_inv1",
+                             "A").waveform_id))
 # 形态②与形态①网统计交叉一致（A ≡ u_blk_a/n_a1——同 id 轨道；对照 =
 # b1 单文件库，窗口与 instpin 同为 [0,84]——wf_b 的 n_a1 已被 b2 覆盖
 # 〔[0,74] 窗〕，不作对照）
 p_b1 = _pin_activity(_activity_map(wf_b1), design_blk,
                      "u_blk_a/u_dff_a", "Q")
 p_ip = _pin_activity(amap_ip, design_blk, "u_blk_a/u_inv1", "A")
-assert (p_ip.t0, p_ip.t1, p_ip.rise_count, p_ip.fall_count) == \
-    (p_b1.t0, p_b1.t1, p_b1.rise_count, p_b1.fall_count), \
-    ((p_ip.t0, p_ip.t1, p_ip.rise_count, p_ip.fall_count),
-     (p_b1.t0, p_b1.t1, p_b1.rise_count, p_b1.fall_count))
-INFO("[OK] instpin.vcd form-② direct attach + cross-consistent with "
+# 原断言：assert (p_ip.t0, p_ip.t1, p_ip.rise_count, p_ip.fall_count) == \
+record("s5/form2_matches_form1_window",
+       (p_ip.t0, p_ip.t1, p_ip.rise_count, p_ip.fall_count)
+       == (p_b1.t0, p_b1.t1, p_b1.rise_count, p_b1.fall_count),
+       detail=((p_ip.t0, p_ip.t1, p_ip.rise_count, p_ip.fall_count),
+               (p_b1.t0, p_b1.t1, p_b1.rise_count, p_b1.fall_count)))
+INFO("[DONE] instpin.vcd form-② direct attach + cross-consistent with "
      "form-① (b1 window)")
 
 # ═══ 场景 6：settings-only 模式（无 VCD；含确定性空分区断言——overrides
@@ -623,67 +755,108 @@ INFO("[OK] instpin.vcd form-② direct attach + cross-consistent with "
 s_so = load_waveform_summary(wf_so)
 # default 元数据落 summary（不逐引脚物化——裁定 6）；overrides 不入
 # settings-only 汇总的 VCD 计数
-assert s_so.default_toggle_rate == 2.0e6
-assert s_so.default_static_probability == 0.4
-assert s_so.duration_sec == 2.0
-assert s_so.x_z_handling == "exclude"
-assert s_so.total_event_count == 0 and s_so.total_hit_count == 0
+# 原断言：assert s_so.default_toggle_rate == 2.0e6
+record("s6/default_toggle_rate", s_so.default_toggle_rate == 2.0e6,
+       detail=f"{s_so.default_toggle_rate!r}")
+# 原断言：assert s_so.default_static_probability == 0.4
+record("s6/default_static_probability",
+       s_so.default_static_probability == 0.4,
+       detail=f"{s_so.default_static_probability!r}")
+# 原断言：assert s_so.duration_sec == 2.0
+record("s6/duration_sec_2", s_so.duration_sec == 2.0,
+       detail=f"{s_so.duration_sec!r}")
+# 原断言：assert s_so.x_z_handling == "exclude"
+record("s6/x_z_handling", s_so.x_z_handling)
+# 原断言：assert s_so.total_event_count == 0 and s_so.total_hit_count == 0
+record("s6/total_event_count", s_so.total_event_count)
+record("s6/total_hit_count", s_so.total_hit_count)
 amap_so = _activity_map(wf_so)
 # 波形容器恒空 + 统计条目全哨兵 waveform_id（消费接口恒定）
-assert _waveform_container_count(wf_so) == 0
-D_FS = 2 * 10**15  # duration 2s → fs
+# 原断言：assert _waveform_container_count(wf_so) == 0
+record("s6/waveform_container_empty", _waveform_container_count(wf_so))
 # 形态②：u_cnt0/Q 直配（T1 = 0.3×2s、rise_fraction 缺省 0.5）
 p = _pin_activity(amap_so, design_grid, "u_cnt0", "Q")
-assert p.waveform_id == 0xFFFFFFFF
-assert (p.t1, p.t0) == (int(0.3 * D_FS), int(0.7 * D_FS))
-assert (p.rise_count, p.fall_count) == (1_000_000, 1_000_000)
+# 原断言：assert p.waveform_id == 0xFFFFFFFF
+record("s6/q_sentinel_waveform_id", p.waveform_id)
+# 原断言：assert (p.t1, p.t0) == (int(0.3 * D_FS), int(0.7 * D_FS))
+record("s6/q_override_times", (p.t1, p.t0))
+# 原断言：assert (p.rise_count, p.fall_count) == (1_000_000, 1_000_000)
+record("s6/q_override_toggles", (p.rise_count, p.fall_count))
 # 未物化实例无条目（default 不物化——u_and1 仅 default 覆盖面）
 gid_and1 = design_grid.convert_to_id("inst", "u_and1")
-assert gid_and1 not in amap_so
+# 原断言：assert gid_and1 not in amap_so
+record("s6/default_not_materialized", gid_and1 not in amap_so,
+       detail=gid_and1)
 # 空分区空对象（确定性构造）：overrides 仅命中 u_cnt0（恰落一个分区）
 # ——其余分区 ACTIVITY 恒空 + WAVEFORM 恒空（双容器照常产出，plan §8）
-assert len(grid_parts) >= 2, grid_parts
+# 原断言：assert len(grid_parts) >= 2, grid_parts
+record("s6/multi_partitions", len(grid_parts) >= 2, detail=grid_parts)
 non_empty = 0
+empty_but_wave = []
+oversize = []
 for xp, yp in grid_parts:
     act = load_partition_activity(wf_so, xp, yp)
     wave = load_partition_waveform(wf_so, xp, yp)
     if act.size == 0:
-        assert wave.waveform_count == 0
+        if wave.waveform_count != 0:
+            empty_but_wave.append((xp, yp, wave.waveform_count))
     else:
         non_empty += 1
-        assert act.size == 1  # 仅 u_cnt0
-assert non_empty == 1, \
-    f"overrides on u_cnt0 must land in exactly one partition: {grid_parts}"
+        if act.size != 1:
+            oversize.append((xp, yp, act.size))
+# 原断言：assert wave.waveform_count == 0
+record("s6/empty_partitions_have_empty_wave", not empty_but_wave,
+       detail=empty_but_wave)
+# 原断言：assert act.size == 1
+record("s6/nonempty_partition_single_inst", not oversize, detail=oversize)
+# 原断言：assert non_empty == 1, \
+record("s6/override_lands_one_partition", non_empty == 1, detail=non_empty)
 # 未解析条目 WFMG::0001 一次汇总透出（聚合判定口径：全部分区都未物化
 # 的条目才计——u_cnt0/Q 落一区已物化不计，仅 ghost/x 计 1；计数随文案
 # 透出，精确断言 =1）
 with open(os.path.join(LOG_DIR, "message.log"), errors="replace") as f:
     _messages = f.read()
-assert "WFMG::0001" in _messages, "unresolved override must be messaged"
-assert "1 settings activity override entr(y/ies) unresolved" in _messages, \
-    f"exactly 1 unresolved override (ghost/x) expected: {_messages!r}"
-INFO("[OK] settings-only: empty waveform container + overrides "
+# 原断言：assert "WFMG::0001" in _messages, "unresolved override must be messaged"
+record("s6/wfmg0001_in_msg", "WFMG::0001" in _messages,
+       detail=_messages[-2000:])
+# 原断言：assert "1 settings activity override entr(y/ies) unresolved" in _messages, \
+record("s6/exactly_one_unresolved_override",
+       "1 settings activity override entr(y/ies) unresolved" in _messages,
+       detail=_messages[-2000:])
+INFO("[DONE] settings-only: empty waveform container + overrides "
      "materialized + sentinels + default metadata + empty partitions")
 
 # ═══ 场景 7：大规模（big.vcd，2 万实例）══════════════════════════════
 
 s_big = load_waveform_summary(wf_big)
-assert s_big.files[0].source_file.endswith("big.vcd")
-assert s_big.failed_chunk_count == 0
+# 原断言：assert s_big.files[0].source_file.endswith("big.vcd")
+record("s7/source_suffix", s_big.files[0].source_file.endswith("big.vcd"),
+       detail=s_big.files[0].source_file)
+# 原断言：assert s_big.failed_chunk_count == 0
+record("s7/failed_chunk_count", s_big.failed_chunk_count)
 big_parts = _all_partitions(wf_big)
-assert len(big_parts) >= 2, f"big design must partition: {big_parts}"
+# 原断言：assert len(big_parts) >= 2, f"big design must partition: {big_parts}"
+record("s7/multi_partitions", len(big_parts) >= 2, detail=big_parts)
 _all_dual_objects(wf_big)
 # 万级下限口径（README）：实例覆盖 ≥ 10000 + 命名点查 + 命中条目下限
 inst_covered = 0
 for xp, yp in big_parts:
     inst_covered += load_partition_activity(wf_big, xp, yp).size
-assert inst_covered >= 10000, inst_covered
-assert s_big.total_hit_count >= 20000, s_big.total_hit_count
+# 原断言：assert inst_covered >= 10000, inst_covered
+record("s7/inst_covered_at_least_10000", inst_covered >= 10000,
+       detail=inst_covered)
+# 原断言：assert s_big.total_hit_count >= 20000, s_big.total_hit_count
+record("s7/total_hit_at_least_20000", s_big.total_hit_count >= 20000,
+       detail=s_big.total_hit_count)
 for name in ("u_dff_0_0", "u_dff_99_99"):
     info = wf_big.get_activity(name)
-    assert info is not None, f"{name} must resolve"
-    assert info["pins"], f"{name} must carry pin stats"
-INFO(f"[OK] big.vcd: {inst_covered} instances, "
+    # 原断言：assert info is not None, f"{name} must resolve"
+    record(f"s7/{name}/resolved", info is not None)
+    # 原断言：assert info["pins"], f"{name} must carry pin stats"
+    record(f"s7/{name}/has_pins",
+           bool(info["pins"]) if info is not None else False)
+    assert info is not None  # 保留：守卫（后面 info["pins"] 解引用）
+INFO(f"[DONE] big.vcd: {inst_covered} instances, "
      f"{len(big_parts)} partitions, hit={s_big.total_hit_count}")
 
 # ═══ 场景 8：确定性（身份键序确定 + 同输入双跑逐字节一致）════════════
@@ -704,10 +877,16 @@ def _db_fingerprint(db):
 
 fp1 = _db_fingerprint(wf_small)
 fp2 = _db_fingerprint(wf_small2)
-assert len(fp1) == len(fp2)
+# 原断言：assert len(fp1) == len(fp2)
+record("s8/fingerprint_counts_equal", len(fp1) == len(fp2),
+       detail=(len(fp1), len(fp2)))
+differing = []
 for i, (a, b) in enumerate(zip(fp1, fp2)):
-    assert a == b, f"object {i} bytes differ across identical runs"
-INFO(f"[OK] determinism: {len(fp1)} db object(s) byte-identical")
+    if a != b:
+        differing.append(i)
+# 原断言：assert a == b, f"object {i} bytes differ across identical runs"
+record("s8/db_objects_byte_identical", not differing, detail=differing)
+INFO(f"[DONE] determinism: {len(fp1)} db object(s) byte-identical")
 
 # ═══ 场景 8b：混合模式（VCD + settings.activity.overrides 并存，裁定
 # IV-2：覆盖条目建库期替换实测统计、waveform_id 保留、default 不生效、
@@ -741,46 +920,60 @@ _wait_dbs("wf_mix", "wf_gz")
 INFO("[WAIT] waveform db batch 2 frozen (mix mode + gzip)")
 
 s_mix = load_waveform_summary(wf_mix)
-MIX_D_FS = 10 ** 15  # duration 缺省 1.0s → fs
 amap_mix = _activity_map(wf_mix)
 # (1) 覆盖条目统计 == 用户值换算（T1 = p·D、T0 = (1−p)·D、rise = rate·
 #     D·rf、fall = rate·D·(1−rf)、TX = TZ = 0——与 wf_small 实测 90/111
 #     9/9 不同，证明替换发生）
 p = _pin_activity(amap_mix, design_small, "u_cnt0", "Q")
-assert (p.t1, p.t0, p.tx, p.tz) == \
-    (int(0.3 * MIX_D_FS), int(0.7 * MIX_D_FS), 0, 0), \
-    (p.t1, p.t0, p.tx, p.tz)
-assert (p.rise_count, p.fall_count) == (600_000, 400_000), \
-    (p.rise_count, p.fall_count)
+# 原断言：assert (p.t1, p.t0, p.tx, p.tz) == \
+record("s8b/override_q_times", (p.t1, p.t0, p.tx, p.tz))
+# 原断言：assert (p.rise_count, p.fall_count) == (600_000, 400_000), \
+record("s8b/override_q_toggles", (p.rise_count, p.fall_count))
 # (2) waveform_id 引用保留（事件是实测数据——覆盖只换统计值）
 p_plain = _pin_activity(amap, design_small, "u_cnt0", "Q")
-assert p.waveform_id == p_plain.waveform_id != 0xFFFFFFFF, \
-    (p.waveform_id, p_plain.waveform_id)
+# 原断言：assert p.waveform_id == p_plain.waveform_id != 0xFFFFFFFF, \
+record("s8b/waveform_id_kept",
+       p.waveform_id == p_plain.waveform_id != 0xFFFFFFFF,
+       detail=(p.waveform_id, p_plain.waveform_id))
 # (3) 未覆盖条目 == 实测（与 wf_small 同引脚逐项一致）
 for inst_path, pin_name in (("u_cnt1", "D"), ("u_cnt3", "Q"),
                             ("u_and_c3a", "ZN")):
     a = _pin_activity(amap_mix, design_small, inst_path, pin_name)
     b = _pin_activity(amap, design_small, inst_path, pin_name)
-    assert (a.t0, a.t1, a.tx, a.tz, a.rise_count, a.fall_count) == \
-        (b.t0, b.t1, b.tx, b.tz, b.rise_count, b.fall_count), \
-        (inst_path, pin_name)
+    # 原断言：assert (a.t0, a.t1, a.tx, a.tz, a.rise_count, a.fall_count) == \
+    record(f"s8b/uncovered_{inst_path}_{pin_name}_matches",
+           (a.t0, a.t1, a.tx, a.tz, a.rise_count, a.fall_count)
+           == (b.t0, b.t1, b.tx, b.tz, b.rise_count, b.fall_count),
+           detail=(inst_path, pin_name))
 # (4) net 名覆盖经形态①推导展开：n_and 连接位（u_and1/ZN driver 位）
 #     统计全部换算（rise_fraction 缺省 0.5）
 p = _pin_activity(amap_mix, design_small, "u_and1", "ZN")
-assert (p.t1, p.t0) == (int(0.8 * MIX_D_FS), int(0.2 * MIX_D_FS)), \
-    (p.t1, p.t0)
-assert (p.rise_count, p.fall_count) == (1_000_000, 1_000_000)
+# 原断言：assert (p.t1, p.t0) == (int(0.8 * MIX_D_FS), int(0.2 * MIX_D_FS)), \
+record("s8b/override_nand_times", (p.t1, p.t0))
+# 原断言：assert (p.rise_count, p.fall_count) == (1_000_000, 1_000_000)
+record("s8b/override_nand_toggles", (p.rise_count, p.fall_count))
 # (5) summary 覆盖条目计数（被替换 + 新建的 (inst, pin) 条目总数，>0）
 #     + default 元数据缺省（VCD 模式不生效——仅元数据，未给即缺省值）
-assert s_mix.override_entry_count > 0, s_mix.override_entry_count
-assert s_mix.default_toggle_rate == 0.0
-assert s_mix.default_static_probability == 0.5
+# 原断言：assert s_mix.override_entry_count > 0, s_mix.override_entry_count
+record("s8b/has_override_entries", s_mix.override_entry_count > 0,
+       detail=s_mix.override_entry_count)
+# 原断言：assert s_mix.default_toggle_rate == 0.0
+record("s8b/default_toggle_rate_zero", s_mix.default_toggle_rate == 0.0,
+       detail=f"{s_mix.default_toggle_rate!r}")
+# 原断言：assert s_mix.default_static_probability == 0.5
+record("s8b/default_static_probability_half",
+       s_mix.default_static_probability == 0.5,
+       detail=f"{s_mix.default_static_probability!r}")
 with open(os.path.join(LOG_DIR, "message.log"), errors="replace") as f:
     _messages = f.read()
-assert "WFMG::0001" in _messages
-assert "1 settings activity override entr(y/ies) unresolved" in _messages, \
-    "exactly 1 unresolved override (ghost/x) expected in mix mode"
-INFO("[OK] mix mode: override replaces stats + waveform_id kept + "
+# 原断言：assert "WFMG::0001" in _messages
+record("s8b/wfmg0001_in_msg", "WFMG::0001" in _messages,
+       detail=_messages[-2000:])
+# 原断言：assert "1 settings activity override entr(y/ies) unresolved" in _messages, \
+record("s8b/exactly_one_unresolved_override",
+       "1 settings activity override entr(y/ies) unresolved" in _messages,
+       detail=_messages[-2000:])
+INFO("[DONE] mix mode: override replaces stats + waveform_id kept + "
      f"uncovered intact + override_entry_count={s_mix.override_entry_count}")
 
 # ═══ 场景 9：错误流 ══════════════════════════════════════════════════
@@ -805,33 +998,59 @@ def _assert_summary_stats_equal(a, b):
                   "override_entry_count", "default_toggle_rate",
                   "default_static_probability", "duration_sec",
                   "x_z_handling"):
-        assert getattr(a, field) == getattr(b, field), field
-    assert len(a.files) == len(b.files)
+        # 原断言：assert getattr(a, field) == getattr(b, field), field
+        record(f"s9a/summary_{field}_equal",
+               getattr(a, field) == getattr(b, field), detail=field)
+    # 原断言：assert len(a.files) == len(b.files)
+    record("s9a/files_count_equal", len(a.files) == len(b.files),
+           detail=(len(a.files), len(b.files)))
+    source_diff = []
+    file_field_mismatch = []
     for fa, fb in zip(a.files, b.files):
-        assert fa.source_file != fb.source_file  # 明文 vs 解压副本路径
+        if fa.source_file == fb.source_file:
+            source_diff.append(fa.source_file)
         for field in ("timescale_sec", "t_start_fs", "t_end_fs",
                       "event_count", "hit_count", "net_name_miss_count",
                       "inst_pin_miss_count", "dangling_net_count",
                       "pg_net_skip_count", "unplaced_instance_count",
                       "strip_miss_count", "unsupported_count",
                       "width_mismatch_count", "failed_chunk_count"):
-            assert getattr(fa, field) == getattr(fb, field), field
+            if getattr(fa, field) != getattr(fb, field):
+                file_field_mismatch.append(field)
+    # 原断言：assert fa.source_file != fb.source_file
+    record("s9a/source_files_differ", not source_diff, detail=source_diff)
+    # 原断言：assert getattr(fa, field) == getattr(fb, field), field
+    record("s9a/file_stats_equal", not file_field_mismatch,
+           detail=file_field_mismatch)
 
 
-assert _all_partitions(wf_gz) == _all_partitions(wf_small)
+# 原断言：assert _all_partitions(wf_gz) == _all_partitions(wf_small)
+record("s9a/partition_list_equal",
+       _all_partitions(wf_gz) == _all_partitions(wf_small),
+       detail=(_all_partitions(wf_gz), _all_partitions(wf_small)))
+wave_diff = []
+act_diff = []
 for xp, yp in _all_partitions(wf_gz):
-    assert load_partition_waveform(wf_gz, xp, yp).__getstate__() == \
-        load_partition_waveform(wf_small, xp, yp).__getstate__(), \
-        f"waveform container differs at ({xp},{yp})"
-    assert load_partition_activity(wf_gz, xp, yp).__getstate__() == \
-        load_partition_activity(wf_small, xp, yp).__getstate__(), \
-        f"activity container differs at ({xp},{yp})"
+    if load_partition_waveform(wf_gz, xp, yp).__getstate__() != \
+            load_partition_waveform(wf_small, xp, yp).__getstate__():
+        wave_diff.append((xp, yp))
+    if load_partition_activity(wf_gz, xp, yp).__getstate__() != \
+            load_partition_activity(wf_small, xp, yp).__getstate__():
+        act_diff.append((xp, yp))
+# 原断言：assert load_partition_waveform(wf_gz, xp, yp).__getstate__() == \
+record("s9a/waveform_containers_byte_identical", not wave_diff,
+       detail=wave_diff)
+# 原断言：assert load_partition_activity(wf_gz, xp, yp).__getstate__() == \
+record("s9a/activity_containers_byte_identical", not act_diff,
+       detail=act_diff)
 _assert_summary_stats_equal(load_waveform_summary(wf_gz),
                             load_waveform_summary(wf_small))
 # 解压副本清理（汇总任务单点——库冻结时已删除）
-assert not os.path.isdir(os.path.join(PROJ_PATH, "wf_gz", "wf_scratch")), \
-    "gzip scratch dir must be cleaned before freeze"
-INFO("[OK] gzip vcd: decompressed pipeline, byte-identical to plain, "
+# 原断言：assert not os.path.isdir(os.path.join(PROJ_PATH, "wf_gz", "wf_scratch")), \
+record("s9a/gz_scratch_cleaned",
+       not os.path.isdir(os.path.join(PROJ_PATH, "wf_gz", "wf_scratch")),
+       detail=os.path.join(PROJ_PATH, "wf_gz", "wf_scratch"))
+INFO("[DONE] gzip vcd: decompressed pipeline, byte-identical to plain, "
      "scratch cleaned")
 
 # 9b. 破损 VCD（$scope 未闭合）→ 文件入口任务失败、库不冻结
@@ -845,27 +1064,33 @@ wf_bad = proj.build_waveform_db(
 assert not proj.wait_frozen("wf_bad", timeout=300), \
     "broken vcd must not freeze"
 reason = proj.db_failure_reason("wf_bad")
-assert reason is not None, "failure reason must be observable"
-INFO("[OK] broken vcd: file-entry task failure, db not frozen")
+# 原断言：assert reason is not None, "failure reason must be observable"
+record("s9b/failure_reason_observable", reason is not None)
+# 非守卫：reason 无后续解引用（脚本到此不再读它）
+INFO("[DONE] broken vcd: file-entry task failure, db not frozen")
 
 # 9c. vcd_files=None 且无 settings.activity → 入口报错（不建库）
 try:
     proj.build_waveform_db(name="wf_no_activity", vcd_files=None,
                            design_db=design_small)
-    raise AssertionError("settings-only without activity must raise")
+    raise AssertionError("settings-only without activity must raise")  # 保留：否定性检查——未抛异常时让脚本直接失败
 except ValueError as e:
-    assert "settings.activity" in str(e), str(e)
+    # 原断言：assert "settings.activity" in str(e), str(e)
+    record("s9c/no_activity_msg", "settings.activity" in str(e),
+           detail=str(e))
 try:
     proj.build_waveform_db(name="wf_no_activity2", vcd_files=None,
                            design_db=design_small,
                            settings={"x_z_handling": "exclude"})
-    raise AssertionError("settings-only without activity must raise")
+    raise AssertionError("settings-only without activity must raise")  # 保留：否定性检查——未抛异常时让脚本直接失败
 except ValueError as e:
-    assert "settings.activity" in str(e), str(e)
-INFO("[OK] settings-only without settings.activity: entry raises")
+    # 原断言：assert "settings.activity" in str(e), str(e)
+    record("s9c/no_activity2_msg", "settings.activity" in str(e),
+           detail=str(e))
+INFO("[DONE] settings-only without settings.activity: entry raises")
 
 shutil.rmtree(ERR_DIR, ignore_errors=True)
 shutil.rmtree(os.path.dirname(A2_RENAMED), ignore_errors=True)
 shutil.rmtree(os.path.dirname(ROUTED_SMALL_DEF), ignore_errors=True)
 
-print("[PASS] test_emir_waveform_flow")
+print("[DONE] test_emir_waveform_flow")

@@ -37,7 +37,7 @@ from fly import get_config, launch_workers, wait_tasks
 from fly.runtime import get_agent
 from emir import EMIRProject
 
-from test import qa_tmp
+from test import qa_tmp, record
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA = os.path.join(SCRIPT_DIR, "data", "waveform")
@@ -123,7 +123,7 @@ def _escaped_vcd():
                 indent = line[:len(line) - len(line.lstrip())]
                 tokens = stripped.split()
                 # $var <type> <width> <id> <name...> $end
-                assert tokens[0] == "$var" and tokens[-1] == "$end"
+                assert tokens[0] == "$var" and tokens[-1] == "$end"  # 保留：输入数据格式前置检查（qa/emir/data/waveform/small.vcd 的行格式不符派生假设时样张无效，后续检查全部失去意义）
                 name_at = 4
                 # 名字 token 序（可含空格容差形态）——首个非位区间 token
                 # 前加反斜杠；位区间 token 原样
@@ -141,7 +141,7 @@ def _escaped_vcd():
                 # 规则 3：模块名前加反斜杠
                 indent = line[:len(line) - len(line.lstrip())]
                 tokens = stripped.split()
-                assert tokens[0] == "$scope" and tokens[-1] == "$end"
+                assert tokens[0] == "$scope" and tokens[-1] == "$end"  # 保留：输入数据格式前置检查（同上）
                 tokens[2] = "\\" + tokens[2]
                 out_lines.append(indent + " ".join(tokens) + "\n")
                 continue
@@ -193,20 +193,38 @@ s_esc = load_waveform_summary(wf_esc)
 # 未放置同时出现——逐项相等即锁定「转义处理未引入任何新 miss 且修复
 # 生效」。未放置实例两库同为 0（端口条目不是实例——2026-11-24 端口角
 # 色裁定后的口径）。
-assert s_esc.net_name_miss_count == s_plain.net_name_miss_count, \
-    (s_esc.net_name_miss_count, s_plain.net_name_miss_count)
-assert s_esc.inst_pin_miss_count == s_plain.inst_pin_miss_count, \
-    (s_esc.inst_pin_miss_count, s_plain.inst_pin_miss_count)
-assert s_esc.unplaced_instance_count == 0, s_esc.unplaced_instance_count
-assert s_esc.unplaced_instance_count == s_plain.unplaced_instance_count
-assert s_esc.dangling_net_count == 0, s_esc.dangling_net_count
-assert s_esc.dangling_net_count == s_plain.dangling_net_count
-INFO("[OK] escaped vcd: counters identical to plain small.vcd build "
+# 原断言：assert s_esc.net_name_miss_count == s_plain.net_name_miss_count, \
+record("parse/net_name_miss_equal",
+       s_esc.net_name_miss_count == s_plain.net_name_miss_count,
+       detail=(s_esc.net_name_miss_count, s_plain.net_name_miss_count))
+# 原断言：assert s_esc.inst_pin_miss_count == s_plain.inst_pin_miss_count, \
+record("parse/inst_pin_miss_equal",
+       s_esc.inst_pin_miss_count == s_plain.inst_pin_miss_count,
+       detail=(s_esc.inst_pin_miss_count, s_plain.inst_pin_miss_count))
+# 原断言：assert s_esc.unplaced_instance_count == 0, s_esc.unplaced_instance_count
+record("parse/esc_unplaced_count", s_esc.unplaced_instance_count)
+# 原断言：assert s_esc.unplaced_instance_count == s_plain.unplaced_instance_count
+record("parse/unplaced_equal",
+       s_esc.unplaced_instance_count == s_plain.unplaced_instance_count,
+       detail=(s_esc.unplaced_instance_count, s_plain.unplaced_instance_count))
+# 原断言：assert s_esc.dangling_net_count == 0, s_esc.dangling_net_count
+record("parse/esc_dangling_count", s_esc.dangling_net_count)
+# 原断言：assert s_esc.dangling_net_count == s_plain.dangling_net_count
+record("parse/dangling_equal",
+       s_esc.dangling_net_count == s_plain.dangling_net_count,
+       detail=(s_esc.dangling_net_count, s_plain.dangling_net_count))
+INFO("[DONE] escaped vcd: counters identical to plain small.vcd build "
      "(no new misses introduced), 0 unplaced, 0 dangling")
 
 # 时间单位：1ps 档（原样 1ns）
-assert abs(s_plain.files[0].timescale_sec - 1e-9) < 1e-15
-assert abs(s_esc.files[0].timescale_sec - 1e-12) < 1e-15
+# 原断言：assert abs(s_plain.files[0].timescale_sec - 1e-9) < 1e-15
+record("time/plain_timescale_1ns",
+       abs(s_plain.files[0].timescale_sec - 1e-9) < 1e-15,
+       detail=f"{s_plain.files[0].timescale_sec!r}")
+# 原断言：assert abs(s_esc.files[0].timescale_sec - 1e-12) < 1e-15
+record("time/esc_timescale_1ps",
+       abs(s_esc.files[0].timescale_sec - 1e-12) < 1e-15,
+       detail=f"{s_esc.files[0].timescale_sec!r}")
 
 # 与时间无关的统计字段逐项相等（事件/命中/翻转/波形/悬空/多驱动等）
 for field in ("total_event_count", "total_hit_count",
@@ -220,21 +238,40 @@ for field in ("total_event_count", "total_hit_count",
               "invalid_binding_count"):
     a = getattr(s_esc, field)
     b = getattr(s_plain, field)
-    assert a == b, f"{field}: escaped={a} plain={b}"
-INFO("[OK] time-independent summary fields identical")
+    # 原断言：assert a == b, f"{field}: escaped={a} plain={b}"
+    record(f"summary/{field}_equal", a == b,
+           detail=f"{field}: escaped={a} plain={b}")
+INFO("[DONE] time-independent summary fields identical")
 
 # 时间相关的量：派生规则 = 单位 1ns→1ps（×1/1000）且时间戳 ×1000——
 # 物理时长精确不变（窗口 / 逐文件时间范围 fs 值逐项相等；timescale_sec
 # 差 1000 倍）。翻转时间点的物理位置不变。
-assert s_esc.total_duration_fs == s_plain.total_duration_fs, \
-    (s_esc.total_duration_fs, s_plain.total_duration_fs)
-assert s_esc.files[0].t_start_fs == s_plain.files[0].t_start_fs
-assert s_esc.files[0].t_end_fs == s_plain.files[0].t_end_fs
-assert abs(s_esc.files[0].timescale_sec * 1000
-           - s_plain.files[0].timescale_sec) < 1e-24
-assert s_esc.files[0].event_count == s_plain.files[0].event_count
-assert s_esc.files[0].hit_count == s_plain.files[0].hit_count
-INFO("[OK] time-related fields physically identical (1ns→1ps and "
+# 原断言：assert s_esc.total_duration_fs == s_plain.total_duration_fs, \
+record("time/total_duration_fs_equal",
+       s_esc.total_duration_fs == s_plain.total_duration_fs,
+       detail=(s_esc.total_duration_fs, s_plain.total_duration_fs))
+# 原断言：assert s_esc.files[0].t_start_fs == s_plain.files[0].t_start_fs
+record("time/t_start_fs_equal",
+       s_esc.files[0].t_start_fs == s_plain.files[0].t_start_fs,
+       detail=(s_esc.files[0].t_start_fs, s_plain.files[0].t_start_fs))
+# 原断言：assert s_esc.files[0].t_end_fs == s_plain.files[0].t_end_fs
+record("time/t_end_fs_equal",
+       s_esc.files[0].t_end_fs == s_plain.files[0].t_end_fs,
+       detail=(s_esc.files[0].t_end_fs, s_plain.files[0].t_end_fs))
+# 原断言：assert abs(s_esc.files[0].timescale_sec * 1000
+record("time/timescale_x1000_equal",
+       abs(s_esc.files[0].timescale_sec * 1000
+           - s_plain.files[0].timescale_sec) < 1e-24,
+       detail=(s_esc.files[0].timescale_sec, s_plain.files[0].timescale_sec))
+# 原断言：assert s_esc.files[0].event_count == s_plain.files[0].event_count
+record("time/event_count_equal",
+       s_esc.files[0].event_count == s_plain.files[0].event_count,
+       detail=(s_esc.files[0].event_count, s_plain.files[0].event_count))
+# 原断言：assert s_esc.files[0].hit_count == s_plain.files[0].hit_count
+record("time/hit_count_equal",
+       s_esc.files[0].hit_count == s_plain.files[0].hit_count,
+       detail=(s_esc.files[0].hit_count, s_plain.files[0].hit_count))
+INFO("[DONE] time-related fields physically identical (1ns→1ps and "
      "timestamps ×1000 cancel out)")
 
 
@@ -263,16 +300,22 @@ SPOT = (("u_and1", "ZN"), ("u_cnt0", "Q"), ("u_cnt1", "D"))
 for inst_path, pin_name in SPOT:
     p_plain = _pin(amap_plain, design, inst_path, pin_name)
     p_esc = _pin(amap_esc, design, inst_path, pin_name)
-    assert (p_plain.rise_count, p_plain.fall_count) == \
-        (p_esc.rise_count, p_esc.fall_count), \
-        f"{inst_path}/{pin_name}: rise/fall differ"
-    assert (p_plain.t0, p_plain.t1, p_plain.tx, p_plain.tz) == \
-        (p_esc.t0, p_esc.t1, p_esc.tx, p_esc.tz), \
-        f"{inst_path}/{pin_name}: time window differ"
-INFO(f"[OK] spot nets physically identical: {SPOT}")
+    # 原断言：assert (p_plain.rise_count, p_plain.fall_count) == \
+    record(f"spot/{inst_path}_{pin_name}_toggle_equal",
+           (p_plain.rise_count, p_plain.fall_count)
+           == (p_esc.rise_count, p_esc.fall_count),
+           detail=((p_plain.rise_count, p_plain.fall_count),
+                   (p_esc.rise_count, p_esc.fall_count)))
+    # 原断言：assert (p_plain.t0, p_plain.t1, p_plain.tx, p_plain.tz) == \
+    record(f"spot/{inst_path}_{pin_name}_window_equal",
+           (p_plain.t0, p_plain.t1, p_plain.tx, p_plain.tz)
+           == (p_esc.t0, p_esc.t1, p_esc.tx, p_esc.tz),
+           detail=((p_plain.t0, p_plain.t1, p_plain.tx, p_plain.tz),
+                   (p_esc.t0, p_esc.t1, p_esc.tx, p_esc.tz)))
+INFO(f"[DONE] spot nets physically identical: {SPOT}")
 
 shutil.rmtree(os.path.dirname(ROUTED_DEF), ignore_errors=True)
 shutil.rmtree(os.path.dirname(ESCAPED_VCD), ignore_errors=True)
 
 get_agent().stop()
-print("[PASS] test_emir_waveform_escaped")
+print("[DONE] test_emir_waveform_escaped")

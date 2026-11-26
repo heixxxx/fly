@@ -11,10 +11,11 @@
 工具产出满足该形态），从 DEF 与 SPEF 现场算出逐网三值（飞法）与记录
 计数，与建库结果逐网核对（相对误差 1e-9）。逐网数值不写死、不落盘
 （gcd 设计许可状态不明确——只有从它派生的逐网数值不进仓库）；汇总层
-计数写常量（已在设计数据仓库的说明里公开），并与独立解析合计相互印
-证。期望值经主 agent 在真实数据上核对（2026-11-25）。
+计数的期望值固化在 qa/emir/gold/test_emir_real_gcd.gold（数值与设计数据
+仓库的说明里公开的计数一致），并与独立解析合计相互印证。期望值经主
+agent 在真实数据上核对（2026-11-25）。
 
-断言面：
+检查面（断言已迁移成记录，由运行器与基准文件比对）：
   - 设计库：校验报告（752 实例 / 508 网 = 506 信号 + VDD/VSS / 单分
     区 / 0 跨区网）+ 电源地网集（power 1 / ground 1——真实布线工具写
     的电源网只有通配连接 `( * VDD )`，解析期展开为每实例一条连接）+
@@ -48,6 +49,7 @@ from log import INFO
 from fly import get_config, launch_workers, wait_tasks
 from fly.runtime import get_agent
 from emir import EMIRProject
+from test import record
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 TIMING_DATA = os.path.join(SCRIPT_DIR, "data", "timing")
@@ -73,24 +75,18 @@ PROJ_PATH = os.path.join(LOG_DIR, "emir_real_gcd")
 
 _MISSING = [p for p in (DEF_PATH, SPEF_PATH, TWF_PATH, VCD_PATH)
             if not os.path.isfile(p)]
+# 保留：环境前置检查——子模块未初始化时必须明确失败并提示初始化命令，不静默跳过（AGENTS.md 裁定）
 assert not _MISSING, (
     f"designs 子模块数据缺失: {_MISSING}（designs/ 是独立仓库，fly 仅"
     f"引用）—— 请先初始化子模块: git submodule update --init designs")
 for _p in (TECH_LEF, MACRO_MOD_LEF, LIBERTY):
-    assert os.path.isfile(_p), f"工艺库文件缺失: {_p}"
+    assert os.path.isfile(_p), f"工艺库文件缺失: {_p}"  # 保留：环境前置检查——工艺库文件缺失时用例无法进行
 
-# ── 汇总层期望值（字面量；与 designs/ 子模块说明的公开计数一致）──────
+# ── 汇总层期望值（字面量；与 designs/ 子模块说明的公开计数一致——
+#    迁移后各计数的期望值固化在 qa/emir/gold/test_emir_real_gcd.gold）──
 
-EXPECT_DEF_SIGNAL_NETS = 506     # DEF NETS 段普通网（含 34 张未布线）
-EXPECT_DEF_ROUTED_NETS = 472     # 其中带 + ROUTED 布线几何的
 EXPECT_DEF_PG_NETS = ("VDD", "VSS")  # SPECIALNETS 段电源地网
-EXPECT_SPEF_NETS = 472           # SPEF 网段 == 已布线信号网
-EXPECT_CAP_RECORDS = 8513        # *CAP 记录合计（对地 + 耦合）
-EXPECT_COUPLING_RECORDS = 6794   # 其中耦合（三字段）记录
-EXPECT_RES_RECORDS = 1247        # *RES 记录
 EXPECT_CAP_UNIT_FF = 1000.0      # *C_UNIT 1 PF → 1 单位 = 1000 飞法
-EXPECT_VERIFY_INSTANCES = 752    # 校验报告：实例总数
-EXPECT_VERIFY_NETS = 508         # 校验报告：网总数（506 信号 + VDD/VSS）
 EXPECT_PG_CONNECTIONS = 752      # 每实例一条电源引脚连接（通配展开后）
 EXPECT_TIMING_ENTRY = 506        # 时序库条目
 EXPECT_TIMING_HIT = 472          # 时序库命中
@@ -99,8 +95,6 @@ EXPECT_TIMING_PARTITION_SIZE = 436  # 分区 (0,0) 时序对象条目
 EXPECT_WAVEFORM_COUNT = 472      # 波形库波形实体数
 EXPECT_WAVEFORM_HIT = 426        # 波形库命中
 EXPECT_WAVEFORM_EVENTS = 18661   # 波形库事件总数
-EXPECT_WAVEFORM_T_START_FS = 8740000   # 8.74 ns
-EXPECT_WAVEFORM_T_END_FS = 80500000    # 80.5 ns
 REL_TOL = 1e-9                   # 逐网三值相对误差上限
 
 
@@ -182,7 +176,7 @@ def _read_spef(path):
                 if t[0].startswith("*") and not t[0][1:].isdigit():
                     section = None
                 else:
-                    assert t[0][1:].isdigit(), line  # 条目必为 *数字
+                    assert t[0][1:].isdigit(), line  # 条目必为 *数字  # 保留：独立参照解析器的输入格式前置检查（数据形态破坏时参照值无效，后续核对全部失去意义）
                     name_map[t[0]] = _unescape(t[1])
                     continue
             if t[0] == "*END":
@@ -190,9 +184,9 @@ def _read_spef(path):
                 section = None
                 continue
             if t[0] in ("*D_NET", "*R_NET"):
-                assert cap_unit is not None, "*C_UNIT must come first"
+                assert cap_unit is not None, "*C_UNIT must come first"  # 保留：独立参照解析器的输入格式前置检查（同上）
                 name = name_map.get(t[1], t[1])
-                assert name not in nets, f"SPEF 重复网段: {name}"
+                assert name not in nets, f"SPEF 重复网段: {name}"  # 保留：独立参照解析器的输入格式前置检查（同上）
                 cur = [float(t[2]) * cap_unit, 0.0, 0.0]
                 nets[name] = cur
                 stats["net"] += 1
@@ -205,7 +199,7 @@ def _read_spef(path):
             if t[0].startswith("*"):
                 continue
             if section == "CAP":
-                assert cur is not None, line
+                assert cur is not None, line  # 保留：独立参照解析器的输入格式前置检查（同上）
                 if len(t) == 3:      # 编号 节点 值 —— 对地
                     cur[1] += float(t[2]) * cap_unit
                     stats["cap"] += 1
@@ -216,7 +210,7 @@ def _read_spef(path):
                 else:
                     raise AssertionError(f"意外的电容记录形态: {line}")
             elif section == "RES":
-                assert len(t) == 4, line
+                assert len(t) == 4, line  # 保留：独立参照解析器的输入格式前置检查（同上）
                 stats["res"] += 1
     return nets, stats, cap_unit
 
@@ -227,26 +221,30 @@ REF_NETS, REF_STATS, REF_CAP_UNIT = _read_spef(SPEF_PATH)
 DEF_SIGNAL, DEF_PG = _read_def(DEF_PATH)
 DEF_ROUTED = [name for name, routed in DEF_SIGNAL if routed]
 
-assert len(DEF_SIGNAL) == EXPECT_DEF_SIGNAL_NETS, \
-    (len(DEF_SIGNAL), EXPECT_DEF_SIGNAL_NETS)
-assert len(set(name for name, _ in DEF_SIGNAL)) == len(DEF_SIGNAL), \
-    "parser defect: duplicate DEF net names"
-assert len(DEF_ROUTED) == EXPECT_DEF_ROUTED_NETS, \
-    (len(DEF_ROUTED), EXPECT_DEF_ROUTED_NETS)
-assert tuple(sorted(name for name, _ in DEF_PG)) == EXPECT_DEF_PG_NETS, \
-    DEF_PG
-assert len(REF_NETS) == EXPECT_SPEF_NETS, \
-    (len(REF_NETS), EXPECT_SPEF_NETS)
-assert REF_STATS["cap"] == EXPECT_CAP_RECORDS, \
-    (REF_STATS["cap"], EXPECT_CAP_RECORDS)
-assert REF_STATS["coupling"] == EXPECT_COUPLING_RECORDS, \
-    (REF_STATS["coupling"], EXPECT_COUPLING_RECORDS)
-assert REF_STATS["res"] == EXPECT_RES_RECORDS, \
-    (REF_STATS["res"], EXPECT_RES_RECORDS)
-assert REF_STATS["rnet"] == 0, REF_STATS
-assert abs(REF_CAP_UNIT - EXPECT_CAP_UNIT_FF) <= \
-    1e-9 * EXPECT_CAP_UNIT_FF, REF_CAP_UNIT
-INFO(f"[OK] independent parse: {len(DEF_SIGNAL)} DEF nets "
+# 原断言：assert len(DEF_SIGNAL) == EXPECT_DEF_SIGNAL_NETS, \
+record("ref/def_signal_count", len(DEF_SIGNAL))
+# 原断言：assert len(set(name for name, _ in DEF_SIGNAL)) == len(DEF_SIGNAL), \
+record("ref/def_net_names_unique",
+       len(set(name for name, _ in DEF_SIGNAL)) == len(DEF_SIGNAL))
+# 原断言：assert len(DEF_ROUTED) == EXPECT_DEF_ROUTED_NETS, \
+record("ref/def_routed_count", len(DEF_ROUTED))
+# 原断言：assert tuple(sorted(name for name, _ in DEF_PG)) == EXPECT_DEF_PG_NETS, \
+record("ref/def_pg_names", sorted(name for name, _ in DEF_PG))
+# 原断言：assert len(REF_NETS) == EXPECT_SPEF_NETS, \
+record("ref/spef_net_count", len(REF_NETS))
+# 原断言：assert REF_STATS["cap"] == EXPECT_CAP_RECORDS, \
+record("ref/cap_records", REF_STATS["cap"])
+# 原断言：assert REF_STATS["coupling"] == EXPECT_COUPLING_RECORDS, \
+record("ref/coupling_records", REF_STATS["coupling"])
+# 原断言：assert REF_STATS["res"] == EXPECT_RES_RECORDS, \
+record("ref/res_records", REF_STATS["res"])
+# 原断言：assert REF_STATS["rnet"] == 0, REF_STATS
+record("ref/rnet_records", REF_STATS["rnet"])
+# 原断言：assert abs(REF_CAP_UNIT - EXPECT_CAP_UNIT_FF) <= \
+record("ref/cap_unit_1000ff",
+       abs(REF_CAP_UNIT - EXPECT_CAP_UNIT_FF) <= 1e-9 * EXPECT_CAP_UNIT_FF,
+       detail=f"{REF_CAP_UNIT!r}")
+INFO(f"[DONE] independent parse: {len(DEF_SIGNAL)} DEF nets "
      f"({len(DEF_ROUTED)} routed + {len(DEF_PG)} pg), "
      f"{len(REF_NETS)} SPEF nets, {REF_STATS['cap']} cap records "
      f"({REF_STATS['coupling']} coupling), {REF_STATS['res']} res")
@@ -266,8 +264,10 @@ INFO("  2 workers connected (user-managed)")
 proj = EMIRProject(PROJ_PATH)
 for flow in ("build_lib_db", "build_design_db", "build_spef_db",
              "build_timing_db", "build_waveform_db"):
-    assert flow in proj.list_flows(), flow
-INFO("[OK] four-db flows registered on EMIRProject")
+    # 原断言：assert flow in proj.list_flows(), flow
+    record(f"flows/{flow}_registered", flow in proj.list_flows(),
+           detail=sorted(proj.list_flows()))
+INFO("[DONE] four-db flows registered on EMIRProject")
 
 # ── 建库链：lib → design（冻结后）→ spef + timing + waveform 一批 ────
 
@@ -304,41 +304,55 @@ from emir.design import (  # noqa: E402  设计库读库（校验报告 + pg 集
 )
 
 report = load_design_verify_report(design)
-assert report.total_instances == EXPECT_VERIFY_INSTANCES, \
-    (report.total_instances, EXPECT_VERIFY_INSTANCES)
-assert report.total_nets == EXPECT_VERIFY_NETS, \
-    (report.total_nets, EXPECT_VERIFY_NETS)
-assert report.partition_count == 1, report.partition_count
-assert report.total_crossing_nets == 0, report.total_crossing_nets
-INFO("[OK] design verify report: 752 instances / 508 nets / "
+# 原断言：assert report.total_instances == EXPECT_VERIFY_INSTANCES, \
+record("design/total_instances", report.total_instances)
+# 原断言：assert report.total_nets == EXPECT_VERIFY_NETS, \
+record("design/total_nets", report.total_nets)
+# 原断言：assert report.partition_count == 1, report.partition_count
+record("design/partition_count", report.partition_count)
+# 原断言：assert report.total_crossing_nets == 0, report.total_crossing_nets
+record("design/total_crossing_nets", report.total_crossing_nets)
+INFO("[DONE] design verify report: 752 instances / 508 nets / "
      "1 partition / 0 crossing nets")
 
 pg_nets = load_design_pg_nets(design)
-assert pg_nets.power_count == 1, pg_nets.power_count
-assert pg_nets.ground_count == 1, pg_nets.ground_count
-INFO("[OK] design pg nets: 1 power (VDD) + 1 ground (VSS)")
+# 原断言：assert pg_nets.power_count == 1, pg_nets.power_count
+record("design/pg_power_count", pg_nets.power_count)
+# 原断言：assert pg_nets.ground_count == 1, pg_nets.ground_count
+record("design/pg_ground_count", pg_nets.ground_count)
+INFO("[DONE] design pg nets: 1 power (VDD) + 1 ground (VSS)")
 
 # 真实布线工具写的电源网只有通配连接 `( * VDD )`——设计库解析期展开为
 # 每实例一条电源引脚连接；电源引脚双向（全 hybrid 位）、无端口条目
 for name in EXPECT_DEF_PG_NETS:
     net = design.get_net(name)
-    assert net is not None, name
-    assert net["connection_count"] == EXPECT_PG_CONNECTIONS, \
-        (name, net["connection_count"])
-    assert net["hybrid_count"] == EXPECT_PG_CONNECTIONS, \
-        (name, net["hybrid_count"])
-    assert net["driver_count"] == 0, (name, net["driver_count"])
-    assert net["receiver_count"] == 0, (name, net["receiver_count"])
-    assert net["port_count"] == 0, (name, net["port_count"])
-INFO(f"[OK] design VDD/VSS: {EXPECT_PG_CONNECTIONS} wildcard-expanded "
+    # 原断言：assert net is not None, name
+    record(f"design/pg_{name}_exists", net is not None, detail=name)
+    assert net is not None  # 保留：守卫（后面 net["connection_count"] 等解引用）
+    # 原断言：assert net["connection_count"] == EXPECT_PG_CONNECTIONS, \
+    record(f"design/pg_{name}_connection_count", net["connection_count"])
+    # 原断言：assert net["hybrid_count"] == EXPECT_PG_CONNECTIONS, \
+    record(f"design/pg_{name}_hybrid_count", net["hybrid_count"])
+    # 原断言：assert net["driver_count"] == 0, (name, net["driver_count"])
+    record(f"design/pg_{name}_driver_count", net["driver_count"])
+    # 原断言：assert net["receiver_count"] == 0, (name, net["receiver_count"])
+    record(f"design/pg_{name}_receiver_count", net["receiver_count"])
+    # 原断言：assert net["port_count"] == 0, (name, net["port_count"])
+    record(f"design/pg_{name}_port_count", net["port_count"])
+INFO(f"[DONE] design VDD/VSS: {EXPECT_PG_CONNECTIONS} wildcard-expanded "
      f"connections each (all hybrid, no ports)")
 
 clk = design.get_net("clk")
-assert clk is not None, "clk"
-assert clk["driver_count"] == 1, clk["driver_count"]
-assert clk["receiver_count"] == 1, clk["receiver_count"]
-assert clk["port_count"] == 1, clk["port_count"]
-INFO("[OK] design clk: 1 driver (clock port) + 1 receiver")
+# 原断言：assert clk is not None, "clk"
+record("design/clk_exists", clk is not None)
+assert clk is not None  # 保留：守卫（后面 clk["driver_count"] 等解引用）
+# 原断言：assert clk["driver_count"] == 1, clk["driver_count"]
+record("design/clk_driver_count", clk["driver_count"])
+# 原断言：assert clk["receiver_count"] == 1, clk["receiver_count"]
+record("design/clk_receiver_count", clk["receiver_count"])
+# 原断言：assert clk["port_count"] == 1, clk["port_count"]
+record("design/clk_port_count", clk["port_count"])
+INFO("[DONE] design clk: 1 driver (clock port) + 1 receiver")
 
 # ═══ 寄生库：逐网独立参照核对（本用例的核心）══════════════════════════
 
@@ -349,104 +363,189 @@ from emir.spef import (  # noqa: E402  spef 读库 API（模块函数层）
 )
 
 
-def _assert_close(got, want, where):
-    """浮点对照（相对误差 REL_TOL；零值附近退化为绝对 1e-9 飞法——远
-    小于任何记录精度）。"""
-    assert abs(got - want) <= REL_TOL * max(abs(want), 1.0), \
-        (where, got, want)
+def _close(got, want):
+    """浮点对照判定（相对误差 REL_TOL；零值附近退化为绝对 1e-9 飞法——远
+    小于任何记录精度）。返回是否满足容差。"""
+    return abs(got - want) <= REL_TOL * max(abs(want), 1.0)
 
 
 spef_summary = load_spef_summary(spef)
-assert len(spef_summary.files) == 1, spef_summary.files
+# 原断言：assert len(spef_summary.files) == 1, spef_summary.files
+record("spef/files_count", len(spef_summary.files))
+assert len(spef_summary.files) >= 1  # 保留：守卫（后面按下标取 spef_summary.files[0]，越界在 C++ 侧是未定义行为）
 f0 = spef_summary.files[0]
-assert f0.source_file.endswith("6_final.spef"), f0.source_file
+# 原断言：assert f0.source_file.endswith("6_final.spef"), f0.source_file
+record("spef/f0_source_suffix", f0.source_file.endswith("6_final.spef"),
+       detail=f0.source_file)
 # 逐文件统计：字面量与独立解析合计双口径交叉
-assert f0.net_count == len(REF_NETS) == EXPECT_SPEF_NETS, \
-    (f0.net_count, len(REF_NETS))
-assert f0.hit_count == EXPECT_SPEF_NETS, f0.hit_count
-assert f0.net_name_miss_count == 0, f0.net_name_miss_count
-assert f0.broken_net_count == 0, f0.broken_net_count
-assert f0.rnet_count == REF_STATS["rnet"] == 0, f0.rnet_count
-assert f0.cap_count == REF_STATS["cap"] == EXPECT_CAP_RECORDS, \
-    (f0.cap_count, REF_STATS["cap"])
-assert f0.coupling_cap_count == REF_STATS["coupling"] == \
-    EXPECT_COUPLING_RECORDS, (f0.coupling_cap_count, REF_STATS["coupling"])
-assert f0.res_count == REF_STATS["res"] == EXPECT_RES_RECORDS, \
-    (f0.res_count, REF_STATS["res"])
-assert f0.chunk_count == 1, f0.chunk_count
-assert f0.pg_net_skip_count == 0, f0.pg_net_skip_count
-assert f0.unrouted_net_count == 0, f0.unrouted_net_count
-assert f0.failed_chunk_count == 0, f0.failed_chunk_count
-assert abs(f0.c_unit_ff_per_unit - EXPECT_CAP_UNIT_FF) <= \
-    1e-9 * EXPECT_CAP_UNIT_FF, f0.c_unit_ff_per_unit
-INFO("[OK] spef file stats: 472 nets hit, 8513 cap records (6794 "
+# 原断言：assert f0.net_count == len(REF_NETS) == EXPECT_SPEF_NETS, \
+record("spef/f0_net_count", f0.net_count)
+record("spef/f0_net_count_matches_ref", f0.net_count == len(REF_NETS),
+       detail=(f0.net_count, len(REF_NETS)))
+# 原断言：assert f0.hit_count == EXPECT_SPEF_NETS, f0.hit_count
+record("spef/f0_hit_count", f0.hit_count)
+# 原断言：assert f0.net_name_miss_count == 0, f0.net_name_miss_count
+record("spef/f0_net_name_miss_count", f0.net_name_miss_count)
+# 原断言：assert f0.broken_net_count == 0, f0.broken_net_count
+record("spef/f0_broken_net_count", f0.broken_net_count)
+# 原断言：assert f0.rnet_count == REF_STATS["rnet"] == 0, f0.rnet_count
+record("spef/f0_rnet_count", f0.rnet_count)
+record("spef/f0_rnet_count_matches_ref", f0.rnet_count == REF_STATS["rnet"],
+       detail=(f0.rnet_count, REF_STATS["rnet"]))
+# 原断言：assert f0.cap_count == REF_STATS["cap"] == EXPECT_CAP_RECORDS, \
+record("spef/f0_cap_count", f0.cap_count)
+record("spef/f0_cap_count_matches_ref", f0.cap_count == REF_STATS["cap"],
+       detail=(f0.cap_count, REF_STATS["cap"]))
+# 原断言：assert f0.coupling_cap_count == REF_STATS["coupling"] == \
+record("spef/f0_coupling_cap_count", f0.coupling_cap_count)
+record("spef/f0_coupling_matches_ref",
+       f0.coupling_cap_count == REF_STATS["coupling"],
+       detail=(f0.coupling_cap_count, REF_STATS["coupling"]))
+# 原断言：assert f0.res_count == REF_STATS["res"] == EXPECT_RES_RECORDS, \
+record("spef/f0_res_count", f0.res_count)
+record("spef/f0_res_count_matches_ref", f0.res_count == REF_STATS["res"],
+       detail=(f0.res_count, REF_STATS["res"]))
+# 原断言：assert f0.chunk_count == 1, f0.chunk_count
+record("spef/f0_chunk_count", f0.chunk_count)
+# 原断言：assert f0.pg_net_skip_count == 0, f0.pg_net_skip_count
+record("spef/f0_pg_net_skip_count", f0.pg_net_skip_count)
+# 原断言：assert f0.unrouted_net_count == 0, f0.unrouted_net_count
+record("spef/f0_unrouted_net_count", f0.unrouted_net_count)
+# 原断言：assert f0.failed_chunk_count == 0, f0.failed_chunk_count
+record("spef/f0_failed_chunk_count", f0.failed_chunk_count)
+# 原断言：assert abs(f0.c_unit_ff_per_unit - EXPECT_CAP_UNIT_FF) <= \
+record("spef/f0_c_unit_1000ff",
+       abs(f0.c_unit_ff_per_unit - EXPECT_CAP_UNIT_FF)
+       <= 1e-9 * EXPECT_CAP_UNIT_FF, detail=f"{f0.c_unit_ff_per_unit!r}")
+INFO("[DONE] spef file stats: 472 nets hit, 8513 cap records (6794 "
      "coupling), 1247 res, 1 chunk, *C_UNIT 1 PF = 1000 fF")
 
 # 全局覆盖（平展设计单分区——绝对数即全局数）
-assert spef_summary.routed_signal_net_count == len(DEF_ROUTED) == \
-    EXPECT_DEF_ROUTED_NETS, (spef_summary.routed_signal_net_count,
-                             len(DEF_ROUTED))
-assert spef_summary.covered_net_count == EXPECT_SPEF_NETS, \
-    spef_summary.covered_net_count
-assert spef_summary.uncovered_net_count == 0, spef_summary.uncovered_net_count
-assert spef_summary.uncovered_instance_count == 0, \
-    spef_summary.uncovered_instance_count
-assert spef_summary.zero_cap_instance_count == 0, \
-    spef_summary.zero_cap_instance_count
-assert spef_summary.cap_mismatch_count == 0, spef_summary.cap_mismatch_count
-assert spef_summary.rnet_count == 0, spef_summary.rnet_count
-assert spef_summary.electrical_net_count == 0, \
-    spef_summary.electrical_net_count  # 多成员电气网 0（平展设计）
-assert spef_summary.invalid_binding_count == 0, \
-    spef_summary.invalid_binding_count
-INFO("[OK] spef global coverage: routed 472 / covered 472 / uncovered "
+# 原断言：assert spef_summary.routed_signal_net_count == len(DEF_ROUTED) == \
+record("spef/routed_signal_net_count", spef_summary.routed_signal_net_count)
+record("spef/routed_matches_def",
+       spef_summary.routed_signal_net_count == len(DEF_ROUTED),
+       detail=(spef_summary.routed_signal_net_count, len(DEF_ROUTED)))
+# 原断言：assert spef_summary.covered_net_count == EXPECT_SPEF_NETS, \
+record("spef/covered_net_count", spef_summary.covered_net_count)
+# 原断言：assert spef_summary.uncovered_net_count == 0, spef_summary.uncovered_net_count
+record("spef/uncovered_net_count", spef_summary.uncovered_net_count)
+# 原断言：assert spef_summary.uncovered_instance_count == 0, \
+record("spef/uncovered_instance_count", spef_summary.uncovered_instance_count)
+# 原断言：assert spef_summary.zero_cap_instance_count == 0, \
+record("spef/zero_cap_instance_count", spef_summary.zero_cap_instance_count)
+# 原断言：assert spef_summary.cap_mismatch_count == 0, spef_summary.cap_mismatch_count
+record("spef/cap_mismatch_count", spef_summary.cap_mismatch_count)
+# 原断言：assert spef_summary.rnet_count == 0, spef_summary.rnet_count
+record("spef/summary_rnet_count", spef_summary.rnet_count)
+# 原断言：assert spef_summary.electrical_net_count == 0, \
+record("spef/electrical_net_count", spef_summary.electrical_net_count)
+# 原断言：assert spef_summary.invalid_binding_count == 0, \
+record("spef/invalid_binding_count", spef_summary.invalid_binding_count)
+INFO("[DONE] spef global coverage: routed 472 / covered 472 / uncovered "
      "0 / mismatch 0 / multi-member electrical 0")
 
 # 分区：单分区 (0,0)，472 条按 net id 升序，逐网三值 == 独立解析
-assert list(iter_spef_partition(spef)) == [(0, 0)], \
-    list(iter_spef_partition(spef))
+# 原断言：assert list(iter_spef_partition(spef)) == [(0, 0)], \
+record("spef/partition_list", list(iter_spef_partition(spef)))
 part_obj = load_partition_net_load(spef, 0, 0)
-assert part_obj.size == EXPECT_SPEF_NETS, part_obj.size
+# 原断言：assert part_obj.size == EXPECT_SPEF_NETS, part_obj.size
+record("spef/partition_size", part_obj.size)
 entries = list(part_obj.items)
 entry_ids = [e.net_id for e in entries]
-assert entry_ids == sorted(entry_ids), "entries must be net-id ascending"
+# 原断言：assert entry_ids == sorted(entry_ids), "entries must be net-id ascending"
+record("spef/entries_net_id_ascending", entry_ids == sorted(entry_ids))
 
 # 名字 ↔ 全局 id：472 个 SPEF 网名在 design db 全部可解析且 id 唯一
 name_by_id = {}
+unresolved_names = []
+duplicate_ids = []
 for name in REF_NETS:
     gid = design.convert_to_id(net=name)
-    assert gid is not None, f"design db must resolve spef net {name}"
-    assert gid not in name_by_id, f"duplicate design net id for {name}"
-    name_by_id[gid] = name
-assert len(name_by_id) == EXPECT_SPEF_NETS, len(name_by_id)
+    if gid is None:
+        unresolved_names.append(name)
+    elif gid in name_by_id:
+        duplicate_ids.append(name)
+    else:
+        name_by_id[gid] = name
+# 原断言：assert gid is not None, f"design db must resolve spef net {name}"
+record("spef/names_all_resolved", not unresolved_names,
+       detail=unresolved_names)
+# 原断言：assert gid not in name_by_id, f"duplicate design net id for {name}"
+record("spef/net_ids_unique", not duplicate_ids, detail=duplicate_ids)
+# 原断言：assert len(name_by_id) == EXPECT_SPEF_NETS, len(name_by_id)
+record("spef/name_map_size", len(name_by_id))
 
+missing_net_ids = []
+cap_mismatch = []
+mask_mismatch = []
+reduced_flags = []
 for e in entries:
     name = name_by_id.get(e.net_id)
-    assert name is not None, f"unexpected net id {e.net_id}"
+    if name is None:
+        missing_net_ids.append(e.net_id)
+        continue
     total, ground, coupling = REF_NETS[name]
-    _assert_close(e.total_cap_reported_ff, total, name)
-    _assert_close(e.ground_cap_ff, ground, name)
-    _assert_close(e.coupling_cap_ff, coupling, name)
-    assert e.source_mask == 1, (name, e.source_mask)
-    assert (e.flags & 0x1) == 0, (name, e.flags)  # 缩减位（无 *R_NET）
-INFO(f"[OK] spef: all {part_obj.size} nets match independent parse "
+    if not _close(e.total_cap_reported_ff, total):
+        cap_mismatch.append(
+            (name, "total", f"{e.total_cap_reported_ff!r} vs {total!r}"))
+    if not _close(e.ground_cap_ff, ground):
+        cap_mismatch.append(
+            (name, "ground", f"{e.ground_cap_ff!r} vs {ground!r}"))
+    if not _close(e.coupling_cap_ff, coupling):
+        cap_mismatch.append(
+            (name, "coupling", f"{e.coupling_cap_ff!r} vs {coupling!r}"))
+    if e.source_mask != 1:
+        mask_mismatch.append((name, e.source_mask))
+    if (e.flags & 0x1) != 0:
+        reduced_flags.append((name, e.flags))
+# 原断言：assert name is not None, f"unexpected net id {e.net_id}"
+record("spef/per_net_names_resolved", not missing_net_ids,
+       detail=missing_net_ids)
+# 原断言：assert abs(got - want) <= REL_TOL * max(abs(want), 1.0), \
+record("spef/per_net_cap_matches_ref", not cap_mismatch, detail=cap_mismatch)
+# 原断言：assert e.source_mask == 1, (name, e.source_mask)
+record("spef/per_net_source_mask_1", not mask_mismatch, detail=mask_mismatch)
+# 原断言：assert (e.flags & 0x1) == 0, (name, e.flags)
+record("spef/per_net_no_reduced_flag", not reduced_flags,  # 缩减位（无 *R_NET）
+       detail=reduced_flags)
+INFO(f"[DONE] spef: all {part_obj.size} nets match independent parse "
      f"(rel {REL_TOL:g}), net-id ascending, no reduced flags")
 
 # 点查：clk 三值 == 独立解析（期望从独立解析现场算出，不写字面量）；
 # 电气网单成员（自身）；电源网不在 SPEF（网段 0 条）→ None
 rec = spef.get_net_load("clk")
-assert rec is not None, "clk"
+# 原断言：assert rec is not None, "clk"
+record("spef/clk_load_exists", rec is not None)
+assert rec is not None  # 保留：守卫（后面 rec["total_cap_reported_ff"] 等解引用）
 clk_id = design.convert_to_id(net="clk")
 clk_total, clk_ground, clk_coupling = REF_NETS["clk"]
-_assert_close(rec["total_cap_reported_ff"], clk_total, "clk")
-_assert_close(rec["ground_cap_ff"], clk_ground, "clk")
-_assert_close(rec["coupling_cap_ff"], clk_coupling, "clk")
-assert rec["net_id"] == clk_id, (rec["net_id"], clk_id)
-assert rec["electrical_members"] == [clk_id], rec["electrical_members"]
-assert rec["partitions"] == [(0, 0)], rec["partitions"]
-assert spef.get_net_load("VDD") is None, "VDD must be absent"
-assert spef.get_net_load("VSS") is None, "VSS must be absent"
-INFO("[OK] spef clk point query = independent parse, "
+# 原断言：assert abs(got - want) <= REL_TOL * max(abs(want), 1.0), \
+record("spef/clk_total_matches_ref",
+       _close(rec["total_cap_reported_ff"], clk_total),
+       detail=(f"{rec['total_cap_reported_ff']!r}", f"{clk_total!r}"))
+# 原断言：assert abs(got - want) <= REL_TOL * max(abs(want), 1.0), \
+record("spef/clk_ground_matches_ref",
+       _close(rec["ground_cap_ff"], clk_ground),
+       detail=(f"{rec['ground_cap_ff']!r}", f"{clk_ground!r}"))
+# 原断言：assert abs(got - want) <= REL_TOL * max(abs(want), 1.0), \
+record("spef/clk_coupling_matches_ref",
+       _close(rec["coupling_cap_ff"], clk_coupling),
+       detail=(f"{rec['coupling_cap_ff']!r}", f"{clk_coupling!r}"))
+# 原断言：assert rec["net_id"] == clk_id, (rec["net_id"], clk_id)
+record("spef/clk_net_id_matches", rec["net_id"] == clk_id,
+       detail=(rec["net_id"], clk_id))
+# 原断言：assert rec["electrical_members"] == [clk_id], rec["electrical_members"]
+record("spef/clk_electrical_members_self",
+       rec["electrical_members"] == [clk_id],
+       detail=rec["electrical_members"])
+# 原断言：assert rec["partitions"] == [(0, 0)], rec["partitions"]
+record("spef/clk_partitions", rec["partitions"])
+# 原断言：assert spef.get_net_load("VDD") is None, "VDD must be absent"
+record("spef/vdd_load_absent", spef.get_net_load("VDD"))
+# 原断言：assert spef.get_net_load("VSS") is None, "VSS must be absent"
+record("spef/vss_load_absent", spef.get_net_load("VSS"))
+INFO("[DONE] spef clk point query = independent parse, "
      "single-member electrical net; VDD/VSS absent")
 
 # ═══ 时序库（汇总层面；时序库自身有专门的测试）════════════════════════
@@ -458,27 +557,32 @@ from emir.timing import (  # noqa: E402  timing 读库 API（模块函数层）
 )
 
 timing_summary = load_timing_summary(timing)
-assert timing_summary.total_entry_count == EXPECT_TIMING_ENTRY, \
-    timing_summary.total_entry_count
-assert timing_summary.total_hit_count == EXPECT_TIMING_HIT, \
-    timing_summary.total_hit_count
-assert timing_summary.dangling_net_count == EXPECT_TIMING_DANGLING == \
-    len(DEF_SIGNAL) - len(DEF_ROUTED), timing_summary.dangling_net_count
-assert timing_summary.multi_driver_net_count == 0, \
-    timing_summary.multi_driver_net_count
-assert timing_summary.unplaced_instance_count == 0, \
-    timing_summary.unplaced_instance_count
-assert timing_summary.net_name_miss_count == 0, \
-    timing_summary.net_name_miss_count
-assert timing_summary.clock_conflict_count == 0, \
-    timing_summary.clock_conflict_count
-assert timing_summary.missing_clock_count == 0, \
-    timing_summary.missing_clock_count
-assert list(iter_timing_partition(timing)) == [(0, 0)], \
-    list(iter_timing_partition(timing))
-assert load_partition_timing(timing, 0, 0).size == \
-    EXPECT_TIMING_PARTITION_SIZE, load_partition_timing(timing, 0, 0).size
-INFO(f"[OK] timing: {EXPECT_TIMING_ENTRY} entries / "
+# 原断言：assert timing_summary.total_entry_count == EXPECT_TIMING_ENTRY, \
+record("timing/total_entry_count", timing_summary.total_entry_count)
+# 原断言：assert timing_summary.total_hit_count == EXPECT_TIMING_HIT, \
+record("timing/total_hit_count", timing_summary.total_hit_count)
+# 原断言：assert timing_summary.dangling_net_count == EXPECT_TIMING_DANGLING == \
+record("timing/dangling_net_count", timing_summary.dangling_net_count)
+record("timing/dangling_matches_unrouted",
+       timing_summary.dangling_net_count
+       == len(DEF_SIGNAL) - len(DEF_ROUTED),
+       detail=(timing_summary.dangling_net_count,
+               len(DEF_SIGNAL) - len(DEF_ROUTED)))
+# 原断言：assert timing_summary.multi_driver_net_count == 0, \
+record("timing/multi_driver_net_count", timing_summary.multi_driver_net_count)
+# 原断言：assert timing_summary.unplaced_instance_count == 0, \
+record("timing/unplaced_instance_count", timing_summary.unplaced_instance_count)
+# 原断言：assert timing_summary.net_name_miss_count == 0, \
+record("timing/net_name_miss_count", timing_summary.net_name_miss_count)
+# 原断言：assert timing_summary.clock_conflict_count == 0, \
+record("timing/clock_conflict_count", timing_summary.clock_conflict_count)
+# 原断言：assert timing_summary.missing_clock_count == 0, \
+record("timing/missing_clock_count", timing_summary.missing_clock_count)
+# 原断言：assert list(iter_timing_partition(timing)) == [(0, 0)], \
+record("timing/partition_list", list(iter_timing_partition(timing)))
+# 原断言：assert load_partition_timing(timing, 0, 0).size == \
+record("timing/partition_size", load_partition_timing(timing, 0, 0).size)
+INFO(f"[DONE] timing: {EXPECT_TIMING_ENTRY} entries / "
      f"{EXPECT_TIMING_HIT} hits / {EXPECT_TIMING_DANGLING} dangling "
      f"(unrouted nets), partition (0,0) size "
      f"{EXPECT_TIMING_PARTITION_SIZE}")
@@ -488,33 +592,39 @@ INFO(f"[OK] timing: {EXPECT_TIMING_ENTRY} entries / "
 from emir.waveform import load_waveform_summary  # noqa: E402
 
 wave_summary = load_waveform_summary(waveform)
-assert wave_summary.waveform_count == EXPECT_WAVEFORM_COUNT, \
-    wave_summary.waveform_count
-assert wave_summary.total_hit_count == EXPECT_WAVEFORM_HIT, \
-    wave_summary.total_hit_count
-assert wave_summary.total_event_count == EXPECT_WAVEFORM_EVENTS, \
-    wave_summary.total_event_count
-assert wave_summary.dangling_net_count == EXPECT_TIMING_DANGLING, \
-    wave_summary.dangling_net_count
-assert wave_summary.net_name_miss_count == 0, \
-    wave_summary.net_name_miss_count  # 仿真器转义标识符已处理
-assert wave_summary.inst_pin_miss_count == 0, \
-    wave_summary.inst_pin_miss_count
-assert wave_summary.unplaced_instance_count == 0, \
-    wave_summary.unplaced_instance_count
-assert wave_summary.multi_driver_net_count == 0, \
-    wave_summary.multi_driver_net_count
-assert len(wave_summary.files) == 1, wave_summary.files
-assert wave_summary.files[0].source_file.endswith(
-    "gcd_period0.46_raw.vcd"), wave_summary.files[0].source_file
-assert wave_summary.files[0].t_start_fs == EXPECT_WAVEFORM_T_START_FS, \
-    wave_summary.files[0].t_start_fs
-assert wave_summary.files[0].t_end_fs == EXPECT_WAVEFORM_T_END_FS, \
-    wave_summary.files[0].t_end_fs
-assert abs(wave_summary.files[0].timescale_sec - 1e-12) <= 1e-18, \
-    wave_summary.files[0].timescale_sec  # 1 ps
-INFO(f"[OK] waveform: {EXPECT_WAVEFORM_COUNT} waveforms / "
+# 原断言：assert wave_summary.waveform_count == EXPECT_WAVEFORM_COUNT, \
+record("wave/waveform_count", wave_summary.waveform_count)
+# 原断言：assert wave_summary.total_hit_count == EXPECT_WAVEFORM_HIT, \
+record("wave/total_hit_count", wave_summary.total_hit_count)
+# 原断言：assert wave_summary.total_event_count == EXPECT_WAVEFORM_EVENTS, \
+record("wave/total_event_count", wave_summary.total_event_count)
+# 原断言：assert wave_summary.dangling_net_count == EXPECT_TIMING_DANGLING, \
+record("wave/dangling_net_count", wave_summary.dangling_net_count)
+# 原断言：assert wave_summary.net_name_miss_count == 0, \
+record("wave/net_name_miss_count", wave_summary.net_name_miss_count)
+# 原断言：assert wave_summary.inst_pin_miss_count == 0, \
+record("wave/inst_pin_miss_count", wave_summary.inst_pin_miss_count)
+# 原断言：assert wave_summary.unplaced_instance_count == 0, \
+record("wave/unplaced_instance_count", wave_summary.unplaced_instance_count)
+# 原断言：assert wave_summary.multi_driver_net_count == 0, \
+record("wave/multi_driver_net_count", wave_summary.multi_driver_net_count)
+# 原断言：assert len(wave_summary.files) == 1, wave_summary.files
+record("wave/files_count", len(wave_summary.files))
+assert len(wave_summary.files) >= 1  # 保留：守卫（后面按下标取 wave_summary.files[0]，越界在 C++ 侧是未定义行为）
+# 原断言：assert wave_summary.files[0].source_file.endswith(
+record("wave/source_suffix",
+       wave_summary.files[0].source_file.endswith("gcd_period0.46_raw.vcd"),
+       detail=wave_summary.files[0].source_file)
+# 原断言：assert wave_summary.files[0].t_start_fs == EXPECT_WAVEFORM_T_START_FS, \
+record("wave/t_start_fs", wave_summary.files[0].t_start_fs)
+# 原断言：assert wave_summary.files[0].t_end_fs == EXPECT_WAVEFORM_T_END_FS, \
+record("wave/t_end_fs", wave_summary.files[0].t_end_fs)
+# 原断言：assert abs(wave_summary.files[0].timescale_sec - 1e-12) <= 1e-18, \
+record("wave/timescale_1ps",
+       abs(wave_summary.files[0].timescale_sec - 1e-12) <= 1e-18,
+       detail=f"{wave_summary.files[0].timescale_sec!r}")
+INFO(f"[DONE] waveform: {EXPECT_WAVEFORM_COUNT} waveforms / "
      f"{EXPECT_WAVEFORM_HIT} hits / {EXPECT_WAVEFORM_EVENTS} events / "
      f"{EXPECT_TIMING_DANGLING} dangling, window 8.74–80.5 ns @ 1 ps")
 
-INFO("[PASS] test_emir_real_gcd")
+INFO("[DONE] test_emir_real_gcd")
