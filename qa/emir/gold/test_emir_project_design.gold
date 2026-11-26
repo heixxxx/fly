@@ -1,0 +1,818 @@
+{
+  "alpha/bad_key_msg": true,
+  "alpha/bad_key_no_db": true,
+  "alpha/density_bin_size": 10,
+  "alpha/design_db_net_batch_size": 1000,
+  "alpha/lcp_name_arena_applied": true,
+  "alpha/normalize_drop_unknown": true,
+  "alpha/normalize_refill_default": true,
+  "alpha/target_partitions": null,
+  "cells/block_child_exists": true,
+  "cells/block_parent_exists": true,
+  "cells/count_at_least_4": true,
+  "cells/inv_exists": true,
+  "cells/inv_name_by_id": "INV_X1",
+  "cells/no_dff_x1": null,
+  "conv/cell_kwargs": true,
+  "conv/cell_name_back": "INV_X1",
+  "conv/cell_positional": true,
+  "conv/cell_shorthand": true,
+  "conv/ghost_none": null,
+  "conv/inst10_none": null,
+  "conv/inst_name_back": "top3/u1",
+  "conv/inst_u1": 5,
+  "conv/layer_m2": 2,
+  "conv/layer_name_back": "M2",
+  "conv/net_n_top": 1,
+  "conv/net_name_back": "n_top",
+  "conv/pin_bare": 0,
+  "conv/pin_combined": 0,
+  "conv/pin_name_back": "A",
+  "conv/via_cell_matches": true,
+  "conv/via_name_back": "block_child::VIA12",
+  "dbgapi/block_child_flag": true,
+  "dbgapi/block_child_pin0_is_port": true,
+  "dbgapi/block_child_pin0_name": "PIN_IN",
+  "dbgapi/cell_inv_has_lef_flag": true,
+  "dbgapi/cell_inv_has_lib_flag": true,
+  "dbgapi/cell_inv_id_matches": true,
+  "dbgapi/cell_inv_library": "minitest_typ",
+  "dbgapi/cell_inv_pin_count": 3,
+  "dbgapi/inst0_none": null,
+  "dbgapi/inst999_none": null,
+  "dbgapi/inst_ghost_none": null,
+  "dbgapi/layer99_none": null,
+  "dbgapi/layer_ghost_none": null,
+  "dbgapi/layer_m1_direction": "HORIZONTAL",
+  "dbgapi/layer_m1_id": 0,
+  "dbgapi/layer_m1_name": "M1",
+  "dbgapi/layer_m1_pitch": 190,
+  "dbgapi/layer_m1_spacing": [
+    70
+  ],
+  "dbgapi/layer_m1_type": "ROUTING",
+  "dbgapi/layer_m1_width": 70,
+  "dbgapi/layer_via1_type": "CUT",
+  "dbgapi/net0_none": null,
+  "dbgapi/net999_none": null,
+  "dbgapi/net_n1_conn_count": 2,
+  "dbgapi/net_n1_conns": [
+    [
+      3,
+      "top3",
+      "PIN_IN",
+      true
+    ],
+    [
+      5,
+      "top3/u1",
+      "A",
+      false
+    ]
+  ],
+  "dbgapi/net_n1_driver_count": 1,
+  "dbgapi/net_n1_hybrid_count": 0,
+  "dbgapi/net_n1_id": 3,
+  "dbgapi/net_n1_not_pg": true,
+  "dbgapi/net_n1_receiver_count": 1,
+  "dbgapi/net_n1_use": "SIGNAL",
+  "dbgapi/net_n2_none": null,
+  "dbgapi/net_n_top_none": null,
+  "dbgapi/pin_a_direction": "INPUT",
+  "dbgapi/pin_a_not_port": true,
+  "dbgapi/pin_vdd_type": "POWER",
+  "dbgapi/top1_conns": [
+    [
+      1,
+      "n_top",
+      "A",
+      false
+    ]
+  ],
+  "dbgapi/top1_name": "top1",
+  "dbgapi/u1_cell_matches_inv": true,
+  "dbgapi/u1_cell_name": "INV_X1",
+  "dbgapi/u1_conn_flags": [
+    [
+      true,
+      false
+    ],
+    [
+      false,
+      true
+    ]
+  ],
+  "dbgapi/u1_conns": [
+    [
+      3,
+      "top3/n1",
+      "A"
+    ],
+    [
+      4,
+      "top3/n2",
+      "ZN"
+    ]
+  ],
+  "dbgapi/u1_id": 5,
+  "dbgapi/u1_name": "top3/u1",
+  "dbgapi/u1_orient": 0,
+  "dbgapi/u1_partition": 0,
+  "dbgapi/u1_placement": "PLACED",
+  "dbgapi/u1_pos": [
+    1350,
+    700
+  ],
+  "debugdb/geo_net4_entries": 0,
+  "debugdb/geo_net_count": 3,
+  "debugdb/geo_pg_net4_entries": 1,
+  "debugdb/geo_pg_net4_not_obs": true,
+  "debugdb/geo_pg_net_count": 1,
+  "debugdb/h1_cell_name": "INVIO",
+  "debugdb/h1_conns": [
+    [
+      1,
+      "sig1",
+      true,
+      true,
+      false
+    ],
+    [
+      4,
+      "VDD0",
+      false,
+      true,
+      true
+    ]
+  ],
+  "debugdb/h1_id": 1,
+  "debugdb/h1_orient": 0,
+  "debugdb/h1_pos": [
+    100,
+    100
+  ],
+  "debugdb/h2_cell_name": "INV_X1",
+  "debugdb/h2_conns": [
+    [
+      1,
+      true,
+      false
+    ],
+    [
+      2,
+      false,
+      true
+    ],
+    [
+      3,
+      true,
+      false
+    ]
+  ],
+  "debugdb/inst0_none": null,
+  "debugdb/inst1_partition": 0,
+  "debugdb/inst2_partition": 0,
+  "debugdb/inst3_partition": null,
+  "debugdb/invio_pin_count": 2,
+  "debugdb/namemap_inconsistency_clean": true,
+  "debugdb/net0_not_pg": true,
+  "debugdb/net0_partition": null,
+  "debugdb/net1_not_pg": true,
+  "debugdb/net2_not_pg": true,
+  "debugdb/net3_not_pg": true,
+  "debugdb/net4_is_pg": true,
+  "debugdb/net4_is_power": true,
+  "debugdb/nets_1_to_4_in_partition0": true,
+  "debugdb/nets_ids": [
+    1,
+    2,
+    3
+  ],
+  "debugdb/nets_net4_none": null,
+  "debugdb/nets_pg_ids": [
+    4
+  ],
+  "debugdb/nets_pg_size": 1,
+  "debugdb/nets_size": 3,
+  "debugdb/pg_ground_count": 0,
+  "debugdb/pg_power_count": 1,
+  "debugdb/sig1_conn_count": 3,
+  "debugdb/sig1_conns": [
+    [
+      null,
+      "DBG_IN",
+      true
+    ],
+    [
+      "h1",
+      "BIDIR",
+      false
+    ],
+    [
+      "h2",
+      "A",
+      false
+    ]
+  ],
+  "debugdb/sig1_driver_count": 1,
+  "debugdb/sig1_hybrid_count": 1,
+  "debugdb/sig1_id": 1,
+  "debugdb/sig1_port_count": 1,
+  "debugdb/sig1_receiver_count": 1,
+  "debugdb/sig1_use": "SIGNAL",
+  "debugdb/sig1_use_storage": "SIGNAL",
+  "debugdb/tie1_driver_count": 1,
+  "debugdb/tie1_name": "tie1",
+  "debugdb/tie1_not_pg": true,
+  "debugdb/tie1_use": "TIEOFF",
+  "debugdb/tie1_use_storage": "TIEOFF",
+  "debugdb/total_connections": 12,
+  "debugdb/total_geometry_entries": 5,
+  "debugdb/total_nets": 4,
+  "debugdb/total_primary": 2,
+  "debugdb/union_inconsistency_clean": true,
+  "debugdb/vdd0_conn_count": 1,
+  "debugdb/vdd0_id": 4,
+  "debugdb/vdd0_is_pg": true,
+  "debugdb/vdd0_no_connections": true,
+  "debugdb/vdd0_power_count": 1,
+  "debugdb/vdd0_receiver_count": 1,
+  "debugdb/vdd0_use": "POWER",
+  "debugdb/vdd0_use_storage": "POWER",
+  "debugdb/vdd_pg_present": true,
+  "debugdb/vdd_pg_summary": {
+    "connection_count": 1,
+    "use": "POWER"
+  },
+  "debugdb/weird_receiver_count": 1,
+  "debugdb/weird_use": "ANALOG",
+  "debugdb/weird_use_storage": "ANALOG",
+  "dsgn/all_emitted": true,
+  "fake/cells_at_least_5": true,
+  "fake/height": 1,
+  "fake/id_resolved": true,
+  "fake/ids": [
+    30924
+  ],
+  "fake/is_fake_cell": true,
+  "fake/pin_count": 0,
+  "fake/top2_cell_id_matches": true,
+  "fake/width": 1,
+  "flow/registered": [
+    "build_design_db",
+    "build_lib_db",
+    "build_spef_db",
+    "build_timing_db",
+    "build_waveform_db"
+  ],
+  "idmap/inst1_partition": 0,
+  "idmap/inst2_partition": null,
+  "idmap/inst5_partition": 0,
+  "idmap/inst_seg_id_start": 0,
+  "idmap/inst_seg_size_const": true,
+  "idmap/inst_segment_count": 1,
+  "idmap/net0_partition": 0,
+  "idmap/net1_partition": null,
+  "idmap/net2_partition": null,
+  "idmap/net3_partition": 0,
+  "idmap/net4_partition": null,
+  "idmap/net_segment_count": 1,
+  "load/pin_a_no_tables": true,
+  "load/pin_geometry_injected": true,
+  "load/pin_in_id_resolved": true,
+  "load/pin_tables_injected": true,
+  "load/pin_zn_has_tables": true,
+  "load/pin_zn_id_resolved": true,
+  "merge/filler_lef_only": true,
+  "merge/inv_library_name": "minitest_typ",
+  "pins/inv_pin_count": 3,
+  "pins/pin_a_direction": 0,
+  "pins/pin_a_name": "A",
+  "pins/pin_a_not_port": true,
+  "pins/pin_id_matches_namemap": true,
+  "pins/pin_vdd_name": "VDD",
+  "pins/pin_vdd_type": 1,
+  "port_geom/count": 1,
+  "port_geom/pin_in": [
+    0,
+    [
+      -5,
+      -10,
+      15,
+      20
+    ]
+  ],
+  "r7/ghost_global_id": null,
+  "r7/id0_full_name": null,
+  "r7/id1_full_name": "top1",
+  "r7/id3_full_name": "top3",
+  "r7/id4_full_name": "top3/n2",
+  "r7/id5_full_name": "top3/u1",
+  "r7/id999_full_name": null,
+  "r7/injected_count": 2,
+  "r7/n_top_global_id": 1,
+  "r7/top1_global_id": 1,
+  "r7/top3_global_id": 3,
+  "r7/top3_n1_global_id": 3,
+  "r7/top3_u1_global_id": 5,
+  "r8d/lcp_design_name": "block_parent",
+  "r8d/lcp_id4_name": "top3/n2",
+  "r8d/lcp_id5_name": "top3/u1",
+  "r8d/lcp_node_count": 2,
+  "r8d/lcp_top3_n2_id": 4,
+  "r8d/lcp_top3_u1_id": 5,
+  "r8d/names0_id1_name": "u1",
+  "r8d/names0_lcp_form": true,
+  "r8d/names0_n1_id": 1,
+  "r8d/names0_n2_id": 2,
+  "r8d/names0_net2_name": "n2",
+  "r8d/names0_u1_id": 1,
+  "r8d/names1_ghost_id": null,
+  "r8d/names1_id2_name": "top2",
+  "r8d/names1_id999_name": null,
+  "r8d/names1_lcp_form": true,
+  "r8d/names1_top2_id": 2,
+  "r9/deps_block_names": [
+    "<sub_log_dir>/emir_design_flow/design:DSBlockNames_1"
+  ],
+  "r9/deps_default": [
+    "<sub_log_dir>/emir_design_flow/design:DSDesign"
+  ],
+  "r9/deps_with": [
+    "<sub_log_dir>/emir_design_flow/design:DSDesign",
+    "<sub_log_dir>/emir_design_flow/design:DSPinTables",
+    "<sub_log_dir>/emir_design_flow/design:DSPinGeometry"
+  ],
+  "r9/lib_db_load_rejected_msg": true,
+  "r9/run_direct_cells": true,
+  "restore/cells_readable": true,
+  "restore/class_name": "EMIRProject",
+  "restore/has_build_design_db": true,
+  "s1/dbu_per_micron": 1000,
+  "s1/find_implant1": null,
+  "s1/find_m2": 2,
+  "s1/layer0_name": "M1",
+  "s1/layer1_name": "VIA1",
+  "s1/layer2_name": "M2",
+  "s1/layer_count": 3,
+  "s1/manufacturing_grid": 3,
+  "s10/coverage_gap_clean": true,
+  "s10/density_totals": [
+    2,
+    1,
+    1
+  ],
+  "s10/density_variance_clean": true,
+  "s10/has_0022_warn": true,
+  "s10/has_0024_summary": true,
+  "s10/inst_actual": 3,
+  "s10/inst_duplicates": 0,
+  "s10/inst_expected": 4,
+  "s10/inst_holes": 1,
+  "s10/namemap_inconsistency_clean": true,
+  "s10/net_actual": 3,
+  "s10/net_holes": 0,
+  "s10/no_fatal_msgs": true,
+  "s10/partition_count": 1,
+  "s10/total_connections": 9,
+  "s10/total_crossing_nets": 0,
+  "s10/total_geometry_entries": 5,
+  "s10/total_instances": 3,
+  "s10/total_nets": 3,
+  "s10/total_primary": 3,
+  "s10/union_inconsistency_clean": true,
+  "s10/via_actual": 1,
+  "s10/via_holes": 0,
+  "s4/child_bbox": [
+    -500,
+    -250,
+    750,
+    1000
+  ],
+  "s4/child_def_path_suffix": true,
+  "s4/child_is_block_cell": true,
+  "s4/child_is_polygon": true,
+  "s4/child_name": "block_child",
+  "s4/child_origin_x": 500,
+  "s4/child_origin_y": 250,
+  "s4/child_pin_count": 2,
+  "s4/child_polygon_len": 4,
+  "s4/child_polygon_p0": [
+    -500,
+    -250
+  ],
+  "s4/child_polygon_p3": [
+    750,
+    -250
+  ],
+  "s4/parent_bbox": [
+    0,
+    0,
+    1500,
+    1000
+  ],
+  "s4/parent_exists": true,
+  "s4/parent_is_block_cell": true,
+  "s4/parent_not_polygon": true,
+  "s4/parent_pin_count": 1,
+  "s4/parent_polygon_len": 0,
+  "s4/port_in_is_port": true,
+  "s4/port_in_name": "PIN_IN",
+  "s4/port_in_placement": 1,
+  "s4/port_out_name": "PIN_OUT",
+  "s4/port_out_placement": 3,
+  "s5a/block0_block_name": "block_child",
+  "s5a/block0_density_grid": {
+    "cols": 1,
+    "rows": 1
+  },
+  "s5a/block0_density_total": 1,
+  "s5a/block0_fake_cell_count": 0,
+  "s5a/block0_instance_total": 2,
+  "s5a/block0_leaf_count": 1,
+  "s5a/block0_net_count": 2,
+  "s5a/block1_density_total": 1,
+  "s5a/block1_fake_cell_count": 1,
+  "s5a/block1_instance_total": 4,
+  "s5a/block1_leaf_count": 3,
+  "s5a/block1_n_top_id": 1,
+  "s5a/block1_net_count": 1,
+  "s5a/block1_unplaced_count": 1,
+  "s5a/names0_block_name": "block_child",
+  "s5a/names0_id1_name": "u1",
+  "s5a/names0_n1_id": 1,
+  "s5a/names0_n2_id": 2,
+  "s5a/names0_net2_name": "n2",
+  "s5a/names0_u1_id": 1,
+  "s5a/names1_id2_name": "top2",
+  "s5a/top2_orient": 0,
+  "s5a/top2_placement": 0,
+  "s5a/u1_cell_is_inv": true,
+  "s5a/u1_exists": true,
+  "s5a/u1_orient": 0,
+  "s5a/u1_placement": 3,
+  "s5a/u1_pos": [
+    100,
+    200
+  ],
+  "s5b/n1_conn_is_driver": [
+    true,
+    false
+  ],
+  "s5b/n1_conn_is_port": [
+    true,
+    false
+  ],
+  "s5b/n1_conn_is_receiver": [
+    false,
+    true
+  ],
+  "s5b/n1_conn_pairs": [
+    [
+      0,
+      3
+    ],
+    [
+      1,
+      0
+    ]
+  ],
+  "s5b/n1_no_hybrid": true,
+  "s5b/n1_wire_count": 1,
+  "s5b/n1_wire_layer": 0,
+  "s5b/n1_wire_points": [
+    [
+      100,
+      200
+    ],
+    [
+      500,
+      200
+    ]
+  ],
+  "s5b/n1_wire_width": 70,
+  "s5b/n2_conn_is_driver": [
+    false,
+    true
+  ],
+  "s5b/n2_conn_is_port": [
+    true,
+    false
+  ],
+  "s5b/n2_conn_is_receiver": [
+    true,
+    false
+  ],
+  "s5b/n2_conn_pairs": [
+    [
+      0,
+      4
+    ],
+    [
+      1,
+      1
+    ]
+  ],
+  "s5b/n2_wire_count": 0,
+  "s5b/net0_block_name": "block_child",
+  "s5b/net0_connection_count": 4,
+  "s5b/net0_layer0_metal": 1,
+  "s5b/net0_layer1_via": 1,
+  "s5b/net0_metal_total": 1,
+  "s5b/net0_net_count": 2,
+  "s5b/net0_skipped_invalid_conn": 0,
+  "s5b/net0_skipped_net": 0,
+  "s5b/net0_skipped_via": 0,
+  "s5b/net0_via_instance_1": [
+    1,
+    500,
+    200
+  ],
+  "s5b/net0_via_instance_count": 1,
+  "s5b/net0_via_instance_total": 1,
+  "s5b/net0_via_total": 1,
+  "s5b/net0_wire_count": 1,
+  "s5b/net1_block_name": "block_parent",
+  "s5b/net1_skipped_invalid_conn": 0,
+  "s5b/net1_via_instance_count": 0,
+  "s5b/net1_wire_count": 0,
+  "s5b/top_conn_is_driver": [
+    true,
+    false,
+    false
+  ],
+  "s5b/top_conn_is_port": [
+    true,
+    false,
+    false
+  ],
+  "s5b/top_conn_is_receiver": [
+    false,
+    true,
+    true
+  ],
+  "s5b/top_conn_pairs": [
+    [
+      0,
+      5
+    ],
+    [
+      1,
+      0
+    ],
+    [
+      3,
+      3
+    ]
+  ],
+  "s5b/via12_id_resolved": true,
+  "s6/child_block_cell_name": "block_child",
+  "s6/child_instance_name": "top3",
+  "s6/child_instance_range": [
+    4,
+    6
+  ],
+  "s6/child_net_range": [
+    2,
+    5
+  ],
+  "s6/child_parent_id": 0,
+  "s6/child_self_global_id": 3,
+  "s6/child_via_range": [
+    0,
+    1
+  ],
+  "s6/design_name": "block_parent",
+  "s6/global_inst_0_0": 0,
+  "s6/global_inst_1_0": 3,
+  "s6/global_inst_1_1": 5,
+  "s6/global_net_0_1": 1,
+  "s6/global_net_1_1": 3,
+  "s6/global_net_1_2": 4,
+  "s6/global_via_0_1": null,
+  "s6/global_via_1_1": 0,
+  "s6/global_via_1_2": null,
+  "s6/inst3_block": 0,
+  "s6/inst5_block": 1,
+  "s6/net3_block": 1,
+  "s6/node_count": 2,
+  "s6/parent_of_1": 0,
+  "s6/root_block_cell_name": "block_parent",
+  "s6/root_children": [
+    1
+  ],
+  "s6/root_instance_name": "",
+  "s6/root_instance_range": [
+    0,
+    4
+  ],
+  "s6/root_net_range": [
+    0,
+    2
+  ],
+  "s6/root_parent_id": 0,
+  "s6/root_self_global_id": 0,
+  "s6/root_via_range": [
+    0,
+    0
+  ],
+  "s6/tree_child_line": true,
+  "s6/tree_inst_range_text": true,
+  "s6/tree_root_line": true,
+  "s6/via0_block": 1,
+  "s6/via1_block": null,
+  "s7/class_count": 2,
+  "s7/dangling_count": 1,
+  "s7/n1_root": 1,
+  "s7/n2_members": [
+    4
+  ],
+  "s7/n2_self_root": true,
+  "s7/n_top_members": [
+    1,
+    3
+  ],
+  "s7/n_top_self_map": true,
+  "s7/two_layer_invariant": true,
+  "s8/cell_0_0": 2,
+  "s8/core_rect": [
+    0,
+    0,
+    10000,
+    10000
+  ],
+  "s8/extend_rect": [
+    -2147483648,
+    -2147483648,
+    2147483647,
+    2147483647
+  ],
+  "s8/grid": {
+    "cols": 1,
+    "rows": 1
+  },
+  "s8/inst_total": 2,
+  "s8/metal_total": 1,
+  "s8/partition_count": 1,
+  "s8/partition_id": 0,
+  "s8/via_total": 1,
+  "s9/geo_pg_net_count": 0,
+  "s9/inst_size": 3,
+  "s9/n1_conn_flags": [
+    [
+      false,
+      true
+    ],
+    [
+      true,
+      false
+    ]
+  ],
+  "s9/n1_conn_triples": [
+    [
+      3,
+      3,
+      true
+    ],
+    [
+      5,
+      0,
+      false
+    ]
+  ],
+  "s9/n1_entries_len": 4,
+  "s9/n1_entries_present": true,
+  "s9/n1_net_id": 3,
+  "s9/n1_net_present": true,
+  "s9/n1_net_use": "SIGNAL",
+  "s9/n1_via_graphics": [
+    [
+      0,
+      [
+        1650,
+        600,
+        1850,
+        800
+      ]
+    ],
+    [
+      1,
+      [
+        1710,
+        660,
+        1790,
+        740
+      ]
+    ],
+    [
+      2,
+      [
+        1600,
+        550,
+        1900,
+        850
+      ]
+    ]
+  ],
+  "s9/n1_via_prefixed_primary": true,
+  "s9/n1_wire_count": 1,
+  "s9/n1_wire_layer": 0,
+  "s9/n1_wire_rect": [
+    1315,
+    665,
+    1785,
+    735
+  ],
+  "s9/net0_bucket_len": 1,
+  "s9/net1_not_pg": true,
+  "s9/net3_not_crossing": true,
+  "s9/net3_not_pg": true,
+  "s9/nets_ids": [
+    3
+  ],
+  "s9/nets_pg_ids": [],
+  "s9/nets_pg_size": 0,
+  "s9/nets_size": 1,
+  "s9/obs_count": 1,
+  "s9/obs_layer": 2,
+  "s9/obs_rect": [
+    50,
+    50,
+    150,
+    200
+  ],
+  "s9/partition_list": [
+    [
+      0,
+      0
+    ]
+  ],
+  "s9/pg_ground_count": 0,
+  "s9/pg_power_count": 0,
+  "s9/top1_iconn": [
+    [
+      1,
+      0
+    ]
+  ],
+  "s9/top1_pos": [
+    250,
+    250
+  ],
+  "s9/top1_primary": true,
+  "s9/top2_excluded": true,
+  "s9/top3_iconn_count": 3,
+  "s9/top3_n2_flags": [
+    [
+      true,
+      true,
+      false
+    ]
+  ],
+  "s9/top3_n_top_endpoint": true,
+  "s9/top3_port_endpoints": [
+    [
+      3,
+      3
+    ],
+    [
+      4,
+      4
+    ]
+  ],
+  "s9/top3_pos": [
+    1250,
+    500
+  ],
+  "s9/top3_primary": true,
+  "s9/u1_endpoints": [
+    [
+      3,
+      0
+    ],
+    [
+      4,
+      1
+    ]
+  ],
+  "s9/u1_n1_flags": [
+    [
+      true,
+      false
+    ]
+  ],
+  "s9/u1_pos": [
+    1350,
+    700
+  ],
+  "s9/u1_primary": true,
+  "via/count": 3,
+  "via/gen_bottom_enc_x0": -50,
+  "via/gen_cut_x0": -30,
+  "via/gen_exists": true,
+  "via/gen_top_enc_x2": 55,
+  "via/prefixed_bottom_enc_x0": -100,
+  "via/prefixed_cut_layer": 40,
+  "via/prefixed_exists": true,
+  "via/tech_via12_exists": true
+}

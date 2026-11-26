@@ -271,6 +271,7 @@ run_subcase("load_db_run2.py", timeout=60, env=shared_env, check_list=[
 - 「取值为空」的检查（`x is None`）可以记成取值，基准存 `null`；不一致时差异报告直接给出实际值。
 - 测试函数被包装函数包住的脚本（包装函数用 `except Exception` 吞掉失败、只计数、末尾只打日志）：原来断言失败从不影响通过与否。包装调用之后必须记一条顶层判定「没有测试失败」，例如 `record("run/no_test_failed", failed == 0, detail={"passed": passed, "failed": failed})`，否则留在测试函数里的等待原语、try 块内的 `assert False` 失败时仍会被吞掉。参考 `qa/mapreduce/test_mapreduce_coverage_report.py`。
 - **守卫着后续解引用的断言，转成记录之后要留一条守卫**。`assert len(completed) >= 2`、`assert x is not None` 这类断言如果挡着后面的下标访问、`next(iter(x))`、读任务写出的对象，就在记录后面补一条同条件的断言并标注 `# 保留：守卫`。记录不中止脚本，守卫不成立时后面的访问会以 `IndexError`、`KeyError`、`StopIteration` 崩溃，看起来像存储或下标出了问题，实际是任务没完成。确实不依赖它的，在记录的下一行写 `# 非守卫：<理由>`。
+- **计数记录之后的下标访问，守卫的界限要大于下标。** 旧断言 `pin_count == 3`、`len(pts) == 4` 记成取值之后不再中止脚本，后面的 `pin_at(2)`、`pts[3]` 在 C++ 侧只靠调试断言检查越界，发行构建里越界是未定义行为。记录之后补一条界限大于最大下标的守卫（`assert pin_count >= 3`；`>= 1` 挡不住 `[3]`）。下标访问写成条件表达式（`x[0] if x else None`）算已保护。
 - 只打日志的检查不会使用例失败。「`try`: 读；读成功就 `ERR`/`WARN` 一条日志；`except Exception: pass`」这种写法检查「不该可读的数据不可读」时，读成功只是记一笔。迁移时为每个键补一条顶层判定（如 `record(f"dirty_unreadable/{key}", not readable)`），并先确认它成立：不成立说明发现了一个真问题，先查清，不要靠重录把它固化。
 - **等待只执行一次**。既想保留等待门槛的断言、又想记录它的结果时，把等待结果先存进变量，断言与记录共用：`ok = wait_until(...)`、`assert ok`、`record("k", ok)`。不要让断言和记录各调用一次等待——等待时长会翻倍。
 - **记录不写在条件分支里**。`if` 分支、`while` 循环、遍历运行时集合的 `for` 循环里的记录，键出不出现取决于运行时的条件；条件不成立时比对报「缺键」，旧断言允许的情形迁移后变成了失败。「文件可能不存在，存在则大小大于 0」这类检查写成无条件的蕴含式：`record("k", (not exists) or size > 0)`。确实有意的，在记录的上一行写 `# 条件记录：<理由>`。
