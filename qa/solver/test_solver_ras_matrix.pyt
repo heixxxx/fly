@@ -1,19 +1,31 @@
-"""RAS solver 参数矩阵（13 组合循环编排，sub case 各起独立 fly 进程）。
+"""RAS solver 参数矩阵（13 组参数，每组一个子阶段、各起独立 fly 进程）。
 
-2026-08-16 收敛：替代 13 个 test_solver_ras_n*_sd*_ov*.pyt + 参数重复的
-test_solver_ras.pyt（原 14 个 case，每文件仅 N/NSD/OVERLAP 三行不同）。
-每组经 env SOLVER_N/SOLVER_NSD/SOLVER_OVERLAP 注入 solver_ras_param.py。
+13 个入口脚本 test_solver_ras_n*_sd*_ov*.py 结构相同：设置一组参数，调用公共模块
+solver_ras_case.py 的 run_solver_ras_case（问题规模 N、子域数 NSD、重叠数 OVERLAP）。
+2026-08-16 的收敛把 13 个逐文件复制的脚本合并成「一个脚本 + 循环注入环境变量」；
+2026-11-26 改成「公共模块 + 入口脚本」，这样每组参数各有自己的子阶段脚本名，
+结果文件与基准文件可以按脚本名区分。
 """
 MATRIX = [
-    (4, 2, 1), (4, 2, 2),
-    (6, 2, 1), (6, 2, 2), (6, 3, 1), (6, 3, 2),
-    (8, 2, 1), (8, 2, 2), (8, 4, 1), (8, 4, 2),
-    (10, 2, 1), (10, 2, 2), (10, 5, 1),
+    "test_solver_ras_n4_sd2_ov1.py",
+    "test_solver_ras_n4_sd2_ov2.py",
+    "test_solver_ras_n6_sd2_ov1.py",
+    "test_solver_ras_n6_sd2_ov2.py",
+    "test_solver_ras_n6_sd3_ov1.py",
+    "test_solver_ras_n6_sd3_ov2.py",
+    "test_solver_ras_n8_sd2_ov1.py",
+    "test_solver_ras_n8_sd2_ov2.py",
+    "test_solver_ras_n8_sd4_ov1.py",
+    "test_solver_ras_n8_sd4_ov2.py",
+    "test_solver_ras_n10_sd2_ov1.py",
+    "test_solver_ras_n10_sd2_ov2.py",
+    "test_solver_ras_n10_sd5_ov1.py",
 ]
 
-for n, nsd, ov in MATRIX:
-    run_subcase("solver_ras_param.py", timeout=120,
-                env={"SOLVER_N": str(n), "SOLVER_NSD": str(nsd), "SOLVER_OVERLAP": str(ov)})
-    INFO(f"[matrix] n={n} sd={nsd} ov={ov} PASSED")
+# 参数只写在两处：入口脚本的文件名、入口脚本里的调用实参。这里只按脚本名逐个调度。
+# 13 个脚本名互不相同，每个只调度一次；清单里的文件名按各脚本名展开。
+for script in MATRIX:
+    run_subcase(script, timeout=120, check_list=["result.json"])
+    INFO(f"[matrix] {script[:-3]} done")
 
-INFO(f"[PASS] test_solver_ras_matrix: {len(MATRIX)} combos verified")
+INFO("[DONE] test_solver_ras_matrix: 13 combos")
