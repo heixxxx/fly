@@ -2,6 +2,50 @@
 
 ---
 
+## 2026-11-26: 救活两个从未被执行过的测试模块——`qa/unit/smoke_test.py` 与 `qa/unit/storage_test.py`
+
+**问题**：这两个 pytest 风格的模块共 24 个测试函数，从入库起就没有被任何自动化
+流程执行过：运行器 `qa/runqa` 只发现 `.pyt` 编排脚本，仓库里也没有用 pytest 跑
+`qa/` 的目标，而 `qa/README.md` 把它们列成测试套件的一部分。用户裁定「救活」。
+
+**实验看到的情况**：
+
+- `storage_test.py` 原样用 pytest 跑，18 个全部通过，连续 10 轮。
+  `docs/remaining-todo.md` 里记录的「整文件运行时数据损坏」没有复现。
+- `smoke_test.py` 原样跑，6 个全部失败：引导路径少算了一级目录
+  （`qa/unit/../bazel-bin` 指向不存在的 `qa/bazel-bin`），从入库起就找不到扩展
+  模块。修好路径之后还有两处期望与实际行为不符，见下。
+
+**落地**：
+
+1. `smoke_test.py` 按实际情况修正：路径补上一级；Config 句柄的获取函数现在是
+   `ex_core_get_config`（旧名 `get_config` 已不存在）；`master_port` 的缺省值是 0
+   （占位，定稿端口写在 `.fly_config` 里），不是 8000；每个测试结尾把配置复位。
+2. 新增 `qa/unit/test_unit_pytest_modules.pyt` 与子阶段脚本
+   `test_unit_pytest_modules.py`：对两个模块各起一个独立的 pytest 进程（这些测试
+   必须在裸进程里跑——`smoke_test` 会调用 `config.reset()`），子进程不继承 fly 的
+   环境变量，临时目录落在子阶段日志目录下。从 pytest 输出的 JUnit XML 里读出
+   每个测试函数的结果，逐个记进基准文件：哪个函数失败、消失、被跳过或新增，
+   用例都会报出来。全量 QA 从 202 个变成 203 个。
+
+**验证**：用例连续 10 轮通过，重录零变化；全量 QA 203 个全过；全量单测 133 个
+目标通过。变异验证：把 `smoke_test` 的一条断言改错，用例判负并指出是
+`smoke_test::test_config_defaults`（期望 `passed`，实际 `failed`），恢复后通过。
+
+**一处过期的期望，查清后按实际行为改写**：`smoke_test.py` 原本期望「worker 启动
+之后修改配置会抛 `RuntimeError`」。实际的实现是 `Config::set_int` 返回 `false`、
+值不变、只在标准错误上记一条错误，Python 侧不抛异常。评审人查证这是明确的有意
+契约：`src/core/cpp/config.h` 的注释写明「不抛异常，Python 侧 set 返回 bool，
+调用方可检查」；提交 `c90b156d`（2026-08-17）把抛异常改成了返回布尔值，并配了
+C++ 侧的契约测试 `SetRejectedAfterWorkersLaunched`。旧测试期望的是那次重构之前的
+行为。所以只改了测试，产品代码不动。
+
+**文档同步**：`qa/README.md` 的目录结构与分类表改为「pytest 风格模块由
+`test_unit_pytest_modules.pyt` 调度执行」，并说明新增这类模块的做法；
+`docs/remaining-todo.md` 第 3 条改为「观察」，注明复查未复现、已纳入自动化；
+`docs/core/module.md` 接口清单里 `set_int`/`set_str` 的返回类型由 `void` 改为
+`bool`（随提交 `c90b156d` 变更后一直没同步）。
+
 ## 2026-11-26: 参数矩阵用例改成「公共模块 + 入口脚本」并迁移——`qa/solver/test_solver_ras_matrix`
 
 **背景**：这个用例对 RAS 求解器做参数扫描——13 组参数（问题规模 N 取 4、6、8、10，

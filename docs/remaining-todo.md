@@ -178,7 +178,7 @@
 |---|---|---|---|
 | 1 | 真流式读端基准复测 | 待办 | 唯一有明确验收线的主动待办：none 压缩 512MB ≥ 700 MB/s（[HANDOFF-peer-stream.md](HANDOFF-peer-stream.md) §3）。旧机（5.8GB）已补单帧全档位基线（d1062f1，512MB 流式 41 MB/s 属写缓冲压力现场），**新机（≥16GB）复测未做**——当前机器仍为小内存 WSL2，需换机或接受方差 |
 | 2 | stop drain 误报「worker dead + 副本全灭」ERROR | 待治理 | 显式 stop() drain 期 worker 断连被误报为判死+数据全灭（2026-08-30 记录）；shutdown_pending 分派机制（6b9ff95）在位仍复现 → 残余竞态窗口。已立项 [issues/010](issues/010-stop-drain-worker-dead-noise.md)，污染 QA/运维错误信号，成本低应尽快 |
-| 3 | storage_test.py 单例跨 open_db corruption | 待治理 | 裸进程 DataService 单例状态累积，全文件跑时 mixed_cpp_python case 报 corruption（单测/双测组合均过，非 gate）——测试基建可信度问题，待专门排查（DOC_CHANGELOG 2026-08-31） |
+| 3 | storage_test.py 单例跨 open_db corruption | 观察 | 2026-08-31 记录：裸进程 DataService 单例状态累积，全文件跑时 mixed_cpp_python case 报 corruption（单测/双测组合均过，非 gate）。**2026-11-26 复查未复现**：整文件用 pytest 跑连续 10 轮 18/18 通过（该模块此前从未被自动化执行过）；现已由 `qa/unit/test_unit_pytest_modules.pyt` 纳入全量 QA，若复发会直接报出是哪个函数。根因（裸进程里单例状态跨用例累积）没有专门排查，保留观察 |
 
 ### P2 — 低成本/条件接近
 

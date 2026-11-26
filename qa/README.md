@@ -427,6 +427,8 @@ write_data(db, "key", "value")
 
 QA 测试是高层集成测试，必须只使用公共 Python API。底层 C++ 测试属于 unit test（`qa/unit/` 或 `src/*/tests/`），不属于 QA。
 
+**`qa/unit/` 下 pytest 风格的模块由 `test_unit_pytest_modules.pyt` 调度执行**，不是手动跑。这类模块必须自己能引导（按文件位置把 `bazel-bin/src/*/export` 加进 `sys.path`），并且必须能在裸进程里运行——它们每个模块各起一个独立的 pytest 进程，子进程不继承 fly 的环境变量，临时目录落在子阶段日志目录下。结果按测试函数记进基准文件：哪个函数失败、消失、被跳过或新增，用例都会报出来。新增这类模块时，把文件名加进 `test_unit_pytest_modules.py` 的 `MODULES`，运行一次，再用 `./qa/runqa --regold qa/unit/test_unit_pytest_modules.pyt` 生成基准。
+
 ```python
 # ✅ 正确 — 使用公共 API
 master = get_agent()
@@ -643,9 +645,11 @@ qa/
 ├── stress/                      # 压力测试（并发写、读写混合、稳定性）
 ├── write_provenance/            # 写入溯源测试（幂等、mismatch、load_db 溯源）
 │
-├── unit/                        # 单元测试（pytest 手动跑，不经 fly）+ 一个 QA 子阶段用例
-│   ├── smoke_test.py            #   Config + serialization + export 集成
-│   ├── storage_test.py          #   DataService + Database 单元测试
+├── unit/                        # 单元测试：pytest 风格模块（由下面的用例调度执行）+ QA 子阶段用例
+│   ├── smoke_test.py            #   Config 绑定的冒烟测试（pytest 风格，6 个函数）
+│   ├── storage_test.py          #   存储层 C++ 类的集成测试（pytest 风格，18 个函数）
+│   ├── test_unit_pytest_modules.pyt  # 在自动化里执行上面两个模块（QA 子阶段，全量必跑）
+│   ├── test_unit_pytest_modules.py   #   上者的子阶段脚本：逐个模块起 pytest 进程，逐个函数记录结果
 │   ├── test_stream_after_async_write.pyt  # 流式写紧跟异步写回归（QA 子阶段，全量必跑）
 │   ├── test_stream_after_async_write.py   #   上者的子阶段脚本（fly 进程执行）
 │   └── stream_after_async_data.py         #   其数据类辅助模块——fly 用户脚本内定义的
@@ -671,7 +675,7 @@ qa/
 | `storage/` | 存储层功能 | read cache、frozen DB、load_db |
 | `scheduling/` | 任务调度逻辑 | capability 匹配、负载均衡 |
 | `stress/` | 高负载/并发场景 | 并发写、读写混合、稳定性 |
-| `unit/` | pytest 单元测试 | C++ 模块直接测试（不经 fly） |
+| `unit/` | 单元测试 | C++ 模块直接测试。pytest 风格的模块由 `test_unit_pytest_modules.pyt` 在自动化里执行（每个模块一个独立的 pytest 进程），不是手动跑 |
 
 ---
 

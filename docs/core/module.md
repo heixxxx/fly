@@ -28,8 +28,8 @@ class Config {
 public:
     static CMSharedPtr<Config>& instance();  // 获取单例（shared_ptr 语义，支持 reset 重建）
 
-    void set_int(const CMString& key, int64_t value);
-    void set_str(const CMString& key, const CMString& value);
+    bool set_int(const CMString& key, int64_t value);   // Worker 启动后被拒绝：返回 false，值不变，不抛异常
+    bool set_str(const CMString& key, const CMString& value);
 
     int64_t get_int(const CMString& key) const;
     CMString get_str(const CMString& key) const;   // 按值返回（线程安全）
