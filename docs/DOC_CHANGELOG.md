@@ -2,6 +2,58 @@
 
 ---
 
+## 2026-11-26: 阶段丁八——`qa/emir` 最后 7 个用例迁移成基准比对，存量用例的迁移到此完成
+
+**范围**：`test_emir_design_sets_a`、`test_emir_design_sets_b`、`test_emir_design_sets_c`、
+`test_emir_project_lib`、`test_emir_spef_big`、`test_emir_spef_multifile`、
+`test_emir_timing_pg_grid`。7 个脚本原有的 221 条断言里，37 条是等待原语，原样保留；其余
+184 条中 165 条转成 187 处记录调用（按常量循环展开后是 442 个顶层键，其中判定 189 条、
+取值 253 条），19 条留作守卫，另新增 2 条断言（一条守卫、一条环境前置检查）。每个用例按
+`qa/README.md`「把一个存量用例的断言迁移成记录」的七步走完。
+
+**存量用例的迁移到此完成**。全仓库 288 个 QA 脚本里的 829 条 `assert` 逐条清点过，留下来
+的只有等待原语、任务函数内的断言、带 `# 保留：` 标注的守卫，以及 pytest 风格模块和运行时
+生成的子脚本里的断言。203 个用例里 197 个走基准比对；另外 5 个没有可比对的数据
+（`qa/api/test_e2e_process_workers`、`qa/network/test_peer_rpc`、
+`qa/network/test_peer_rpc_listen`、`qa/performance/test_copy_elimination`、
+`qa/performance/test_copy_profiling`），通过与否靠等待原语、任务函数内的断言或退出码，
+编排脚本不加 `check_list`；`qa/expect_pass/test_expect_pass` 是运行器自测。
+
+**循环与辅助函数里的断言怎么转**（本批出现的几种形态）：
+
+- 遍历常量集合的循环按键逐条记，键只由常量构成（如 `parts/{xp}_{yp}/size`、
+  `probe/{库名}/{网名}/…`）。
+- 遍历运行时集合的循环（全量核对 39508 个条目、切块边界窗口、固定步长抽查）在循环里
+  收集没通过的条目，循环外记成「没有没通过的条目」的判定，`detail` 带条目的位置。
+- 断言辅助函数分两种：期望值仍然参与比较的（`_assert_entries`、`_assert_probe`）把每条
+  旧断言的否定写成违规收集条件，一条旧断言对应一条判定；只记实测值的
+  （`_assert_file`、`_assert_summary`）记全部字段的字典。
+- 电容三个值是浮点数，一律记成「等于期望值」的判定，实际值放 `detail`，基准里没有浮点数。
+
+**评审之后改的三处**：
+
+1. `test_emir_project_lib`：旧断言 `cell_names == ["DFF_X1", "INV_X1"]` 起初被整条留下
+   当守卫。后面的代码只要求这两个 cell 存在，守卫改成成员判断；完整清单由基准比对把关。
+2. `test_emir_design_sets_c` 的全量顶层检查：`hybrid_soc.def` 早已随仓库入库
+   （0.55 MB，提交 `e56262e7`），脚本里「文件缺失就打一条日志、照常通过」的分支是不可能
+   触发的旧逻辑。改成环境前置检查加无条件的记录，条数记成取值 842（独立数过文件头是
+   `COMPONENTS 842`）。这个用例的基准因此显式重录了一次：新增 1 个键、删除 1 个键。
+3. `test_emir_spef_multifile` 的两条判定原来写成 `None if rec is None else <比较>`：对象
+   取不到时记下的是 `null` 而不是 `false`，而重录的拒绝规则只拦 `false`。改成
+   `rec is not None and <比较>`，并把规则写进 `qa/README.md`。
+
+`qa/README.md` 另外明确了两点：等待原语的 `# 保留：` 标注可以省略（三位评审人对这一点
+意见相反，说明原文有歧义）；随仓库入库的测试数据不再按「缺失则跳过」处理。
+
+**验证**：三位评审人分段做语义评审，逐条对照旧断言、新写法与基准。最终版本上全量 QA
+203 个全过，7 个用例连续 10 轮全过，重录 203 个零变化，全量单测 133 个目标通过；7 个基准
+文件共 442 个顶层键，没有浮点数、路径、时间戳、进程号，也没有超过 20 个元素的容器。两个
+变异验证：把 `hybrid_soc.def` 挪走，`test_emir_design_sets_c` 失败并指出文件路径；把
+`test_emir_spef_multifile` 里一个网名改成不存在的，对应判定是 `false`，此时重录被拒绝
+（「判定型条目为假，不能重录」），基准不变。
+
+---
+
 ## 2026-11-26: 救活两个从未被执行过的测试模块——`qa/unit/smoke_test.py` 与 `qa/unit/storage_test.py`
 
 **问题**：这两个 pytest 风格的模块共 24 个测试函数，从入库起就没有被任何自动化

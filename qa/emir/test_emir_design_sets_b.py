@@ -31,6 +31,8 @@ from fly import get_config, launch_workers
 from fly.runtime import get_agent
 from emir import EMIRProject
 
+from test import record
+
 DATA = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data",
                     "design_sets", "set_b")
 
@@ -69,22 +71,28 @@ INFO("[WAIT] design_b frozen (640-tile 2-level hierarchy)")
 
 design = design_db.load_design()
 tree = design.get_hier_tree()
-assert tree.node_count == 641, f"hier nodes={tree.node_count}"
+# 原断言：assert tree.node_count == 641, f"hier nodes={tree.node_count}"
+record("design/tree_node_count", tree.node_count)
+assert tree.node_count >= 1  # 保留：守卫（后面 tree.node(i)、tree.node(0) 取节点，越界在 C++ 侧是未定义行为）
 root = tree.node(0)
-assert root.block_cell_name == "noc_mesh", root.block_cell_name
+# 原断言：assert root.block_cell_name == "noc_mesh", root.block_cell_name
+record("design/root_block_cell", root.block_cell_name)
 # 展开实例总数：Σ 各块实例区间宽 − 节点数（每节点 local 0 占位槽）
 n_total = 0
 for i in range(tree.node_count):
     lo, hi = tree.node(i).instance_range
     n_total += hi - lo
-assert n_total - tree.node_count == 32666, n_total
+# 原断言：assert n_total - tree.node_count == 32666, n_total
+record("design/inst_total_expanded", n_total - tree.node_count)
 # 顶层网区间：10372 网 + local 0 空洞位
 lo, hi = root.net_range
-assert hi - lo == 10373, hi - lo
+# 原断言：assert hi - lo == 10373, hi - lo
+record("design/net_range_span", hi - lo)
 # 块实例路径点查（640 tile 中任意取）
 gid_tile = design_db.convert_to_id("inst", "u_tile_19_31")
-assert gid_tile, "tile path lookup"
-INFO(f"[OK] hierarchy: 641 nodes, 32666 expanded instances, top nets "
+# 原断言：assert gid_tile, "tile path lookup"
+record("design/gid_tile_19_31", gid_tile)
+INFO(f"[DONE] hierarchy: 641 nodes, 32666 expanded instances, top nets "
      f"10372, tile lookup OK")
 
 # ── timing db 1：block_cell 块定义绑定（×640 建库期复制）──────────────
@@ -95,22 +103,32 @@ tdb = proj.build_timing_db(
     design_db=design_db)
 assert proj.wait_frozen("timing_b_cell", timeout=600)
 s = tdb.load_timing_summary_obj()
-assert s.total_entry_count == 262, s.total_entry_count
-assert s.total_hit_count == 175, s.total_hit_count
+# 原断言：assert s.total_entry_count == 262, s.total_entry_count
+record("timing_b_cell/total_entry_count", s.total_entry_count)
+# 原断言：assert s.total_hit_count == 175, s.total_hit_count
+record("timing_b_cell/total_hit_count", s.total_hit_count)
 # 47 网条目全悬空（无布线几何）×640 实例复制
-assert s.dangling_net_count == 30080, s.dangling_net_count
-assert s.skipped_pin_count == 40, s.skipped_pin_count  # IQ/IQN 未登记
-assert s.net_name_miss_count == 0 and s.unplaced_instance_count == 0
-assert s.clock_conflict_count == 0
-INFO("[OK] block_cell binding: entry=262 hit=175 (entry-level), "
+# 原断言：assert s.dangling_net_count == 30080, s.dangling_net_count
+record("timing_b_cell/dangling_net_count", s.dangling_net_count)
+# 原断言：assert s.skipped_pin_count == 40, s.skipped_pin_count
+record("timing_b_cell/skipped_pin_count", s.skipped_pin_count)  # IQ/IQN 未登记
+# 原断言：assert s.net_name_miss_count == 0 and s.unplaced_instance_count == 0
+record("timing_b_cell/net_name_miss_count", s.net_name_miss_count)
+record("timing_b_cell/unplaced_instance_count", s.unplaced_instance_count)
+# 原断言：assert s.clock_conflict_count == 0
+record("timing_b_cell/clock_conflict_count", s.clock_conflict_count)
+INFO("[DONE] block_cell binding: entry=262 hit=175 (entry-level), "
      "dangling=47x640=30080 (replication), skip_pin=40")
 
 # 时钟归属抽查：任意远端 tile 内实例均有数据且归 clk_noc
 for tile in ("u_tile_0_0", "u_tile_5_7", "u_tile_19_31", "u_tile_19_0"):
     info = tdb.get_timing(f"{tile}/lp_n0")
-    assert info is not None, f"{tile}/lp_n0 must carry timing"
-    assert info["clock"] == "clk_noc", (tile, info["clock"])
-INFO("[OK] block_cell replication: instances across the 32x20 array all "
+    # 原断言：assert info is not None, f"{tile}/lp_n0 must carry timing"
+    record(f"block_cell/{tile}/info_exists", info is not None)
+    assert info is not None  # 保留：守卫（后面 info["clock"] 按键取，None 时以 TypeError 崩溃）
+    # 原断言：assert info["clock"] == "clk_noc", (tile, info["clock"])
+    record(f"block_cell/{tile}/clock", info["clock"])
+INFO("[DONE] block_cell replication: instances across the 32x20 array all "
      "carry timing (clock=clk_noc)")
 
 # ── timing db 2：strip_prefix 人为前缀包装形态 + block_inst 绑定 ──────
@@ -122,17 +140,29 @@ tdb2 = proj.build_timing_db(
     design_db=design_db)
 assert proj.wait_frozen("timing_b_strip", timeout=600)
 s2 = tdb2.load_timing_summary_obj()
-assert s2.total_entry_count == 262, s2.total_entry_count
-assert s2.total_hit_count == 175, s2.total_hit_count
-assert s2.dangling_net_count == 47, s2.dangling_net_count  # 单实例展开
-assert s2.strip_miss_count == 0, s2.strip_miss_count
+# 原断言：assert s2.total_entry_count == 262, s2.total_entry_count
+record("timing_b_strip/total_entry_count", s2.total_entry_count)
+# 原断言：assert s2.total_hit_count == 175, s2.total_hit_count
+record("timing_b_strip/total_hit_count", s2.total_hit_count)
+# 原断言：assert s2.dangling_net_count == 47, s2.dangling_net_count
+record("timing_b_strip/dangling_net_count", s2.dangling_net_count)  # 单实例展开
+# 原断言：assert s2.strip_miss_count == 0, s2.strip_miss_count
+record("timing_b_strip/strip_miss_count", s2.strip_miss_count)
 clks = tdb2.load_timing_clocks_obj()
-assert clks.size == 2, clks.size
+# 原断言：assert clks.size == 2, clks.size
+record("timing_b_strip/clocks_size", clks.size)
+assert clks.size >= 1  # 保留：守卫（后面 clks.entry_at(i) 取条目，越界在 C++ 侧是未定义行为）
 expect_clk = {"clk_noc": 1.2, "clk_cfg": 3.0}
+bad_clocks = []
 for i in range(clks.size):
     e = clks.entry_at(i)
-    assert abs(e.period - expect_clk[e.name]) < 1e-9, (e.name, e.period)
-INFO("[OK] strip_prefix + block_inst: hit=175 strip_miss=0, clocks "
+    period_ok = abs(e.period - expect_clk[e.name]) < 1e-9
+    if not period_ok:
+        bad_clocks.append((e.name, f"{e.period!r}"))
+# 原断言：assert abs(e.period - expect_clk[e.name]) < 1e-9, (e.name, e.period)
+record("timing_b_strip/clocks_periods_match_expected", not bad_clocks,
+       detail=bad_clocks)
+INFO("[DONE] strip_prefix + block_inst: hit=175 strip_miss=0, clocks "
      "clk_noc=1.2 clk_cfg=3.0")
 
 # ── 顶层纯路径形态（noc_mesh.twf：顶层网维度，28 条目，入库）─────────
@@ -142,14 +172,18 @@ tdb3 = proj.build_timing_db(name="timing_b_top",
                             design_db=design_db)
 assert proj.wait_frozen("timing_b_top", timeout=600)
 s3 = tdb3.load_timing_summary_obj()
-assert s3.total_entry_count == 28, s3.total_entry_count
-assert s3.total_hit_count == 0, s3.total_hit_count
+# 原断言：assert s3.total_entry_count == 28, s3.total_entry_count
+record("timing_b_top/total_entry_count", s3.total_entry_count)
+# 原断言：assert s3.total_hit_count == 0, s3.total_hit_count
+record("timing_b_top/total_hit_count", s3.total_hit_count)
 # 全悬空 = B 套直写 DEF 无布线几何的预期口径（TIMG::0003 合法兜底）
-assert s3.dangling_net_count == 28, s3.dangling_net_count
-assert s3.net_name_miss_count == 0, s3.net_name_miss_count
-INFO("[OK] top-level full-path TWF: entry=28 all dangling (expected: "
+# 原断言：assert s3.dangling_net_count == 28, s3.dangling_net_count
+record("timing_b_top/dangling_net_count", s3.dangling_net_count)
+# 原断言：assert s3.net_name_miss_count == 0, s3.net_name_miss_count
+record("timing_b_top/net_name_miss_count", s3.net_name_miss_count)
+INFO("[DONE] top-level full-path TWF: entry=28 all dangling (expected: "
      "no routed geometry in hand-written DEF)")
 # 顶层混合维度大件（151760 条目，14.3MB > 5MB 不入库）留给 verify_full.sh
 # ——存在且 QA 预算外，永不在此跑（避免 runqa 超时）
 
-print("[PASS] test_emir_design_sets_b")
+print("[DONE] test_emir_design_sets_b")

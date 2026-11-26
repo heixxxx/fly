@@ -1,0 +1,23 @@
+{
+  "clocks/entry0_name": "clk",
+  "clocks/entry0_period_1ns": true,
+  "clocks/size": 1,
+  "primary/no_empty_partition": true,
+  "primary/partition_count_at_least_2": true,
+  "primary/partitioned_instances": 12879,
+  "probe/info_exists": true,
+  "probe/info_instance_id": true,
+  "probe/info_partition": [
+    0,
+    0
+  ],
+  "probe/pin_count_at_least_1": true,
+  "timing/cross_file_conflict_count": 0,
+  "timing/dangling_net_count": 63,
+  "timing/files0_failed_chunk_count": 0,
+  "timing/files_count": 1,
+  "timing/net_name_miss_count": 0,
+  "timing/total_entry_count": 12943,
+  "timing/total_hit_count": 12880,
+  "timing/unplaced_instance_count": 0
+}

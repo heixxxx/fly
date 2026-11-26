@@ -1,0 +1,28 @@
+{
+  "alpha/settings_exists": true,
+  "alpha_bad/db_not_created": true,
+  "alpha_bad/exception_type": "ValueError",
+  "alpha_bad/no_available_keys_in_msg": true,
+  "alpha_bad/nonexistent_key_in_msg": true,
+  "cells/dff_is_sequence_cell": true,
+  "cells/dff_source_file": "<case_dir>/data/cells_b.lib",
+  "cells/inv_library_name": "minitest_typ",
+  "cells/inv_source_file": "<case_dir>/data/cells_a.lib",
+  "flows/build_lib_db_registered": true,
+  "lib/still_frozen": true,
+  "lib_dup/cell_names": [
+    "INV_X1"
+  ],
+  "lib_dup/kept_source_file": "<case_dir>/data/cells_a.lib",
+  "library/cell_names": [
+    "DFF_X1",
+    "INV_X1"
+  ],
+  "library/template_names": [
+    "power_2d"
+  ],
+  "pins/inv_a_cap_1p5ff": true,
+  "restored/build_lib_db_registered": true,
+  "restored/lib_library_readable": true,
+  "restored/type": "EMIRProject"
+}

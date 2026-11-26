@@ -1,0 +1,592 @@
+{
+  "boundaries/near_16_nonempty": true,
+  "boundaries/near_32_nonempty": true,
+  "boundaries/window_caps_match_formula": true,
+  "boundaries/window_loads_exist": true,
+  "boundaries/window_net_ids_sequential": true,
+  "design/partition_list": [
+    [
+      0,
+      0
+    ],
+    [
+      0,
+      1
+    ],
+    [
+      0,
+      2
+    ],
+    [
+      0,
+      3
+    ]
+  ],
+  "determinism/summaries_identical": true,
+  "fullcheck/0_0/item_counts_equal": true,
+  "fullcheck/0_1/item_counts_equal": true,
+  "fullcheck/0_2/item_counts_equal": true,
+  "fullcheck/0_3/item_counts_equal": true,
+  "fullcheck/checked_count": 39508,
+  "fullcheck/matches_formula": true,
+  "fullcheck/net_id_ascending": true,
+  "fullcheck/not_reduced": true,
+  "fullcheck/pairs_identical": true,
+  "fullcheck/source_mask_1": true,
+  "nets/count": 20002,
+  "nets/head3": [
+    "n_d_0_0",
+    "clk",
+    "rn"
+  ],
+  "nets/head4_and_tail": [
+    "n_q_0_0",
+    "n_q_99_99"
+  ],
+  "parts/0_0/size": {
+    "multi": 20002,
+    "single": 20002
+  },
+  "parts/0_1/size": {
+    "multi": 3002,
+    "single": 3002
+  },
+  "parts/0_2/size": {
+    "multi": 4002,
+    "single": 4002
+  },
+  "parts/0_3/size": {
+    "multi": 12502,
+    "single": 12502
+  },
+  "parts/multi_partition_list": [
+    [
+      0,
+      0
+    ],
+    [
+      0,
+      1
+    ],
+    [
+      0,
+      2
+    ],
+    [
+      0,
+      3
+    ]
+  ],
+  "parts/single_partition_list": [
+    [
+      0,
+      0
+    ],
+    [
+      0,
+      1
+    ],
+    [
+      0,
+      2
+    ],
+    [
+      0,
+      3
+    ]
+  ],
+  "parts/total_entries": 39508,
+  "probe/multi/clk/caps": true,
+  "probe/multi/clk/electrical_members": [
+    2
+  ],
+  "probe/multi/clk/exists": true,
+  "probe/multi/clk/net_id": 2,
+  "probe/multi/clk/not_reduced": true,
+  "probe/multi/clk/partitions": [
+    [
+      0,
+      0
+    ],
+    [
+      0,
+      1
+    ],
+    [
+      0,
+      2
+    ],
+    [
+      0,
+      3
+    ]
+  ],
+  "probe/multi/clk/source_mask": 1,
+  "probe/multi/n_d_0_0/caps": true,
+  "probe/multi/n_d_0_0/electrical_members": [
+    1
+  ],
+  "probe/multi/n_d_0_0/exists": true,
+  "probe/multi/n_d_0_0/net_id": 1,
+  "probe/multi/n_d_0_0/not_reduced": true,
+  "probe/multi/n_d_0_0/partitions": [
+    [
+      0,
+      0
+    ]
+  ],
+  "probe/multi/n_d_0_0/source_mask": 1,
+  "probe/multi/n_d_25_0/caps": true,
+  "probe/multi/n_d_25_0/electrical_members": [
+    5003
+  ],
+  "probe/multi/n_d_25_0/exists": true,
+  "probe/multi/n_d_25_0/net_id": 5003,
+  "probe/multi/n_d_25_0/not_reduced": true,
+  "probe/multi/n_d_25_0/partitions": [
+    [
+      0,
+      0
+    ],
+    [
+      0,
+      2
+    ]
+  ],
+  "probe/multi/n_d_25_0/source_mask": 1,
+  "probe/multi/n_d_2_49/caps": true,
+  "probe/multi/n_d_2_49/electrical_members": [
+    501
+  ],
+  "probe/multi/n_d_2_49/exists": true,
+  "probe/multi/n_d_2_49/net_id": 501,
+  "probe/multi/n_d_2_49/not_reduced": true,
+  "probe/multi/n_d_2_49/partitions": [
+    [
+      0,
+      0
+    ]
+  ],
+  "probe/multi/n_d_2_49/source_mask": 1,
+  "probe/multi/n_d_5_0/caps": true,
+  "probe/multi/n_d_5_0/electrical_members": [
+    1003
+  ],
+  "probe/multi/n_d_5_0/exists": true,
+  "probe/multi/n_d_5_0/net_id": 1003,
+  "probe/multi/n_d_5_0/not_reduced": true,
+  "probe/multi/n_d_5_0/partitions": [
+    [
+      0,
+      0
+    ],
+    [
+      0,
+      1
+    ]
+  ],
+  "probe/multi/n_d_5_0/source_mask": 1,
+  "probe/multi/n_q_25_49/caps": true,
+  "probe/multi/n_q_25_49/electrical_members": [
+    5102
+  ],
+  "probe/multi/n_q_25_49/exists": true,
+  "probe/multi/n_q_25_49/net_id": 5102,
+  "probe/multi/n_q_25_49/not_reduced": true,
+  "probe/multi/n_q_25_49/partitions": [
+    [
+      0,
+      0
+    ],
+    [
+      0,
+      2
+    ]
+  ],
+  "probe/multi/n_q_25_49/source_mask": 1,
+  "probe/multi/n_q_3_0/caps": true,
+  "probe/multi/n_q_3_0/electrical_members": [
+    604
+  ],
+  "probe/multi/n_q_3_0/exists": true,
+  "probe/multi/n_q_3_0/net_id": 604,
+  "probe/multi/n_q_3_0/not_reduced": true,
+  "probe/multi/n_q_3_0/partitions": [
+    [
+      0,
+      0
+    ],
+    [
+      0,
+      1
+    ]
+  ],
+  "probe/multi/n_q_3_0/source_mask": 1,
+  "probe/multi/n_q_49_99/caps": true,
+  "probe/multi/n_q_49_99/electrical_members": [
+    10002
+  ],
+  "probe/multi/n_q_49_99/exists": true,
+  "probe/multi/n_q_49_99/net_id": 10002,
+  "probe/multi/n_q_49_99/not_reduced": true,
+  "probe/multi/n_q_49_99/partitions": [
+    [
+      0,
+      0
+    ],
+    [
+      0,
+      3
+    ]
+  ],
+  "probe/multi/n_q_49_99/source_mask": 1,
+  "probe/multi/n_q_99_99/caps": true,
+  "probe/multi/n_q_99_99/electrical_members": [
+    20002
+  ],
+  "probe/multi/n_q_99_99/exists": true,
+  "probe/multi/n_q_99_99/net_id": 20002,
+  "probe/multi/n_q_99_99/not_reduced": true,
+  "probe/multi/n_q_99_99/partitions": [
+    [
+      0,
+      0
+    ],
+    [
+      0,
+      3
+    ]
+  ],
+  "probe/multi/n_q_99_99/source_mask": 1,
+  "probe/multi/rn/caps": true,
+  "probe/multi/rn/electrical_members": [
+    3
+  ],
+  "probe/multi/rn/exists": true,
+  "probe/multi/rn/net_id": 3,
+  "probe/multi/rn/not_reduced": true,
+  "probe/multi/rn/partitions": [
+    [
+      0,
+      0
+    ],
+    [
+      0,
+      1
+    ],
+    [
+      0,
+      2
+    ],
+    [
+      0,
+      3
+    ]
+  ],
+  "probe/multi/rn/source_mask": 1,
+  "probe/single/clk/caps": true,
+  "probe/single/clk/electrical_members": [
+    2
+  ],
+  "probe/single/clk/exists": true,
+  "probe/single/clk/net_id": 2,
+  "probe/single/clk/not_reduced": true,
+  "probe/single/clk/partitions": [
+    [
+      0,
+      0
+    ],
+    [
+      0,
+      1
+    ],
+    [
+      0,
+      2
+    ],
+    [
+      0,
+      3
+    ]
+  ],
+  "probe/single/clk/source_mask": 1,
+  "probe/single/n_d_0_0/caps": true,
+  "probe/single/n_d_0_0/electrical_members": [
+    1
+  ],
+  "probe/single/n_d_0_0/exists": true,
+  "probe/single/n_d_0_0/net_id": 1,
+  "probe/single/n_d_0_0/not_reduced": true,
+  "probe/single/n_d_0_0/partitions": [
+    [
+      0,
+      0
+    ]
+  ],
+  "probe/single/n_d_0_0/source_mask": 1,
+  "probe/single/n_d_25_0/caps": true,
+  "probe/single/n_d_25_0/electrical_members": [
+    5003
+  ],
+  "probe/single/n_d_25_0/exists": true,
+  "probe/single/n_d_25_0/net_id": 5003,
+  "probe/single/n_d_25_0/not_reduced": true,
+  "probe/single/n_d_25_0/partitions": [
+    [
+      0,
+      0
+    ],
+    [
+      0,
+      2
+    ]
+  ],
+  "probe/single/n_d_25_0/source_mask": 1,
+  "probe/single/n_d_2_49/caps": true,
+  "probe/single/n_d_2_49/electrical_members": [
+    501
+  ],
+  "probe/single/n_d_2_49/exists": true,
+  "probe/single/n_d_2_49/net_id": 501,
+  "probe/single/n_d_2_49/not_reduced": true,
+  "probe/single/n_d_2_49/partitions": [
+    [
+      0,
+      0
+    ]
+  ],
+  "probe/single/n_d_2_49/source_mask": 1,
+  "probe/single/n_d_5_0/caps": true,
+  "probe/single/n_d_5_0/electrical_members": [
+    1003
+  ],
+  "probe/single/n_d_5_0/exists": true,
+  "probe/single/n_d_5_0/net_id": 1003,
+  "probe/single/n_d_5_0/not_reduced": true,
+  "probe/single/n_d_5_0/partitions": [
+    [
+      0,
+      0
+    ],
+    [
+      0,
+      1
+    ]
+  ],
+  "probe/single/n_d_5_0/source_mask": 1,
+  "probe/single/n_q_25_49/caps": true,
+  "probe/single/n_q_25_49/electrical_members": [
+    5102
+  ],
+  "probe/single/n_q_25_49/exists": true,
+  "probe/single/n_q_25_49/net_id": 5102,
+  "probe/single/n_q_25_49/not_reduced": true,
+  "probe/single/n_q_25_49/partitions": [
+    [
+      0,
+      0
+    ],
+    [
+      0,
+      2
+    ]
+  ],
+  "probe/single/n_q_25_49/source_mask": 1,
+  "probe/single/n_q_3_0/caps": true,
+  "probe/single/n_q_3_0/electrical_members": [
+    604
+  ],
+  "probe/single/n_q_3_0/exists": true,
+  "probe/single/n_q_3_0/net_id": 604,
+  "probe/single/n_q_3_0/not_reduced": true,
+  "probe/single/n_q_3_0/partitions": [
+    [
+      0,
+      0
+    ],
+    [
+      0,
+      1
+    ]
+  ],
+  "probe/single/n_q_3_0/source_mask": 1,
+  "probe/single/n_q_49_99/caps": true,
+  "probe/single/n_q_49_99/electrical_members": [
+    10002
+  ],
+  "probe/single/n_q_49_99/exists": true,
+  "probe/single/n_q_49_99/net_id": 10002,
+  "probe/single/n_q_49_99/not_reduced": true,
+  "probe/single/n_q_49_99/partitions": [
+    [
+      0,
+      0
+    ],
+    [
+      0,
+      3
+    ]
+  ],
+  "probe/single/n_q_49_99/source_mask": 1,
+  "probe/single/n_q_99_99/caps": true,
+  "probe/single/n_q_99_99/electrical_members": [
+    20002
+  ],
+  "probe/single/n_q_99_99/exists": true,
+  "probe/single/n_q_99_99/net_id": 20002,
+  "probe/single/n_q_99_99/not_reduced": true,
+  "probe/single/n_q_99_99/partitions": [
+    [
+      0,
+      0
+    ],
+    [
+      0,
+      3
+    ]
+  ],
+  "probe/single/n_q_99_99/source_mask": 1,
+  "probe/single/rn/caps": true,
+  "probe/single/rn/electrical_members": [
+    3
+  ],
+  "probe/single/rn/exists": true,
+  "probe/single/rn/net_id": 3,
+  "probe/single/rn/not_reduced": true,
+  "probe/single/rn/partitions": [
+    [
+      0,
+      0
+    ],
+    [
+      0,
+      1
+    ],
+    [
+      0,
+      2
+    ],
+    [
+      0,
+      3
+    ]
+  ],
+  "probe/single/rn/source_mask": 1,
+  "sample/caps_match_formula": true,
+  "sample/loads_exist": true,
+  "settings/multi_chunk_size_mb": 16,
+  "settings/multi_value_index": null,
+  "settings/single_chunk_size_mb": 256,
+  "settings/single_value_index": null,
+  "stats/broken_net_count": {
+    "multi": 0,
+    "single": 0
+  },
+  "stats/cap_count": {
+    "multi": 40004,
+    "single": 40004
+  },
+  "stats/chunk_count_multi": 3,
+  "stats/chunk_count_single": 1,
+  "stats/coupling_cap_count": {
+    "multi": 20002,
+    "single": 20002
+  },
+  "stats/dropped_record_count": {
+    "multi": 0,
+    "single": 0
+  },
+  "stats/failed_chunk_count": {
+    "multi": 0,
+    "single": 0
+  },
+  "stats/files_counts": [
+    1,
+    1
+  ],
+  "stats/hit_count": {
+    "multi": 20002,
+    "single": 20002
+  },
+  "stats/multi_value_net_count": {
+    "multi": 0,
+    "single": 0
+  },
+  "stats/name_map_miss_count": {
+    "multi": 0,
+    "single": 0
+  },
+  "stats/net_count": {
+    "multi": 20002,
+    "single": 20002
+  },
+  "stats/net_name_miss_count": {
+    "multi": 0,
+    "single": 0
+  },
+  "stats/pg_net_skip_count": {
+    "multi": 0,
+    "single": 0
+  },
+  "stats/pnet_skip_count": {
+    "multi": 0,
+    "single": 0
+  },
+  "stats/res_count": {
+    "multi": 20002,
+    "single": 20002
+  },
+  "stats/rnet_count": {
+    "multi": 0,
+    "single": 0
+  },
+  "stats/source_files_equal": true,
+  "stats/strip_miss_count": {
+    "multi": 0,
+    "single": 0
+  },
+  "stats/unplaced_instance_count": {
+    "multi": 0,
+    "single": 0
+  },
+  "stats/unrouted_net_count": {
+    "multi": 0,
+    "single": 0
+  },
+  "stats/value_count_max": {
+    "multi": 1,
+    "single": 1
+  },
+  "stats/value_index_fallback_count": {
+    "multi": 0,
+    "single": 0
+  },
+  "summary_multi/summary_stats": {
+    "cap_mismatch_count": 0,
+    "covered_net_count": 20008,
+    "cross_scope_sum_count": 0,
+    "electrical_net_count": 0,
+    "invalid_binding_count": 0,
+    "rnet_count": 0,
+    "routed_signal_net_count": 20008,
+    "same_scope_overlap_count": 0,
+    "source_mask_overflow_count": 0,
+    "uncovered_instance_count": 0,
+    "uncovered_net_count": 0,
+    "zero_cap_instance_count": 0
+  },
+  "summary_single/summary_stats": {
+    "cap_mismatch_count": 0,
+    "covered_net_count": 20008,
+    "cross_scope_sum_count": 0,
+    "electrical_net_count": 0,
+    "invalid_binding_count": 0,
+    "rnet_count": 0,
+    "routed_signal_net_count": 20008,
+    "same_scope_overlap_count": 0,
+    "source_mask_overflow_count": 0,
+    "uncovered_instance_count": 0,
+    "uncovered_net_count": 0,
+    "zero_cap_instance_count": 0
+  }
+}

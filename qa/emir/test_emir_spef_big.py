@@ -39,7 +39,7 @@ from fly import get_config, launch_workers, wait_tasks
 from fly.runtime import get_agent
 from emir import EMIRProject
 
-from test import qa_tmp
+from test import qa_tmp, record
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 DESIGN_DATA = os.path.join(SCRIPT_DIR, "data", "waveform", "design")
@@ -166,11 +166,11 @@ _SUMMARY_FIELDS = (
 )
 
 
-def _assert_summary(summary, **expect):
-    for field in _SUMMARY_FIELDS:
-        want = expect.get(field, 0)
-        got = getattr(summary, field)
-        assert got == want, (field, got, want)
+def _assert_summary(summary, tag, **expect):
+    """全局统计记录（未给的计数按 0 期望；浮点不进基准）。"""
+    # 原断言：assert got == want, (field, got, want)
+    record(f"{tag}/summary_stats",
+           {field: getattr(summary, field) for field in _SUMMARY_FIELDS})
 
 
 def cleanup():
@@ -209,17 +209,20 @@ _lap("lib + design db frozen")
 
 # §5.3 第 4 条前置：先断言分区列表（条目数依赖设计库分区结果）
 PARTS = [(0, 0), (0, 1), (0, 2), (0, 3)]
-assert list(iter_design_partition(big_design)) == PARTS
-INFO("[OK] big design: 4 horizontal-band partitions")
+# 原断言：assert list(iter_design_partition(big_design)) == PARTS
+record("design/partition_list", list(iter_design_partition(big_design)))
+INFO("[DONE] big design: 4 horizontal-band partitions")
 
 # ── 寄生文件生成（qa_tmp 下，约 38 MB）───────────────────────────────
 
 nets = read_nets(ROUTED_BIG_DEF)
-assert len(nets) == 20002, len(nets)
-assert nets[0] == "n_d_0_0" and nets[1] == "clk" and nets[2] == "rn", \
-    nets[:3]
-assert nets[3] == "n_q_0_0" and nets[-1] == "n_q_99_99", (nets[3],
-                                                          nets[-1])
+# 原断言：assert len(nets) == 20002, len(nets)
+record("nets/count", len(nets))
+assert len(nets) >= 4  # 保留：守卫（后面 nets[0..3] 按下标取，越界会以 IndexError 崩溃）
+# 原断言：assert nets[0] == "n_d_0_0" and nets[1] == "clk" and nets[2] == "rn", \
+record("nets/head3", nets[0:3])
+# 原断言：assert nets[3] == "n_q_0_0" and nets[-1] == "n_q_99_99", (nets[3],
+record("nets/head4_and_tail", [nets[3], nets[-1]])
 SPEF_PATH = os.path.join(SCRATCH, "big.spef")
 offsets = gen_spef(nets, SPEF_PATH)
 _lap("spef file generated (%d bytes, %d net(s))"
@@ -243,90 +246,136 @@ _lap("both spef dbs frozen")
 
 settings_multi = big_multi.read_object("alpha_settings")
 settings_single = big_single.read_object("alpha_settings")
-assert settings_multi.chunk_size_mb == 16, settings_multi.chunk_size_mb
-assert settings_single.chunk_size_mb == 256, settings_single.chunk_size_mb
-assert settings_multi.value_index is None, settings_multi.value_index
-assert settings_single.value_index is None, settings_single.value_index
-INFO("[OK] alpha_settings: chunk_size_mb 16 / 256, value_index None")
+# 原断言：assert settings_multi.chunk_size_mb == 16, settings_multi.chunk_size_mb
+record("settings/multi_chunk_size_mb", settings_multi.chunk_size_mb)
+# 原断言：assert settings_single.chunk_size_mb == 256, settings_single.chunk_size_mb
+record("settings/single_chunk_size_mb", settings_single.chunk_size_mb)
+# 原断言：assert settings_multi.value_index is None, settings_multi.value_index
+record("settings/multi_value_index", settings_multi.value_index)
+# 非守卫：仅检查覆盖未设置，返回值无后续解引用
+# 原断言：assert settings_single.value_index is None, settings_single.value_index
+record("settings/single_value_index", settings_single.value_index)
+# 非守卫：仅检查覆盖未设置，返回值无后续解引用
+INFO("[DONE] alpha_settings: chunk_size_mb 16 / 256, value_index None")
 
 # ═══ §5.3 第 2 条：逐文件统计（两库相同，只有切块数不同）═════════════
 
 s_multi = load_spef_summary(big_multi)
 s_single = load_spef_summary(big_single)
-assert len(s_multi.files) == len(s_single.files) == 1
+# 原断言：assert len(s_multi.files) == len(s_single.files) == 1
+record("stats/files_counts", [len(s_multi.files), len(s_single.files)])
+assert len(s_multi.files) >= 1 and len(s_single.files) >= 1  # 保留：守卫（后面 s_multi.files[0]、s_single.files[0] 按下标取，越界在 C++ 侧是未定义行为）
 f_multi, f_single = s_multi.files[0], s_single.files[0]
-assert f_multi.source_file == f_single.source_file
+# 原断言：assert f_multi.source_file == f_single.source_file
+record("stats/source_files_equal", f_multi.source_file == f_single.source_file,
+       detail=(f_multi.source_file, f_single.source_file))
 for field in _FILE_FIELDS:
     if field == "chunk_count":
         continue
-    assert getattr(f_multi, field) == getattr(f_single, field), field
-    want = {"net_count": 20002, "hit_count": 20002, "cap_count": 40004,
-            "coupling_cap_count": 20002, "res_count": 20002,
-            "value_count_max": 1}.get(field, 0)
-    assert getattr(f_multi, field) == want, (field, getattr(f_multi, field),
-                                             want)
-# 切块数不在上面的字段循环里断言（循环跳过 chunk_count）——单独断言
-assert f_multi.chunk_count == 3, f_multi.chunk_count
-assert f_single.chunk_count == 1, f_single.chunk_count
-INFO("[OK] per-file stats: 20002 nets parsed and hit, chunk count 3 vs 1")
+    # 原断言：assert getattr(f_multi, field) == getattr(f_single, field), field
+    # 原断言：assert getattr(f_multi, field) == want, (field, getattr(f_multi, field),
+    #                                                  want)
+    record(f"stats/{field}",
+           {"multi": getattr(f_multi, field), "single": getattr(f_single, field)})
+# 切块数不在上面的字段循环里断言（循环跳过 chunk_count）——单独记录
+# 原断言：assert f_multi.chunk_count == 3, f_multi.chunk_count
+record("stats/chunk_count_multi", f_multi.chunk_count)
+# 原断言：assert f_single.chunk_count == 1, f_single.chunk_count
+record("stats/chunk_count_single", f_single.chunk_count)
+INFO("[DONE] per-file stats: 20002 nets parsed and hit, chunk count 3 vs 1")
 
 # ═══ §5.3 第 3 条：全局统计（两库相同）═══════════════════════════════
 
-for s in (s_multi, s_single):
-    _assert_summary(s,
+for tag, s in (("multi", s_multi), ("single", s_single)):
+    _assert_summary(s, f"summary_{tag}",
                     routed_signal_net_count=20008,  # 20000 局部网 + clk/
                     covered_net_count=20008,        # rn 在 4 区各计一次
                     cap_mismatch_max_rel=0.0)
-INFO("[OK] global stats: routed 20008 = covered 20008, flat design "
+INFO("[DONE] global stats: routed 20008 = covered 20008, flat design "
      "(0 electrical groups), no mismatch")
 
 # ═══ §5.3 第 4 条：分区列表与条目数 ══════════════════════════════════
 
 PART_SIZES = {(0, 0): 20002, (0, 1): 3002, (0, 2): 4002, (0, 3): 12502}
-assert list(iter_spef_partition(big_multi)) == PARTS
-assert list(iter_spef_partition(big_single)) == PARTS
+# 原断言：assert list(iter_spef_partition(big_multi)) == PARTS
+record("parts/multi_partition_list", list(iter_spef_partition(big_multi)))
+# 原断言：assert list(iter_spef_partition(big_single)) == PARTS
+record("parts/single_partition_list", list(iter_spef_partition(big_single)))
 total_entries = 0
 for xp, yp in PARTS:
     size_a = load_partition_net_load(big_multi, xp, yp).size
     size_b = load_partition_net_load(big_single, xp, yp).size
-    assert size_a == size_b == PART_SIZES[(xp, yp)], ((xp, yp), size_a,
-                                                      size_b)
+    # 原断言：assert size_a == size_b == PART_SIZES[(xp, yp)], ((xp, yp), size_a,
+    record(f"parts/{xp}_{yp}/size", {"multi": size_a, "single": size_b})
     total_entries += size_a
-assert total_entries == 39508, total_entries
-INFO("[OK] partition entry counts: (0,0) 20002 = 502 attached + 19500 "
+# 原断言：assert total_entries == 39508, total_entries
+record("parts/total_entries", total_entries)
+INFO("[DONE] partition entry counts: (0,0) 20002 = 502 attached + 19500 "
      "completed; total 39508")
 
 # ═══ §5.3 第 5 条：全量核对（分区对象逐条目 vs 公式；两库逐条相同）═══
 
 checked = 0
+pair_diffs = []
+order_violations = []
+formula_violations = []
+mask_violations = []
+reduced_violations = []
 for xp, yp in PARTS:
     obj_a = load_partition_net_load(big_multi, xp, yp)
     obj_b = load_partition_net_load(big_single, xp, yp)
     items_a, items_b = obj_a.items, obj_b.items
-    assert len(items_a) == len(items_b)
+    # 原断言：assert len(items_a) == len(items_b)
+    record(f"fullcheck/{xp}_{yp}/item_counts_equal",
+           len(items_a) == len(items_b),
+           detail=(len(items_a), len(items_b)))
     prev_id = 0
     for ea, eb in zip(items_a, items_b):
+        nid = ea.net_id
         # 两库逐条相同
-        assert ea.net_id == eb.net_id and \
-            ea.total_cap_reported_ff == eb.total_cap_reported_ff and \
-            ea.ground_cap_ff == eb.ground_cap_ff and \
-            ea.coupling_cap_ff == eb.coupling_cap_ff and \
-            ea.source_mask == eb.source_mask and ea.flags == eb.flags
+        if not (ea.net_id == eb.net_id and
+                ea.total_cap_reported_ff == eb.total_cap_reported_ff and
+                ea.ground_cap_ff == eb.ground_cap_ff and
+                ea.coupling_cap_ff == eb.coupling_cap_ff and
+                ea.source_mask == eb.source_mask and ea.flags == eb.flags):
+            pair_diffs.append((xp, yp, nid))
         # 条目按 net id 升序（书写序 + 1 → 序号 = net_id − 1）
-        assert ea.net_id > prev_id, (ea.net_id, prev_id)
+        if not ea.net_id > prev_id:
+            order_violations.append((xp, yp, nid, prev_id))
         prev_id = ea.net_id
-        total, ground, coupling = formula(ea.net_id - 1)
-        assert ea.total_cap_reported_ff == float(total), \
-            (xp, yp, ea.net_id, ea.total_cap_reported_ff, total)
-        assert ea.ground_cap_ff == float(ground), \
-            (xp, yp, ea.net_id, ea.ground_cap_ff, ground)
-        assert ea.coupling_cap_ff == float(coupling), \
-            (xp, yp, ea.net_id, ea.coupling_cap_ff, coupling)
-        assert ea.source_mask == 1, (xp, yp, ea.net_id)
-        assert ea.flags & 0x1 == 0, (xp, yp, ea.net_id)
+        total, ground, coupling = formula(nid - 1)
+        if ea.total_cap_reported_ff != float(total):
+            formula_violations.append((xp, yp, nid, "total",
+                                       ea.total_cap_reported_ff, total))
+        if ea.ground_cap_ff != float(ground):
+            formula_violations.append((xp, yp, nid, "ground",
+                                       ea.ground_cap_ff, ground))
+        if ea.coupling_cap_ff != float(coupling):
+            formula_violations.append((xp, yp, nid, "coupling",
+                                       ea.coupling_cap_ff, coupling))
+        if ea.source_mask != 1:
+            mask_violations.append((xp, yp, nid))
+        if ea.flags & 0x1 != 0:
+            reduced_violations.append((xp, yp, nid))
         checked += 1
-assert checked == 39508, checked
-INFO("[OK] full verification: all %d entries of both dbs match the "
+# 原断言：assert ea.net_id == eb.net_id and \
+record("fullcheck/pairs_identical", not pair_diffs, detail=pair_diffs)
+# 原断言：assert ea.net_id > prev_id, (ea.net_id, prev_id)
+record("fullcheck/net_id_ascending", not order_violations,
+       detail=order_violations)
+# 原断言：assert ea.total_cap_reported_ff == float(total), \
+# 原断言：assert ea.ground_cap_ff == float(ground), \
+# 原断言：assert ea.coupling_cap_ff == float(coupling), \
+record("fullcheck/matches_formula", not formula_violations,
+       detail=formula_violations)
+# 原断言：assert ea.source_mask == 1, (xp, yp, ea.net_id)
+record("fullcheck/source_mask_1", not mask_violations, detail=mask_violations)
+# 原断言：assert ea.flags & 0x1 == 0, (xp, yp, ea.net_id)
+record("fullcheck/not_reduced", not reduced_violations,
+       detail=reduced_violations)
+# 原断言：assert checked == 39508, checked
+record("fullcheck/checked_count", checked)
+INFO("[DONE] full verification: all %d entries of both dbs match the "
      "formula (net-id ascending, mask 1, not reduced)" % checked)
 
 # ═══ §5.3 第 6 条：点查表（字面量——名字、网编号、三值、落点）════════
@@ -344,20 +393,28 @@ PROBE_TABLE = [
     ("n_q_49_99", 10002, (8, 3, 5), [(0, 0), (0, 3)]),
     ("n_q_99_99", 20002, (8, 6, 2), [(0, 0), (0, 3)]),
 ]
-for db in (big_multi, big_single):
+for tag, db in (("multi", big_multi), ("single", big_single)):
     for name, nid, vals, parts in PROBE_TABLE:
         rec = db.get_net_load(name)
-        assert rec is not None, name
+        # 原断言：assert rec is not None, name
+        record(f"probe/{tag}/{name}/exists", rec is not None)
+        assert rec is not None  # 保留：守卫（后面 rec["total_cap_reported_ff"] 等按键取，None 时以 TypeError 崩溃）
         got = (rec["total_cap_reported_ff"], rec["ground_cap_ff"],
                rec["coupling_cap_ff"])
-        assert got == vals, (db is big_multi, name, got, vals)
-        assert rec["net_id"] == nid, (name, rec["net_id"], nid)
-        assert rec["partitions"] == parts, (name, rec["partitions"])
-        assert rec["electrical_members"] == [nid], (name, rec[
-            "electrical_members"])
-        assert rec["reduced"] is False, name
-        assert rec["source_mask"] == 1, name
-INFO("[OK] point-query table: 10 nets x 2 dbs (band placement, clk/rn "
+        # 原断言：assert got == vals, (db is big_multi, name, got, vals)
+        record(f"probe/{tag}/{name}/caps", got == vals, detail=(got, vals))
+        # 原断言：assert rec["net_id"] == nid, (name, rec["net_id"], nid)
+        record(f"probe/{tag}/{name}/net_id", rec["net_id"])
+        # 原断言：assert rec["partitions"] == parts, (name, rec["partitions"])
+        record(f"probe/{tag}/{name}/partitions", rec["partitions"])
+        # 原断言：assert rec["electrical_members"] == [nid], (name, rec[
+        record(f"probe/{tag}/{name}/electrical_members",
+               rec["electrical_members"])
+        # 原断言：assert rec["reduced"] is False, name
+        record(f"probe/{tag}/{name}/not_reduced", rec["reduced"] is False)
+        # 原断言：assert rec["source_mask"] == 1, name
+        record(f"probe/{tag}/{name}/source_mask", rec["source_mask"])
+INFO("[DONE] point-query table: 10 nets x 2 dbs (band placement, clk/rn "
      "in all 4 partitions)")
 
 # ═══ §5.3 第 7 条：切块边界（按用例记下的偏移取，不写死网名）═════════
@@ -368,46 +425,78 @@ near_16 = [i for i in range(len(nets))
            if abs(offsets[i] - CHUNK_BYTES) <= BOUNDARY_WINDOW]
 near_32 = [i for i in range(len(nets))
            if abs(offsets[i] - 2 * CHUNK_BYTES) <= BOUNDARY_WINDOW]
-assert near_16, "no net header near the 16 MB boundary"
-assert near_32, "no net header near the 32 MB boundary"
+# 原断言：assert near_16, "no net header near the 16 MB boundary"
+record("boundaries/near_16_nonempty", bool(near_16), detail=len(near_16))
+# 原断言：assert near_32, "no net header near the 32 MB boundary"
+record("boundaries/near_32_nonempty", bool(near_32), detail=len(near_32))
+boundary_missing = []
+boundary_caps = []
+boundary_ids = []
 for i in near_16 + near_32:
     rec_a = big_multi.get_net_load(nets[i])
     rec_b = big_single.get_net_load(nets[i])
     total, ground, coupling = formula(i)
     for rec in (rec_a, rec_b):
-        assert rec is not None, nets[i]
+        if rec is None:
+            boundary_missing.append(nets[i])
+            continue
         got = (rec["total_cap_reported_ff"], rec["ground_cap_ff"],
                rec["coupling_cap_ff"])
-        assert got == (total, ground, coupling), (nets[i], got)
-    assert rec_a["net_id"] == rec_b["net_id"] == i + 1
-INFO("[OK] chunk boundaries: %d net(s) near 16 MB + %d near 32 MB "
+        if got != (total, ground, coupling):
+            boundary_caps.append((nets[i], got))
+    if rec_a is not None and rec_b is not None \
+            and not (rec_a["net_id"] == rec_b["net_id"] == i + 1):
+        boundary_ids.append((nets[i], rec_a["net_id"], rec_b["net_id"]))
+# 原断言：assert rec is not None, nets[i]
+record("boundaries/window_loads_exist", not boundary_missing,
+       detail=boundary_missing)
+# 原断言：assert got == (total, ground, coupling), (nets[i], got)
+record("boundaries/window_caps_match_formula", not boundary_caps,
+       detail=boundary_caps)
+# 原断言：assert rec_a["net_id"] == rec_b["net_id"] == i + 1
+record("boundaries/window_net_ids_sequential", not boundary_ids,
+       detail=boundary_ids)
+INFO("[DONE] chunk boundaries: %d net(s) near 16 MB + %d near 32 MB "
      "match the formula in both dbs" % (len(near_16), len(near_32)))
 
 # 固定步长抽查约 400 个网（点查路径——名字换算 + 分区 LRU）
 step = max(1, len(nets) // 400)
 sample = list(range(0, len(nets), step))
+sample_missing = []
+sample_caps = []
 for i in sample:
     rec_a = big_multi.get_net_load(nets[i])
     rec_b = big_single.get_net_load(nets[i])
     total, ground, coupling = formula(i)
     for rec in (rec_a, rec_b):
-        assert rec is not None, nets[i]
+        if rec is None:
+            sample_missing.append(nets[i])
+            continue
         got = (rec["total_cap_reported_ff"], rec["ground_cap_ff"],
                rec["coupling_cap_ff"])
-        assert got == (total, ground, coupling), (nets[i], got)
-INFO("[OK] sampled %d net(s) at fixed step %d: both dbs match the "
+        if got != (total, ground, coupling):
+            sample_caps.append((nets[i], got))
+# 原断言：assert rec is not None, nets[i]
+record("sample/loads_exist", not sample_missing, detail=sample_missing)
+# 原断言：assert got == (total, ground, coupling), (nets[i], got)
+record("sample/caps_match_formula", not sample_caps, detail=sample_caps)
+INFO("[DONE] sampled %d net(s) at fixed step %d: both dbs match the "
      "formula" % (len(sample), step))
 _lap("verification done")
 
 # ═══ §5.3 第 8 条：确定性（同输入两库逐条一致）═══════════════════════
 
-for field in _SUMMARY_FIELDS + ("cap_mismatch_max_rel",
-                                "internal_cap_unit_ff",
-                                "internal_res_unit_ohm"):
-    assert getattr(s_multi, field) == getattr(s_single, field), field
-INFO("[OK] determinism: big_multi / big_single identical except chunk "
+determinism_diffs = [
+    field for field in _SUMMARY_FIELDS + ("cap_mismatch_max_rel",
+                                          "internal_cap_unit_ff",
+                                          "internal_res_unit_ohm")
+    if getattr(s_multi, field) != getattr(s_single, field)]
+# 原断言：assert getattr(s_multi, field) == getattr(s_single, field), field
+record("determinism/summaries_identical", not determinism_diffs,
+       detail=determinism_diffs)
+INFO("[DONE] determinism: big_multi / big_single identical except chunk "
      "count")
 
 shutil.rmtree(SCRATCH, ignore_errors=True)
 
-INFO("[PASS] test_emir_spef_big")
+INFO("[DONE] test_emir_spef_big")

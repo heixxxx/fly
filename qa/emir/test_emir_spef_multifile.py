@@ -44,7 +44,7 @@ from fly import get_config, launch_workers, wait_tasks
 from fly.runtime import get_agent
 from emir import EMIRProject
 
-from test import qa_tmp
+from test import qa_tmp, record
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA = os.path.join(SCRIPT_DIR, "data", "spef")
@@ -202,24 +202,27 @@ _SUMMARY_FIELDS = (
 )
 
 
-def _file_stats(summary, suffix):
+def _file_stats(summary, suffix, tag):
     hits = [f for f in summary.files if f.source_file.endswith(suffix)]
-    assert len(hits) == 1, (suffix, [f.source_file for f in summary.files])
+    # 原断言：assert len(hits) == 1, (suffix, [f.source_file for f in summary.files])
+    record(f"{tag}/file_stats_hit_1", len(hits) == 1,
+           detail=[f.source_file for f in summary.files])
+    assert len(hits) == 1  # 保留：守卫（后面 hits[0] 按下标取，空列表会以 IndexError 崩溃）
     return hits[0]
 
 
-def _assert_file(f, **expect):
-    for field in _FILE_FIELDS:
-        want = expect.get(field, 0)
-        got = getattr(f, field)
-        assert got == want, (field, got, want)
+def _assert_file(f, tag, **expect):
+    """逐文件统计全字段记录（未给的数值字段按 0 期望）。"""
+    # 原断言：assert got == want, (field, got, want)
+    record(f"{tag}/file_stats",
+           {field: getattr(f, field) for field in _FILE_FIELDS})
 
 
-def _assert_summary(summary, **expect):
-    for field in _SUMMARY_FIELDS:
-        want = expect.get(field, 0)
-        got = getattr(summary, field)
-        assert got == want, (field, got, want)
+def _assert_summary(summary, tag, **expect):
+    """全局统计记录（未给的计数按 0 期望）。"""
+    # 原断言：assert got == want, (field, got, want)
+    record(f"{tag}/summary_stats",
+           {field: getattr(summary, field) for field in _SUMMARY_FIELDS})
 
 
 def _partition_entries(db, xp, yp):
@@ -232,22 +235,48 @@ def _partition_entries(db, xp, yp):
 def _assert_entries(entries, expect, where):
     got_ids = [e[0] for e in entries]
     want_ids = [e[0] for e in expect]
-    assert got_ids == want_ids, (where, got_ids, want_ids)
-    for g, w in zip(entries, expect):
-        assert g == w, (where, g, w)
+    # 原断言：assert got_ids == want_ids, (where, got_ids, want_ids)
+    record(f"{where}/entries_net_id_order", got_ids == want_ids,
+           detail=(got_ids, want_ids))
+    # 原断言：assert g == w, (where, g, w)
+    record(f"{where}/entries_exact", entries == expect,
+           detail=[(g, w) for g, w in zip(entries, expect) if g != w])
 
 
-def _assert_probe(db, queries, vals, mask, members):
+def _assert_probe(db, queries, vals, mask, members, tag):
+    misses = []
+    caps_mismatch = []
+    mask_mismatch = []
+    parts_mismatch = []
+    members_mismatch = []
     for q in queries:
         rec = db.get_net_load(q)
-        assert rec is not None, q
+        if rec is None:
+            misses.append(q)
+            continue
         got = (rec["total_cap_reported_ff"], rec["ground_cap_ff"],
                rec["coupling_cap_ff"])
-        assert got == vals, (q, got, vals)
-        assert rec["source_mask"] == mask, (q, rec["source_mask"])
-        assert rec["partitions"] == [(0, 0)], (q, rec["partitions"])
-        assert rec["electrical_members"] == members, \
-            (q, rec["electrical_members"])
+        if got != vals:
+            caps_mismatch.append((q, got))
+        if rec["source_mask"] != mask:
+            mask_mismatch.append((q, rec["source_mask"]))
+        if rec["partitions"] != [(0, 0)]:
+            parts_mismatch.append((q, rec["partitions"]))
+        if rec["electrical_members"] != members:
+            members_mismatch.append((q, rec["electrical_members"]))
+    # 原断言：assert rec is not None, q
+    record(f"{tag}/loads_exist", not misses, detail=misses)
+    # 原断言：assert got == vals, (q, got, vals)
+    record(f"{tag}/caps_match", not caps_mismatch, detail=caps_mismatch)
+    # 原断言：assert rec["source_mask"] == mask, (q, rec["source_mask"])
+    record(f"{tag}/source_mask_match", not mask_mismatch,
+           detail=mask_mismatch)
+    # 原断言：assert rec["partitions"] == [(0, 0)], (q, rec["partitions"])
+    record(f"{tag}/partitions_single", not parts_mismatch,
+           detail=parts_mismatch)
+    # 原断言：assert rec["electrical_members"] == members, \
+    record(f"{tag}/electrical_members_match", not members_mismatch,
+           detail=members_mismatch)
 
 
 def _spmg_counts():
@@ -256,11 +285,10 @@ def _spmg_counts():
     return {i: text.count("SPMG::%04d" % i) for i in range(1, 15)}
 
 
-def _assert_msg_delta(before, after, expect):
+def _assert_msg_delta(before, after, tag, expect):
     delta = {k: after[k] - before[k] for k in after}
-    for i in range(1, 15):
-        want = expect.get(i, 0)
-        assert delta[i] == want, (f"SPMG::{i:04d}", delta[i], want)
+    # 原断言：assert delta[i] == want, (f"SPMG::{i:04d}", delta[i], want)
+    record(f"{tag}/spmg_msg_deltas", delta)
 
 
 def cleanup():
@@ -332,27 +360,38 @@ INFO("[WAIT] design db family frozen (2 db(s), one batch)")
 # ── 设计库并查集前置断言（§1.3 / §4.6）───────────────────────────────
 
 union = load_design_net_union(d_main)
-assert union.class_count == 5, union.class_count
-assert union.dangling_count == 0, union.dangling_count
+# 原断言：assert union.class_count == 5, union.class_count
+record("union/class_count", union.class_count)
+# 原断言：assert union.dangling_count == 0, union.dangling_count
+record("union/dangling_count", union.dangling_count)
 for root, members in MF_GROUPS.items():
     got = sorted(int(m) for m in (union.members(union.find(root)) or []))
-    assert got == members, (root, got, members)
-INFO("[OK] mf_design net union: 5 multi-member groups (clk/rn/n_top/"
+    # 原断言：assert got == members, (root, got, members)
+    record(f"union/groups/{root}", got)
+INFO("[DONE] mf_design net union: 5 multi-member groups (clk/rn/n_top/"
      "n_top2/n_a1)")
 
 union_d = load_design_net_union(d_dangling)
-assert union_d.class_count == 5, union_d.class_count
-assert union_d.dangling_count == 1, union_d.dangling_count
+# 原断言：assert union_d.class_count == 5, union_d.class_count
+record("union_d/class_count", union_d.class_count)
+# 原断言：assert union_d.dangling_count == 1, union_d.dangling_count
+record("union_d/dangling_count", union_d.dangling_count)
 # 悬空的单成员类：u_blk_b/n_out 自己成组；顶层 n_top2 完全没参与跨块
 # 连接——不在表（find 恒一步返回自身，members 未命中 = 空）
-assert union_d.find(23) == 23, union_d.find(23)
-assert sorted(int(m) for m in (union_d.members(23) or [])) == [23]
-assert union_d.find(MF_NET_ID["n_top2"]) == MF_NET_ID["n_top2"]
-assert not (union_d.members(MF_NET_ID["n_top2"]) or []), "n_top2 ungrouped"
+# 原断言：assert union_d.find(23) == 23, union_d.find(23)
+record("union_d/find_23", union_d.find(23))
+# 原断言：assert sorted(int(m) for m in (union_d.members(23) or [])) == [23]
+record("union_d/members_23", sorted(int(m) for m in (union_d.members(23) or [])))
+# 原断言：assert union_d.find(MF_NET_ID["n_top2"]) == MF_NET_ID["n_top2"]
+record("union_d/find_n_top2", union_d.find(MF_NET_ID["n_top2"]))
+# 原断言：assert not (union_d.members(MF_NET_ID["n_top2"]) or []), "n_top2 ungrouped"
+record("union_d/n_top2_ungrouped",
+       not (union_d.members(MF_NET_ID["n_top2"]) or []))
 # 多成员组不受影响（时钟组仍在）
 got_clk = sorted(int(m) for m in (union_d.members(union_d.find(1)) or []))
-assert got_clk == [1, 7, 13, 20], got_clk
-INFO("[OK] mf_design_dangling net union: 1 dangling single-member class "
+# 原断言：assert got_clk == [1, 7, 13, 20], got_clk
+record("union_d/clock_group_members", got_clk)
+INFO("[DONE] mf_design_dangling net union: 1 dangling single-member class "
      "(u_blk_b/n_out), n_top2 ungrouped, clock group intact")
 
 # ── 寄生库五个正常库（一批提交，一次等待）────────────────────────────
@@ -397,133 +436,184 @@ INFO("[WAIT] spef db batch frozen (5 db(s), one batch)")
 # ═══ §4.1 mf_main：19 条目 + 逐文件统计 + 点查表 ═════════════════════
 
 s_main = load_spef_summary(mf_main)
-assert len(s_main.files) == 5, [f.source_file for f in s_main.files]
+# 原断言：assert len(s_main.files) == 5, [f.source_file for f in s_main.files]
+record("main/files_count", len(s_main.files))
 obj, entries = _partition_entries(mf_main, 0, 0)
-assert obj.size == 19, obj.size
-assert list(iter_spef_partition(mf_main)) == [(0, 0)]
-_assert_entries(entries, MF_MAIN_PART, "mf_main PART_0_0")
-INFO("[OK] mf_main: 19 entries (12 attached + 7 completed) exact")
+# 原断言：assert obj.size == 19, obj.size
+record("main/part00_size", obj.size)
+# 原断言：assert list(iter_spef_partition(mf_main)) == [(0, 0)]
+record("main/partition_list", list(iter_spef_partition(mf_main)))
+_assert_entries(entries, MF_MAIN_PART, "main/part00")
+INFO("[DONE] mf_main: 19 entries (12 attached + 7 completed) exact")
 
-_assert_file(_file_stats(s_main, "blk_top.spef"),
+_assert_file(_file_stats(s_main, "blk_top.spef", "main/blk_top"),
+             "main/blk_top",
              net_count=10, value_count_max=1, cap_count=20,
              coupling_cap_count=10, res_count=1, chunk_count=1,
              hit_count=9, net_name_miss_count=1)
-_assert_file(_file_stats(s_main, "blk_a_inst.spef"),
+_assert_file(_file_stats(s_main, "blk_a_inst.spef", "main/blk_a_inst"),
+             "main/blk_a_inst",
              net_count=3, value_count_max=1, cap_count=6,
              coupling_cap_count=3, chunk_count=1, hit_count=3)
-_assert_file(_file_stats(s_main, "blk_top_overlap.spef"),
+_assert_file(_file_stats(s_main, "blk_top_overlap.spef",
+                         "main/blk_top_overlap"), "main/blk_top_overlap",
              net_count=3, value_count_max=1, cap_count=6,
              coupling_cap_count=3, chunk_count=1, hit_count=3)
-_assert_file(_file_stats(s_main, "blk_strip.spef"),
+_assert_file(_file_stats(s_main, "blk_strip.spef", "main/blk_strip"),
+             "main/blk_strip",
              net_count=4, value_count_max=1, cap_count=7,
              coupling_cap_count=3, chunk_count=1, hit_count=2,
              strip_miss_count=2)
-_assert_file(_file_stats(s_main, "blk_sub_cell.spef"),
+_assert_file(_file_stats(s_main, "blk_sub_cell.spef", "main/blk_sub_cell"),
+             "main/blk_sub_cell",
              net_count=3, value_count_max=1, cap_count=6,
              coupling_cap_count=3, chunk_count=1, hit_count=3)
-INFO("[OK] mf_main: per-file stats for 5 file(s)")
+INFO("[DONE] mf_main: per-file stats for 5 file(s)")
 
-_assert_summary(s_main,
+_assert_summary(s_main, "main",
                 routed_signal_net_count=20, covered_net_count=19,
                 uncovered_net_count=1, uncovered_instance_count=2,
                 same_scope_overlap_count=4, cross_scope_sum_count=4,
                 invalid_binding_count=1, electrical_net_count=5)
-INFO("[OK] mf_main: overlap 4 / cross-scope sum 4 / 1 invalid binding / "
+INFO("[DONE] mf_main: overlap 4 / cross-scope sum 4 / 1 invalid binding / "
      "electrical 5 / coverage 20/19/1/2/0")
 
-for queries, vals, mask, members in MF_MAIN_PROBES:
-    _assert_probe(mf_main, queries, vals, mask, members)
+for idx, (queries, vals, mask, members) in enumerate(MF_MAIN_PROBES):
+    _assert_probe(mf_main, queries, vals, mask, members, f"main_probe{idx}")
 # 单成员电气网：members = [自己]
-_assert_probe(mf_main, ["u_blk_a/u_sub/n3"], (6, 4, 2), 0b10000, [17])
-assert mf_main.get_net_load("u_blk_b/n_b2") is None
-assert mf_main.get_net_load("ghost_top") is None
-INFO("[OK] mf_main: point queries by name and net id all resolve to "
+_assert_probe(mf_main, ["u_blk_a/u_sub/n3"], (6, 4, 2), 0b10000, [17],
+              "main_probe_single")
+# 原断言：assert mf_main.get_net_load("u_blk_b/n_b2") is None
+record("main/miss_n_b2", mf_main.get_net_load("u_blk_b/n_b2"))
+# 非守卫：仅检查未命中网返回空，返回值无后续解引用
+# 原断言：assert mf_main.get_net_load("ghost_top") is None
+record("main/miss_ghost_top", mf_main.get_net_load("ghost_top"))
+# 非守卫：仅检查未命中网返回空，返回值无后续解引用
+INFO("[DONE] mf_main: point queries by name and net id all resolve to "
      "electrical-net totals")
 
 # ═══ §4.2 mf_top_only：只有顶层文件的基线 ════════════════════════════
 
 s_top = load_spef_summary(mf_top_only)
 obj, entries = _partition_entries(mf_top_only, 0, 0)
-assert obj.size == 17, obj.size
-_assert_entries(entries, TOP_ONLY_PART, "mf_top_only PART_0_0")
-_assert_file(_file_stats(s_top, "blk_top.spef"),
+# 原断言：assert obj.size == 17, obj.size
+record("top_only/part00_size", obj.size)
+_assert_entries(entries, TOP_ONLY_PART, "top_only/part00")
+_assert_file(_file_stats(s_top, "blk_top.spef", "top_only/blk_top"),
+             "top_only/blk_top",
              net_count=10, value_count_max=1, cap_count=20,
              coupling_cap_count=10, res_count=1, chunk_count=1,
              hit_count=9, net_name_miss_count=1)
-_assert_summary(s_top,
+_assert_summary(s_top, "top_only",
                 routed_signal_net_count=20, covered_net_count=17,
                 uncovered_net_count=3, uncovered_instance_count=5,
                 electrical_net_count=5)
-INFO("[OK] mf_top_only: 17 entries (bitmap all 1), coverage 20/17/3/5/0")
+INFO("[DONE] mf_top_only: 17 entries (bitmap all 1), coverage 20/17/3/5/0")
 
 # ═══ §4.3 mf_nameforms：点分隔符与转义分隔符 ═════════════════════════
 
 s_nf = load_spef_summary(mf_nameforms)
 obj, entries = _partition_entries(mf_nameforms, 0, 0)
-assert obj.size == 4, obj.size
-_assert_entries(entries, NAMEFORMS_PART, "mf_nameforms PART_0_0")
-_assert_file(_file_stats(s_nf, "blk_top_nameforms.spef"),
+# 原断言：assert obj.size == 4, obj.size
+record("nameforms/part00_size", obj.size)
+_assert_entries(entries, NAMEFORMS_PART, "nameforms/part00")
+_assert_file(_file_stats(s_nf, "blk_top_nameforms.spef",
+                         "nameforms/blk_top_nameforms"),
+             "nameforms/blk_top_nameforms",
              net_count=3, value_count_max=1, cap_count=6,
              coupling_cap_count=3, chunk_count=1, hit_count=3)
-_assert_summary(s_nf,
+_assert_summary(s_nf, "nameforms",
                 routed_signal_net_count=20, covered_net_count=4,
                 uncovered_net_count=16, uncovered_instance_count=11,
                 electrical_net_count=5)
 rec = mf_nameforms.get_net_load("u_blk_a/n_a1")
-assert rec["electrical_members"] == [9, 16]
-assert mf_nameforms.get_net_load("u_blk_a/u_sub/n_in")[
-    "total_cap_reported_ff"] == 10
-INFO("[OK] mf_nameforms: dot divider + escaped divider hit 3 nets, "
+# 原断言：assert rec["electrical_members"] == [9, 16]
+record("nameforms/n_a1_members",
+       None if rec is None else rec["electrical_members"])
+# 原断言：assert mf_nameforms.get_net_load("u_blk_a/u_sub/n_in")[
+rec_in = mf_nameforms.get_net_load("u_blk_a/u_sub/n_in")
+record("nameforms/n_in_total_cap_10",
+       rec_in is not None and rec_in["total_cap_reported_ff"] == 10,
+       detail=None if rec_in is None else f"{rec_in['total_cap_reported_ff']!r}")
+INFO("[DONE] mf_nameforms: dot divider + escaped divider hit 3 nets, "
      "n_in completed entry, no messages")
 
 # ═══ §4.4 mf_reordered：重合保留首份按文件序 ═════════════════════════
 
 s_re = load_spef_summary(mf_reordered)
 obj, entries = _partition_entries(mf_reordered, 0, 0)
-assert obj.size == 19, obj.size
-_assert_entries(entries, MF_REORDERED_PART, "mf_reordered PART_0_0")
-_assert_file(_file_stats(s_re, "blk_top_overlap.spef"),
+# 原断言：assert obj.size == 19, obj.size
+record("reordered/part00_size", obj.size)
+_assert_entries(entries, MF_REORDERED_PART, "reordered/part00")
+_assert_file(_file_stats(s_re, "blk_top_overlap.spef",
+                         "reordered/blk_top_overlap"),
+             "reordered/blk_top_overlap",
              net_count=3, value_count_max=1, cap_count=6,
              coupling_cap_count=3, chunk_count=1, hit_count=3)
-_assert_file(_file_stats(s_re, "blk_top.spef"),
+_assert_file(_file_stats(s_re, "blk_top.spef", "reordered/blk_top"),
+             "reordered/blk_top",
              net_count=10, value_count_max=1, cap_count=20,
              coupling_cap_count=10, res_count=1, chunk_count=1,
              hit_count=9, net_name_miss_count=1)
-_assert_summary(s_re,
+_assert_summary(s_re, "reordered",
                 routed_signal_net_count=20, covered_net_count=19,
                 uncovered_net_count=1, uncovered_instance_count=2,
                 same_scope_overlap_count=4, cross_scope_sum_count=4,
                 electrical_net_count=5)
 rec = mf_reordered.get_net_load("n_top")
-assert (rec["total_cap_reported_ff"], rec["ground_cap_ff"],
-        rec["coupling_cap_ff"]) == (1038, 623, 415)
-assert rec["electrical_members"] == [3, 10]
-INFO("[OK] mf_reordered: first-file-wins by file order (n_top = 999+39), "
+# 原断言：assert (rec["total_cap_reported_ff"], rec["ground_cap_ff"],
+record("reordered/n_top_caps_1038_623_415",
+       rec is not None and
+       (rec["total_cap_reported_ff"], rec["ground_cap_ff"],
+        rec["coupling_cap_ff"]) == (1038, 623, 415),
+       detail=None if rec is None else
+       (rec["total_cap_reported_ff"], rec["ground_cap_ff"],
+        rec["coupling_cap_ff"]))
+# 原断言：assert rec["electrical_members"] == [3, 10]
+record("reordered/n_top_members",
+       None if rec is None else rec["electrical_members"])
+INFO("[DONE] mf_reordered: first-file-wins by file order (n_top = 999+39), "
      "electrical totals order-independent")
 
 # ═══ §4.6 mf_dangling：块的端口在父层没接 ════════════════════════════
 
 s_dg = load_spef_summary(mf_dangling)
 obj, entries = _partition_entries(mf_dangling, 0, 0)
-assert obj.size == 15, obj.size
-_assert_entries(entries, DANGLING_PART, "mf_dangling PART_0_0")
-_assert_file(_file_stats(s_dg, "blk_top.spef"),
+# 原断言：assert obj.size == 15, obj.size
+record("dangling/part00_size", obj.size)
+_assert_entries(entries, DANGLING_PART, "dangling/part00")
+_assert_file(_file_stats(s_dg, "blk_top.spef", "dangling/blk_top"),
+             "dangling/blk_top",
              net_count=10, value_count_max=1, cap_count=20,
              coupling_cap_count=10, res_count=1, chunk_count=1,
              hit_count=8, net_name_miss_count=1, unrouted_net_count=1)
-_assert_summary(s_dg,
+_assert_summary(s_dg, "dangling",
                 routed_signal_net_count=19, covered_net_count=15,
                 uncovered_net_count=4, uncovered_instance_count=7,
                 electrical_net_count=4)
-assert mf_dangling.get_net_load("n_top2") is None
-assert mf_dangling.get_net_load("u_blk_b/n_out") is None
+# 原断言：assert mf_dangling.get_net_load("n_top2") is None
+record("dangling/miss_n_top2", mf_dangling.get_net_load("n_top2"))
+# 非守卫：仅检查未命中网返回空，返回值无后续解引用
+# 原断言：assert mf_dangling.get_net_load("u_blk_b/n_out") is None
+record("dangling/miss_u_blk_b_n_out", mf_dangling.get_net_load("u_blk_b/n_out"))
+# 非守卫：仅检查未命中网返回空，返回值无后续解引用
 rec = mf_dangling.get_net_load("clk")
-assert rec["electrical_members"] == [1, 7, 13, 20]
+# 原断言：assert rec["electrical_members"] == [1, 7, 13, 20]
+record("dangling/clk_members",
+       None if rec is None else rec["electrical_members"])
 rec = mf_dangling.get_net_load("n_top")
-assert (rec["total_cap_reported_ff"], rec["ground_cap_ff"],
-        rec["coupling_cap_ff"]) == (90, 54, 36)
-assert rec["electrical_members"] == [3, 10]
-INFO("[OK] mf_dangling: 15 entries, electrical_net_count 4 excludes the "
+# 原断言：assert (rec["total_cap_reported_ff"], rec["ground_cap_ff"],
+record("dangling/n_top_caps_90_54_36",
+       rec is not None and
+       (rec["total_cap_reported_ff"], rec["ground_cap_ff"],
+        rec["coupling_cap_ff"]) == (90, 54, 36),
+       detail=None if rec is None else
+       (rec["total_cap_reported_ff"], rec["ground_cap_ff"],
+        rec["coupling_cap_ff"]))
+# 原断言：assert rec["electrical_members"] == [3, 10]
+record("dangling/n_top_members",
+       None if rec is None else rec["electrical_members"])
+INFO("[DONE] mf_dangling: 15 entries, electrical_net_count 4 excludes the "
      "dangling single-member class, coverage 19/15/4/7/0")
 
 # ═══ §4.5 mf_all_invalid：全部绑定未命中 → 库不冻结 ══════════════════
@@ -538,16 +628,18 @@ assert not proj.wait_frozen("mf_all_invalid", timeout=300), \
     "all-invalid binding must not freeze"
 reason = proj.db_failure_reason("mf_all_invalid")
 # db_failure_reason 返回 (task_id, error) 元组或 None——error 是失败文案
-assert reason is not None \
-    and "no binding target resolved" in reason[1], reason
-INFO("[OK] mf_all_invalid: db not frozen, reason names the unresolved "
+# 原断言：assert reason is not None \
+record("all_invalid/reason_names_binding",
+       reason is not None and "no binding target resolved" in reason[1],
+       detail=reason)
+INFO("[DONE] mf_all_invalid: db not frozen, reason names the unresolved "
      "binding target")
 
 # ═══ §4.7 消息总次数（正常批 + all_invalid 全部结束之后）═════════════
 
-_assert_msg_delta(msg_before, _spmg_counts(), MF_MSGS)
-INFO("[OK] SPMG message counts over the whole file (§4.7)")
+_assert_msg_delta(msg_before, _spmg_counts(), "msgs", MF_MSGS)
+INFO("[DONE] SPMG message counts over the whole file (§4.7)")
 
 shutil.rmtree(qa_tmp("spef_mf_def"), ignore_errors=True)
 
-INFO("[PASS] test_emir_spef_multifile")
+INFO("[DONE] test_emir_spef_multifile")
