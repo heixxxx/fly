@@ -44,7 +44,7 @@ def _read_matrix_task(db, expected_n):
 
 
 cleanup()
-get_config().set_int("fail_unscaleable_tasks", 0)
+get_config().set_int("fail_unscheduleable_tasks", 0)
 
 master = fly.get_agent()
 master.launch_local_workers([{"host": "host_A"}, {"host": "host_B"}])

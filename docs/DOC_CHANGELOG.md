@@ -2,6 +2,45 @@
 
 ---
 
+## 2026-11-26: 删除一对孤儿脚本 `qa/storage/save_to_db_false_run1.py` 与 `run2.py`
+
+**背景**：这两个脚本没有被任何编排脚本调度，全量 QA 从不运行它们（QA 改造的
+阶段丙一发现，当时留待用户裁定）。
+
+**确认覆盖情况**（2026-11-26，用户裁定「确认后可以删除」）：
+
+- 它们检查的场景是「不落库写入的临时对象（`save_to_db=False`）与正式对象写进
+  数据库后，同进程可读；跨进程加载后正式对象还在、临时对象应消失」。
+- 同进程可读、任务无失败：`qa/storage/test_save_to_db_false_basic.pyt` 等 5 个
+  用例覆盖。
+- 正式对象跨进程加载后可读：`test_save_to_db_false_persist.pyt`、
+  `test_load_db.pyt` 覆盖。
+- 临时对象跨进程的行为：现行语义是**临时对象也落盘，可以经 `load_db` 跨进程
+  恢复**，由 `test_temp_persist.pyt` 覆盖。孤儿脚本断言的「临时对象应消失」是
+  已经废弃的旧语义。
+- 实测：用当前二进制把两个脚本原样各跑一遍，都是退出码 0；再用探针在新进程里
+  `load_db` 同一个数据库，`perm=42`、`temp=99` 都读得到。也就是说 `run2` 的
+  「临时对象不应跨进程保留」在现行语义下是假的，它之所以「通过」，只是因为那条
+  检查写成了会把自己吞掉的 `try/except`（阶段丙一记录过的失效写法）。
+
+**落地**：删除两个文件。仓库里没有其他地方引用它们；全量 QA 的用例数不变
+（202）。
+
+## 2026-11-26: 修正配置键拼写——`fail_unscaleable_tasks` 应为 `fail_unscheduleable_tasks`
+
+**问题**：`qa/storage/test_merge_then_solve_cross_path.py` 把配置键写成了
+`fail_unscaleable_tasks`。配置对象对未登记的键照样存下来，所以这一行从来没有
+生效过：这个用例一直用的是缺省值 1，而作者的本意（以及姊妹用例
+`test_merge_then_solve.py`）是 0。QA 改造阶段丙四的实现者发现，留待用户裁定。
+
+**影响**：`fail_unscheduleable_tasks` 控制「属性死锁检测」——没有任何 worker
+具备所需属性、也没有任务在运行时，把死等的任务判失败。这个用例的任务不要求
+特殊属性，开关取 0 或 1 行为相同，所以修正拼写不改变用例验证的内容，只是让它
+与姊妹用例的配置保持一致。
+
+**验证**：修正后主进程落盘的配置里这个键的值是 0；用例连续 10 轮通过；全量 QA
+202 个全过；对 `qa/storage` 重录零变化。
+
 ## 2026-11-26: QA 改造阶段丁七——迁移 `qa/emir` 的四个用例（`test_emir_timing_flow`、`test_emir_design_pg_wildcard`、`test_emir_spef_flow`、`test_emir_partition`）
 
 **依据**：QA 改造任务书第 7 节的阶段丁七。
