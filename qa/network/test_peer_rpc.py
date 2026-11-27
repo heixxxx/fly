@@ -65,12 +65,16 @@ def compute_task(db, group_id):
         print(f"[COMPUTE] rpc {i}: status={status} elapsed={elapsed:.2f}ms ok={ok}", flush=True)
         # 保留：@as_task 任务函数内的断言，record 只能在子阶段的主进程里调用
         assert ok, f"rpc {i} result mismatch"
-    # 测纯 RPC 往返延迟（小 payload）
+    # 测纯 RPC 往返延迟（小 payload）。状态同样要检查——失败时 RPC 不抛异常，
+    # 只把 status 置为 FAILED/ERROR，不检查的话这一段失败也不影响用例通过
     times = []
     for i in range(3):
         t0 = time.perf_counter()
         status, resp = chan.rpc(b"ping", timeout=10)
         times.append((time.perf_counter() - t0) * 1000)
+        # 保留：@as_task 任务函数内的断言，record 只能在子阶段的主进程里调用
+        assert status == PeerRpcStatus.OK and resp == b"pong", \
+            f"small rpc {i} failed status={status} resp={resp[:40]!r}"
     avg = sum(times) / len(times)
     RESULTS["compute_avg_rpc_ms"] = avg
     print(f"[COMPUTE] avg RPC round-trip={avg:.2f}ms", flush=True)

@@ -36,6 +36,21 @@
 
 ---
 
+## 2026-11-27: `qa/network/test_peer_rpc.py` 的小报文往返段补上状态检查
+
+**问题**：`compute_task` 末尾测纯 RPC 往返延迟的三个 `ping` 只计时不检查——`chan.rpc` 失败时
+不抛异常，只把 `status` 置为 `FAILED`/`ERROR`（`src/agent/cpp/worker_agent.h` 的
+`PeerRpcStatus`），这一段失败不影响用例通过。检查缺口从入库起就在，QA 改造清点时发现
+（任务书第 13 节第 23 条），用户裁定补上。
+
+**落地**：循环里补一条任务函数内的断言（与前面数组请求段同一写法）：
+`assert status == PeerRpcStatus.OK and resp == b"pong"`——响应体也一并核对（服务端回的
+是 `b"pong"`）。延迟照旧只计时打印，测得的数值不进任何基准。
+
+**验证**：变异验证——把断言期望临时改错，用例失败并指出是第几个 small rpc；恢复后通过。
+
+---
+
 ## 2026-11-27: 推送门禁改成「先跑校验再推送」——新增 `scripts/push`，pre-push 钩子只核对标记文件
 
 **问题**：门禁（build → unit test → 全量 QA）原来跑在 pre-push 钩子里，而 `git push` 的顺序是
