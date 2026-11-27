@@ -16,6 +16,19 @@ py_test(
     deps = [requirement("numpy")],
 )
 
+# 推送门禁（scripts/push 与 scripts/pre-push）的行为测试：在临时 git 仓库里做真实的
+# git push（本地裸仓库当远端，不联网、不跑门禁），核对标记文件的放行与拦截规则，以及
+# scripts/push 在门禁之前的前置检查。两个脚本按 runfiles 内路径读取，无 deps。
+py_test(
+    name = "push_hook_test",
+    srcs = ["push_hook_test.py"],
+    data = [
+        "//scripts:pre-push",
+        "//scripts:push",
+    ],
+    main = "push_hook_test.py",
+)
+
 # qa_wait.py 同样按路径加载：wait_tasks_no_failure 的记录调用经模块属性转发，测试里
 # 替换成桩，无需 fly 与真实记录接口（纯标准库，无额外 deps）。
 py_test(

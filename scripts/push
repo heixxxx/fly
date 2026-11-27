@@ -1,0 +1,178 @@
+#!/usr/bin/env bash
+#
+# 项目专用的推送命令：先跑门禁，全部通过后再推送。参数与 git push 相同。
+#
+#   ./scripts/push                       # 等价于 git push
+#   ./scripts/push origin main           # 参数原样传给 git push
+#
+# 流程：
+#   0. 前置检查   -> 工作区与当前提交完全一致（没有未提交、未跟踪的改动）
+#   1. BUILD      -> ./fly.sh build                    (bazel build + clangd 刷新)
+#   2. UNIT TEST  -> ./fly.sh test //src/... --jobs=4  (单测阶段内并行 4)
+#   3. QA TEST    -> ./fly.sh install && ./qa/runqa -j 6 -t 20  (QA 阶段内并行 6)
+#   4. 通过       -> 把验证过的提交号写进标记文件 <git-dir>/fly-push-marker
+#   5. git push "$@"（scripts/pre-push 核对标记文件后放行）
+#
+# 门禁为什么放在这里而不是放在 pre-push 钩子里：git push 的顺序是「连接远端 → 运行
+# pre-push 钩子 → 传输」，门禁跑多久连接就空闲多久；超过约 6 分钟时远端会关闭空闲
+# 连接，钩子通过之后 git push 以退出码 141 失败（2026-11-23、2026-11-27 各实测一次）。
+# 门禁挪到 git push 之前，钩子里只剩一次标记核对，连接不再空闲等待。
+#
+# 任一阶段失败即 exit 1：不写标记，不推送。
+#
+# 禁止以 git push --no-verify 绕过 —— 见 docs/push-hook.md。
+#
+
+set -euo pipefail
+
+usage() {
+    cat <<USAGE
+用法: $0 [git push 的参数...]
+
+先跑门禁（build -> unit test -> QA test），全部通过后把提交号写进标记文件，再执行
+git push。参数原样传给 git push，例如：
+
+  $0                      等价于 git push
+  $0 origin main
+USAGE
+}
+
+case "${1:-}" in
+    -h|--help)
+        usage
+        exit 0
+        ;;
+esac
+
+if ! REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)"; then
+    echo "ERROR: 这里不是 git 仓库的工作区，$0 不能运行。" >&2
+    exit 1
+fi
+cd "$REPO_ROOT"
+
+MARKER="$(git rev-parse --absolute-git-dir)/fly-push-marker"
+COMMIT="$(git rev-parse HEAD)"
+
+# --- [0/4] 前置检查 --------------------------------------------------------------
+# 标记只为一个提交背书：门禁验证的内容必须就是将要推送的那个提交。工作区里只要
+# 有未提交或未跟踪的改动，门禁验证的就不再是提交本身。
+DIRTY="$(git status --porcelain)"
+if [ -n "$DIRTY" ]; then
+    echo
+    echo "============================== PUSH BLOCKED =============================="
+    echo "  工作区与当前提交不一致，门禁没有开始，push 已阻止。"
+    echo
+    echo "  标记只为一个提交背书：门禁验证的内容必须就是将要推送的提交。先把下面的"
+    echo "  改动提交（或者移走），再运行 $0："
+    echo
+    echo "$DIRTY" | sed 's/^/    /'
+    echo "=========================================================================="
+    exit 1
+fi
+
+# --- 计时与横幅 ------------------------------------------------------------------
+fmt_duration() {
+    # $1=开始秒 $2=结束秒 -> 打印 "Xs"
+    local d=$(( $2 - $1 ))
+    printf '%ds' "$d"
+}
+
+# 失败时通过 trap 输出统一阻断横幅。BLOCK_STAGE 由各阶段在进入时设置。
+BLOCK_STAGE=""
+on_error() {
+    local exit_code=$?
+    echo
+    echo "============================== PUSH BLOCKED =============================="
+    echo "  阶段 [${BLOCK_STAGE:-unknown}] 失败 (exit $exit_code)，push 已阻止。"
+    echo "  请修复失败根因后重试。禁止使用 git push --no-verify 绕过。"
+    echo "=========================================================================="
+    exit "$exit_code"
+}
+trap on_error ERR
+
+# 内存水位打印（增强日志）：每阶段前后输出 available，OOM 复发时有现场可查。
+mem_avail() {
+    free -m | awk '/^Mem:/{printf "%sMB available", $7}'
+}
+
+echo "============================== pre-push gate =============================="
+echo "  仓库: $REPO_ROOT"
+echo "  即将执行 build -> unit test -> QA test，全部通过才推送。"
+echo "  两套测试严格串行：unit test 全过后才启动 QA（不并行叠加）。"
+echo "=========================================================================="
+
+# [1/3] BUILD
+BLOCK_STAGE="1/3 BUILD"
+BUILD_START=$(date +%s)
+echo
+echo "=== [1/3] BUILD ==="
+echo "  [mem] $(mem_avail)"
+./fly.sh build
+BUILD_END=$(date +%s)
+echo "=== [1/3] BUILD OK ($(fmt_duration "$BUILD_START" "$BUILD_END")) ==="
+
+# [2/3] UNIT TEST
+BLOCK_STAGE="2/3 UNIT TEST"
+TEST_START=$(date +%s)
+echo
+echo "=== [2/3] UNIT TEST ==="
+echo "  [mem] $(mem_avail)"
+# --jobs=4：单测阶段内并行 4（用户裁定 2026-08-16）。与 QA 严格串行——
+# 两套测试不并行叠加；bazel shutdown 在阶段末释放 Java server 内存给 QA。
+./fly.sh test //src/... --jobs=4
+TEST_END=$(date +%s)
+echo "=== [2/3] UNIT TEST OK ($(fmt_duration "$TEST_START" "$TEST_END")) ==="
+
+# 释放 bazel Java server 内存给 QA 阶段（QA 直接跑 fly binary 不经 bazel；
+# 下次 build 时 server 重启代价 ~10s，净收益 0.5-1GB 峰值余量）。
+bazel shutdown >/dev/null 2>&1 || true
+
+# [3/3] QA TEST (runqa 依赖 build/bin/fly，需先 install)
+BLOCK_STAGE="3/3 QA TEST"
+QA_START=$(date +%s)
+echo
+echo "=== [3/3] QA TEST ==="
+echo "--- refresh build/bin/fly (runqa 依赖) ---"
+./fly.sh install
+echo "  [mem] $(mem_avail)"
+# -j 6：QA 阶段内并行 6（用户裁定 2026-08-16；runqa 默认值同步为 6）。
+echo "--- runqa -j 6 -t 20 (全量 QA) ---"
+./qa/runqa -j 6 -t 20
+QA_END=$(date +%s)
+echo "=== [3/3] QA TEST OK ($(fmt_duration "$QA_START" "$QA_END")) ==="
+echo "  [mem] $(mem_avail)"
+
+trap - ERR
+
+# --- [4/4] 写标记，然后推送 ------------------------------------------------------
+# 门禁跑了几分钟：期间 HEAD 和工作区都不能变，否则验证过的不是将要推送的提交。
+NOW="$(git rev-parse HEAD)"
+if [ "$NOW" != "$COMMIT" ]; then
+    echo
+    echo "============================== PUSH BLOCKED =============================="
+    echo "  门禁运行期间 HEAD 从 $COMMIT 变成了 $NOW。"
+    echo "  验证过的是门禁开始时的提交，push 已阻止。在要推送的提交上重新运行 $0。"
+    echo "=========================================================================="
+    exit 1
+fi
+DIRTY="$(git status --porcelain)"
+if [ -n "$DIRTY" ]; then
+    echo
+    echo "============================== PUSH BLOCKED =============================="
+    echo "  门禁运行之后工作区出现了改动（见下），push 已阻止。"
+    echo "  标记只为一个提交背书：处理掉这些改动后重新运行 $0。"
+    echo
+    echo "$DIRTY" | sed 's/^/    /'
+    echo "=========================================================================="
+    exit 1
+fi
+
+# 临时文件 + 原子替换：钩子不会读到写了一半的标记
+MARKER_TMP="$(mktemp "$(dirname "$MARKER")/.fly-push-marker.XXXXXX")"
+printf '%s\n' "$COMMIT" > "$MARKER_TMP"
+mv -f "$MARKER_TMP" "$MARKER"
+echo
+echo ">>> 门禁通过，标记文件已更新：$MARKER（提交 $COMMIT）"
+echo
+
+git push "$@"

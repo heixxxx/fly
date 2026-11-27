@@ -1,15 +1,17 @@
 #!/usr/bin/env bash
 #
-# pre-push hook: 在 git push 前自动执行 build -> unit test -> QA test。
-# 仅当三步全部通过、零失败时才放行 push。
+# pre-push hook: 只做一件事——核对门禁标记。
 #
-# 流程：
-#   1. BUILD      -> ./fly.sh build                    (bazel build + clangd 刷新)
-#   2. UNIT TEST  -> ./fly.sh test //src/... --jobs=4  (单测阶段内并行 4)
-#   3. QA TEST    -> ./fly.sh install && ./qa/runqa -j 6 -t 20  (QA 阶段内并行 6)
-# 两套测试严格串行（unit test 全过才启动 QA）；各阶段打印内存水位。
+# 门禁（build → unit test → 全量 QA）不在钩子里跑，由 scripts/push 在 git push 之前
+# 跑完，通过后把验证过的提交号写进标记文件 <git-dir>/fly-push-marker。这里检查标记
+# 文件里的提交号与本次推送的提交是否一致：
 #
-# 任一阶段失败即 exit 1，阻止 push。
+#   一致   → 放行
+#   不一致 → 报错退出，并说明正确的推送方式
+#
+# 为什么不在钩子里跑门禁：git push 的顺序是「连接远端 → 运行本钩子 → 传输」，门禁
+# 跑多久连接就空闲多久，超过约 6 分钟时远端会关闭空闲连接，钩子通过之后 git push
+# 以退出码 141 失败（见 docs/push-hook.md）。
 #
 # 禁止以 git push --no-verify 绕过 —— 见 docs/push-hook.md。
 #
@@ -19,86 +21,85 @@ set -euo pipefail
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 cd "$REPO_ROOT"
 
-# 消费 git 喂入的 stdin (本 hook 不依赖其内容，但保持读取语义完整)。
-cat >/dev/null
+MARKER="$(git rev-parse --absolute-git-dir)/fly-push-marker"
+PUSH_CMD="./scripts/push"
 
-# --- 计时与横幅 ------------------------------------------------------------------
-fmt_duration() {
-    # $1=开始秒 $2=结束秒 -> 打印 "Xs"
-    local d=$(( $2 - $1 ))
-    printf '%ds' "$d"
-}
+# git 从标准输入喂入要更新的引用，每行：本地引用 本地对象号 远端引用 远端对象号
+# （删除远端引用时本地对象号全是 0）
+REFS=()
+while read -r local_ref local_sha remote_ref remote_sha || [ -n "${local_ref:-}" ]; do
+    [ -n "${local_ref:-}" ] || continue
+    REFS+=("$local_ref $local_sha $remote_ref")
+done
 
-# 失败时通过 trap 输出统一阻断横幅。BLOCK_STAGE 由各阶段在进入时设置。
-BLOCK_STAGE=""
-on_error() {
-    local exit_code=$?
+block() {
+    # $1: 标记文件的情况
     echo
     echo "============================== PUSH BLOCKED =============================="
-    echo "  阶段 [${BLOCK_STAGE:-unknown}] 失败 (exit $exit_code)，push 已阻止。"
-    echo "  请修复失败根因后重试。禁止使用 git push --no-verify 绕过。"
+    echo "  本次推送没有对应的门禁标记，push 已阻止。"
+    echo
+    echo "  标记文件：$MARKER"
+    echo "    $1"
+    if [ "${#REFS[@]}" -gt 0 ]; then
+        echo "  本次推送的引用（本地引用 本地对象号 -> 远端引用）："
+        for line in "${REFS[@]}"; do
+            read -r local_ref local_sha remote_ref <<< "$line"
+            echo "    $local_ref  $local_sha  ->  $remote_ref"
+        done
+    fi
+    echo
+    echo "  正确的推送方式：不要直接用 git push。用项目的推送命令——它先跑"
+    echo "  build -> unit test -> 全量 QA，全部通过后把提交号写进上面的标记文件，再推送："
+    echo
+    echo "      $PUSH_CMD                # 参数与 git push 相同，例如 $PUSH_CMD origin main"
+    echo
+    echo "  标记文件里的提交号必须与本次推送的提交一致。门禁验证的是当前检出的提交，"
+    echo "  只能推送指向它的引用；换了提交就要重新跑一遍 $PUSH_CMD。"
+    echo "  禁止用 git push --no-verify 绕过。"
     echo "=========================================================================="
-    exit "$exit_code"
-}
-trap on_error ERR
-
-# --- 阶段执行 --------------------------------------------------------------------
-# 内存水位打印（增强日志）：每阶段前后输出 available，OOM 复发时有现场可查。
-mem_avail() {
-    free -m | awk '/^Mem:/{printf "%sMB available", $7}'
+    exit 1
 }
 
-echo "============================== pre-push gate =============================="
-echo "  仓库: $REPO_ROOT"
-echo "  即将执行 build -> unit test -> QA test，全部通过才放行 push。"
-echo "  两套测试严格串行：unit test 全过后才启动 QA（不并行叠加）。"
-echo "=========================================================================="
+# --- 标记文件 --------------------------------------------------------------------
+MARKER_COMMIT=""
+MARKER_STATE="不存在（没有跑过门禁，或者标记被删掉了）"
+if [ -f "$MARKER" ]; then
+    MARKER_COMMIT="$(tr -d '[:space:]' < "$MARKER")"
+    if [[ "$MARKER_COMMIT" =~ ^[0-9a-f]{40}$ ]]; then
+        MARKER_STATE="记录的提交：$MARKER_COMMIT"
+    else
+        MARKER_STATE="内容不是提交号：${MARKER_COMMIT:-（空文件）}"
+        MARKER_COMMIT=""
+    fi
+fi
+[ -n "$MARKER_COMMIT" ] || block "$MARKER_STATE"
 
-# [1/3] BUILD
-BLOCK_STAGE="1/3 BUILD"
-BUILD_START=$(date +%s)
-echo
-echo "=== [1/3] BUILD ==="
-echo "  [mem] $(mem_avail)"
-./fly.sh build
-BUILD_END=$(date +%s)
-echo "=== [1/3] BUILD OK ($(fmt_duration "$BUILD_START" "$BUILD_END")) ==="
+# --- 逐个引用核对 ----------------------------------------------------------------
+# 删除远端引用不推送内容，跳过核对；其余每个引用都必须指向标记里的提交。
+# 附注标签的对象号是标签对象自己的，先解析到它指向的提交再比较。
+PUSHES_CONTENT=0
+if [ "${#REFS[@]}" -gt 0 ]; then
+    for line in "${REFS[@]}"; do
+        read -r local_ref local_sha remote_ref <<< "$line"
+        if [[ "$local_sha" =~ ^0+$ ]]; then
+            continue
+        fi
+        PUSHES_CONTENT=1
+        COMMIT="$(git rev-parse --verify --quiet "$local_sha^{commit}" || true)"
+        if [ -z "$COMMIT" ]; then
+            block "$MARKER_STATE
+    本次推送的 $local_ref（$local_sha）不是一个提交"
+        fi
+        if [ "$COMMIT" != "$MARKER_COMMIT" ]; then
+            block "$MARKER_STATE
+    本次推送的提交：$COMMIT（$local_ref）——与标记不一致"
+        fi
+    done
+fi
 
-# [2/3] UNIT TEST
-BLOCK_STAGE="2/3 UNIT TEST"
-TEST_START=$(date +%s)
-echo
-echo "=== [2/3] UNIT TEST ==="
-echo "  [mem] $(mem_avail)"
-# --jobs=4：单测阶段内并行 4（用户裁定 2026-08-16）。与 QA 严格串行——
-# 两套测试不并行叠加；bazel shutdown 在阶段末释放 Java server 内存给 QA。
-./fly.sh test //src/... --jobs=4
-TEST_END=$(date +%s)
-echo "=== [2/3] UNIT TEST OK ($(fmt_duration "$TEST_START" "$TEST_END")) ==="
-
-# 释放 bazel Java server 内存给 QA 阶段（QA 直接跑 fly binary 不经 bazel；
-# 下次 build 时 server 重启代价 ~10s，净收益 0.5-1GB 峰值余量）。
-bazel shutdown >/dev/null 2>&1 || true
-
-# [3/3] QA TEST (runqa 依赖 build/bin/fly，需先 install)
-BLOCK_STAGE="3/3 QA TEST"
-QA_START=$(date +%s)
-echo
-echo "=== [3/3] QA TEST ==="
-echo "--- refresh build/bin/fly (runqa 依赖) ---"
-./fly.sh install
-echo "  [mem] $(mem_avail)"
-# -j 6：QA 阶段内并行 6（用户裁定 2026-08-16；runqa 默认值同步为 6）。
-echo "--- runqa -j 6 -t 20 (全量 QA) ---"
-./qa/runqa -j 6 -t 20
-QA_END=$(date +%s)
-echo "=== [3/3] QA TEST OK ($(fmt_duration "$QA_START" "$QA_END")) ==="
-echo "  [mem] $(mem_avail)"
-
-# --- 放行 -----------------------------------------------------------------------
-trap - ERR
-echo
-echo "============================== PUSH ALLOWED =============================="
-echo "  build + unit test + QA test 全部通过，放行 push。"
-echo "=========================================================================="
+if [ "$PUSHES_CONTENT" = "1" ]; then
+    echo "=== [pre-push] 门禁标记与本次推送的提交一致（${MARKER_COMMIT:0:7}），放行 ==="
+else
+    echo "=== [pre-push] 本次只删除远端引用、不推送内容；标记文件存在（${MARKER_COMMIT:0:7}），放行 ==="
+fi
 exit 0

@@ -34,11 +34,11 @@ bash qa/run_qa_tests.sh        # Legacy wrapper, same thing
 
 ### 开发流程：直接推送到 main（不建分支）
 
-当前处于早期开发阶段，**直接在 `main` 分支提交并推送，不创建 feature 分支**。commit 后直接 `git push`（pre-push hook 自动跑全量校验）。待项目进入稳定期再切换为分支模型。
+当前处于早期开发阶段，**直接在 `main` 分支提交并推送，不创建 feature 分支**。commit 后用 `./scripts/push` 推送（参数与 `git push` 相同）：它先跑 **build → unit test → 全量 QA**，全部通过后写标记文件再推送。不要直接 `git push`——会被 pre-push hook 拒绝。工作区必须干净（没有未提交、未跟踪的改动），`./scripts/push` 才开始跑门禁。待项目进入稳定期再切换为分支模型。
 
-### Pre-push hook（push 前自动校验）
+### 推送门禁（`scripts/push` 先跑校验，pre-push hook 只核对标记）
 
-`.git/hooks/pre-push` 在每次 `git push` 前自动跑 **build → unit test → 全量 QA**，任一阶段失败即阻止 push。**禁止以 `git push --no-verify` 绕过** —— 失败时必须修复根因让流水线自然通过。详见 [`docs/push-hook.md`](docs/push-hook.md)。
+门禁 **build → unit test → 全量 QA** 由 `./scripts/push` 在 `git push` **之前**跑，全部通过后把提交号写进 `.git/fly-push-marker`。`.git/hooks/pre-push` 只核对该标记与本次推送的提交是否一致：一致放行，不一致阻止 push 并提示用 `./scripts/push`。门禁不放在钩子里，是因为 `git push` 先连接远端再跑钩子，门禁超过约 6 分钟时连接空闲超时，推送以退出码 141 失败。**禁止以 `git push --no-verify` 或手写标记文件绕过** —— 失败时必须修复根因让流水线自然通过。详见 [`docs/push-hook.md`](docs/push-hook.md)。
 
 ### 手动跑 fly 烟测/脚本的日志落点（禁止污染仓库根）
 
@@ -58,7 +58,7 @@ bash qa/run_qa_tests.sh        # Legacy wrapper, same thing
 - **目录约定**（以下相对数据仓库自己的根；子模块挂在 fly 仓库根的 `designs/`，而数据仓库根下还有一层 `designs/`——所以在 fly 仓库里的实际路径是 `designs/designs/<设计名>/…`）：`designs/<设计名>/<工艺>/<时钟周期>ns/` 下有 `results/`（布局布线产出）、`twf/`（时序窗口）、`vcd/`（翻转活动）、`reports/`、`stats.json`；输入网表与约束在 `designs/inputs/`；各来源许可原文在 `designs/LICENSES/`。规模、已知局限、下游该用哪些文件，见 `designs/README.md`。
 - **用例写法**：按路径读取。需要这些数据的用例在子模块未初始化时必须**明确失败并提示上面的命令**，不得静默跳过；存在性检查要放在任何读文件的动作之前（否则抛出的是不带提示的 `FileNotFoundError`）。
 - **更新指向**：子模块内容的改动在它自己的仓库里提交推送（复现脚本需要的外部位置经环境变量传入，见其 `scripts/env.sh`）；然后在 fly 仓库根 `git add designs` 提交新的指向。
-- 构建与 bazel 不读取它；端到端测试里读它的只有 `qa/emir/test_emir_real_gcd.py`（真实 gcd 设计的四库链用例），它在推送钩子的全量端到端里运行——所以推送前子模块必须已初始化。
+- 构建与 bazel 不读取它；端到端测试里读它的只有 `qa/emir/test_emir_real_gcd.py`（真实 gcd 设计的四库链用例），它在推送门禁的全量端到端里运行——所以推送前子模块必须已初始化。
 
 ---
 

@@ -72,7 +72,7 @@ agent、common（模块族）、container、core、emir（含子模块开发规�
   - runqa 并行度/发现机制/case 总数口径 → [qa/README.md](../qa/README.md)「并行度权威口径」
   - QA 用例基准比对（记录接口、`check_list`、基准重录、测例产物命名约定）→ [qa/README.md](../qa/README.md)「基准比对机制」
   - task 参数编码（`__fly_db2__`）与 db 身份/uid → [db-chain-design.md](db-chain-design.md)
-  - pre-push 流水线配方 → `scripts/pre-push`（源码即权威），行为说明见 [push-hook.md](push-hook.md)
+  - 推送门禁流水线配方 → `scripts/push`（源码即权威；`scripts/pre-push` 只核对标记文件），用法与行为说明见 [push-hook.md](push-hook.md)
 - 所有结构性改动记入 [DOC_CHANGELOG.md](DOC_CHANGELOG.md)（倒序追加）
 - 状态标记：❌ 未做 / 🟡 部分 / ✅ 已做 / ⏸ 待触发 / ⛔ 明确不做
 - 历史文档删除原则：任务完结且结论已沉淀到活跃文档（roadmap/architecture/CHANGELOG）后删除，git 历史可查；被后续机制部分取代的历史设计文档**不删**，在文头加「部分被取代」注并链接取代者
