@@ -28,17 +28,21 @@
 bash qa/run_qa_tests.sh        # Legacy wrapper, same thing
 ```
 
+### Push：agent 的推送工作必须用 `./scripts/push`
+
+**不要直接 `git push`**——pre-push 钩子只核对门禁标记，直接推会被拒绝并提示本节的做法。`./scripts/push`（参数与 `git push` 相同）先跑 **build → unit test → 全量 QA**，全部通过后把提交号写进 `.git/fly-push-marker` 再推送；推送前工作区必须干净（没有未提交、未跟踪的改动）。**禁止 `git push --no-verify`、禁止手写标记文件**。详见 [`docs/push-hook.md`](docs/push-hook.md)。
+
 `runqa` 只发现 `.pyt` 编排脚本（编排脚本是唯一的用例单位）；每个用例在 runqa 进程内 exec，其中的 `run_subcase` 为每个 sub case 起一个全新 `fly` 进程（隔离的 C++ 单例）。裸 `test_*.py` 是子阶段脚本，不被发现也不被运行——必须被某个 `.pyt` 调度（不能按同名判断），显式传 `.py` 路径报错退出（退出码 2），全量运行结束后的引用审计会把没被调度的 `test_*.py` 判为失败。Logs go to `{test_dir}/{test_name}/{N}_{sub_stem}/`. Before each run, `runqa` cleans the case's historical logs (`.N` variants + helper nested logs). Test discovery uses `os.walk` (not glob), skipping `.latest`/`.N` log residues and symlinked dirs so each case is collected exactly once — directory and file args both resolve to canonical real paths.
 
 **QA case 脚本不需要 `sys.path.insert`** — fly 启动时已自动配好所有模块路径。获取 fly binary 路径用 `get_fly_binary()`，不要硬编码 `bazel-bin/...`。
 
 ### 开发流程：直接推送到 main（不建分支）
 
-当前处于早期开发阶段，**直接在 `main` 分支提交并推送，不创建 feature 分支**。commit 后用 `./scripts/push` 推送（参数与 `git push` 相同）：它先跑 **build → unit test → 全量 QA**，全部通过后写标记文件再推送。不要直接 `git push`——会被 pre-push hook 拒绝。工作区必须干净（没有未提交、未跟踪的改动），`./scripts/push` 才开始跑门禁。待项目进入稳定期再切换为分支模型。
+当前处于早期开发阶段，**直接在 `main` 分支提交并推送，不创建 feature 分支**。commit 后用 `./scripts/push` 推送（参数与 `git push` 相同；**agent 的推送工作必须使用该脚本，不要直接 `git push`**）：它先跑 **build → unit test → 全量 QA**，全部通过后写标记文件再推送。不要直接 `git push`——会被 pre-push hook 拒绝。工作区必须干净（没有未提交、未跟踪的改动），`./scripts/push` 才开始跑门禁。待项目进入稳定期再切换为分支模型。
 
 ### 推送门禁（`scripts/push` 先跑校验，pre-push hook 只核对标记）
 
-门禁 **build → unit test → 全量 QA** 由 `./scripts/push` 在 `git push` **之前**跑，全部通过后把提交号写进 `.git/fly-push-marker`。`.git/hooks/pre-push` 只核对该标记与本次推送的提交是否一致：一致放行，不一致阻止 push 并提示用 `./scripts/push`。门禁不放在钩子里，是因为 `git push` 先连接远端再跑钩子，门禁超过约 6 分钟时连接空闲超时，推送以退出码 141 失败。**禁止以 `git push --no-verify` 或手写标记文件绕过** —— 失败时必须修复根因让流水线自然通过。详见 [`docs/push-hook.md`](docs/push-hook.md)。
+**Agent 的推送工作必须使用 `./scripts/push` 脚本进行**，不要直接 `git push`。门禁 **build → unit test → 全量 QA** 由 `./scripts/push` 在 `git push` **之前**跑，全部通过后把提交号写进 `.git/fly-push-marker`。`.git/hooks/pre-push` 只核对该标记与本次推送的提交是否一致：一致放行，不一致阻止 push 并提示用 `./scripts/push`。门禁不放在钩子里，是因为 `git push` 先连接远端再跑钩子，门禁超过约 6 分钟时连接空闲超时，推送以退出码 141 失败。**禁止以 `git push --no-verify` 或手写标记文件绕过** —— 失败时必须修复根因让流水线自然通过。详见 [`docs/push-hook.md`](docs/push-hook.md)。
 
 ### 手动跑 fly 烟测/脚本的日志落点（禁止污染仓库根）
 

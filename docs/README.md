@@ -13,7 +13,7 @@
 | 打开集群监控 GUI | [monitor-design.md](monitor-design.md)（`fly --serve-monitor <db>` 实时/事后浏览） |
 | 查当前待办/路线 | [remaining-todo.md](remaining-todo.md)（欠账清单）+ [roadmap.md](roadmap.md)（决策记录） |
 | 查已知问题 | [ISSUES.md](ISSUES.md) |
-| push 被拦/门禁行为 | [push-hook.md](push-hook.md) |
+| 推送必须用 ./scripts/push（门禁行为、push 被拦） | [push-hook.md](push-hook.md) |
 | 了解某次改动的来龙去脉 | [DOC_CHANGELOG.md](DOC_CHANGELOG.md)（倒序，最新在顶部） |
 
 ## 设计与决策（按主题）

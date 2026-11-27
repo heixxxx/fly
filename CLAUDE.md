@@ -379,25 +379,27 @@ Task 失败时自动序列化到 `log_dir/failed_tasks.bin`。`restart_failed_ta
 ### 必须遵循
 
 1. **使用 `./fly.sh`** 而非裸 bazel
-2. **TDD 流程**：先写测试，再写实现，测试通过后提交
-3. **C++20 / gcc12**
-4. **模块式 include 路径**：`<module/cpp/file.h>` 格式
-5. **调试必须加载 `systematic-debugging-analysis` skill**：先加日志运行观察，禁止仅靠静态分析猜测
-6. **并发封装优先**：多线程共享的容器用 `ConcurrentMap`/`ConcurrentUnorderedSet`，pending 状态机（登记→等完成→消费）用 `PendingRpcMap`，禁止新增裸 mutex+容器成员对；cv notify 必须持锁。详见 `docs/DEVELOPMENT_GUIDELINES.md` §13
+2. **推送必须用 `./scripts/push`**（参数与 `git push` 相同）：它先跑门禁（build → unit test → 全量 QA），全部通过后写标记文件再推送；pre-push 钩子只核对标记，直接 `git push` 会被拒绝。推送前工作区必须干净（没有未提交、未跟踪的改动）。见 [`docs/push-hook.md`](docs/push-hook.md)
+3. **TDD 流程**：先写测试，再写实现，测试通过后提交
+4. **C++20 / gcc12**
+5. **模块式 include 路径**：`<module/cpp/file.h>` 格式
+6. **调试必须加载 `systematic-debugging-analysis` skill**：先加日志运行观察，禁止仅靠静态分析猜测
+7. **并发封装优先**：多线程共享的容器用 `ConcurrentMap`/`ConcurrentUnorderedSet`，pending 状态机（登记→等完成→消费）用 `PendingRpcMap`，禁止新增裸 mutex+容器成员对；cv notify 必须持锁。详见 `docs/DEVELOPMENT_GUIDELINES.md` §13
 
 ### 禁止事项
 
 1. 禁止直接使用 `bazel build` 或 `bazel test`
-2. 禁止使用相对路径 include
-3. 禁止直接调用 bitsery/nanobind 原始 API（必须通过宏）
-4. 禁止跳过测试直接提交
-5. **禁止在 `qa/` 下用 `rm -rf test_*` 等通配符删除文件** —— `test_*` 通配符会同时匹配 `test_xxx.py` 源文件和 `test_xxx/` 日志目录，极易误删测试源码。qa 下的清理：
+2. **禁止直接用 `git push` 推送**（钩子会拒绝并提示 `./scripts/push`）；禁止以 `git push --no-verify` 或手写 `.git/fly-push-marker` 标记文件绕过门禁
+3. 禁止使用相对路径 include
+4. 禁止直接调用 bitsery/nanobind 原始 API（必须通过宏）
+5. 禁止跳过测试直接提交
+6. **禁止在 `qa/` 下用 `rm -rf test_*` 等通配符删除文件** —— `test_*` 通配符会同时匹配 `test_xxx.py` 源文件和 `test_xxx/` 日志目录，极易误删测试源码。qa 下的清理：
    - 未被 git 跟踪的无用文件（日志残留）：用 `git clean -fd qa/`（仅删 untracked，不碰 git 跟踪的源码）
    - 有用的非测试资源（如预生成矩阵）：放到 `qa/<dir>/matrices/` 等专用资源目录，不要散落在 test 目录下
-5. 禁止无日志调试
-6. **禁止归因为"之前代码就存在的问题"**：所有 crash 和不稳定问题必须视为本次代码修改引入的，不得以"pre-existing bug"为由跳过
-7. **禁止忽略任何 crash 和不稳定问题**：发现的第一时间必须修复，不允许搁置或推迟
-8. **禁止使用 `/tmp` 存放中间任务数据** —— 中间文件放在项目 `.work/` 目录下，任务结束前 `rm -rf .work/` 清理。`/tmp` 无限累积会填满磁盘导致 WSL2 崩溃
+7. 禁止无日志调试
+8. **禁止归因为"之前代码就存在问题"**：所有 crash 和不稳定问题必须视为本次代码修改引入的，不得以"pre-existing bug"为由跳过
+9. **禁止忽略任何 crash 和不稳定问题**：发现的第一时间必须修复，不允许搁置或推迟
+10. **禁止使用 `/tmp` 存放中间任务数据** —— 中间文件放在项目 `.work/` 目录下，任务结束前 `rm -rf .work/` 清理。`/tmp` 无限累积会填满磁盘导致 WSL2 崩溃
 
 ### 崩溃与不稳定性零容忍
 
@@ -435,4 +437,4 @@ src/new_module/
 
 ---
 
-*文档更新日期: 2026-08-28*
+*文档更新日期: 2026-11-27*

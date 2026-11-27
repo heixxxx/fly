@@ -111,7 +111,7 @@ Ask user:
 Only after user confirms:
 1. `git add` all relevant files (code + docs)
 2. `git commit` with approved message
-3. If user said push → `git push`
+3. If user said push → `./scripts/push` (NEVER raw `git push`: the pre-push hook only verifies a gate marker written by `./scripts/push`, so a raw push is rejected. `./scripts/push` runs build → unit test → full QA first, then pushes; arguments are the same as `git push`. See docs/push-hook.md)
 
 ## Fast Path: Non-Code Changes
 
@@ -123,7 +123,7 @@ When ALL changed files are **none** of the following:
 
 Then:
 1. Skip Step 2–4 entirely (no classification, no doc check, no summary confirmation)
-2. Stage, commit, and push immediately
+2. Stage and commit immediately; if user said push, use `./scripts/push` (same gate as Step 7)
 3. Print: `Fast-committed [message] and pushed.`
 
 Examples of fast-path changes: `.agents/skills/`, `.opencode/`, `.github/`, `.gitignore`, `LICENSE`, `README.md` (non-technical), config dotfiles, etc.
